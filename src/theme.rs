@@ -26,9 +26,27 @@ impl Theme {
     pub const TOOL_BG: Rgba = rgb_c(0x181818);
     pub const TOOL_TEXT: Rgba = rgb_c(0xcccccc);
     pub const REASONING: Rgba = rgb_c(0x888888);
+    pub const REASONING_BG: Rgba = rgba_c(0xffffff_06);
+    pub const TEXT_FAINT: Rgba = rgb_c(0x6e6e6e);
+    pub const TOOL_BORDER: Rgba = rgb_c(0x262626);
+    pub const ERROR_BG: Rgba = rgba_c(0xffffff_0a);
     pub const CODE_BG: Rgba = rgb_c(0x080808);
     pub const CODE_TEXT: Rgba = rgb_c(0xe7e7e7);
     pub const INLINE_CODE_BG: Rgba = rgb_c(0x242424);
+    pub const CODE_BORDER: Rgba = rgb_c(0x232323);
+    pub const CODE_HEADER_BG: Rgba = rgb_c(0x141414);
+    pub const CODE_GUTTER: Rgba = rgb_c(0x4a4a4a);
+    // Monochrome syntax tiers: weight by luminance, not hue, so code stays
+    // legible inside the site's ink/muted/faint hierarchy.
+    pub const CODE_KEYWORD: Rgba = rgb_c(0xffffff);
+    pub const CODE_STRING: Rgba = rgb_c(0xb9b9b9);
+    pub const CODE_COMMENT: Rgba = rgb_c(0x6b6b6b);
+    pub const CODE_NUMBER: Rgba = rgb_c(0xd6d6d6);
+    pub const CODE_TYPE: Rgba = rgb_c(0xededed);
+    pub const CODE_PUNCT: Rgba = rgb_c(0x8f8f8f);
+    pub const ACCENT_MUTED: Rgba = rgb_c(0xbdbdbd);
+    pub const QUOTE_BG: Rgba = rgba_c(0xffffff_07);
+    pub const TABLE_STRIPE: Rgba = rgba_c(0xffffff_08);
     pub const INPUT_BG: Rgba = rgb_c(0x0d0d0d);
     pub const INPUT_BORDER: Rgba = rgb_c(0x444444);
     pub const CURSOR: Rgba = rgb_c(0xffffff);
