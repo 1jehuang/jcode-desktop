@@ -7,7 +7,7 @@
 //! that panel's commands. Session creation also uses a fresh connection each
 //! time, because a connection re-serves its already-attached session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -117,15 +117,23 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
 }
 
 fn run(updates: Sender<Update>, commands: Receiver<Command>) {
-    // Ensure the runtime once; after that, per-session workers just dial.
-    let _ = updates.send(Update::Status("starting jcode runtime...".into()));
-    if let Err(error) = jcode_sdk::ensure_runtime(&LaunchOptions::default(), &|status| {
-        let _ = updates.send(Update::Status(status.to_string()));
-    }) {
-        let _ = updates.send(Update::Disconnected {
-            reason: error.to_string(),
-        });
-        return;
+    // A self-dev reload deliberately takes the runtime socket away for a short
+    // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
+    // while it comes back instead of turning a transient failure into a dead
+    // desktop window.
+    loop {
+        let _ = updates.send(Update::Status("starting jcode runtime...".into()));
+        match jcode_sdk::ensure_runtime(&LaunchOptions::default(), &|status| {
+            let _ = updates.send(Update::Status(status.to_string()));
+        }) {
+            Ok(()) => break,
+            Err(error) => {
+                let _ = updates.send(Update::Disconnected {
+                    reason: format!("{error}; retrying"),
+                });
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
     }
     let _ = updates.send(Update::Connected);
 
@@ -223,78 +231,83 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
         });
     };
 
-    let client = match connect("panel") {
-        Ok(client) => client,
-        Err(error) => return lost(error.to_string()),
-    };
+    let mut pending = VecDeque::new();
 
-    // Subscribe before attaching so events pushed during attach are kept.
-    let events = client.events(None);
+    // Reconnect in this same worker. The window and workspace stay resident,
+    // and history refreshes the panel after the replacement runtime is ready.
+    loop {
+        let client = match connect("panel") {
+            Ok(client) => client,
+            Err(error) => {
+                lost(format!("{error}; reconnecting"));
+                if collect_disconnected_commands(&commands, &mut pending) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                continue;
+            }
+        };
+        let events = client.events(None);
+        if let Err(error) = client.attach_session(&session_id) {
+            lost(format!("{error}; reconnecting"));
+            std::thread::sleep(Duration::from_millis(300));
+            continue;
+        }
 
-    if let Err(error) = client.attach_session(&session_id) {
-        return lost(error.to_string());
-    }
-
-    // History on the same connection: cheap, and the panel needs it once.
-    match client.get_history(&session_id) {
-        Ok(messages) => {
+        if let Ok(messages) = client.get_history(&session_id) {
             let _ = updates.send(Update::History {
                 session_id: session_id.clone(),
                 messages,
             });
         }
-        Err(error) => {
-            let _ = updates.send(Update::Status(format!("history failed: {error}")));
-        }
-    }
 
-    // Command half on its own thread so a blocked send never stalls events.
-    let command_client = client.clone();
-    let command_session = session_id.clone();
-    let command_updates = updates.clone();
-    std::thread::Builder::new()
-        .name(format!("jcode-session-cmd-{command_session}"))
-        .spawn(move || {
-            while let Ok(command) = commands.recv() {
+        loop {
+            while let Some(command) = pending.pop_front().or_else(|| commands.try_recv().ok()) {
                 match command {
                     SessionCommand::Send { content } => {
-                        if let Err(error) = command_client.send_message(
-                            &command_session,
+                        if let Err(error) = client.send_message(
+                            &session_id,
                             &content,
                             Vec::new(),
                             Some(Duration::from_secs(5)),
                         ) {
-                            let _ = command_updates.send(Update::SendFailed {
-                                session_id: command_session.clone(),
+                            let _ = updates.send(Update::SendFailed {
+                                session_id: session_id.clone(),
                                 reason: error.to_string(),
                             });
                         }
                     }
                     SessionCommand::Cancel => {
-                        let _ = command_client.cancel(&command_session);
+                        let _ = client.cancel(&session_id);
                     }
-                    SessionCommand::Stop => break,
+                    SessionCommand::Stop => return,
                 }
             }
-            // Dropping the client here closes the shared connection and ends
-            // the event loop below.
-        })
-        .expect("spawn session command thread");
 
-    // Event loop: forward this session's stream to the UI.
-    loop {
-        match events.next_timeout(Duration::from_millis(200)) {
-            Some(event) => {
+            if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
                     event,
                 });
-            }
-            None => {
-                if client.is_closed() {
-                    return lost("connection closed".into());
-                }
+            } else if client.is_closed() {
+                lost("runtime reloading; reconnecting".into());
+                break;
             }
         }
     }
+}
+
+/// Retain user commands while the self-dev runtime is between processes.
+/// Returns true when the panel was closed and the worker should stop.
+fn collect_disconnected_commands(
+    commands: &Receiver<SessionCommand>,
+    pending: &mut VecDeque<SessionCommand>,
+) -> bool {
+    while let Ok(command) = commands.try_recv() {
+        if matches!(command, SessionCommand::Stop) {
+            return true;
+        }
+        pending.push_back(command);
+    }
+    false
 }
