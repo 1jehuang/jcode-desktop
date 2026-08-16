@@ -13,6 +13,7 @@ use gpui::{
 use crate::harness::{self, Bridge, Command, Update};
 use crate::panel::Panel;
 use crate::theme::Theme;
+use crate::transition::{self, AnimatedValue, Transition};
 
 actions!(
     workspace,
@@ -33,6 +34,8 @@ actions!(
         NewPanel,
         ClosePanel,
         ToggleOverview,
+        ToggleHints,
+        NewHelpSession,
         CycleWidth,
         MaximizeWidth,
         WidthPreset1,
@@ -45,7 +48,7 @@ actions!(
 
 /// niri `animations { window-resize / workspace-switch }` use 150ms with an
 /// `ease-out-expo` curve; the strip camera matches that.
-const CAMERA_DURATION: Duration = Duration::from_millis(150);
+const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
 /// niri `layout { gaps 0 }`: columns sit flush against each other.
 const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
@@ -58,12 +61,29 @@ const CORNER_RADIUS: f32 = 6.0;
 const PRESET_WIDTHS: [f32; 3] = [0.25, 0.5, 0.75];
 /// niri `default-column-width { proportion 0.5; }`.
 const DEFAULT_WIDTH: f32 = 0.5;
+const HELP_SESSION_PROMPT: &str = r#"Act as the in-app Jcode guide. Use the bundled Jcode documentation before answering questions about Jcode features or behavior.
+
+The jcode-desktop shortcuts are:
+- Super+H/J/K/L: navigate panels
+- Super+Shift+H/J/K/L: move panels
+- Super+N: open a session to the right
+- Super+Tab: return to the previous panel
+- Super+R: cycle panel width
+- Super+F: maximize or restore panel width
+- Super+O: open the overview
+- Super+/ or F1: toggle the hints overlay
+- Super+Shift+/: open this documentation-aware help session
+
+Start with a concise orientation, then invite me to ask how to use Jcode."#;
+const SIDEBAR_WIDTH: f32 = 264.0;
 
 struct Slot {
     panel: Entity<Panel>,
     row: usize,
     /// Width as a fraction of the viewport (0.25, 0.5, 0.75, 1.0).
     width_fraction: f32,
+    /// Rendered width, retargeted when the configured width changes.
+    animated_width: AnimatedValue,
     /// Width to restore when un-maximizing (niri `maximize-column` toggle).
     restore_fraction: Option<f32>,
 }
@@ -85,8 +105,12 @@ pub struct Workspace {
     /// once the viewport width is known.
     camera_dirty: [bool; STRIP_COUNT],
     overview: bool,
-    /// Sessions offered on connect that have no panel yet.
-    available_sessions: Vec<jcode_sdk::SessionInfo>,
+    overview_progress: AnimatedValue,
+    hints_overlay: bool,
+    hints_progress: AnimatedValue,
+    pending_help_session: bool,
+    /// Every non-archived session offered by the runtime, oldest to newest.
+    sessions: Vec<jcode_sdk::SessionInfo>,
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
@@ -137,7 +161,14 @@ impl Workspace {
             camera_started: [None; STRIP_COUNT],
             camera_dirty: [true; STRIP_COUNT],
             overview: false,
-            available_sessions: Vec::new(),
+            overview_progress: AnimatedValue::new(
+                0.0,
+                transition::policy(Transition::Overview).duration,
+            ),
+            hints_overlay: false,
+            hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
+            pending_help_session: false,
+            sessions: Vec::new(),
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle(),
@@ -161,25 +192,27 @@ impl Workspace {
                 }
             }
             Update::Sessions { sessions } => {
-                // Open the two most recent sessions alongside whatever is
-                // already on the strip; keep the rest for a resume list.
-                let mut sessions = sessions;
-                let open_now: Vec<_> = sessions.split_off(sessions.len().saturating_sub(2));
-                self.available_sessions = sessions;
-                for session in open_now {
-                    let already_open = self
-                        .slots
-                        .iter()
-                        .any(|slot| slot.panel.read(cx).session_id == session.session_id);
-                    if !already_open {
-                        self.open_session(session, cx);
-                    }
-                }
+                self.sessions = sessions;
             }
             Update::SessionCreated { session } => {
+                let session_id = session.session_id.clone();
+                if !self
+                    .sessions
+                    .iter()
+                    .any(|known| known.session_id == session.session_id)
+                {
+                    self.sessions.push(session.clone());
+                }
                 let inserted = self.open_session(session, cx);
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
+                if self.pending_help_session {
+                    self.pending_help_session = false;
+                    self.bridge.send(Command::Send {
+                        session_id,
+                        content: HELP_SESSION_PROMPT.into(),
+                    });
+                }
             }
             Update::History {
                 session_id,
@@ -251,6 +284,10 @@ impl Workspace {
             panel,
             row: self.active_row,
             width_fraction: DEFAULT_WIDTH,
+            animated_width: AnimatedValue::new(
+                0.0,
+                transition::policy(Transition::PanelOpen).duration,
+            ),
             restore_fraction: None,
         };
         let active_is_on_strip = self
@@ -260,11 +297,32 @@ impl Workspace {
         let row_last = self.row_indices(self.active_row).last();
         let insert_at = insert_index(self.active, active_is_on_strip, row_last, self.slots.len());
         self.slots.insert(insert_at, slot);
+        self.slots[insert_at]
+            .animated_width
+            .set(DEFAULT_WIDTH, Instant::now());
         // Inserting shifts every later index, including the focused one.
         if self.active >= insert_at {
             self.active += 1;
         }
         insert_at
+    }
+
+    fn activate_session(
+        &mut self,
+        session: jcode_sdk::SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == session.session_id)
+            .unwrap_or_else(|| self.open_session(session, cx));
+        self.set_active(index, cx);
+        self.overview = false;
+        self.overview_progress.set(0.0, Instant::now());
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     /// Focus the slot at `index`, remembering the outgoing panel so
@@ -291,6 +349,10 @@ impl Workspace {
 
     fn slot_width(&self, index: usize, viewport: f32) -> f32 {
         let fraction = self.slots[index].width_fraction;
+        Self::width_for_fraction(fraction, viewport)
+    }
+
+    fn width_for_fraction(fraction: f32, viewport: f32) -> f32 {
         // niri sizes a column as a proportion of the working area, which is the
         // output minus the struts.
         ((viewport - STRUT * 2.0) * fraction - GAP).max(320.0)
@@ -582,6 +644,27 @@ impl Workspace {
 
     fn toggle_overview(&mut self, _: &ToggleOverview, _: &mut Window, cx: &mut Context<Self>) {
         self.overview = !self.overview;
+        self.overview_progress
+            .set(if self.overview { 1.0 } else { 0.0 }, Instant::now());
+        self.hints_overlay = false;
+        self.hints_progress.set(0.0, Instant::now());
+        cx.notify();
+    }
+
+    fn toggle_hints(&mut self, _: &ToggleHints, _: &mut Window, cx: &mut Context<Self>) {
+        self.hints_overlay = !self.hints_overlay;
+        self.hints_progress
+            .set(if self.hints_overlay { 1.0 } else { 0.0 }, Instant::now());
+        cx.notify();
+    }
+
+    fn new_help_session(&mut self, _: &NewHelpSession, _: &mut Window, cx: &mut Context<Self>) {
+        self.pending_help_session = true;
+        self.hints_overlay = false;
+        self.hints_progress.set(0.0, Instant::now());
+        self.bridge.send(Command::CreateSession {
+            working_dir: default_working_dir(),
+        });
         cx.notify();
     }
 
@@ -592,6 +675,7 @@ impl Workspace {
             .filter(|slot| slot.row == self.active_row)
         {
             slot.width_fraction = fraction;
+            slot.animated_width.set(fraction, Instant::now());
             slot.restore_fraction = None;
             self.retarget_camera();
             cx.notify();
@@ -609,6 +693,7 @@ impl Workspace {
             return;
         };
         slot.width_fraction = next_preset(slot.width_fraction);
+        slot.animated_width.set(slot.width_fraction, Instant::now());
         slot.restore_fraction = None;
         self.retarget_camera();
         cx.notify();
@@ -624,13 +709,10 @@ impl Workspace {
         else {
             return;
         };
-        match slot.restore_fraction.take() {
-            Some(restore) => slot.width_fraction = restore,
-            None => {
-                slot.restore_fraction = Some(slot.width_fraction);
-                slot.width_fraction = 1.0;
-            }
-        }
+        let (width, restore) = toggle_maximize(slot.width_fraction, slot.restore_fraction);
+        slot.width_fraction = width;
+        slot.animated_width.set(width, Instant::now());
+        slot.restore_fraction = restore;
         self.retarget_camera();
         cx.notify();
     }
@@ -700,6 +782,16 @@ impl Workspace {
         }
 
         let panel_h = viewport_h - STRIP_PADDING_Y * 2.0;
+        let indices = self.row_indices(self.active_row).collect::<Vec<_>>();
+        let now = Instant::now();
+        let mut animated_widths = Vec::with_capacity(indices.len());
+        for &index in &indices {
+            let fraction = self.slots[index].animated_width.sample(now);
+            if self.slots[index].animated_width.is_animating() {
+                window.request_animation_frame();
+            }
+            animated_widths.push(Self::width_for_fraction(fraction, viewport_w));
+        }
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_Y))
@@ -708,9 +800,8 @@ impl Workspace {
             .flex_row()
             .gap(px(GAP));
 
-        for index in self.row_indices(self.active_row).collect::<Vec<_>>() {
+        for (index, width) in indices.into_iter().zip(animated_widths) {
             let slot = &self.slots[index];
-            let width = self.slot_width(index, viewport_w);
             let focused = index == self.active;
             strip = strip.child(
                 div()
@@ -801,6 +892,7 @@ impl Workspace {
                         cx.listener(move |this, _event, window, cx| {
                             this.set_active(index, cx);
                             this.overview = false;
+                            this.overview_progress.set(0.0, Instant::now());
                             this.focus_active(window, cx);
                             cx.notify();
                         }),
@@ -870,6 +962,7 @@ impl Workspace {
                             working_dir: default_working_dir(),
                         });
                         this.overview = false;
+                        this.overview_progress.set(0.0, Instant::now());
                         cx.notify();
                     }),
                 )
@@ -885,25 +978,177 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A persistent, compact map of the four strips. Panel lengths hint at
-    /// their viewport width, while the bright panel is the current target.
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let active_id = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.read(cx).session_id.clone());
+        let open_ids = self
+            .slots
+            .iter()
+            .map(|slot| slot.panel.read(cx).session_id.clone())
+            .collect::<Vec<_>>();
+        let mut list = div()
+            .id("sidebar-session-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .py_2();
+
+        for (sidebar_index, session) in self.sessions.iter().rev().cloned().enumerate() {
+            let selected = active_id.as_deref() == Some(session.session_id.as_str());
+            let open = open_ids.contains(&session.session_id);
+            let title = session
+                .title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| format!("session {}", short_session_id(&session.session_id)));
+            let directory = session
+                .working_dir
+                .as_deref()
+                .map(compact_working_dir)
+                .unwrap_or_else(|| "unknown folder".into());
+
+            list = list.child(
+                div()
+                    .id(("sidebar-session", sidebar_index))
+                    .mx_2()
+                    .mb_1()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .bg(if selected {
+                        Theme::ACCENT_DIM
+                    } else {
+                        Theme::BG
+                    })
+                    .border_1()
+                    .border_color(if selected {
+                        Theme::PANEL_BORDER_FOCUS
+                    } else {
+                        Theme::PANEL_BORDER_IDLE
+                    })
+                    .hover(|el| el.bg(Theme::HEADER_BG).border_color(Theme::PANEL_BORDER))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, window, cx| {
+                            this.activate_session(session.clone(), window, cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().size(px(6.0)).rounded_full().bg(if open {
+                                Theme::TEXT
+                            } else {
+                                Theme::TEXT_DIM
+                            }))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .text_size(px(12.0))
+                                    .child(title),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .pl(px(14.0))
+                            .overflow_hidden()
+                            .text_size(px(10.0))
+                            .text_color(Theme::TEXT_DIM)
+                            .child(directory),
+                    ),
+            );
+        }
+
+        if self.sessions.is_empty() {
+            list = list.child(
+                div()
+                    .p_4()
+                    .text_size(px(11.0))
+                    .text_color(Theme::TEXT_DIM)
+                    .child(if self.connected {
+                        "no previous sessions"
+                    } else {
+                        "loading sessions..."
+                    }),
+            );
+        }
+
+        div()
+            .w(px(SIDEBAR_WIDTH))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(Theme::BG)
+            .border_r_1()
+            .border_color(Theme::PANEL_BORDER)
+            .child(
+                div()
+                    .h(px(54.0))
+                    .px_4()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(Theme::PANEL_BORDER)
+                    .child(div().text_size(px(13.0)).child("sessions"))
+                    .child(
+                        div()
+                            .id("sidebar-new-session")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_size(px(16.0))
+                            .text_color(Theme::TEXT_DIM)
+                            .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _event, window, cx| {
+                                    this.new_panel(&NewPanel, window, cx);
+                                }),
+                            )
+                            .child("+"),
+                    ),
+            )
+            .child(list)
+            .into_any_element()
+    }
+
+    /// A small persistent map of the strips, anchored over the bottom-left of
+    /// the workspace. Panel lengths hint at their configured widths.
     fn render_minimap(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let mut map = div()
             .id("workspace-minimap")
-            .w(px(156.0))
+            .absolute()
+            .left(px(8.0))
+            .bottom(px(8.0))
+            .w(px(92.0))
+            .p(px(4.0))
             .flex()
             .flex_col()
-            .gap(px(2.0));
+            .gap(px(2.0))
+            .rounded_md()
+            .bg(Theme::HEADER_BG);
 
         for row in 0..STRIP_COUNT {
             let active_row = row == self.active_row;
             let mut track = div()
                 .id(("minimap-row", row))
-                .h(px(4.0))
+                .h(px(3.0))
                 .w_full()
                 .flex()
                 .flex_row()
-                .gap(px(2.0))
+                .gap(px(1.0))
                 .rounded_full()
                 .bg(if active_row {
                     Theme::ACCENT_DIM
@@ -913,7 +1158,7 @@ impl Workspace {
 
             for index in self.row_indices(row) {
                 let focused = index == self.active;
-                let width = 8.0 + self.slots[index].width_fraction * 24.0;
+                let width = 4.0 + self.slots[index].width_fraction * 14.0;
                 track = track.child(
                     div()
                         .id(("minimap-panel", index))
@@ -933,6 +1178,7 @@ impl Workspace {
                             cx.listener(move |this, _event, window, cx| {
                                 this.set_active(index, cx);
                                 this.overview = false;
+                                this.overview_progress.set(0.0, Instant::now());
                                 this.focus_active(window, cx);
                                 cx.notify();
                             }),
@@ -945,6 +1191,83 @@ impl Workspace {
 
         map.into_any_element()
     }
+
+    fn render_hints_overlay(&self, progress: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let shortcut = |keys: &'static str, description: &'static str| {
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .gap_8()
+                .child(div().text_color(Theme::TEXT).child(description))
+                .child(div().text_color(Theme::TEXT_DIM).child(keys))
+        };
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .opacity(progress)
+            .bg(gpui::rgba(0x000000b8))
+            .child(
+                div()
+                    .id("hints-card")
+                    .relative()
+                    .top(px((1.0 - progress) * 12.0))
+                    .w(px(480.0))
+                    .p_6()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .bg(Theme::PANEL_BG)
+                    .border_1()
+                    .border_color(Theme::PANEL_BORDER_FOCUS)
+                    .rounded_xl()
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(div().text_size(px(18.0)).child("Jcode hints"))
+                            .child(div().text_color(Theme::TEXT_DIM).child("Super+/ or F1 to close")),
+                    )
+                    .child(shortcut("Super+H/J/K/L", "Navigate panels"))
+                    .child(shortcut("Super+Shift+H/J/K/L", "Move panels"))
+                    .child(shortcut("Super+N", "Open a session to the right"))
+                    .child(shortcut("Super+Tab", "Return to the previous panel"))
+                    .child(shortcut("Super+R / Super+F", "Cycle width / maximize"))
+                    .child(shortcut("Super+O", "Open overview"))
+                    .child(
+                        div()
+                            .id("new-help-session")
+                            .mt_3()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(Theme::HEADER_BG)
+                            .border_1()
+                            .border_color(Theme::PANEL_BORDER)
+                            .cursor_pointer()
+                            .hover(|el| el.border_color(Theme::ACCENT))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _event, window, cx| {
+                                    this.new_help_session(&NewHelpSession, window, cx);
+                                }),
+                            )
+                            .child("Ask Jcode about the app")
+                            .child(
+                                div()
+                                    .mt_1()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::TEXT_DIM)
+                                    .child("Opens a new session with the hints and bundled docs loaded into context."),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for Workspace {
@@ -955,11 +1278,22 @@ impl Render for Workspace {
             self.focus_active(window, cx);
         }
         let viewport = window.viewport_size();
-        let viewport_w = f32::from(viewport.width);
-        let viewport_h = f32::from(viewport.height) - 28.0; // status bar
+        let viewport_w = (f32::from(viewport.width) - SIDEBAR_WIDTH).max(320.0);
+        let viewport_h = f32::from(viewport.height);
 
-        let content = if self.overview {
-            self.render_overview(cx)
+        let now = Instant::now();
+        let overview_progress = self.overview_progress.sample(now);
+        let hints_progress = self.hints_progress.sample(now);
+        if self.overview_progress.is_animating() || self.hints_progress.is_animating() {
+            window.request_animation_frame();
+        }
+
+        let content = if overview_progress > 0.0 {
+            div()
+                .size_full()
+                .opacity(overview_progress)
+                .child(self.render_overview(cx))
+                .into_any_element()
         } else if self.row_indices(self.active_row).next().is_none() {
             div()
                 .size_full()
@@ -986,7 +1320,7 @@ impl Render for Workspace {
         div()
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(Theme::BG)
             .font_family(Theme::FONT_UI)
             .text_size(px(14.0))
@@ -1008,46 +1342,27 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
+            .on_action(cx.listener(Self::toggle_hints))
+            .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
             .on_action(cx.listener(|this, _: &WidthPreset1, _w, cx| this.set_width(0.25, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset2, _w, cx| this.set_width(0.5, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
-            .child(div().flex_1().min_h_0().child(content))
-            // Status bar
+            .child(self.render_sidebar(cx))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .h(px(28.0))
-                    .px_3()
-                    .bg(Theme::HEADER_BG)
-                    .border_t_1()
-                    .border_color(Theme::PANEL_BORDER)
-                    .text_size(px(11.0))
-                    .text_color(Theme::TEXT_DIM)
-                    .child(div().size(px(7.0)).rounded_full().bg(if self.connected {
-                        Theme::OK
-                    } else {
-                        Theme::WARN
-                    }))
-                    .child(self.status.clone())
-                    .child(div().flex_1())
-                    .child(self.render_minimap(cx))
-                    .child(format!(
-                        "strip {}/{} · {} panel{}",
-                        self.active_row + 1,
-                        STRIP_COUNT,
-                        self.slots.len(),
-                        if self.slots.len() == 1 { "" } else { "s" }
-                    ))
-                    .child(
-                        "super-hjkl navigate · super-n new right · super-tab previous · super-r width · super-f max · super-o overview",
-                    ),
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(content)
+                    .child(self.render_minimap(cx)),
             )
+            .when(hints_progress > 0.0, |root| {
+                root.child(self.render_hints_overlay(hints_progress, cx))
+            })
     }
 }
 
@@ -1059,6 +1374,20 @@ impl Focusable for Workspace {
 
 fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
+}
+
+fn short_session_id(session_id: &str) -> String {
+    session_id.chars().take(8).collect()
+}
+
+fn compact_working_dir(path: &str) -> String {
+    let home = std::env::var("HOME").ok();
+    if let Some(home) = home.as_deref()
+        && let Some(relative) = path.strip_prefix(home)
+    {
+        return format!("~{relative}");
+    }
+    path.to_owned()
 }
 
 /// A one-line description of the strip layout, for tests and for the
@@ -1120,6 +1449,18 @@ fn next_preset(current: f32) -> f32 {
         .unwrap_or(PRESET_WIDTHS[0])
 }
 
+/// niri `maximize-column`: fill the viewport, or return to the stored width.
+/// Returns the new `(width, restore)` pair. A panel that is already full width
+/// with nothing stored (for example after `super-4`) toggles to the default
+/// width, so the key is never a no-op.
+fn toggle_maximize(width: f32, restore: Option<f32>) -> (f32, Option<f32>) {
+    match restore {
+        Some(restore) => (restore, None),
+        None if width >= 1.0 => (DEFAULT_WIDTH, None),
+        None => (1.0, Some(width)),
+    }
+}
+
 /// niri `center-focused-column "never"`: scroll the least amount that brings
 /// `[left, left + width]` fully into a `viewport`-wide window at `current`.
 fn scroll_into_view(current: f32, left: f32, width: f32, viewport: f32) -> f32 {
@@ -1173,6 +1514,34 @@ mod tests {
     }
 
     #[test]
+    fn maximize_toggles_back_to_the_previous_width() {
+        // Maximize a half-width panel, then restore it.
+        let (width, restore) = toggle_maximize(0.5, None);
+        assert_eq!((width, restore), (1.0, Some(0.5)));
+        assert_eq!(toggle_maximize(width, restore), (0.5, None));
+        // A quarter-width panel restores to a quarter.
+        let (width, restore) = toggle_maximize(0.25, None);
+        assert_eq!(toggle_maximize(width, restore), (0.25, None));
+        // Already full width with nothing stored: toggle to the default so the
+        // key is never a no-op.
+        assert_eq!(toggle_maximize(1.0, None), (DEFAULT_WIDTH, None));
+        // Round trip from there still works.
+        let (width, restore) = toggle_maximize(DEFAULT_WIDTH, None);
+        assert_eq!(width, 1.0);
+        assert_eq!(toggle_maximize(width, restore).0, DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn strip_description_reports_focus_and_widths() {
+        assert_eq!(
+            describe_strip(&[0.5, 0.25], Some(1), 2),
+            "strip=2 focus=1 widths=0.50,0.25"
+        );
+        // An empty strip has no focused position.
+        assert_eq!(describe_strip(&[], None, 0), "strip=0 focus=- widths=");
+    }
+
+    #[test]
     fn camera_never_centers_and_scrolls_minimally() {
         let viewport = 1000.0;
         // Fully visible: do not move.
@@ -1203,5 +1572,13 @@ mod tests {
         // quarters within 20%.
         assert!((ease_out_expo(0.1) - 0.5).abs() < 0.001);
         assert!((ease_out_expo(0.2) - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn help_session_prompt_carries_docs_instruction_and_visible_hints() {
+        assert!(HELP_SESSION_PROMPT.contains("bundled Jcode documentation"));
+        assert!(HELP_SESSION_PROMPT.contains("Super+H/J/K/L"));
+        assert!(HELP_SESSION_PROMPT.contains("Super+/ or F1"));
+        assert!(HELP_SESSION_PROMPT.contains("Super+Shift+/"));
     }
 }
