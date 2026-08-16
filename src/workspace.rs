@@ -10,6 +10,7 @@ use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Window, actions, div, prelude::*, px, relative,
 };
 
+use crate::accounts;
 use crate::harness::{self, Bridge, Command, Update};
 use crate::learning;
 use crate::panel::Panel;
@@ -132,6 +133,8 @@ pub struct Workspace {
     pending_help_session: bool,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
+    /// Configured logins and API keys, refreshed in the background.
+    accounts: Vec<accounts::Account>,
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
@@ -145,6 +148,7 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         crate::input::bind_keys(cx);
         let bridge = harness::spawn();
+        let accounts_feed = accounts::spawn();
 
         // Poll bridge updates ~60 times per second while anything is pending.
         let poll_bridge = bridge.clone();
@@ -154,12 +158,16 @@ impl Workspace {
                     .timer(Duration::from_millis(16))
                     .await;
                 let updates = poll_bridge.drain();
-                if updates.is_empty() {
+                let accounts = accounts_feed.latest();
+                if updates.is_empty() && accounts.is_none() {
                     continue;
                 }
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     for update in updates {
                         workspace.apply(update, cx);
+                    }
+                    if let Some(accounts) = accounts {
+                        workspace.accounts = accounts;
                     }
                     cx.notify();
                 });
@@ -192,6 +200,7 @@ impl Workspace {
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             pending_help_session: false,
             sessions: Vec::new(),
+            accounts: Vec::new(),
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle(),
@@ -227,6 +236,7 @@ impl Workspace {
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             pending_help_session: false,
             sessions: Vec::new(),
+            accounts: Vec::new(),
             status: "test".into(),
             connected: true,
             focus_handle: cx.focus_handle(),
@@ -251,6 +261,12 @@ impl Workspace {
             ),
             restore_fraction: None,
         });
+    }
+
+    /// Seed accounts for tests, bypassing the CLI.
+    #[cfg(test)]
+    pub fn set_test_accounts(&mut self, accounts: Vec<accounts::Account>) {
+        self.accounts = accounts;
     }
 
     #[cfg(test)]
@@ -1387,7 +1403,108 @@ impl Workspace {
                     ),
             )
             .child(list)
+            .when_some(self.render_accounts(), |el, accounts| el.child(accounts))
             .into_any_element()
+    }
+
+    /// The connected-accounts strip: one row per configured credential, led
+    /// by the provider's logo, with the auth method (OAuth / API key) and
+    /// state. Only configured providers appear, so the section stays honest
+    /// and short: it answers "what am I logged into right now".
+    fn render_accounts(&self) -> Option<gpui::AnyElement> {
+        if self.accounts.is_empty() {
+            return None;
+        }
+
+        let mut section = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(Theme::PANEL_BORDER)
+            .py_2()
+            .child(
+                div()
+                    .px_4()
+                    .pb_1()
+                    .text_size(px(10.0))
+                    .text_color(Theme::TEXT_DIM)
+                    .child("accounts"),
+            );
+
+        for (index, account) in self.accounts.iter().enumerate() {
+            let available = account.available();
+            let ink = if available {
+                Theme::TEXT
+            } else {
+                Theme::TEXT_FAINT
+            };
+
+            let logo: gpui::AnyElement = match accounts::logo(&account.id) {
+                Some(bytes) => gpui::svg()
+                    .data(bytes)
+                    .size(px(16.0))
+                    .flex_none()
+                    .text_color(ink)
+                    .into_any_element(),
+                None => div()
+                    .size(px(16.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .bg(Theme::INLINE_CODE_BG)
+                    .text_size(px(10.0))
+                    .text_color(ink)
+                    .child(accounts::lettermark(&account.display_name))
+                    .into_any_element(),
+            };
+
+            section = section.child(
+                div()
+                    .id(("account", index))
+                    .debug_selector(|| format!("account-{}", account.id))
+                    .mx_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .hover(|el| el.bg(Theme::HEADER_BG))
+                    .child(logo)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_size(px(11.0))
+                            .text_color(ink)
+                            .child(account.display_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(9.0))
+                            .text_color(Theme::TEXT_DIM)
+                            .child(if available {
+                                account.auth_kind.clone()
+                            } else {
+                                format!("{} · expired", account.auth_kind)
+                            }),
+                    )
+                    .child(div().flex_none().size(px(5.0)).rounded_full().bg(
+                        if available {
+                            Theme::OK
+                        } else {
+                            Theme::TEXT_FAINT
+                        },
+                    )),
+            );
+        }
+
+        Some(section.into_any_element())
     }
 
     /// Compact workspace switcher modeled after the user's Waybar module.
@@ -2236,6 +2353,51 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The accounts strip must actually paint: a provider with a vendored
+    /// logo, and one without (which falls back to a lettermark). Seeding
+    /// bypasses the CLI so the test needs no runtime or credentials.
+    #[gpui::test]
+    fn connected_accounts_paint_in_the_sidebar(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (_workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.set_test_accounts(vec![
+                accounts::Account {
+                    id: "openai".into(),
+                    display_name: "OpenAI".into(),
+                    status: "available".into(),
+                    auth_kind: "OAuth".into(),
+                    method: "OAuth".into(),
+                },
+                accounts::Account {
+                    id: "jcode".into(),
+                    display_name: "Jcode".into(),
+                    status: "expired".into(),
+                    auth_kind: "API key".into(),
+                    method: "API key (`JCODE_API_KEY`)".into(),
+                },
+            ]);
+            let _ = window;
+            workspace
+        });
+        vcx.run_until_parked();
+
+        assert!(
+            accounts::logo("openai").is_some(),
+            "openai must have a vendored logo"
+        );
+        let with_logo = vcx
+            .debug_bounds("account-openai")
+            .expect("the OpenAI account row should have painted");
+        let with_lettermark = vcx
+            .debug_bounds("account-jcode")
+            .expect("the Jcode account row should have painted");
+        assert!(
+            with_logo.origin.y < with_lettermark.origin.y,
+            "available accounts should be listed above expired ones"
+        );
+    }
 
     #[test]
     fn new_panel_lands_right_of_the_focused_one() {
