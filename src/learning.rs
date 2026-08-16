@@ -887,19 +887,41 @@ mod tests {
     fn repeated_spaced_use_outlasts_repeated_immediate_use() {
         // The spacing effect: the same number of uses spread out must leave a
         // more durable trace than the same uses in quick succession.
+        //
+        // Comparing mastery at a fixed date would not show this, because the
+        // spaced learner's last use is also more recent, so recency alone would
+        // carry the assertion. Two things are compared instead: the stability
+        // the practice built, and mastery measured the same distance *after
+        // each learner's final use*, which holds recency equal.
         let start = 1_000_000;
         let mut crammed = Coach::new();
         for step in 0..4 {
             crammed.used_shortcut("maximize", start + step * 10);
         }
+        let crammed_last = start + 3 * 10;
+
         let mut spaced = Coach::new();
         for step in 0..4 {
             spaced.used_shortcut("maximize", start + step * 5 * DAY);
         }
-        let horizon = start + 60 * DAY;
+        let spaced_last = start + 3 * 5 * DAY;
+
+        let crammed_stability = crammed.trace("maximize").stability;
+        let spaced_stability = spaced.trace("maximize").stability;
         assert!(
-            spaced.mastery("maximize", horizon) > crammed.mastery("maximize", horizon),
-            "spaced practice should be more durable"
+            spaced_stability > crammed_stability * 1.5,
+            "spacing should build substantially more stability: \
+             {spaced_stability} vs {crammed_stability}"
+        );
+
+        // Equal time since each learner's last use: only durability differs.
+        let elapsed = 30 * DAY;
+        let spaced_retained = spaced.mastery("maximize", spaced_last + elapsed);
+        let crammed_retained = crammed.mastery("maximize", crammed_last + elapsed);
+        assert!(
+            spaced_retained > crammed_retained,
+            "at equal recency, spaced practice should be better retained: \
+             {spaced_retained} vs {crammed_retained}"
         );
     }
 

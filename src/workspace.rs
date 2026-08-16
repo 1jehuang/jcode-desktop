@@ -1337,6 +1337,10 @@ impl Workspace {
                     .child(
                         div()
                             .id("sidebar-new-session")
+                            // Tagged so a render test can click the real button
+                            // and confirm it counts as a slow path, not as
+                            // knowledge of super-n.
+                            .debug_selector(|| "sidebar-new-session".into())
                             .px_2()
                             .py_1()
                             .rounded_md()
@@ -1908,6 +1912,33 @@ fn ease_out_expo(t: f32) -> f32 {
 /// left/right navigation.
 const LONG_HOP: usize = 3;
 
+/// Whether a catalog `keys` string shows the given chord to the user. The
+/// catalog writes chords for humans ("super-h / super-l", "super-1 .. super-4"),
+/// so a range is expanded to the concrete keys it stands for.
+#[cfg(test)]
+fn advertises(keys: &str, chord: &str) -> bool {
+    for part in keys.split('/').map(str::trim) {
+        if part == chord {
+            return true;
+        }
+        // "super-1 .. super-4" advertises every key in that inclusive range.
+        if let Some((start, end)) = part.split_once("..") {
+            let (start, end) = (start.trim(), end.trim());
+            if let (Some(first), Some(last), Some(wanted)) = (
+                start.rsplit('-').next().and_then(|d| d.parse::<u32>().ok()),
+                end.rsplit('-').next().and_then(|d| d.parse::<u32>().ok()),
+                chord.rsplit('-').next().and_then(|d| d.parse::<u32>().ok()),
+            ) {
+                let prefix = &start[..start.len() - 1];
+                if chord.starts_with(prefix) && (first..=last).contains(&wanted) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Which shortcut a click-to-focus bypassed, given how far it jumped and where
 /// it landed.
 fn click_skill(steps: usize, landed_at: usize, strip_len: usize) -> &'static str {
@@ -2165,6 +2196,170 @@ mod tests {
             .unwrap();
     }
 
+    /// Every instrumented skill must actually be reachable by the keys the
+    /// catalog advertises. This is the check the earlier work never had: it
+    /// drives each shortcut through the real keymap and asserts the coach
+    /// recognised it, so an instrumented skill that no keystroke can trigger
+    /// (a wrong binding, a guard that always returns early) cannot pass.
+    #[gpui::test]
+    fn every_taught_shortcut_is_reachable_by_its_advertised_keys(cx: &mut gpui::TestAppContext) {
+        // Each skill, with keys that should exercise it from a fresh workspace.
+        // Ordering matters only in that each sequence must leave enough panels
+        // to work with; the assertions are per-skill.
+        let cases: &[(&str, &str)] = &[
+            ("new_panel", "super-n"),
+            ("focus_left_right", "super-h"),
+            ("focus_first_last", "super-end"),
+            ("focus_previous", "super-tab"),
+            ("overview", "super-o"),
+            ("move_panel", "super-shift-h"),
+            ("move_panel_end", "super-shift-end"),
+            ("cycle_width", "super-r"),
+            ("maximize", "super-f"),
+            ("width_presets", "super-2"),
+            ("move_panel_strip", "super-shift-j"),
+            ("focus_up_down", "super-j"),
+            ("close_panel", "super-q"),
+        ];
+
+        for (skill_id, keys) in cases {
+            cx.update(|cx| crate::bind_workspace_keys(cx));
+            let (workspace, vcx) = cx.add_window_view(|window, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                // Enough panels that no shortcut is a no-op, and a second strip
+                // populated so cross-strip navigation is meaningful.
+                for name in ["one", "two", "three", "four"] {
+                    workspace.push_test_panel(name, cx);
+                }
+                workspace.active_row = 1;
+                workspace.push_test_panel("below", cx);
+                workspace.active_row = 0;
+                workspace.active = 1;
+                let _ = window;
+                workspace
+            });
+            vcx.update(|window, cx| {
+                let handle = workspace.read(cx).focus_handle.clone();
+                window.focus(&handle, cx);
+            });
+            vcx.run_until_parked();
+
+            // focus_previous needs somewhere to return to.
+            if *skill_id == "focus_previous" {
+                vcx.simulate_keystrokes("super-l");
+                vcx.run_until_parked();
+            }
+
+            vcx.simulate_keystrokes(keys);
+            vcx.run_until_parked();
+
+            workspace.update(vcx, |workspace, _| {
+                let coach = workspace.test_coach();
+                let trace = coach.trace(skill_id);
+                assert!(
+                    trace.recalled > 0,
+                    "{keys} should have registered {skill_id} as used, \
+                     but the coach recorded no unaided use"
+                );
+                assert!(
+                    coach.mastery(skill_id, learning::now()) > 0.0,
+                    "{skill_id} should have nonzero mastery after {keys}"
+                );
+            });
+        }
+    }
+
+    /// The catalog's advertised keys must be the keys that are actually bound.
+    /// Earlier work only checked that catalog entries existed by name; this
+    /// compares each advertised chord against the real keymap, so the coach can
+    /// never teach a keystroke the app does not listen for.
+    #[gpui::test]
+    fn advertised_keys_match_the_real_keymap(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let workspace = Workspace::for_test(learning::Coach::new(), cx);
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        vcx.run_until_parked();
+
+        // Each advertised chord paired with the action it should invoke. A skill
+        // that shows two chords (left/right) maps each to its own action.
+        let expected: Vec<(&str, &str, Box<dyn gpui::Action>)> = vec![
+            ("focus_left_right", "super-h", Box::new(FocusLeft)),
+            ("focus_left_right", "super-l", Box::new(FocusRight)),
+            ("focus_up_down", "super-j", Box::new(FocusDown)),
+            ("focus_up_down", "super-k", Box::new(FocusUp)),
+            ("focus_first_last", "super-home", Box::new(FocusFirst)),
+            ("focus_first_last", "super-end", Box::new(FocusLast)),
+            ("focus_previous", "super-tab", Box::new(FocusPrevious)),
+            ("overview", "super-o", Box::new(ToggleOverview)),
+            ("move_panel", "super-shift-h", Box::new(MovePanelLeft)),
+            ("move_panel", "super-shift-l", Box::new(MovePanelRight)),
+            ("move_panel_strip", "super-shift-j", Box::new(MovePanelDown)),
+            ("move_panel_strip", "super-shift-k", Box::new(MovePanelUp)),
+            (
+                "move_panel_end",
+                "super-shift-home",
+                Box::new(MovePanelToFirst),
+            ),
+            (
+                "move_panel_end",
+                "super-shift-end",
+                Box::new(MovePanelToLast),
+            ),
+            ("cycle_width", "super-r", Box::new(CycleWidth)),
+            ("maximize", "super-f", Box::new(MaximizeWidth)),
+            ("width_presets", "super-1", Box::new(WidthPreset1)),
+            ("width_presets", "super-2", Box::new(WidthPreset2)),
+            ("width_presets", "super-3", Box::new(WidthPreset3)),
+            ("width_presets", "super-4", Box::new(WidthPreset4)),
+            ("new_panel", "super-n", Box::new(NewPanel)),
+            ("close_panel", "super-q", Box::new(ClosePanel)),
+        ];
+
+        // Every catalog skill must appear, so a new skill cannot skip this check.
+        for skill in learning::SKILLS {
+            assert!(
+                expected.iter().any(|(id, _, _)| *id == skill.id),
+                "{} is in the catalog but unchecked against the keymap",
+                skill.id
+            );
+        }
+
+        for (skill_id, chord, action) in &expected {
+            let skill = learning::skill(skill_id).expect("catalog entry");
+            // The chord must be one the catalog actually shows the user.
+            assert!(
+                advertises(skill.keys, chord),
+                "{skill_id} shows {:?}, which does not include {chord:?}",
+                skill.keys
+            );
+            let bound: Vec<String> = vcx.update(|window, _| {
+                window
+                    .bindings_for_action(action.as_ref())
+                    .iter()
+                    .map(|binding| {
+                        binding
+                            .keystrokes()
+                            .iter()
+                            .map(|keystroke| keystroke.unparse())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect()
+            });
+            assert!(
+                bound.iter().any(|actual| actual == chord),
+                "{skill_id} advertises {chord:?} but that action binds {bound:?}"
+            );
+        }
+    }
+
     /// Clicking a panel that a keypress would have focused is the pointer slow
     /// path. This clicks the real panel element in a real rendered frame, rather
     /// than testing the classification helper in isolation.
@@ -2215,6 +2410,46 @@ mod tests {
                 Some("focus_left_right"),
                 "and should teach the navigation keys"
             );
+        });
+    }
+
+    /// Clicking the sidebar's "+" opens a session, but must never be mistaken
+    /// for knowing super-n. Without this check, routing the button through the
+    /// keyboard handler would silently teach the coach that the user is fluent
+    /// in a shortcut they have never pressed.
+    #[gpui::test]
+    fn clicking_the_new_session_button_is_not_keyboard_credit(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        vcx.run_until_parked();
+
+        let button = vcx
+            .debug_bounds("sidebar-new-session")
+            .expect("the new-session button should have painted");
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        workspace.update(vcx, |workspace, _| {
+            let coach = workspace.test_coach();
+            let trace = coach.trace("new_panel");
+            assert_eq!(
+                trace.recalled, 0,
+                "clicking the button must not count as recalling super-n"
+            );
+            assert!(
+                trace.slow_paths > 0,
+                "clicking the button should be recorded as the long way round"
+            );
+            assert!(coach.effort_wasted > 0, "and should count as wasted effort");
         });
     }
 
@@ -2480,6 +2715,21 @@ mod tests {
                 assert_eq!(coach.effort_wasted, 0, "no slow paths were taken");
             })
             .unwrap();
+    }
+
+    #[test]
+    fn catalog_chord_parsing_handles_pairs_and_ranges() {
+        // The keymap check is only as good as its reading of the catalog's
+        // human-facing key strings, so pin that reading down.
+        assert!(advertises("super-h / super-l", "super-h"));
+        assert!(advertises("super-h / super-l", "super-l"));
+        assert!(!advertises("super-h / super-l", "super-j"));
+        assert!(advertises("super-tab", "super-tab"));
+        // Ranges stand for every key they span, and nothing outside it.
+        assert!(advertises("super-1 .. super-4", "super-1"));
+        assert!(advertises("super-1 .. super-4", "super-4"));
+        assert!(!advertises("super-1 .. super-4", "super-5"));
+        assert!(!advertises("super-1 .. super-4", "alt-2"));
     }
 
     #[test]
