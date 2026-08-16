@@ -461,29 +461,37 @@ impl PromptInput {
     }
 
     fn previous_word_boundary(&self, offset: usize) -> usize {
-        let prefix = &self.content[..offset];
-        let trimmed = prefix.trim_end_matches(char::is_whitespace);
-        trimmed
-            .char_indices()
-            .rev()
-            .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
-            .unwrap_or(0)
+        previous_word_boundary(&self.content, offset)
     }
 
     fn next_word_boundary(&self, offset: usize) -> usize {
-        let suffix = &self.content[offset..];
-        let word_end = suffix
-            .char_indices()
-            .find_map(|(index, ch)| ch.is_whitespace().then_some(index))
-            .unwrap_or(suffix.len());
-        let rest = &suffix[word_end..];
-        offset
-            + word_end
-            + rest
-                .char_indices()
-                .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
-                .unwrap_or(rest.len())
+        next_word_boundary(&self.content, offset)
     }
+}
+
+fn previous_word_boundary(text: &str, offset: usize) -> usize {
+    let prefix = &text[..offset];
+    let trimmed = prefix.trim_end_matches(char::is_whitespace);
+    trimmed
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
+        .unwrap_or(0)
+}
+
+fn next_word_boundary(text: &str, offset: usize) -> usize {
+    let suffix = &text[offset..];
+    let word_end = suffix
+        .char_indices()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(index))
+        .unwrap_or(suffix.len());
+    let rest = &suffix[word_end..];
+    offset
+        + word_end
+        + rest
+            .char_indices()
+            .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
+            .unwrap_or(rest.len())
 }
 
 impl EntityInputHandler for PromptInput {
@@ -914,5 +922,29 @@ mod tests {
             scroll_to_reveal_cursor(px(60.), px(40.), px(80.), px(100.)),
             px(0.)
         );
+    }
+
+    #[test]
+    fn word_motion_crosses_words_and_whitespace() {
+        let text = "one   two three";
+        assert_eq!(next_word_boundary(text, 0), 6);
+        assert_eq!(next_word_boundary(text, 6), 10);
+        assert_eq!(next_word_boundary(text, text.len()), text.len());
+        assert_eq!(previous_word_boundary(text, text.len()), 10);
+        assert_eq!(previous_word_boundary(text, 10), 6);
+        assert_eq!(previous_word_boundary(text, 0), 0);
+    }
+
+    #[test]
+    fn word_motion_never_splits_multibyte_text() {
+        let text = "你好  world 🚀";
+        let second_word = next_word_boundary(text, 0);
+        assert_eq!(&text[second_word..], "world 🚀");
+        let emoji = next_word_boundary(text, second_word);
+        assert_eq!(&text[emoji..], "🚀");
+        assert_eq!(previous_word_boundary(text, text.len()), emoji);
+        for offset in [second_word, emoji, previous_word_boundary(text, emoji)] {
+            assert!(text.is_char_boundary(offset));
+        }
     }
 }
