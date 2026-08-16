@@ -140,6 +140,19 @@ struct Attachment {
 }
 
 impl PromptInput {
+    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.attachments.len() {
+            return;
+        }
+        self.attachments.remove(index);
+        self.attachment_notice = match self.attachments.len() {
+            0 => None,
+            1 => Some("1 image attached".into()),
+            count => Some(format!("{count} images attached").into()),
+        };
+        cx.notify();
+    }
+
     pub fn new(
         cx: &mut Context<Self>,
         placeholder: impl Into<SharedString>,
@@ -910,15 +923,7 @@ impl Render for PromptInput {
                 .child(div().text_color(Theme::TEXT_FAINT).child("×"))
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                    if index < this.attachments.len() {
-                        this.attachments.remove(index);
-                        this.attachment_notice = match this.attachments.len() {
-                            0 => None,
-                            1 => Some("1 image attached".into()),
-                            count => Some(format!("{count} images attached").into()),
-                        };
-                        cx.notify();
-                    }
+                    this.remove_attachment(index, cx);
                 }))
         });
         div()
@@ -1147,6 +1152,26 @@ mod tests {
             .update(cx, |input, _, _| {
                 assert!(input.content.is_empty());
                 assert!(input.attachments.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn removing_an_attachment_updates_the_visible_count(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, _, cx| {
+                for label in ["4×3", "8×6"] {
+                    input.attachments.push(Attachment {
+                        media_type: "image/png".into(),
+                        encoded: "cG5n".into(),
+                        label: label.into(),
+                    });
+                }
+                input.remove_attachment(0, cx);
+                assert_eq!(input.attachments.len(), 1);
+                assert_eq!(input.attachments[0].label.as_ref(), "8×6");
+                assert_eq!(input.attachment_notice.as_deref(), Some("1 image attached"));
             })
             .unwrap();
     }

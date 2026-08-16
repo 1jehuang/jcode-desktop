@@ -380,7 +380,7 @@ mod tests {
         let (tx, rx) = channel();
         tx.send(SessionCommand::Send {
             content: "hi".into(),
-            images: Vec::new(),
+            images: vec![("image/png".into(), "cG5n".into())],
         })
         .unwrap();
         tx.send(SessionCommand::Cancel).unwrap();
@@ -389,7 +389,11 @@ mod tests {
         assert!(!collect_disconnected_commands(&rx, &mut pending));
         assert_eq!(pending.len(), 2);
         assert!(
-            matches!(pending.pop_front(), Some(SessionCommand::Send { content, .. }) if content == "hi")
+            matches!(
+                pending.pop_front(),
+                Some(SessionCommand::Send { content, images })
+                    if content == "hi" && images == [("image/png".into(), "cG5n".into())]
+            )
         );
         assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));
     }

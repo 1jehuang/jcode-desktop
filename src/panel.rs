@@ -193,9 +193,7 @@ impl Panel {
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         match event {
             ApiEvent::MessageAccepted { .. } => {
-                if let Some(index) = self.pending_users.pop_front() {
-                    self.accepted_users.insert(index, Instant::now());
-                }
+                acknowledge_next(&mut self.pending_users, &mut self.accepted_users, Instant::now());
             }
             ApiEvent::TextDelta { text, .. } => {
                 self.flush_reasoning();
@@ -962,6 +960,16 @@ fn tool_detail(input: &str, output: &str) -> String {
 }
 
 /// Keep a block short from the top, noting how much was hidden.
+fn acknowledge_next(
+    pending: &mut VecDeque<usize>,
+    accepted: &mut HashMap<usize, Instant>,
+    now: Instant,
+) {
+    if let Some(index) = pending.pop_front() {
+        accepted.insert(index, now);
+    }
+}
+
 fn clip_lines(text: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= max_lines {
@@ -976,6 +984,16 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_acceptance_promotes_the_oldest_pending_prompt() {
+        let now = Instant::now();
+        let mut pending = VecDeque::from([4, 7]);
+        let mut accepted = HashMap::new();
+        acknowledge_next(&mut pending, &mut accepted, now);
+        assert_eq!(pending, VecDeque::from([7]));
+        assert_eq!(accepted.get(&4), Some(&now));
+    }
 
     #[test]
     fn tool_summary_prefers_the_meaningful_field() {
