@@ -248,6 +248,11 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
     };
 
     let mut pending = VecDeque::new();
+    // The harness rejects a second SendMessage while a turn is active. Keep the
+    // activity bit in this worker so subsequent composer submissions use the
+    // SDK's urgent soft-interrupt queue instead. That is the same "ASAP"
+    // steering path used by the TUI.
+    let mut turn_active = false;
 
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
@@ -281,16 +286,26 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             while let Some(command) = pending.pop_front().or_else(|| commands.try_recv().ok()) {
                 match command {
                     SessionCommand::Send { content } => {
-                        if let Err(error) = client.send_message(
-                            &session_id,
-                            &content,
-                            Vec::new(),
-                            Some(Duration::from_secs(5)),
-                        ) {
+                        let result = if turn_active {
+                            client.soft_interrupt(&session_id, &content, true)
+                        } else {
+                            client.send_message(
+                                &session_id,
+                                &content,
+                                Vec::new(),
+                                Some(Duration::from_secs(5)),
+                            )
+                        };
+                        if let Err(error) = result {
                             let _ = updates.send(Update::SendFailed {
                                 session_id: session_id.clone(),
                                 reason: error.to_string(),
                             });
+                        } else {
+                            // Mark active immediately instead of waiting for a
+                            // streamed status event, so two rapidly submitted
+                            // prompts cannot both take the SendMessage path.
+                            turn_active = true;
                         }
                     }
                     SessionCommand::Cancel => {
@@ -301,6 +316,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             }
 
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
+                update_turn_activity(&event, &mut turn_active);
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
                     event,
@@ -310,6 +326,15 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 break;
             }
         }
+    }
+}
+
+fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
+    match event {
+        ApiEvent::MessageAccepted { .. } => *turn_active = true,
+        ApiEvent::TurnDone { .. } => *turn_active = false,
+        ApiEvent::SessionStatus { status, .. } => *turn_active = status != "idle",
+        _ => {}
     }
 }
 
@@ -358,5 +383,26 @@ mod tests {
 
         assert!(collect_disconnected_commands(&rx, &mut pending));
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn turn_activity_tracks_acceptance_completion_and_session_status() {
+        let mut active = false;
+        update_turn_activity(
+            &ApiEvent::MessageAccepted {
+                session_id: "s1".into(),
+            },
+            &mut active,
+        );
+        assert!(active);
+
+        update_turn_activity(
+            &ApiEvent::SessionStatus {
+                session_id: "s1".into(),
+                status: "idle".into(),
+            },
+            &mut active,
+        );
+        assert!(!active);
     }
 }
