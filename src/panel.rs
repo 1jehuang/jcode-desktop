@@ -265,8 +265,6 @@ impl Panel {
                 .flex()
                 .flex_col()
                 .bg(Theme::USER_BG)
-                .border_l_2()
-                .border_color(Theme::USER_BAR)
                 .rounded_md()
                 .px_3()
                 .py_2()

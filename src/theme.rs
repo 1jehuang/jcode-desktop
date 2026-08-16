@@ -23,7 +23,6 @@ impl Theme {
     pub const ACCENT: Rgba = rgb_c(0xffffff);
     pub const ACCENT_DIM: Rgba = rgba_c(0xffffff_1f);
     pub const USER_BG: Rgba = rgb_c(0x1b1b1b);
-    pub const USER_BAR: Rgba = rgb_c(0xffffff);
     pub const TOOL_BG: Rgba = rgb_c(0x181818);
     pub const TOOL_TEXT: Rgba = rgb_c(0xcccccc);
     pub const REASONING: Rgba = rgb_c(0x888888);
