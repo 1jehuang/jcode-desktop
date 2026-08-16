@@ -55,9 +55,9 @@ pub struct Workspace {
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
-    /// Camera offset in strip pixels; animated toward `camera_target`.
-    camera_x: f32,
-    camera_target: f32,
+    /// Each strip retains its own horizontal camera position.
+    camera_x: [f32; STRIP_COUNT],
+    camera_target: [f32; STRIP_COUNT],
     overview: bool,
     /// Sessions offered on connect that have no panel yet.
     available_sessions: Vec<jcode_sdk::SessionInfo>,
@@ -104,8 +104,8 @@ impl Workspace {
             slots: Vec::new(),
             active: 0,
             active_row: 0,
-            camera_x: 0.0,
-            camera_target: 0.0,
+            camera_x: [0.0; STRIP_COUNT],
+            camera_target: [0.0; STRIP_COUNT],
             overview: false,
             available_sessions: Vec::new(),
             status: "starting...".into(),
@@ -269,12 +269,12 @@ impl Workspace {
     fn retarget_camera(&mut self) {
         // Camera target is resolved during render when the viewport width is
         // known; setting a sentinel forces recomputation.
-        self.camera_target = f32::NAN;
+        self.camera_target[self.active_row] = f32::NAN;
     }
 
     fn resolve_camera_target(&mut self, viewport: f32) {
         if self.row_indices(self.active_row).next().is_none() {
-            self.camera_target = 0.0;
+            self.camera_target[self.active_row] = 0.0;
             return;
         }
         let active = self
@@ -292,7 +292,7 @@ impl Workspace {
             .sum::<f32>()
             + GAP;
         let centered = left - (viewport - width) / 2.0;
-        self.camera_target = centered.clamp(-GAP, (total - viewport).max(-GAP));
+        self.camera_target[self.active_row] = centered.clamp(-GAP, (total - viewport).max(-GAP));
     }
 
     // --- Actions --------------------------------------------------------
@@ -456,23 +456,23 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if self.camera_target.is_nan() {
+        if self.camera_target[self.active_row].is_nan() {
             self.resolve_camera_target(viewport_w);
         }
         // Animate the camera.
-        let delta = self.camera_target - self.camera_x;
+        let delta = self.camera_target[self.active_row] - self.camera_x[self.active_row];
         if delta.abs() > 0.5 {
-            self.camera_x += delta * CAMERA_LERP;
+            self.camera_x[self.active_row] += delta * CAMERA_LERP;
             window.request_animation_frame();
         } else {
-            self.camera_x = self.camera_target;
+            self.camera_x[self.active_row] = self.camera_target[self.active_row];
         }
 
         let panel_h = viewport_h - STRIP_PADDING_Y * 2.0;
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_Y))
-            .left(px(-self.camera_x))
+            .left(px(-self.camera_x[self.active_row]))
             .flex()
             .flex_row()
             .gap(px(GAP));
