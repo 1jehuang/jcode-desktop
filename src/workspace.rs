@@ -433,6 +433,22 @@ impl Workspace {
         self.slots[insert_at]
             .animated_width
             .set(width_fraction, Instant::now());
+        // The lone panel that had the whole viewport steps back to the default
+        // width now that it has company, leaving two equal halves.
+        let strip_panels = self.row_indices(self.active_row).count();
+        let now = Instant::now();
+        for index in self.row_indices(self.active_row).collect::<Vec<_>>() {
+            if index == insert_at {
+                continue;
+            }
+            let slot = &mut self.slots[index];
+            let demoted = demoted_width(slot.width_fraction, strip_panels);
+            if demoted != slot.width_fraction {
+                slot.width_fraction = demoted;
+                slot.animated_width.set(demoted, now);
+                slot.restore_fraction = None;
+            }
+        }
         // Inserting shifts every later index, including the focused one.
         if self.active >= insert_at {
             self.active += 1;
@@ -2278,6 +2294,18 @@ fn spawned_panel_width(existing_panels: usize) -> f32 {
     }
 }
 
+/// A lone full-width panel is only full width because it had the viewport to
+/// itself. When a second panel joins it, it gives up the extra space so the
+/// pair sits side by side at the default width. A width the user chose
+/// deliberately (anything other than full) is left alone.
+fn demoted_width(width: f32, panels_after_spawn: usize) -> f32 {
+    if panels_after_spawn == 2 && width >= 1.0 {
+        DEFAULT_WIDTH
+    } else {
+        width
+    }
+}
+
 /// A one-line description of the strip layout, for tests and for the
 /// `JCODE_DESKTOP_STATE` debug dump: `strip=<row> focus=<pos> widths=a,b,c`.
 fn describe_strip(widths: &[f32], focus_position: Option<usize>, row: usize) -> String {
@@ -3297,6 +3325,21 @@ mod tests {
         assert_eq!(spawned_panel_width(0), 1.0);
         assert_eq!(spawned_panel_width(1), DEFAULT_WIDTH);
         assert_eq!(spawned_panel_width(4), DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn the_lone_full_width_panel_halves_when_a_second_one_spawns() {
+        // Spawning the second panel leaves two equal halves: the newcomer opens
+        // at the default width and the incumbent gives up the extra space.
+        assert_eq!(spawned_panel_width(1), DEFAULT_WIDTH);
+        assert_eq!(demoted_width(1.0, 2), DEFAULT_WIDTH);
+        // Every later spawn leaves the existing panels untouched, so the strip
+        // keeps scrolling at the default width.
+        assert_eq!(demoted_width(DEFAULT_WIDTH, 3), DEFAULT_WIDTH);
+        assert_eq!(demoted_width(1.0, 3), 1.0);
+        // A width the user picked is never overridden.
+        assert_eq!(demoted_width(0.25, 2), 0.25);
+        assert_eq!(demoted_width(0.75, 2), 0.75);
     }
 
     #[test]
