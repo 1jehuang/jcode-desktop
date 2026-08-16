@@ -2676,6 +2676,40 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn ctrl_o_creates_a_session_in_the_selected_directory(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.run_until_parked();
+
+        vcx.simulate_keystrokes("ctrl-o");
+        vcx.run_until_parked();
+        assert!(vcx.did_prompt_for_paths());
+        vcx.simulate_path_prompt_response(|options| {
+            assert!(options.directories && !options.files && !options.multiple);
+            Some(vec![std::path::PathBuf::from("/tmp/jcode-picker-test")])
+        });
+        vcx.run_until_parked();
+
+        match commands
+            .try_recv()
+            .expect("folder selection should create a session")
+        {
+            Command::CreateSession { working_dir } => {
+                assert_eq!(working_dir.as_deref(), Some("/tmp/jcode-picker-test"));
+            }
+            _ => panic!("folder selection sent the wrong runtime command"),
+        }
+    }
+
     #[test]
     fn new_panel_lands_right_of_the_focused_one() {
         // Focused panel is index 1 of a three-panel strip: the new panel takes

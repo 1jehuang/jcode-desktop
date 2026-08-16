@@ -128,6 +128,21 @@ pub fn spawn_inert() -> Bridge {
     }
 }
 
+/// A runtime-free bridge whose commands can be asserted by UI acceptance tests.
+#[cfg(test)]
+pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
+    let (_update_tx, update_rx) = channel::<Update>();
+    let (command_tx, command_rx) = channel::<Command>();
+    std::mem::forget(_update_tx);
+    (
+        Bridge {
+            commands: command_tx,
+            updates: Arc::new(Mutex::new(update_rx)),
+        },
+        command_rx,
+    )
+}
+
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     JcodeClient::connect(ConnectOptions {
         client_name: format!("jcode-desktop-{client_name}/{}", env!("CARGO_PKG_VERSION")),
