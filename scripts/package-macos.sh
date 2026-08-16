@@ -16,6 +16,8 @@ DMG="$OUT/Jcode-macOS-universal.dmg"
 ZIP="$OUT/Jcode-macOS-universal.zip"
 DMG_ROOT="$OUT/dmg-root"
 ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
+SPARKLE_ROOT="${SPARKLE_ROOT:-$OUT/sparkle}"
+UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/1jehuang/jcode-desktop/releases/download/desktop-updates/appcast.xml}"
 TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
@@ -33,7 +35,7 @@ VERSION="${VERSION%%-*}"
   exit 1
 }
 
-for command in cargo codesign ditto hdiutil iconutil lipo rustup sips xcrun; do
+for command in cargo codesign ditto hdiutil iconutil lipo python3 rustup sips xcrun; do
   command -v "$command" >/dev/null || { echo "error: missing required command: $command" >&2; exit 1; }
 done
 [[ -f "$JCODE_REPO/Cargo.toml" ]] || { echo "error: set JCODE_REPO to a Jcode checkout" >&2; exit 1; }
@@ -45,6 +47,7 @@ fi
 
 export MACOSX_DEPLOYMENT_TARGET=13.0
 for target in "${TARGETS[@]}"; do rustup target add "$target"; done
+"$ROOT/scripts/fetch-sparkle.sh" "$SPARKLE_ROOT"
 
 for target in "${TARGETS[@]}"; do
   cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$target"
@@ -54,9 +57,21 @@ for target in "${TARGETS[@]}"; do
 done
 
 rm -rf "$APP" "$DMG_ROOT"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$OUT/icon.iconset"
-sed -e "s/__VERSION__/$VERSION/g" -e "s/__BUILD__/$BUILD_NUMBER/g" \
-  "$ROOT/packaging/macos/Info.plist.in" > "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$OUT/icon.iconset"
+PLIST_ARGS=(
+  --template "$ROOT/packaging/macos/Info.plist.in"
+  --output "$APP/Contents/Info.plist"
+  --version "$VERSION"
+  --build "$BUILD_NUMBER"
+)
+if [[ -n "${SPARKLE_PUBLIC_KEY:-}" ]]; then
+  PLIST_ARGS+=(--public-key "$SPARKLE_PUBLIC_KEY" --feed-url "$UPDATE_FEED_URL")
+fi
+if [[ "${REQUIRE_SECURE_UPDATES:-0}" == 1 ]]; then
+  PLIST_ARGS+=(--require-updates)
+fi
+python3 "$ROOT/scripts/render-macos-plist.py" "${PLIST_ARGS[@]}"
+ditto "$SPARKLE_ROOT/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 for bin in "${BINS[@]}"; do
@@ -82,6 +97,19 @@ rm -rf "$OUT/icon.iconset"
 IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY")
 if [[ "$IDENTITY" != "-" ]]; then SIGN_ARGS+=(--timestamp); fi
+# Sparkle's helper services need their own entitlements. Preserve those while
+# re-signing every nested bundle with the host application's identity, then
+# seal the framework. Avoid codesign --deep for signing because it can hide a
+# malformed or incompletely signed nested bundle.
+NESTED_SIGN_ARGS=(--force --options runtime --preserve-metadata=identifier,entitlements --sign "$IDENTITY")
+if [[ "$IDENTITY" != "-" ]]; then NESTED_SIGN_ARGS+=(--timestamp); fi
+for nested in \
+  "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc" \
+  "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc" \
+  "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app"; do
+  codesign "${NESTED_SIGN_ARGS[@]}" "$nested"
+done
+codesign "${NESTED_SIGN_ARGS[@]}" "$APP/Contents/Frameworks/Sparkle.framework"
 for bin in jcode jcode-harness-api-bridge jcode-desktop; do
   codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/$bin"
 done

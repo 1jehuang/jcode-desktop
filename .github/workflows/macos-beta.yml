@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: macos-desktop-release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-14
@@ -22,19 +26,19 @@ jobs:
       HAS_APPLE_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
     steps:
       - name: Check out Jcode Desktop
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: jcode-desktop
       - name: Check out Jcode runtime
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
           path: jcode
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: |
             jcode-desktop
@@ -47,11 +51,15 @@ jobs:
           API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           signing=0
           notarization=0
+          updates=0
           [[ -n "$CERTIFICATE_P12" && -n "$CERTIFICATE_PASSWORD" && -n "$SIGNING_IDENTITY" ]] && signing=1
           [[ -n "$API_KEY_P8" && -n "$API_KEY_ID" && -n "$API_ISSUER_ID" ]] && notarization=1
+          [[ -n "$SPARKLE_PUBLIC_KEY" && -n "$SPARKLE_PRIVATE_KEY" ]] && updates=1
 
           if [[ $signing -eq 0 && -n "$CERTIFICATE_P12$CERTIFICATE_PASSWORD$SIGNING_IDENTITY" ]]; then
             echo "Signing credentials must be configured as a complete set." >&2
@@ -65,8 +73,12 @@ jobs:
             echo "Notarization requires Developer ID signing credentials." >&2
             exit 1
           fi
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* && ($signing -eq 0 || $notarization -eq 0) ]]; then
-            echo "Tagged releases must be Developer ID signed and notarized." >&2
+          if [[ $updates -eq 0 && -n "$SPARKLE_PUBLIC_KEY$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "Sparkle public and private keys must be configured together." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* && ($signing -eq 0 || $notarization -eq 0 || $updates -eq 0) ]]; then
+            echo "Tagged releases must be signed, notarized, and configured for signed updates." >&2
             exit 1
           fi
       - name: Import Developer ID certificate
@@ -100,28 +112,66 @@ jobs:
           JCODE_REPO: ${{ github.workspace }}/jcode
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_API_KEY_P8 != '' && 'jcode-notary' || '' }}
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
+          REQUIRE_SECURE_UPDATES: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
         run: jcode-desktop/scripts/package-macos.sh
       - name: Verify app bundle and DMG install path
         env:
           EXPECT_NOTARIZED: ${{ secrets.APPLE_API_KEY_P8 != '' && '1' || '0' }}
         run: jcode-desktop/scripts/verify-macos-package.sh
+      - name: Sign automatic update and generate appcast
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          UPDATES="$RUNNER_TEMP/jcode-updates"
+          ARCHIVE="Jcode-${VERSION}-macOS-universal.zip"
+          mkdir -p "$UPDATES"
+          cp jcode-desktop/dist/macos/Jcode-macOS-universal.zip "$UPDATES/$ARCHIVE"
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" | \
+            jcode-desktop/dist/macos/sparkle/bin/generate_appcast \
+              --ed-key-file - \
+              --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+              "$UPDATES"
+          test -s "$UPDATES/appcast.xml"
+          grep -q 'sparkle:edSignature=' "$UPDATES/appcast.xml"
+          cp "$UPDATES/appcast.xml" jcode-desktop/dist/macos/appcast.xml
+          cp "$UPDATES/$ARCHIVE" jcode-desktop/dist/macos/
+          (
+            cd jcode-desktop/dist/macos
+            shasum -a 256 "$ARCHIVE" Jcode-macOS-universal.dmg > SHA256SUMS
+          )
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Jcode-macOS-beta
           if-no-files-found: error
           path: |
             jcode-desktop/dist/macos/Jcode-macOS-universal.dmg
             jcode-desktop/dist/macos/Jcode-macOS-universal.zip
+            jcode-desktop/dist/macos/Jcode-*-macOS-universal.zip
+            jcode-desktop/dist/macos/appcast.xml
             jcode-desktop/dist/macos/SHA256SUMS
       - name: Publish tagged beta release
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" --prerelease \
-            --notes "macOS beta for Apple Silicon and Intel Macs. Download the DMG, drag Jcode to Applications, and open it. The Jcode runtime is included." \
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" --prerelease \
+              --notes "macOS beta for Apple Silicon and Intel Macs. Download the DMG, drag Jcode to Applications, and open it. The Jcode runtime is included."
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
             jcode-desktop/dist/macos/Jcode-macOS-universal.dmg \
-            jcode-desktop/dist/macos/Jcode-macOS-universal.zip \
+            "jcode-desktop/dist/macos/Jcode-${VERSION}-macOS-universal.zip" \
             jcode-desktop/dist/macos/SHA256SUMS
+          if ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create desktop-updates --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --prerelease --title "Jcode Desktop update feed" \
+              --notes "Machine-readable Sparkle update feed. Download the latest desktop release instead."
+          fi
+          gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber \
+            jcode-desktop/dist/macos/appcast.xml

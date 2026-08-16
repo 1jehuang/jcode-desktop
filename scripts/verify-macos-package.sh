@@ -37,6 +37,36 @@ verify_bundle() {
   [[ "$(cat "$app/Contents/PkgInfo")" == "APPL????" ]] || fail "invalid PkgInfo"
   [[ -s "$app/Contents/Resources/Jcode.icns" ]] || fail "app icon is missing"
 
+  local sparkle="$app/Contents/Frameworks/Sparkle.framework"
+  local sparkle_executable="$sparkle/Versions/B/Sparkle"
+  [[ -x "$sparkle_executable" ]] || fail "Sparkle framework is missing"
+  lipo -verify_arch arm64 x86_64 "$sparkle_executable" || fail "Sparkle is not universal"
+  codesign --verify --deep --strict --verbose=2 "$sparkle"
+
+  local update_key=""
+  update_key="$(plist_value "$plist" SUPublicEDKey 2>/dev/null || true)"
+  if [[ -n "$update_key" ]]; then
+    [[ "$(plist_value "$plist" SUFeedURL)" == \
+      "https://github.com/1jehuang/jcode-desktop/releases/download/desktop-updates/appcast.xml" ]] || \
+      fail "unexpected automatic update feed"
+    [[ "$(plist_value "$plist" SUEnableAutomaticChecks)" == "true" ]] || fail "automatic checks are disabled"
+    [[ "$(plist_value "$plist" SUAutomaticallyUpdate)" == "true" ]] || fail "automatic updates are disabled"
+    python3 - "$update_key" <<'PY'
+import base64
+import binascii
+import sys
+
+try:
+    key = base64.b64decode(sys.argv[1], validate=True)
+except binascii.Error as error:
+    raise SystemExit(f"invalid Sparkle public key: {error}")
+if len(key) != 32:
+    raise SystemExit("Sparkle public key is not a 32-byte Ed25519 key")
+PY
+  elif [[ "${REQUIRE_SECURE_UPDATES:-0}" == 1 ]]; then
+    fail "secure automatic update metadata is missing"
+  fi
+
   for bin in "${BINS[@]}"; do
     local executable="$app/Contents/MacOS/$bin"
     [[ -x "$executable" ]] || fail "missing executable companion: $bin"
