@@ -24,8 +24,10 @@ mod tests {
     #[test]
     fn acknowledgement_starts_and_ends_at_rest() {
         let at = Instant::now();
-        assert_eq!(motion(at, at).0, 0.0);
+        assert_eq!(motion(at, at), (0.0, PENDING_TONE, true));
         assert_eq!(motion(at, at + DURATION), (0.0, 1.0, false));
-        assert!(motion(at, at + DURATION / 8).0.abs() > 0.5);
+        let during = motion(at, at + DURATION / 8);
+        assert!(during.0.abs() > 0.5);
+        assert!(during.1 > PENDING_TONE && during.1 < 1.0);
     }
 }
