@@ -13,6 +13,9 @@ impl Theme {
     pub const PANEL_BG: Rgba = rgb_c(0x111111);
     pub const PANEL_BORDER: Rgba = rgb_c(0x333333);
     pub const PANEL_BORDER_FOCUS: Rgba = rgb_c(0xf4f4f4);
+    /// niri `focus-ring { inactive-color "transparent" }`: only the focused
+    /// panel is ringed.
+    pub const PANEL_BORDER_IDLE: Rgba = rgba_c(0x00000000);
     pub const HEADER_BG: Rgba = rgb_c(0x171717);
     pub const TEXT: Rgba = rgb_c(0xf4f4f4);
     pub const TEXT_DIM: Rgba = rgb_c(0x999999);

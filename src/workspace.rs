@@ -4,7 +4,7 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Window, actions, div, prelude::*, px, relative,
@@ -21,13 +21,20 @@ actions!(
         FocusRight,
         FocusUp,
         FocusDown,
+        FocusFirst,
+        FocusLast,
+        FocusPrevious,
         MovePanelLeft,
         MovePanelRight,
         MovePanelUp,
         MovePanelDown,
+        MovePanelToFirst,
+        MovePanelToLast,
         NewPanel,
         ClosePanel,
         ToggleOverview,
+        CycleWidth,
+        MaximizeWidth,
         WidthPreset1,
         WidthPreset2,
         WidthPreset3,
@@ -36,18 +43,29 @@ actions!(
     ]
 );
 
-/// Camera animation speed: fraction of remaining distance covered per frame
-/// at 60 fps. Exponential ease-out, niri-like.
-const CAMERA_LERP: f32 = 0.22;
-const GAP: f32 = 16.0;
-const STRIP_PADDING_Y: f32 = 20.0;
+/// niri `animations { window-resize / workspace-switch }` use 150ms with an
+/// `ease-out-expo` curve; the strip camera matches that.
+const CAMERA_DURATION: Duration = Duration::from_millis(150);
+/// niri `layout { gaps 0 }`: columns sit flush against each other.
+const GAP: f32 = 0.0;
+/// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
+const STRUT: f32 = 0.58;
+const STRIP_PADDING_Y: f32 = STRUT;
 const STRIP_COUNT: usize = 4;
+/// niri `window-rule { geometry-corner-radius 6 }`.
+const CORNER_RADIUS: f32 = 6.0;
+/// niri `preset-column-widths`: Alt+R cycles through these in order.
+const PRESET_WIDTHS: [f32; 3] = [0.25, 0.5, 0.75];
+/// niri `default-column-width { proportion 0.5; }`.
+const DEFAULT_WIDTH: f32 = 0.5;
 
 struct Slot {
     panel: Entity<Panel>,
     row: usize,
     /// Width as a fraction of the viewport (0.25, 0.5, 0.75, 1.0).
     width_fraction: f32,
+    /// Width to restore when un-maximizing (niri `maximize-column` toggle).
+    restore_fraction: Option<f32>,
 }
 
 pub struct Workspace {
@@ -55,9 +73,17 @@ pub struct Workspace {
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
+    /// Previously focused panel, for niri's `focus-window-previous`.
+    previous: Option<gpui::EntityId>,
     /// Each strip retains its own horizontal camera position.
     camera_x: [f32; STRIP_COUNT],
     camera_target: [f32; STRIP_COUNT],
+    /// Where the current camera animation started, and when.
+    camera_from: [f32; STRIP_COUNT],
+    camera_started: [Option<Instant>; STRIP_COUNT],
+    /// Set when a strip's camera target must be recomputed at render time,
+    /// once the viewport width is known.
+    camera_dirty: [bool; STRIP_COUNT],
     overview: bool,
     /// Sessions offered on connect that have no panel yet.
     available_sessions: Vec<jcode_sdk::SessionInfo>,
@@ -104,8 +130,12 @@ impl Workspace {
             slots: Vec::new(),
             active: 0,
             active_row: 0,
+            previous: None,
             camera_x: [0.0; STRIP_COUNT],
             camera_target: [0.0; STRIP_COUNT],
+            camera_from: [0.0; STRIP_COUNT],
+            camera_started: [None; STRIP_COUNT],
+            camera_dirty: [true; STRIP_COUNT],
             overview: false,
             available_sessions: Vec::new(),
             status: "starting...".into(),
@@ -147,10 +177,8 @@ impl Workspace {
                 }
             }
             Update::SessionCreated { session } => {
-                self.open_session(session, cx);
-                self.active = self.slots.len().saturating_sub(1);
-                self.active_row = self.slots[self.active].row;
-                self.retarget_camera();
+                let inserted = self.open_session(session, cx);
+                self.set_active(inserted, cx);
                 self.focus_pending = true;
             }
             Update::History {
@@ -202,7 +230,10 @@ impl Workspace {
         }
     }
 
-    fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) {
+    /// Open `session` as a panel immediately to the right of the focused panel,
+    /// mirroring niri's "new column opens right of the focused column".
+    /// Returns the index of the new slot.
+    fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
         let bridge = self.bridge.clone();
         let session_id = session.session_id.clone();
         let panel = cx.new(|cx| {
@@ -216,22 +247,57 @@ impl Workspace {
         });
         Panel::connect_input(&panel, cx);
         self.bridge.send(Command::Watch { session_id });
-        self.slots.push(Slot {
+        let slot = Slot {
             panel,
             row: self.active_row,
-            width_fraction: 0.5,
-        });
+            width_fraction: DEFAULT_WIDTH,
+            restore_fraction: None,
+        };
+        let active_is_on_strip = self
+            .slots
+            .get(self.active)
+            .is_some_and(|slot| slot.row == self.active_row);
+        let row_last = self.row_indices(self.active_row).last();
+        let insert_at = insert_index(self.active, active_is_on_strip, row_last, self.slots.len());
+        self.slots.insert(insert_at, slot);
+        // Inserting shifts every later index, including the focused one.
+        if self.active >= insert_at {
+            self.active += 1;
+        }
+        insert_at
+    }
+
+    /// Focus the slot at `index`, remembering the outgoing panel so
+    /// `FocusPrevious` (niri's Alt+Tab) can return to it.
+    fn set_active(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.slots.len() {
+            return;
+        }
+        let outgoing = self
+            .slots
+            .get(self.active)
+            .filter(|_| self.active != index)
+            .map(|slot| slot.panel.entity_id());
+        if let Some(outgoing) = outgoing {
+            self.previous = Some(outgoing);
+        }
+        self.active = index;
+        self.active_row = self.slots[index].row;
+        self.retarget_camera();
+        cx.notify();
     }
 
     // --- Geometry -------------------------------------------------------
 
     fn slot_width(&self, index: usize, viewport: f32) -> f32 {
         let fraction = self.slots[index].width_fraction;
-        (viewport * fraction - GAP * 2.0).max(320.0)
+        // niri sizes a column as a proportion of the working area, which is the
+        // output minus the struts.
+        ((viewport - STRUT * 2.0) * fraction - GAP).max(320.0)
     }
 
     fn slot_left(&self, index: usize, viewport: f32) -> f32 {
-        let mut x = GAP;
+        let mut x = STRUT;
         for i in self.row_indices(self.slots[index].row) {
             if i == index {
                 break;
@@ -261,6 +327,14 @@ impl Workspace {
             .nth(preferred_position)
             .or_else(|| self.row_indices(self.active_row).last());
         if let Some(index) = selected {
+            if let Some(outgoing) = self
+                .slots
+                .get(self.active)
+                .map(|slot| slot.panel.entity_id())
+                && self.active != index
+            {
+                self.previous = Some(outgoing);
+            }
             self.active = index;
         }
         self.retarget_camera();
@@ -269,10 +343,15 @@ impl Workspace {
     fn retarget_camera(&mut self) {
         // Camera target is resolved during render when the viewport width is
         // known; setting a sentinel forces recomputation.
-        self.camera_target[self.active_row] = f32::NAN;
+        self.camera_dirty[self.active_row] = true;
     }
 
+    /// Resolve the strip's scroll offset. This follows niri's
+    /// `center-focused-column "never"`: the camera only scrolls far enough to
+    /// bring the focused panel fully on screen, keeping it at the left or right
+    /// edge rather than centering it.
     fn resolve_camera_target(&mut self, viewport: f32) {
+        self.camera_dirty[self.active_row] = false;
         if self.row_indices(self.active_row).next().is_none() {
             self.camera_target[self.active_row] = 0.0;
             return;
@@ -285,14 +364,21 @@ impl Workspace {
             .unwrap_or_else(|| self.row_indices(self.active_row).next().unwrap());
         let left = self.slot_left(active, viewport);
         let width = self.slot_width(active, viewport);
-        // Center the active panel, clamped to strip bounds.
         let total = self
             .row_indices(self.active_row)
             .map(|index| self.slot_width(index, viewport) + GAP)
             .sum::<f32>()
-            + GAP;
-        let centered = left - (viewport - width) / 2.0;
-        self.camera_target[self.active_row] = centered.clamp(-GAP, (total - viewport).max(-GAP));
+            + STRUT * 2.0;
+        let current = self.camera_target[self.active_row];
+        let target = scroll_into_view(current, left, width, viewport);
+        let max_scroll = (total - viewport).max(-GAP);
+        let target = target.clamp(-STRUT, max_scroll.max(-STRUT));
+        let row = self.active_row;
+        if (target - self.camera_target[row]).abs() > 0.01 {
+            self.camera_from[row] = self.camera_x[row];
+            self.camera_started[row] = Some(Instant::now());
+            self.camera_target[row] = target;
+        }
     }
 
     // --- Actions --------------------------------------------------------
@@ -302,8 +388,7 @@ impl Workspace {
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position > 0
         {
-            self.active = indices[position - 1];
-            self.retarget_camera();
+            self.set_active(indices[position - 1], cx);
             self.focus_active(window, cx);
             cx.notify();
         }
@@ -314,11 +399,49 @@ impl Workspace {
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position + 1 < indices.len()
         {
-            self.active = indices[position + 1];
-            self.retarget_camera();
+            self.set_active(indices[position + 1], cx);
             self.focus_active(window, cx);
             cx.notify();
         }
+    }
+
+    /// niri `focus-column-first`.
+    fn focus_first(&mut self, _: &FocusFirst, window: &mut Window, cx: &mut Context<Self>) {
+        let first = self.row_indices(self.active_row).next();
+        if let Some(index) = first {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// niri `focus-column-last`.
+    fn focus_last(&mut self, _: &FocusLast, window: &mut Window, cx: &mut Context<Self>) {
+        let last = self.row_indices(self.active_row).last();
+        if let Some(index) = last {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// niri `focus-window-previous` (the user's Alt+Tab). Returns to the last
+    /// focused panel wherever it now lives, including on another strip.
+    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(previous) = self.previous else {
+            return;
+        };
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.entity_id() == previous)
+        else {
+            self.previous = None;
+            return;
+        };
+        self.set_active(index, cx);
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -369,6 +492,45 @@ impl Workspace {
         self.move_panel_to_row(-1, window, cx);
     }
 
+    /// niri `move-column-to-first`.
+    fn move_panel_to_first(
+        &mut self,
+        _: &MovePanelToFirst,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let first = self.row_indices(self.active_row).next();
+        let on_strip = self
+            .slots
+            .get(self.active)
+            .is_some_and(|slot| slot.row == self.active_row);
+        let Some(first) = first.filter(|first| on_strip && *first != self.active) else {
+            return;
+        };
+        let slot = self.slots.remove(self.active);
+        self.slots.insert(first, slot);
+        self.active = first;
+        self.retarget_camera();
+        cx.notify();
+    }
+
+    /// niri `move-column-to-last`.
+    fn move_panel_to_last(&mut self, _: &MovePanelToLast, _: &mut Window, cx: &mut Context<Self>) {
+        let last = self.row_indices(self.active_row).last();
+        let on_strip = self
+            .slots
+            .get(self.active)
+            .is_some_and(|slot| slot.row == self.active_row);
+        let Some(last) = last.filter(|last| on_strip && *last != self.active) else {
+            return;
+        };
+        let slot = self.slots.remove(self.active);
+        self.slots.insert(last, slot);
+        self.active = last;
+        self.retarget_camera();
+        cx.notify();
+    }
+
     fn move_panel_down(&mut self, _: &MovePanelDown, window: &mut Window, cx: &mut Context<Self>) {
         self.move_panel_to_row(1, window, cx);
     }
@@ -408,9 +570,11 @@ impl Workspace {
         let removed = self.slots.remove(self.active);
         let session_id = removed.panel.read(cx).session_id.clone();
         self.bridge.send(Command::Unwatch { session_id });
-        if let Some(index) = self.row_indices(self.active_row).last() {
-            self.active = index;
+        if self.previous == Some(removed.panel.entity_id()) {
+            self.previous = None;
         }
+        let remaining: Vec<_> = self.row_indices(self.active_row).collect();
+        self.active = focus_after_close(self.active, &remaining);
         self.retarget_camera();
         self.focus_active(window, cx);
         cx.notify();
@@ -428,9 +592,47 @@ impl Workspace {
             .filter(|slot| slot.row == self.active_row)
         {
             slot.width_fraction = fraction;
+            slot.restore_fraction = None;
             self.retarget_camera();
             cx.notify();
         }
+    }
+
+    /// niri `switch-preset-column-width` (Alt+R): step to the next preset,
+    /// wrapping around.
+    fn cycle_width(&mut self, _: &CycleWidth, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(slot) = self
+            .slots
+            .get_mut(self.active)
+            .filter(|slot| slot.row == self.active_row)
+        else {
+            return;
+        };
+        slot.width_fraction = next_preset(slot.width_fraction);
+        slot.restore_fraction = None;
+        self.retarget_camera();
+        cx.notify();
+    }
+
+    /// niri `maximize-column` (Alt+F): fill the viewport, or restore the
+    /// previous width when already maximized.
+    fn maximize_width(&mut self, _: &MaximizeWidth, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(slot) = self
+            .slots
+            .get_mut(self.active)
+            .filter(|slot| slot.row == self.active_row)
+        else {
+            return;
+        };
+        match slot.restore_fraction.take() {
+            Some(restore) => slot.width_fraction = restore,
+            None => {
+                slot.restore_fraction = Some(slot.width_fraction);
+                slot.width_fraction = 1.0;
+            }
+        }
+        self.retarget_camera();
+        cx.notify();
     }
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
@@ -449,6 +651,24 @@ impl Workspace {
 
     // --- Rendering ------------------------------------------------------
 
+    /// A one-line snapshot of the strip layout. Written to the path in
+    /// `JCODE_DESKTOP_STATE` on every render so an automated check can observe
+    /// what the running window is actually doing.
+    fn dump_state(&self) {
+        let Ok(path) = std::env::var("JCODE_DESKTOP_STATE") else {
+            return;
+        };
+        let widths: Vec<f32> = self
+            .row_indices(self.active_row)
+            .map(|index| self.slots[index].width_fraction)
+            .collect();
+        let focus = self
+            .row_indices(self.active_row)
+            .position(|index| index == self.active);
+        let line = describe_strip(&widths, focus, self.active_row);
+        let _ = std::fs::write(path, format!("{line}\n"));
+    }
+
     fn render_strip(
         &mut self,
         viewport_w: f32,
@@ -456,16 +676,27 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if self.camera_target[self.active_row].is_nan() {
+        if self.camera_dirty[self.active_row] {
             self.resolve_camera_target(viewport_w);
         }
-        // Animate the camera.
-        let delta = self.camera_target[self.active_row] - self.camera_x[self.active_row];
-        if delta.abs() > 0.5 {
-            self.camera_x[self.active_row] += delta * CAMERA_LERP;
-            window.request_animation_frame();
-        } else {
-            self.camera_x[self.active_row] = self.camera_target[self.active_row];
+        // Animate the camera over CAMERA_DURATION on an ease-out-expo curve,
+        // matching niri's animation settings.
+        let row = self.active_row;
+        match self.camera_started[row] {
+            Some(started) => {
+                let elapsed = started.elapsed();
+                if elapsed >= CAMERA_DURATION {
+                    self.camera_x[row] = self.camera_target[row];
+                    self.camera_started[row] = None;
+                } else {
+                    let t = elapsed.as_secs_f32() / CAMERA_DURATION.as_secs_f32();
+                    let eased = ease_out_expo(t);
+                    let from = self.camera_from[row];
+                    self.camera_x[row] = from + (self.camera_target[row] - from) * eased;
+                    window.request_animation_frame();
+                }
+            }
+            None => self.camera_x[row] = self.camera_target[row],
         }
 
         let panel_h = viewport_h - STRIP_PADDING_Y * 2.0;
@@ -488,21 +719,18 @@ impl Workspace {
                     .h(px(panel_h))
                     .flex_none()
                     .bg(Theme::PANEL_BG)
-                    .border_2()
+                    .border_1()
                     .border_color(if focused {
                         Theme::PANEL_BORDER_FOCUS
                     } else {
-                        Theme::PANEL_BORDER
+                        Theme::PANEL_BORDER_IDLE
                     })
-                    .rounded_xl()
+                    .rounded(px(CORNER_RADIUS))
                     .overflow_hidden()
-                    .when(focused, |el| el.shadow_lg())
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
-                            this.active = index;
-                            this.active_row = this.slots[index].row;
-                            this.retarget_camera();
+                            this.set_active(index, cx);
                             this.focus_active(window, cx);
                             cx.notify();
                         }),
@@ -571,10 +799,8 @@ impl Workspace {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
-                            this.active = index;
-                            this.active_row = this.slots[index].row;
+                            this.set_active(index, cx);
                             this.overview = false;
-                            this.retarget_camera();
                             this.focus_active(window, cx);
                             cx.notify();
                         }),
@@ -705,10 +931,8 @@ impl Workspace {
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
-                                this.active = index;
-                                this.active_row = this.slots[index].row;
+                                this.set_active(index, cx);
                                 this.overview = false;
-                                this.retarget_camera();
                                 this.focus_active(window, cx);
                                 cx.notify();
                             }),
@@ -725,6 +949,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.dump_state();
         if self.focus_pending && !self.slots.is_empty() {
             self.focus_pending = false;
             self.focus_active(window, cx);
@@ -771,13 +996,20 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::focus_right))
             .on_action(cx.listener(Self::focus_up))
             .on_action(cx.listener(Self::focus_down))
+            .on_action(cx.listener(Self::focus_first))
+            .on_action(cx.listener(Self::focus_last))
+            .on_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))
             .on_action(cx.listener(Self::move_panel_up))
             .on_action(cx.listener(Self::move_panel_down))
+            .on_action(cx.listener(Self::move_panel_to_first))
+            .on_action(cx.listener(Self::move_panel_to_last))
             .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
+            .on_action(cx.listener(Self::cycle_width))
+            .on_action(cx.listener(Self::maximize_width))
             .on_action(cx.listener(|this, _: &WidthPreset1, _w, cx| this.set_width(0.25, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset2, _w, cx| this.set_width(0.5, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
@@ -813,7 +1045,7 @@ impl Render for Workspace {
                         if self.slots.len() == 1 { "" } else { "s" }
                     ))
                     .child(
-                        "super-hjkl navigate · super-n new · super-tab overview · super-1..4 width",
+                        "super-hjkl navigate · super-n new right · super-tab previous · super-r width · super-f max · super-o overview",
                     ),
             )
     }
@@ -827,4 +1059,149 @@ impl Focusable for Workspace {
 
 fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
+}
+
+/// A one-line description of the strip layout, for tests and for the
+/// `JCODE_DESKTOP_STATE` debug dump: `strip=<row> focus=<pos> widths=a,b,c`.
+fn describe_strip(widths: &[f32], focus_position: Option<usize>, row: usize) -> String {
+    let widths = widths
+        .iter()
+        .map(|w| format!("{w:.2}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let focus = focus_position
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "-".into());
+    format!("strip={row} focus={focus} widths={widths}")
+}
+
+/// CSS `ease-out-expo`, the curve used across the user's niri animations.
+fn ease_out_expo(t: f32) -> f32 {
+    if t >= 1.0 {
+        1.0
+    } else {
+        1.0 - 2f32.powf(-10.0 * t)
+    }
+}
+
+/// Where a newly created panel is inserted: directly right of the focused
+/// panel when it is on this strip, otherwise after the strip's last panel.
+/// `row_last` is the index of the strip's rightmost panel, if any.
+fn insert_index(
+    active: usize,
+    active_is_on_strip: bool,
+    row_last: Option<usize>,
+    slot_count: usize,
+) -> usize {
+    if active_is_on_strip {
+        active + 1
+    } else {
+        row_last.map(|last| last + 1).unwrap_or(slot_count)
+    }
+}
+
+/// After closing the panel at `closed`, niri focuses the panel that slid into
+/// its place (the right neighbour), falling back to the new rightmost panel.
+/// `remaining` are the strip's indices after removal.
+fn focus_after_close(closed: usize, remaining: &[usize]) -> usize {
+    match remaining.iter().find(|&&index| index >= closed) {
+        Some(&right) => right,
+        None => remaining.last().copied().unwrap_or(0),
+    }
+}
+
+/// niri `switch-preset-column-width`: the next preset above `current`,
+/// wrapping back to the narrowest.
+fn next_preset(current: f32) -> f32 {
+    PRESET_WIDTHS
+        .iter()
+        .copied()
+        .find(|preset| *preset > current + 0.01)
+        .unwrap_or(PRESET_WIDTHS[0])
+}
+
+/// niri `center-focused-column "never"`: scroll the least amount that brings
+/// `[left, left + width]` fully into a `viewport`-wide window at `current`.
+fn scroll_into_view(current: f32, left: f32, width: f32, viewport: f32) -> f32 {
+    if width + STRUT * 2.0 >= viewport {
+        return left - STRUT;
+    }
+    if left - STRUT < current {
+        left - STRUT
+    } else if left + width + STRUT > current + viewport {
+        left + width + STRUT - viewport
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_panel_lands_right_of_the_focused_one() {
+        // Focused panel is index 1 of a three-panel strip: the new panel takes
+        // index 2, pushing the old index 2 to the right.
+        assert_eq!(insert_index(1, true, Some(2), 3), 2);
+        // Focused panel is the rightmost: append.
+        assert_eq!(insert_index(2, true, Some(2), 3), 3);
+        // Focus is on another strip: append after that strip's last panel.
+        assert_eq!(insert_index(0, false, Some(4), 6), 5);
+        // Empty strip: append at the end of the slot list.
+        assert_eq!(insert_index(0, false, None, 3), 3);
+    }
+
+    #[test]
+    fn closing_focuses_the_right_neighbour() {
+        // Closed index 1 of [0,1,2]; remaining strip indices are [0,1] and the
+        // panel formerly at 2 now sits at 1, so focus stays at 1.
+        assert_eq!(focus_after_close(1, &[0, 1]), 1);
+        // Closed the rightmost: fall back to the new rightmost.
+        assert_eq!(focus_after_close(2, &[0, 1]), 1);
+        // Closed the only panel.
+        assert_eq!(focus_after_close(0, &[]), 0);
+    }
+
+    #[test]
+    fn width_presets_cycle_and_wrap() {
+        assert_eq!(next_preset(0.25), 0.5);
+        assert_eq!(next_preset(0.5), 0.75);
+        assert_eq!(next_preset(0.75), 0.25);
+        // A maximized panel wraps to the narrowest preset.
+        assert_eq!(next_preset(1.0), 0.25);
+    }
+
+    #[test]
+    fn camera_never_centers_and_scrolls_minimally() {
+        let viewport = 1000.0;
+        // Fully visible: do not move.
+        assert_eq!(scroll_into_view(0.0, 100.0, 400.0, viewport), 0.0);
+        // Off to the right: bring its right edge to the viewport edge, which is
+        // not the centered position (that would be 400.0).
+        let target = scroll_into_view(0.0, 900.0, 400.0, viewport);
+        assert!((target - (900.0 + 400.0 + STRUT - viewport)).abs() < 0.01);
+        // Off to the left: bring its left edge to the viewport edge.
+        let target = scroll_into_view(900.0, 100.0, 400.0, viewport);
+        assert!((target - (100.0 - STRUT)).abs() < 0.01);
+        // Wider than the viewport: pin to its left edge.
+        let target = scroll_into_view(0.0, 500.0, 1200.0, viewport);
+        assert!((target - (500.0 - STRUT)).abs() < 0.01);
+    }
+
+    #[test]
+    fn camera_easing_is_monotonic_and_settles() {
+        assert_eq!(ease_out_expo(0.0), 0.0);
+        assert_eq!(ease_out_expo(1.0), 1.0);
+        let mut previous = 0.0;
+        for step in 1..=10 {
+            let value = ease_out_expo(step as f32 / 10.0);
+            assert!(value > previous, "easing must increase at {step}");
+            previous = value;
+        }
+        // Ease-out: half the distance is covered in the first 10%, and three
+        // quarters within 20%.
+        assert!((ease_out_expo(0.1) - 0.5).abs() < 0.001);
+        assert!((ease_out_expo(0.2) - 0.75).abs() < 0.001);
+    }
 }

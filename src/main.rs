@@ -11,15 +11,18 @@ use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, prelude::*, px,
 use gpui_platform::application;
 
 use workspace::{
-    ClosePanel, FocusDown, FocusLeft, FocusRight, FocusUp, MovePanelDown, MovePanelLeft,
-    MovePanelRight, MovePanelUp, NewPanel, Quit, ToggleOverview, WidthPreset1, WidthPreset2,
+    ClosePanel, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious, FocusRight,
+    FocusUp, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight, MovePanelToFirst,
+    MovePanelToLast, MovePanelUp, NewPanel, Quit, ToggleOverview, WidthPreset1, WidthPreset2,
     WidthPreset3, WidthPreset4, Workspace,
 };
 
 fn main() {
     application().run(|cx: &mut App| {
-        // Niri-inspired bindings, but on super instead of alt. The user's niri
-        // config owns alt; super is free inside an application window.
+        // The user's niri binds live on alt (alt-hjkl navigate, alt-shift-hjkl
+        // move, alt-1..4 widths, alt-r presets, alt-f maximize, alt-tab
+        // previous, alt-q close). niri grabs alt before the window sees it, so
+        // the same layout is mirrored onto super here.
         cx.bind_keys([
             KeyBinding::new("super-h", FocusLeft, None),
             KeyBinding::new("super-l", FocusRight, None),
@@ -29,15 +32,25 @@ fn main() {
             KeyBinding::new("super-right", FocusRight, None),
             KeyBinding::new("super-down", FocusDown, None),
             KeyBinding::new("super-up", FocusUp, None),
+            // niri focus-column-first / focus-column-last (Mod+Home/End).
+            KeyBinding::new("super-home", FocusFirst, None),
+            KeyBinding::new("super-end", FocusLast, None),
             KeyBinding::new("super-shift-h", MovePanelLeft, None),
             KeyBinding::new("super-shift-l", MovePanelRight, None),
             KeyBinding::new("super-shift-k", MovePanelUp, None),
             KeyBinding::new("super-shift-j", MovePanelDown, None),
+            KeyBinding::new("super-shift-home", MovePanelToFirst, None),
+            KeyBinding::new("super-shift-end", MovePanelToLast, None),
             KeyBinding::new("super-n", NewPanel, None),
             KeyBinding::new("super-t", NewPanel, None),
             KeyBinding::new("super-q", ClosePanel, None),
-            KeyBinding::new("super-tab", ToggleOverview, None),
+            // niri: Alt+Tab is focus-window-previous, Mod+Tab is the overview.
+            KeyBinding::new("super-tab", FocusPrevious, None),
+            KeyBinding::new("super-shift-tab", ToggleOverview, None),
             KeyBinding::new("super-o", ToggleOverview, None),
+            // niri switch-preset-column-width / maximize-column.
+            KeyBinding::new("super-r", CycleWidth, None),
+            KeyBinding::new("super-f", MaximizeWidth, None),
             KeyBinding::new("super-1", WidthPreset1, None),
             KeyBinding::new("super-2", WidthPreset2, None),
             KeyBinding::new("super-3", WidthPreset3, None),
