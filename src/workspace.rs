@@ -8,8 +8,7 @@
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, Window, actions, div, prelude::*, px,
-    relative,
+    App, Context, Entity, FocusHandle, Focusable, Window, actions, div, prelude::*, px, relative,
 };
 
 use crate::harness::{self, Bridge, Command, Update};
@@ -19,8 +18,20 @@ use crate::theme::Theme;
 actions!(
     workspace,
     [
-        FocusLeft, FocusRight, FocusUp, FocusDown, MovePanelLeft, MovePanelRight, NewPanel,
-        ClosePanel, ToggleOverview, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Quit,
+        FocusLeft,
+        FocusRight,
+        FocusUp,
+        FocusDown,
+        MovePanelLeft,
+        MovePanelRight,
+        NewPanel,
+        ClosePanel,
+        ToggleOverview,
+        WidthPreset1,
+        WidthPreset2,
+        WidthPreset3,
+        WidthPreset4,
+        Quit,
     ]
 );
 
@@ -149,13 +160,21 @@ impl Workspace {
                     }
                 }
             }
-            Update::Event(event) => {
-                if let Some(session_id) = event_session_id(&event) {
-                    for slot in &self.slots {
-                        if slot.panel.read(cx).session_id == session_id {
-                            slot.panel.update(cx, |panel, cx| panel.apply(&event, cx));
-                            break;
-                        }
+            Update::Event { session_id, event } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| panel.apply(&event, cx));
+                        break;
+                    }
+                }
+            }
+            Update::SendFailed { session_id, reason } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.message_failed(format!("message failed: {reason}"), cx);
+                        });
+                        break;
                     }
                 }
             }
@@ -327,7 +346,13 @@ impl Workspace {
 
     // --- Rendering ------------------------------------------------------
 
-    fn render_strip(&mut self, viewport_w: f32, viewport_h: f32, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_strip(
+        &mut self,
+        viewport_w: f32,
+        viewport_h: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         if self.camera_target.is_nan() {
             self.resolve_camera_target(viewport_w);
         }
@@ -457,12 +482,11 @@ impl Workspace {
                             .px_3()
                             .py_2()
                             .bg(Theme::HEADER_BG)
-                            .child(
-                                div()
-                                    .size(px(7.0))
-                                    .rounded_full()
-                                    .bg(if busy { Theme::WARN } else { Theme::OK }),
-                            )
+                            .child(div().size(px(7.0)).rounded_full().bg(if busy {
+                                Theme::WARN
+                            } else {
+                                Theme::OK
+                            }))
                             .child(
                                 div()
                                     .flex_1()
@@ -556,11 +580,7 @@ impl Render for Workspace {
                 } else {
                     "connecting to jcode..."
                 })
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .child(self.status.clone()),
-                )
+                .child(div().text_size(px(12.0)).child(self.status.clone()))
                 .into_any_element()
         } else {
             self.render_strip(viewport_w, viewport_h, window, cx)
@@ -603,12 +623,11 @@ impl Render for Workspace {
                     .border_color(Theme::PANEL_BORDER)
                     .text_size(px(11.0))
                     .text_color(Theme::TEXT_DIM)
-                    .child(
-                        div()
-                            .size(px(7.0))
-                            .rounded_full()
-                            .bg(if self.connected { Theme::OK } else { Theme::WARN }),
-                    )
+                    .child(div().size(px(7.0)).rounded_full().bg(if self.connected {
+                        Theme::OK
+                    } else {
+                        Theme::WARN
+                    }))
                     .child(self.status.clone())
                     .child(div().flex_1())
                     .child(format!(
@@ -629,34 +648,4 @@ impl Focusable for Workspace {
 
 fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
-}
-
-fn event_session_id(event: &jcode_sdk::ApiEvent) -> Option<&str> {
-    use jcode_sdk::ApiEvent::*;
-    match event {
-        TextDelta { session_id, .. }
-        | ReasoningDelta { session_id, .. }
-        | ReasoningDone { session_id, .. }
-        | ToolStart { session_id, .. }
-        | ToolInputDelta { session_id, .. }
-        | ToolExec { session_id, .. }
-        | ToolDone { session_id, .. }
-        | TokenUsage { session_id, .. }
-        | TurnDone { session_id, .. }
-        | BackgroundProgress { session_id, .. }
-        | MessageAccepted { session_id }
-        | PermissionRequest { session_id, .. }
-        | SessionStatus { session_id, .. }
-        | ConnectionPhase { session_id, .. }
-        | ModelInfo { session_id, .. }
-        | Models { session_id, .. }
-        | RuntimeInfo { session_id, .. }
-        | FileContent { session_id, .. }
-        | Files { session_id, .. }
-        | TextMatches { session_id, .. }
-        | FileStatus { session_id, .. }
-        | Compacted { session_id, .. }
-        | SessionRenamed { session_id, .. } => Some(session_id),
-        _ => None,
-    }
 }

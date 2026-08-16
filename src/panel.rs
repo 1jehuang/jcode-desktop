@@ -112,7 +112,11 @@ impl Panel {
         });
     }
 
-    pub fn load_history(&mut self, messages: Vec<jcode_sdk::HistoryMessage>, cx: &mut Context<Self>) {
+    pub fn load_history(
+        &mut self,
+        messages: Vec<jcode_sdk::HistoryMessage>,
+        cx: &mut Context<Self>,
+    ) {
         if self.history_loaded {
             return;
         }
@@ -130,7 +134,12 @@ impl Panel {
             }
         }
         // History replaces any placeholder items but keeps live streaming.
-        items.extend(self.items.drain(..).filter(|item| matches!(item, Item::User(_))).take(0));
+        items.extend(
+            self.items
+                .drain(..)
+                .filter(|item| matches!(item, Item::User(_)))
+                .take(0),
+        );
         let mut existing = std::mem::take(&mut self.items);
         // Keep locally echoed items that arrived before history loaded.
         items.append(&mut existing);
@@ -170,7 +179,10 @@ impl Panel {
                 let found = self.items.iter_mut().rev().find(|item| {
                     matches!(item, Item::Tool { call_id: existing, .. } if existing == call_id)
                 });
-                if let Some(Item::Tool { done, error: slot, .. }) = found {
+                if let Some(Item::Tool {
+                    done, error: slot, ..
+                }) = found
+                {
                     *done = true;
                     *slot = error.clone();
                 } else {
@@ -224,8 +236,9 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         if !self.streaming_reasoning.trim().is_empty() {
-            self.items
-                .push(Item::Reasoning(std::mem::take(&mut self.streaming_reasoning)));
+            self.items.push(Item::Reasoning(std::mem::take(
+                &mut self.streaming_reasoning,
+            )));
         } else {
             self.streaming_reasoning.clear();
         }
@@ -233,6 +246,17 @@ impl Panel {
 
     pub fn is_busy(&self) -> bool {
         self.status != "idle" || !self.streaming_text.is_empty()
+    }
+
+    pub fn message_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.flush_reasoning();
+        self.flush_streaming();
+        self.items.push(Item::Error(message));
+        self.status = "idle".into();
+        self.connection_phase.clear();
+        self.stick_to_bottom = true;
+        self.scroll.scroll_to_bottom();
+        cx.notify();
     }
 
     fn render_item(item: &Item, window: &Window) -> gpui::AnyElement {

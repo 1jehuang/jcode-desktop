@@ -30,8 +30,11 @@ pub enum Update {
         session_id: String,
         messages: Vec<jcode_sdk::HistoryMessage>,
     },
-    /// A streaming event for one session.
-    Event(ApiEvent),
+    /// A streaming event for one session. The worker supplies the session id
+    /// because some important events (notably errors) do not include one.
+    Event { session_id: String, event: ApiEvent },
+    /// Sending a message failed before the harness accepted it.
+    SendFailed { session_id: String, reason: String },
     /// A per-session connection died.
     SessionLost { session_id: String, reason: String },
     /// The control connection died; the bridge will retry.
@@ -40,13 +43,24 @@ pub enum Update {
 
 /// Commands flowing from the UI into the bridge.
 pub enum Command {
-    CreateSession { working_dir: Option<String> },
+    CreateSession {
+        working_dir: Option<String>,
+    },
     /// Open a dedicated connection for this session (attach + stream).
-    Watch { session_id: String },
+    Watch {
+        session_id: String,
+    },
     /// Drop a session's dedicated connection.
-    Unwatch { session_id: String },
-    Send { session_id: String, content: String },
-    Cancel { session_id: String },
+    Unwatch {
+        session_id: String,
+    },
+    Send {
+        session_id: String,
+        content: String,
+    },
+    Cancel {
+        session_id: String,
+    },
 }
 
 enum SessionCommand {
@@ -160,9 +174,8 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
                             }
                         },
                         Err(error) => {
-                            let _ = updates.send(Update::Status(format!(
-                                "connect failed: {error}"
-                            )));
+                            let _ =
+                                updates.send(Update::Status(format!("connect failed: {error}")));
                         }
                     })
                     .expect("spawn create thread");
@@ -202,11 +215,7 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
 }
 
 /// One session's dedicated connection: attach, history, events, commands.
-fn session_worker(
-    session_id: String,
-    commands: Receiver<SessionCommand>,
-    updates: Sender<Update>,
-) {
+fn session_worker(session_id: String, commands: Receiver<SessionCommand>, updates: Sender<Update>) {
     let lost = |reason: String| {
         let _ = updates.send(Update::SessionLost {
             session_id: session_id.clone(),
@@ -242,18 +251,24 @@ fn session_worker(
     // Command half on its own thread so a blocked send never stalls events.
     let command_client = client.clone();
     let command_session = session_id.clone();
+    let command_updates = updates.clone();
     std::thread::Builder::new()
         .name(format!("jcode-session-cmd-{command_session}"))
         .spawn(move || {
             while let Ok(command) = commands.recv() {
                 match command {
                     SessionCommand::Send { content } => {
-                        let _ = command_client.send_message(
+                        if let Err(error) = command_client.send_message(
                             &command_session,
                             &content,
                             Vec::new(),
-                            None,
-                        );
+                            Some(Duration::from_secs(5)),
+                        ) {
+                            let _ = command_updates.send(Update::SendFailed {
+                                session_id: command_session.clone(),
+                                reason: error.to_string(),
+                            });
+                        }
                     }
                     SessionCommand::Cancel => {
                         let _ = command_client.cancel(&command_session);
@@ -270,7 +285,10 @@ fn session_worker(
     loop {
         match events.next_timeout(Duration::from_millis(200)) {
             Some(event) => {
-                let _ = updates.send(Update::Event(event));
+                let _ = updates.send(Update::Event {
+                    session_id: session_id.clone(),
+                    event,
+                });
             }
             None => {
                 if client.is_closed() {
