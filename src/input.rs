@@ -903,6 +903,23 @@ impl Focusable for PromptInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{TestAppContext, WindowOptions};
+
+    fn input_window(cx: &mut TestAppContext) -> gpui::WindowHandle<PromptInput> {
+        cx.update(|cx| bind_keys(cx));
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|cx| PromptInput::new(cx, "test", |_, _, _| {}))
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                window.focus(&input.focus_handle, cx)
+            })
+            .unwrap();
+        window
+    }
 
     #[test]
     fn horizontal_scroll_keeps_cursor_in_view() {
@@ -946,5 +963,52 @@ mod tests {
         for offset in [second_word, emoji, previous_word_boundary(text, emoji)] {
             assert!(text.is_char_boundary(offset));
         }
+    }
+
+    #[gpui::test]
+    fn ported_editing_chords_dispatch_through_the_real_keymap(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "one two");
+        cx.simulate_keystrokes(*window, "alt-b ctrl-w");
+        window
+            .update(cx, |input, _, _| assert_eq!(input.content.as_ref(), "two"))
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "ctrl-z ctrl-shift-z ctrl-u");
+        window
+            .update(cx, |input, _, _| assert!(input.content.is_empty()))
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn history_and_escape_dispatch_through_the_real_keymap(cx: &mut TestAppContext) {
+        let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = submitted.clone();
+        cx.update(|cx| bind_keys(cx));
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|cx| {
+                    PromptInput::new(cx, "test", move |text, _, _| {
+                        seen.lock().unwrap().push(text)
+                    })
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                window.focus(&input.focus_handle, cx)
+            })
+            .unwrap();
+
+        cx.simulate_input(*window, "first");
+        cx.simulate_keystrokes(*window, "enter");
+        cx.simulate_input(*window, "draft");
+        cx.simulate_keystrokes(*window, "up down up escape");
+
+        assert_eq!(&*submitted.lock().unwrap(), &["first"]);
+        window
+            .update(cx, |input, _, _| assert!(input.content.is_empty()))
+            .unwrap();
     }
 }

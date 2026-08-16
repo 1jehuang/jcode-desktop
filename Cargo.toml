@@ -11,6 +11,9 @@ jcode-sdk = { path = "../jcode/crates/jcode-sdk" }
 anyhow = "1"
 unicode-segmentation = "1"
 
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
+
 [profile.dev]
 opt-level = 1
 
