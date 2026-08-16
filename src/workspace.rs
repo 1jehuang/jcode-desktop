@@ -2167,6 +2167,7 @@ impl Render for Workspace {
                 .overflow_hidden()
                 .child(
                     div()
+                        .debug_selector(|| "row-transition-outgoing".into())
                         .absolute()
                         .top(px(outgoing_y))
                         .left_0()
@@ -2175,6 +2176,7 @@ impl Render for Workspace {
                 )
                 .child(
                     div()
+                        .debug_selector(|| "row-transition-incoming".into())
                         .absolute()
                         .top(px(incoming_y))
                         .left_0()
@@ -3157,6 +3159,136 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    /// This is the public acceptance path for vertical navigation: real bound
+    /// keys must reveal a directional transition and returning to either strip
+    /// must restore that strip's own last-focused panel.
+    #[gpui::test]
+    fn vertical_keys_animate_and_restore_each_strips_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("top-left", cx);
+            workspace.push_test_panel("top-right", cx);
+            workspace.active_row = 1;
+            workspace.push_test_panel("bottom-left", cx);
+            workspace.push_test_panel("bottom-right", cx);
+            workspace.set_active(1, cx);
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        vcx.run_until_parked();
+
+        // Moving down initially preserves column position. The incoming strip
+        // starts below the outgoing strip, proving the visible direction.
+        vcx.simulate_keystrokes("super-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active_row, 1);
+            assert_eq!(workspace.test_focus_position(), Some(1));
+            assert!(workspace.row_progress.is_animating());
+        });
+        let outgoing = vcx
+            .debug_bounds("row-transition-outgoing")
+            .expect("the old strip should remain visible during the transition");
+        let incoming = vcx
+            .debug_bounds("row-transition-incoming")
+            .expect("the new strip should be visible during the transition");
+        assert!(
+            incoming.origin.y > outgoing.origin.y,
+            "moving down should bring the new strip in from below"
+        );
+
+        // Give the lower strip a distinct remembered position, then round-trip.
+        vcx.simulate_keystrokes("super-h super-k");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active_row, 0);
+            assert_eq!(workspace.test_focus_position(), Some(1));
+        });
+        vcx.simulate_keystrokes("super-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active_row, 1);
+            assert_eq!(
+                workspace.test_focus_position(),
+                Some(0),
+                "returning should restore the lower strip's last-focused panel"
+            );
+        });
+
+        // The temporary outgoing layer must be retired after the policy duration.
+        std::thread::sleep(transition::policy(Transition::Row).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.outgoing_row, None);
+            assert!(!workspace.row_progress.is_animating());
+        });
+        assert!(
+            vcx.debug_bounds("panel-2").is_some(),
+            "the remembered lower panel should remain painted after settling"
+        );
+    }
+
+    #[gpui::test]
+    fn vertical_keys_cover_both_animation_directions(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("top-left", cx);
+            workspace.push_test_panel("top-right", cx);
+            workspace.active_row = 1;
+            workspace.push_test_panel("bottom-left", cx);
+            workspace.push_test_panel("bottom-right", cx);
+            workspace.set_active(1, cx);
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.run_until_parked();
+
+        vcx.simulate_keystrokes("super-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!((workspace.active_row, workspace.test_focus_position()), (1, Some(1)));
+            assert!(workspace.row_progress.is_animating());
+        });
+        let outgoing = vcx.debug_bounds("row-transition-outgoing").unwrap();
+        let incoming = vcx.debug_bounds("row-transition-incoming").unwrap();
+        assert!(incoming.origin.y > outgoing.origin.y, "down enters from below");
+
+        vcx.simulate_keystrokes("super-h");
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("super-k");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!((workspace.active_row, workspace.test_focus_position()), (0, Some(1)));
+        });
+        let outgoing = vcx.debug_bounds("row-transition-outgoing").unwrap();
+        let incoming = vcx.debug_bounds("row-transition-incoming").unwrap();
+        assert!(incoming.origin.y < outgoing.origin.y, "up enters from above");
+
+        vcx.simulate_keystrokes("super-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!((workspace.active_row, workspace.test_focus_position()), (1, Some(0)));
+        });
+
+        std::thread::sleep(transition::policy(Transition::Row).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.outgoing_row, None);
+            assert!(!workspace.row_progress.is_animating());
+        });
     }
 
     /// The same harness, confirming a no-op keypress teaches nothing and earns
