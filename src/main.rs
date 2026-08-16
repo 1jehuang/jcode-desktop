@@ -25,6 +25,12 @@ fn main() {
         // previous, alt-q close). niri grabs alt before the window sees it, so
         // the same layout is mirrored onto super here.
         cx.bind_keys([
+            // Canonical Jcode TUI workspace bindings. On niri these are normally
+            // intercepted by the compositor, so Super aliases remain below.
+            KeyBinding::new("alt-h", FocusLeft, None),
+            KeyBinding::new("alt-l", FocusRight, None),
+            KeyBinding::new("alt-j", FocusDown, None),
+            KeyBinding::new("alt-k", FocusUp, None),
             KeyBinding::new("super-h", FocusLeft, None),
             KeyBinding::new("super-l", FocusRight, None),
             KeyBinding::new("super-j", FocusDown, None),
