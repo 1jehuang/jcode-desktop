@@ -5,6 +5,7 @@ mod input;
 mod markdown;
 mod panel;
 mod theme;
+mod transition;
 mod workspace;
 
 use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, prelude::*, px, size};
@@ -13,8 +14,8 @@ use gpui_platform::application;
 use workspace::{
     ClosePanel, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious, FocusRight,
     FocusUp, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight, MovePanelToFirst,
-    MovePanelToLast, MovePanelUp, NewPanel, Quit, ToggleOverview, WidthPreset1, WidthPreset2,
-    WidthPreset3, WidthPreset4, Workspace,
+    MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel, Quit, ToggleHints, ToggleOverview,
+    WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
 fn main() {
@@ -48,6 +49,9 @@ fn main() {
             KeyBinding::new("super-tab", FocusPrevious, None),
             KeyBinding::new("super-shift-tab", ToggleOverview, None),
             KeyBinding::new("super-o", ToggleOverview, None),
+            KeyBinding::new("super-/", ToggleHints, None),
+            KeyBinding::new("f1", ToggleHints, None),
+            KeyBinding::new("super-shift-/", NewHelpSession, None),
             // niri switch-preset-column-width / maximize-column.
             KeyBinding::new("super-r", CycleWidth, None),
             KeyBinding::new("super-f", MaximizeWidth, None),
