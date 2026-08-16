@@ -86,6 +86,14 @@ Composer shortcuts ported from the TUI:
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
 
+// Minimap: a rounded card in the top right that maps every strip to scale.
+const MINIMAP_WIDTH: f32 = 176.0;
+const MINIMAP_PADDING: f32 = 8.0;
+const MINIMAP_ROW_HEIGHT: f32 = 14.0;
+const MINIMAP_ROW_GAP: f32 = 5.0;
+const MINIMAP_TOP: f32 = 8.0;
+const MINIMAP_RIGHT: f32 = 16.0;
+
 struct Slot {
     panel: Entity<Panel>,
     row: usize,
@@ -1485,6 +1493,157 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The minimap: a rounded card in the top right that draws every strip to
+    /// scale. Panels are proportional rectangles, the focused panel is lit, a
+    /// lens shows where the camera is looking, clicking a panel jumps to it,
+    /// clicking a track switches strips, and scrolling over the map pans the
+    /// active strip.
+    fn render_minimap(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let track_w = MINIMAP_WIDTH - MINIMAP_PADDING * 2.0;
+        let widest = (0..STRIP_COUNT)
+            .map(|row| {
+                self.row_indices(row)
+                    .map(|index| self.slot_width(index, viewport_w) + GAP)
+                    .sum::<f32>()
+                    + STRUT * 2.0
+            })
+            .fold(viewport_w, f32::max);
+        let scale = minimap_scale(track_w, viewport_w, widest);
+
+        let mut card = div()
+            .id("minimap")
+            .debug_selector(|| "minimap".into())
+            .absolute()
+            .top(px(MINIMAP_TOP))
+            .right(px(MINIMAP_RIGHT))
+            .w(px(MINIMAP_WIDTH))
+            .p(px(MINIMAP_PADDING))
+            .flex()
+            .flex_col()
+            .gap(px(MINIMAP_ROW_GAP))
+            .rounded_lg()
+            .bg(Theme::MINIMAP_BG)
+            .border_1()
+            .border_color(Theme::PANEL_BORDER)
+            .occlude()
+            // Scrolling over the map pans the active strip's camera, scaled
+            // back up to canvas distance so the map and canvas move 1:1.
+            .on_scroll_wheel(cx.listener(
+                move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    let row = this.active_row;
+                    let delta = event.delta.pixel_delta(window.line_height());
+                    let mut dx = f32::from(delta.x);
+                    if dx == 0.0 {
+                        dx = f32::from(delta.y);
+                    }
+                    if dx == 0.0 || scale <= f32::EPSILON {
+                        return;
+                    }
+                    let total = this
+                        .row_indices(row)
+                        .map(|index| this.slot_width(index, viewport_w) + GAP)
+                        .sum::<f32>()
+                        + STRUT * 2.0;
+                    let next = pan_camera(this.camera_x[row], -dx / scale, total, viewport_w);
+                    if (next - this.camera_x[row]).abs() < f32::EPSILON {
+                        return;
+                    }
+                    this.camera_x[row] = next;
+                    this.camera_target[row] = next;
+                    this.camera_from[row] = next;
+                    this.camera_started[row] = None;
+                    this.camera_dirty[row] = false;
+                    cx.notify();
+                },
+            ));
+
+        for row in 0..STRIP_COUNT {
+            let active_row = row == self.active_row;
+            let mut track = div()
+                .id(("minimap-row", row))
+                .debug_selector(move || format!("minimap-row-{row}"))
+                .relative()
+                .h(px(MINIMAP_ROW_HEIGHT))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .bg(if active_row {
+                    Theme::MINIMAP_TRACK_ACTIVE
+                } else {
+                    Theme::MINIMAP_TRACK
+                })
+                .hover(|el| el.bg(Theme::MINIMAP_TRACK_ACTIVE))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _event, window, cx| {
+                        let position = this.active_position_in_row();
+                        this.select_row(row, position);
+                        this.focus_active(window, cx);
+                        cx.notify();
+                    }),
+                );
+
+            for index in self.row_indices(row) {
+                let left = self.slot_left(index, viewport_w) * scale;
+                let width = (self.slot_width(index, viewport_w) * scale - 1.0).max(2.0);
+                let focused = index == self.active;
+                let busy = self.slots[index].panel.read(cx).is_busy();
+                track = track.child(
+                    div()
+                        .id(("minimap-panel", index))
+                        .debug_selector(move || format!("minimap-panel-{index}"))
+                        .absolute()
+                        .left(px(left))
+                        .top(px(2.0))
+                        .w(px(width))
+                        .h(px(MINIMAP_ROW_HEIGHT - 4.0))
+                        .rounded(px(2.0))
+                        .cursor_pointer()
+                        .bg(if focused {
+                            Theme::ACCENT
+                        } else if busy {
+                            Theme::MINIMAP_PANEL_BUSY
+                        } else {
+                            Theme::MINIMAP_PANEL
+                        })
+                        .hover(|el| el.bg(Theme::ACCENT))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _event, window, cx| {
+                                cx.stop_propagation();
+                                this.set_active(index, cx);
+                                this.overview = false;
+                                this.overview_progress.set(0.0, Instant::now());
+                                this.focus_active(window, cx);
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+
+            // The lens: where the camera is looking on the active strip.
+            if active_row {
+                let lens_left = ((self.camera_x[row] + STRUT) * scale).max(0.0);
+                let lens_width = (viewport_w * scale).min(track_w - lens_left).max(4.0);
+                track = track.child(
+                    div()
+                        .absolute()
+                        .left(px(lens_left))
+                        .top(px(0.0))
+                        .w(px(lens_width))
+                        .h(px(MINIMAP_ROW_HEIGHT))
+                        .rounded(px(3.0))
+                        .border_1()
+                        .border_color(Theme::MINIMAP_VIEWPORT)
+                        .bg(gpui::rgba(0xffffff08)),
+                );
+            }
+
+            card = card.child(track);
+        }
+
+        card.into_any_element()
+    }
+
     /// The coach's just-in-time hint. It appears next to the status bar rather
     /// than over the transcript, so a suggestion never covers the work that
     /// prompted it, and it states what was observed so the advice is legible.
@@ -1847,7 +2006,10 @@ impl Render for Workspace {
                     .min_w_0()
                     .min_h_0()
                     .child(content)
-                    .child(self.render_workspace_bar(cx)),
+                    .child(self.render_workspace_bar(cx))
+                    .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
+                        el.child(self.render_minimap(viewport_w, cx))
+                    }),
             )
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
@@ -2035,6 +2197,14 @@ fn scroll_into_view(current: f32, left: f32, width: f32, viewport: f32) -> f32 {
 fn pan_camera(current: f32, delta: f32, total_width: f32, viewport: f32) -> f32 {
     let max_scroll = (total_width - viewport).max(-GAP).max(-STRUT);
     (current + delta).clamp(-STRUT, max_scroll)
+}
+
+/// Pixels-per-canvas-pixel for the minimap: fit the widest strip (never less
+/// than one viewport) into the track, so every strip shares one scale and the
+/// map stays proportional.
+fn minimap_scale(track_width: f32, viewport: f32, widest_strip: f32) -> f32 {
+    let canvas = widest_strip.max(viewport).max(1.0);
+    track_width / canvas
 }
 
 /// Choose the panel underneath the camera's focal point after a direct pan.
@@ -2858,5 +3028,94 @@ mod tests {
         assert_eq!(spawned_panel_width(0), 1.0);
         assert_eq!(spawned_panel_width(1), DEFAULT_WIDTH);
         assert_eq!(spawned_panel_width(4), DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn the_minimap_scale_fits_the_widest_strip() {
+        // A canvas narrower than the viewport still maps the full viewport, so
+        // the lens can never overflow the track.
+        assert_eq!(minimap_scale(160.0, 1000.0, 500.0), 160.0 / 1000.0);
+        // A wide canvas is compressed to fit the track exactly.
+        assert_eq!(minimap_scale(160.0, 1000.0, 4000.0), 160.0 / 4000.0);
+        // Degenerate inputs never divide by zero.
+        assert!(minimap_scale(160.0, 0.0, 0.0).is_finite());
+    }
+
+    /// The minimap must actually paint in the top right and jumping through it
+    /// must work: this clicks the real minimap rectangle for the third panel in
+    /// a real rendered frame and asserts focus moved there.
+    #[gpui::test]
+    fn clicking_a_minimap_panel_jumps_focus_there(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two", "three"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+
+        let map = cx.debug_bounds("minimap").expect("the minimap should paint");
+        let window_width = cx.update(|window, _| f32::from(window.viewport_size().width));
+        assert!(
+            f32::from(map.right()) <= window_width + 1.0
+                && f32::from(map.origin.x) > window_width / 2.0,
+            "the minimap should sit in the top right"
+        );
+        assert!(
+            f32::from(map.origin.y) < 40.0,
+            "the minimap should hug the top edge"
+        );
+
+        let target = cx
+            .debug_bounds("minimap-panel-2")
+            .expect("the third panel should appear on the map");
+        cx.simulate_click(target.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.test_focus_position(),
+                Some(2),
+                "clicking the minimap rectangle should jump focus to that panel"
+            );
+        });
+    }
+
+    /// Clicking an empty minimap track switches to that strip, mirroring the
+    /// workspace bar.
+    #[gpui::test]
+    fn clicking_a_minimap_track_switches_strips(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+
+        let track = cx
+            .debug_bounds("minimap-row-2")
+            .expect("every strip should have a track on the map");
+        cx.simulate_click(track.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 2,
+                "clicking the third track should select strip 3"
+            );
+        });
     }
 }
