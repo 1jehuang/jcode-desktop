@@ -1,5 +1,7 @@
 //! Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions.
 
+mod ack;
+mod clipboard_image;
 mod harness;
 mod input;
 mod learning;

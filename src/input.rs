@@ -10,6 +10,7 @@ use gpui::{
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
     point, prelude::*, px, relative, size,
 };
+use base64::Engine as _;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{Theme, to_hsla};
@@ -126,14 +127,23 @@ pub struct PromptInput {
     history: Vec<String>,
     history_index: Option<usize>,
     live_draft: String,
-    on_submit: Box<dyn Fn(String, &mut Window, &mut App)>,
+    attachments: Vec<Attachment>,
+    attachment_notice: Option<SharedString>,
+    on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
+}
+
+#[derive(Clone)]
+struct Attachment {
+    media_type: String,
+    encoded: String,
+    label: SharedString,
 }
 
 impl PromptInput {
     pub fn new(
         cx: &mut Context<Self>,
         placeholder: impl Into<SharedString>,
-        on_submit: impl Fn(String, &mut Window, &mut App) + 'static,
+        on_submit: impl Fn(String, Vec<(String, String)>, &mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -151,15 +161,23 @@ impl PromptInput {
             history: Vec::new(),
             history_index: None,
             live_draft: String::new(),
+            attachments: Vec::new(),
+            attachment_notice: None,
             on_submit: Box::new(on_submit),
         }
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.content.trim().to_string();
-        if content.is_empty() {
+        if content.is_empty() && self.attachments.is_empty() {
             return;
         }
+        let content = if content.is_empty() { "[image]".to_string() } else { content };
+        let images = std::mem::take(&mut self.attachments)
+            .into_iter()
+            .map(|image| (image.media_type, image.encoded))
+            .collect();
+        self.attachment_notice = None;
         self.content = "".into();
         self.selected_range = 0..0;
         self.marked_range = None;
@@ -167,7 +185,7 @@ impl PromptInput {
         self.history.push(content.clone());
         self.history_index = None;
         self.live_draft.clear();
-        (self.on_submit)(content, window, cx);
+        (self.on_submit)(content, images, window, cx);
         cx.notify();
     }
 
@@ -231,6 +249,26 @@ impl PromptInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        match crate::clipboard_image::read() {
+            Ok(Some(image)) => {
+                let label = image.label();
+                self.attachments.push(Attachment {
+                    media_type: image.media_type,
+                    encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes),
+                    label: label.clone().into(),
+                });
+                self.attachment_notice = Some(match self.attachments.len() {
+                    1 => format!("image attached ({label})").into(),
+                    count => format!("{count} images attached").into(),
+                });
+                cx.notify();
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.attachment_notice = Some(format!("image paste unavailable: {error}").into());
+            }
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
         }
@@ -855,8 +893,37 @@ impl Element for TextElement {
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        let attachments = self.attachments.iter().enumerate().map(|(index, image)| {
+            div()
+                .id(("attachment", index))
+                .flex()
+                .items_center()
+                .gap_1()
+                .rounded_md()
+                .px_2()
+                .py_1()
+                .bg(Theme::USER_BG)
+                .text_size(px(11.0))
+                .text_color(Theme::TEXT_DIM)
+                .child("image")
+                .child(image.label.clone())
+                .child(div().text_color(Theme::TEXT_FAINT).child("×"))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    if index < this.attachments.len() {
+                        this.attachments.remove(index);
+                        this.attachment_notice = match this.attachments.len() {
+                            0 => None,
+                            1 => Some("1 image attached".into()),
+                            count => Some(format!("{count} images attached").into()),
+                        };
+                        cx.notify();
+                    }
+                }))
+        });
         div()
             .flex()
+            .flex_col()
             .key_context("PromptInput")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
@@ -900,11 +967,24 @@ impl Render for PromptInput {
                 Theme::INPUT_BORDER
             })
             .rounded_lg()
-            .px_3()
-            .py_2()
+            .when(!self.attachments.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .px_2()
+                        .pt_2()
+                        .children(attachments),
+                )
+            })
+            .children(self.attachment_notice.clone().map(|notice| {
+                div().px_3().pt_1().text_size(px(10.0)).text_color(Theme::TEXT_FAINT).child(notice)
+            }))
+            .child(div().w_full().overflow_hidden().px_3().py_2()
             .text_size(px(14.0))
             .text_color(Theme::TEXT)
-            .child(TextElement { input: cx.entity() })
+            .child(TextElement { input: cx.entity() }))
     }
 }
 
@@ -923,7 +1003,7 @@ mod tests {
         cx.update(|cx| bind_keys(cx));
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
-                cx.new(|cx| PromptInput::new(cx, "test", |_, _, _| {}))
+                cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}))
             })
             .unwrap()
         });
@@ -1002,7 +1082,7 @@ mod tests {
         let window = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| {
-                    PromptInput::new(cx, "test", move |text, _, _| {
+                    PromptInput::new(cx, "test", move |text, _, _, _| {
                         seen.lock().unwrap().push(text)
                     })
                 })

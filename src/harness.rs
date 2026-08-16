@@ -57,6 +57,7 @@ pub enum Command {
     Send {
         session_id: String,
         content: String,
+        images: Vec<(String, String)>,
     },
     Cancel {
         session_id: String,
@@ -64,7 +65,7 @@ pub enum Command {
 }
 
 enum SessionCommand {
-    Send { content: String },
+    Send { content: String, images: Vec<(String, String)> },
     Cancel,
     Stop,
 }
@@ -224,9 +225,10 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
             Command::Send {
                 session_id,
                 content,
+                images,
             } => {
                 if let Some(worker) = workers.get(&session_id) {
-                    let _ = worker.send(SessionCommand::Send { content });
+                    let _ = worker.send(SessionCommand::Send { content, images });
                 }
             }
             Command::Cancel { session_id } => {
@@ -285,14 +287,14 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
         loop {
             while let Some(command) = pending.pop_front().or_else(|| commands.try_recv().ok()) {
                 match command {
-                    SessionCommand::Send { content } => {
-                        let result = if turn_active {
+                    SessionCommand::Send { content, images } => {
+                        let result = if turn_active && images.is_empty() {
                             client.soft_interrupt(&session_id, &content, true)
                         } else {
                             client.send_message(
                                 &session_id,
                                 &content,
-                                Vec::new(),
+                                images,
                                 Some(Duration::from_secs(5)),
                             )
                         };
@@ -362,6 +364,7 @@ mod tests {
         let (tx, rx) = channel();
         tx.send(SessionCommand::Send {
             content: "hi".into(),
+            images: Vec::new(),
         })
         .unwrap();
         tx.send(SessionCommand::Cancel).unwrap();
@@ -370,7 +373,7 @@ mod tests {
         assert!(!collect_disconnected_commands(&rx, &mut pending));
         assert_eq!(pending.len(), 2);
         assert!(
-            matches!(pending.pop_front(), Some(SessionCommand::Send { content }) if content == "hi")
+            matches!(pending.pop_front(), Some(SessionCommand::Send { content, .. }) if content == "hi")
         );
         assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));
     }

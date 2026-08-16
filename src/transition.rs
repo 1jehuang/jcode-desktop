@@ -23,6 +23,7 @@ pub enum Transition {
     Coach,
     Connection,
     Transcript,
+    PromptDelivery,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,7 +39,7 @@ pub struct Policy {
     pub duration: Duration,
 }
 
-pub const POLICIES: [Policy; 11] = [
+pub const POLICIES: [Policy; 12] = [
     Policy {
         transition: Transition::Focus,
         motion: Motion::Animate,
@@ -95,6 +96,11 @@ pub const POLICIES: [Policy; 11] = [
         transition: Transition::Transcript,
         motion: Motion::Continuous,
         duration: Duration::ZERO,
+    },
+    Policy {
+        transition: Transition::PromptDelivery,
+        motion: Motion::Animate,
+        duration: Duration::from_millis(420),
     },
 ];
 
@@ -187,6 +193,7 @@ mod tests {
             Transition::Coach,
             Transition::Connection,
             Transition::Transcript,
+            Transition::PromptDelivery,
         ];
         for transition in all {
             assert_eq!(

@@ -290,6 +290,7 @@ impl Workspace {
                     self.bridge.send(Command::Send {
                         session_id,
                         content: HELP_SESSION_PROMPT.into(),
+                        images: Vec::new(),
                     });
                 }
             }

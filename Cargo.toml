@@ -9,6 +9,9 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["wayland", "x11", "font-kit"] }
 jcode-sdk = { path = "../jcode/crates/jcode-sdk" }
 anyhow = "1"
+arboard = { version = "3", features = ["wayland-data-control"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 unicode-segmentation = "1"
 serde_json = "1.0.151"
 

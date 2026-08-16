@@ -1,6 +1,7 @@
 //! Panel: one Jcode session as a spatial card with a live transcript.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, Window,
@@ -52,6 +53,8 @@ pub struct Panel {
     expanded_tools: HashSet<String>,
     /// Reasoning rows the user expanded, keyed by transcript index.
     expanded_reasoning: HashSet<usize>,
+    pending_users: VecDeque<usize>,
+    accepted_users: HashMap<usize, Instant>,
 }
 
 impl Panel {
@@ -65,10 +68,11 @@ impl Panel {
         let send_bridge = bridge.clone();
         let send_session = session_id.clone();
         let input = cx.new(|cx| {
-            PromptInput::new(cx, "message jcode...", move |content, _window, _app| {
+            PromptInput::new(cx, "message jcode...", move |content, images, _window, _app| {
                 send_bridge.send(Command::Send {
                     session_id: send_session.clone(),
                     content,
+                    images,
                 });
             })
         });
@@ -95,6 +99,8 @@ impl Panel {
             history_loaded: false,
             expanded_tools: HashSet::new(),
             expanded_reasoning: HashSet::new(),
+            pending_users: VecDeque::new(),
+            accepted_users: HashMap::new(),
         }
     }
 
@@ -106,14 +112,17 @@ impl Panel {
             let bridge = this.bridge.clone();
             let session_id = this.session_id.clone();
             this.input = cx.new(|cx| {
-                PromptInput::new(cx, "message jcode...", move |content, _window, app| {
+                PromptInput::new(cx, "message jcode...", move |content, images, _window, app| {
                     bridge.send(Command::Send {
                         session_id: session_id.clone(),
                         content: content.clone(),
+                        images,
                     });
                     if let Some(panel) = weak.upgrade() {
                         panel.update(app, |this, cx| {
+                            let index = this.items.len();
                             this.items.push(Item::User(content));
+                            this.pending_users.push_back(index);
                             this.stick_to_bottom = true;
                             this.scroll.scroll_to_bottom();
                             cx.notify();
@@ -152,6 +161,16 @@ impl Panel {
             Item::User(text) => !matches!(items.last(), Some(Item::User(last)) if last == text),
             _ => true,
         });
+        let history_len = items.len();
+        self.pending_users = self
+            .pending_users
+            .drain(..)
+            .map(|index| index + history_len)
+            .collect();
+        self.accepted_users = std::mem::take(&mut self.accepted_users)
+            .into_iter()
+            .map(|(index, at)| (index + history_len, at))
+            .collect();
         items.append(&mut existing);
         self.items = items;
         self.scroll.scroll_to_bottom();
@@ -161,6 +180,11 @@ impl Panel {
     /// Apply a streaming event addressed to this session.
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         match event {
+            ApiEvent::MessageAccepted { .. } => {
+                if let Some(index) = self.pending_users.pop_front() {
+                    self.accepted_users.insert(index, Instant::now());
+                }
+            }
             ApiEvent::TextDelta { text, .. } => {
                 self.flush_reasoning();
                 self.streaming_text.push_str(text);
@@ -307,16 +331,28 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match item {
-            Item::User(text) => div()
-                .flex()
-                .flex_col()
-                .bg(Theme::USER_BG)
-                .rounded_md()
-                .px_3()
-                .py_2()
-                .text_color(Theme::TEXT_USER)
-                .child(markdown::render(text, window))
-                .into_any_element(),
+            Item::User(text) => {
+                let now = Instant::now();
+                let pending = self.pending_users.contains(&index);
+                let (offset, opacity, animating) = self.accepted_users.get(&index)
+                    .map(|at| crate::ack::motion(*at, now))
+                    .unwrap_or((0.0, if pending { crate::ack::PENDING_TONE } else { 1.0 }, false));
+                if animating {
+                    window.request_animation_frame();
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .ml(px(offset))
+                    .opacity(opacity)
+                    .bg(Theme::USER_BG)
+                    .rounded_md()
+                    .px_3()
+                    .py_2()
+                    .text_color(Theme::TEXT_USER)
+                    .child(markdown::render(text, window))
+                    .into_any_element()
+            }
             Item::Assistant(text) => div()
                 .px_1()
                 .text_color(Theme::TEXT)
