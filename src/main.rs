@@ -47,6 +47,14 @@ fn main() {
             KeyBinding::new("super-q", ClosePanel, None),
             // niri: Alt+Tab is focus-window-previous, Mod+Tab is the overview.
             KeyBinding::new("super-tab", FocusPrevious, None),
+            KeyBinding::new("ctrl-tab", FocusRight, None),
+            KeyBinding::new("ctrl-shift-tab", FocusLeft, None),
+            KeyBinding::new("ctrl-pageup", FocusLeft, None),
+            KeyBinding::new("ctrl-pagedown", FocusRight, None),
+            KeyBinding::new("ctrl-alt-left", FocusLeft, None),
+            KeyBinding::new("ctrl-alt-right", FocusRight, None),
+            KeyBinding::new("ctrl-alt-up", FocusUp, None),
+            KeyBinding::new("ctrl-alt-down", FocusDown, None),
             KeyBinding::new("super-shift-tab", ToggleOverview, None),
             KeyBinding::new("super-o", ToggleOverview, None),
             KeyBinding::new("super-/", ToggleHints, None),
@@ -60,6 +68,8 @@ fn main() {
             KeyBinding::new("super-3", WidthPreset3, None),
             KeyBinding::new("super-4", WidthPreset4, None),
             KeyBinding::new("super-shift-q", Quit, None),
+            KeyBinding::new("ctrl-shift-n", NewPanel, None),
+            KeyBinding::new("ctrl-t", NewPanel, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
 
