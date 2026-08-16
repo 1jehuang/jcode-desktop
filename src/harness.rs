@@ -284,6 +284,22 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             });
         }
 
+        // Identity for the panel's status footer: which model and provider are
+        // serving this session, and through which credential route. Delivered
+        // as a normal event so the panel has one place that absorbs identity,
+        // whether it arrives by request (here) or unsolicited (model switches).
+        if let Ok(info) = client.get_runtime_info(&session_id) {
+            let _ = updates.send(Update::Event {
+                session_id: session_id.clone(),
+                event: ApiEvent::RuntimeInfo {
+                    session_id: session_id.clone(),
+                    provider: info.provider,
+                    model: info.model,
+                    routes: info.routes,
+                },
+            });
+        }
+
         loop {
             while let Some(command) = pending.pop_front().or_else(|| commands.try_recv().ok()) {
                 match command {

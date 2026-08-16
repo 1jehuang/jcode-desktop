@@ -39,6 +39,14 @@ pub struct Panel {
     pub working_dir: Option<String>,
     pub status: String,
     pub connection_phase: String,
+    /// Model id serving this session, e.g. `gpt-5.6-sol`.
+    pub model: Option<String>,
+    /// Provider display name, e.g. `openai` or `anthropic`.
+    pub provider: Option<String>,
+    /// Credential route for the current model, e.g. `oauth` or `api key`.
+    pub auth_method: Option<String>,
+    /// Latest token usage: (input, output, cache_read) from the last update.
+    token_usage: Option<(u64, u64, u64)>,
     pub items: Vec<Item>,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
@@ -88,6 +96,10 @@ impl Panel {
             working_dir,
             status: "idle".into(),
             connection_phase: String::new(),
+            model: None,
+            provider: None,
+            auth_method: None,
+            token_usage: None,
             items: demo_items(),
             streaming_text: String::new(),
             streaming_reasoning: String::new(),
@@ -254,6 +266,41 @@ impl Panel {
             }
             ApiEvent::ConnectionPhase { phase, .. } => {
                 self.connection_phase = phase.clone();
+            }
+            ApiEvent::ModelInfo {
+                provider, model, ..
+            } => {
+                if provider.is_some() {
+                    self.provider = provider.clone();
+                }
+                if model.is_some() {
+                    self.model = model.clone();
+                    // The route catalog keyed the auth method by model, so a
+                    // switch invalidates it until the next RuntimeInfo.
+                    self.auth_method = None;
+                }
+            }
+            ApiEvent::RuntimeInfo {
+                provider,
+                model,
+                routes,
+                ..
+            } => {
+                if provider.is_some() {
+                    self.provider = provider.clone();
+                }
+                if model.is_some() {
+                    self.model = model.clone();
+                }
+                self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
+            }
+            ApiEvent::TokenUsage {
+                input,
+                output,
+                cache_read_input,
+                ..
+            } => {
+                self.token_usage = Some((*input, *output, cache_read_input.unwrap_or(0)));
             }
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
@@ -624,6 +671,13 @@ impl Render for Panel {
         }
 
         let status_line = self.status_line();
+        let meta_line = meta_line(
+            self.working_dir.as_deref(),
+            self.model.as_deref(),
+            self.provider.as_deref(),
+            self.auth_method.as_deref(),
+            self.token_usage,
+        );
 
         div()
             .flex()
@@ -644,6 +698,20 @@ impl Render for Panel {
                     .font_family(Theme::FONT_MONO)
                     .text_color(Theme::TEXT_FAINT)
                     .child("·")
+                    .child(text)
+            }))
+            // Session identity: where it runs, what serves it, and how full
+            // the context is. Always present, so the user never has to ask
+            // "which model is this?" mid-conversation.
+            .children(meta_line.map(|text| {
+                div()
+                    .px_3()
+                    .py_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(10.0))
+                    .font_family(Theme::FONT_MONO)
+                    .text_color(Theme::TEXT_FAINT)
                     .child(text)
             }))
             // Input
@@ -708,6 +776,126 @@ fn role_caption(label: &'static str, body: gpui::AnyElement) -> gpui::AnyElement
         )
         .child(body)
         .into_any_element()
+}
+
+/// The credential route serving `model`, phrased for humans. The route
+/// catalog's `api_method` values are stable ids like `openai-oauth` or
+/// `anthropic-api-key`; the footer says "oauth" or "api key".
+fn auth_method_for_model(
+    model: Option<&str>,
+    routes: &[jcode_sdk::ModelRouteInfo],
+) -> Option<String> {
+    let model = model?;
+    let route = routes.iter().find(|route| route.model == model)?;
+    let method = route.api_method.to_lowercase();
+    Some(if method.contains("oauth") {
+        "oauth".to_string()
+    } else if method.contains("api-key") || method.contains("api_key") {
+        "api key".to_string()
+    } else {
+        method
+    })
+}
+
+/// The identity footer: directory, model (provider, auth), and context usage.
+/// Absent parts are simply omitted, so the line never shows placeholders.
+fn meta_line(
+    working_dir: Option<&str>,
+    model: Option<&str>,
+    provider: Option<&str>,
+    auth_method: Option<&str>,
+    token_usage: Option<(u64, u64, u64)>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(dir) = working_dir.filter(|dir| !dir.is_empty()) {
+        parts.push(compact_dir(dir));
+    }
+    if let Some(model) = model {
+        let mut qualifiers: Vec<&str> = Vec::new();
+        if let Some(provider) = provider {
+            qualifiers.push(provider);
+        }
+        if let Some(auth) = auth_method {
+            qualifiers.push(auth);
+        }
+        if qualifiers.is_empty() {
+            parts.push(model.to_string());
+        } else {
+            parts.push(format!("{model} ({})", qualifiers.join(", ")));
+        }
+    }
+    if let Some((input, output, cache_read)) = token_usage {
+        let used = input + output + cache_read;
+        match model.and_then(context_window_for_model) {
+            Some(window) => {
+                let percent = (used as f64 / window as f64 * 100.0).min(100.0);
+                parts.push(format!(
+                    "{} / {} ({percent:.0}%)",
+                    format_tokens(used),
+                    format_tokens(window)
+                ));
+            }
+            None => parts.push(format!("{} tokens", format_tokens(used))),
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("  ·  "))
+}
+
+/// Shorten a home-relative path for the footer.
+fn compact_dir(path: &str) -> String {
+    match std::env::var("HOME").ok() {
+        Some(home) if path == home => "~".to_string(),
+        Some(home) => match path.strip_prefix(&format!("{home}/")) {
+            Some(relative) => format!("~/{relative}"),
+            None => path.to_string(),
+        },
+        None => path.to_string(),
+    }
+}
+
+/// Best-effort context window by model family. The harness API does not carry
+/// the provider's exact window, so this mirrors jcode's own fallbacks for the
+/// families the user actually runs; unknown models show raw token counts.
+fn context_window_for_model(model: &str) -> Option<u64> {
+    let m = model.to_lowercase();
+    if m.starts_with("gpt-5.3-codex-spark") {
+        return Some(128_000);
+    }
+    if m.contains("chat") && m.starts_with("gpt-5") {
+        return Some(128_000);
+    }
+    if m.starts_with("gpt-5.4") {
+        return Some(1_000_000);
+    }
+    if m.starts_with("gpt-5") {
+        return Some(272_000);
+    }
+    if m.starts_with("claude-")
+        || m.starts_with("fable")
+        || m.contains("opus")
+        || m.contains("sonnet")
+        || m.contains("haiku")
+    {
+        return Some(200_000);
+    }
+    if m.starts_with("gemini-") {
+        return Some(1_000_000);
+    }
+    None
+}
+
+/// `12500` -> `12.5k`, `1048576` -> `1.0m`; small counts stay exact.
+fn format_tokens(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}m", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
 }
 
 /// Collapse whitespace and clip to a readable length.
@@ -811,6 +999,90 @@ mod tests {
         assert!(detail.contains("line2"));
         let long: String = (0..50).map(|n| format!("l{n}\n")).collect();
         assert!(tool_detail("{}", &long).contains("more lines"));
+    }
+
+    fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
+        jcode_sdk::ModelRouteInfo {
+            model: model.into(),
+            provider: "openai".into(),
+            api_method: api_method.into(),
+            available: true,
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn auth_method_is_read_from_the_current_models_route() {
+        let routes = vec![
+            route("gpt-5.6-sol", "openai-oauth"),
+            route("claude-fable-5", "anthropic-api-key"),
+        ];
+        assert_eq!(
+            auth_method_for_model(Some("gpt-5.6-sol"), &routes).as_deref(),
+            Some("oauth")
+        );
+        assert_eq!(
+            auth_method_for_model(Some("claude-fable-5"), &routes).as_deref(),
+            Some("api key")
+        );
+        // Unknown model or no model: nothing to claim.
+        assert_eq!(auth_method_for_model(Some("other"), &routes), None);
+        assert_eq!(auth_method_for_model(None, &routes), None);
+    }
+
+    #[test]
+    fn meta_line_shows_directory_model_auth_and_context() {
+        let line = meta_line(
+            Some("/srv/project"),
+            Some("gpt-5.6-sol"),
+            Some("openai"),
+            Some("oauth"),
+            Some((100_000, 8_000, 28_000)),
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            "/srv/project  ·  gpt-5.6-sol (openai, oauth)  ·  136.0k / 272.0k (50%)"
+        );
+    }
+
+    #[test]
+    fn meta_line_omits_missing_parts_instead_of_showing_placeholders() {
+        // No identity at all: no footer.
+        assert_eq!(meta_line(None, None, None, None, None), None);
+        // Model only: just the model, no empty parens.
+        assert_eq!(
+            meta_line(None, Some("gpt-5.6"), None, None, None).as_deref(),
+            Some("gpt-5.6")
+        );
+        // Unknown model family: raw token count, no bogus percentage.
+        assert_eq!(
+            meta_line(None, Some("mystery-model"), None, None, Some((1_500, 500, 0))).as_deref(),
+            Some("mystery-model  ·  2.0k tokens")
+        );
+    }
+
+    #[test]
+    fn context_windows_match_the_families_jcode_uses() {
+        assert_eq!(context_window_for_model("gpt-5.6-sol"), Some(272_000));
+        assert_eq!(context_window_for_model("gpt-5.4-alto"), Some(1_000_000));
+        assert_eq!(
+            context_window_for_model("gpt-5.2-chat-latest"),
+            Some(128_000)
+        );
+        assert_eq!(
+            context_window_for_model("claude-sonnet-4-20250514"),
+            Some(200_000)
+        );
+        assert_eq!(context_window_for_model("gemini-3-pro"), Some(1_000_000));
+        assert_eq!(context_window_for_model("mystery"), None);
+    }
+
+    #[test]
+    fn token_counts_format_compactly() {
+        assert_eq!(format_tokens(950), "950");
+        assert_eq!(format_tokens(12_500), "12.5k");
+        assert_eq!(format_tokens(1_048_576), "1.0m");
     }
 }
 
