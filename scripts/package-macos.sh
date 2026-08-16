@@ -12,13 +12,38 @@ VERSION="${VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" 
 BUILD_NUMBER="${BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-1}}"
 OUT="${OUT_DIR:-$ROOT/dist/macos}"
 APP="$OUT/Jcode.app"
+DMG="$OUT/Jcode-macOS-universal.dmg"
+ZIP="$OUT/Jcode-macOS-universal.zip"
+DMG_ROOT="$OUT/dmg-root"
+ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
 TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
-command -v cargo >/dev/null
-command -v lipo >/dev/null
-command -v iconutil >/dev/null
+# Release tags and beta labels are valid artifact versions, but Apple's bundle
+# short version must be exactly three numeric components.
+VERSION="${VERSION#desktop-v}"
+VERSION="${VERSION#v}"
+VERSION="${VERSION%%-*}"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "error: VERSION must contain a three-part numeric macOS version" >&2
+  exit 1
+}
+[[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+  echo "error: BUILD_NUMBER must be a positive integer" >&2
+  exit 1
+}
+
+for command in cargo codesign ditto hdiutil iconutil lipo rustup sips xcrun; do
+  command -v "$command" >/dev/null || { echo "error: missing required command: $command" >&2; exit 1; }
+done
 [[ -f "$JCODE_REPO/Cargo.toml" ]] || { echo "error: set JCODE_REPO to a Jcode checkout" >&2; exit 1; }
+[[ -f "$ENTITLEMENTS" ]] || { echo "error: missing entitlements: $ENTITLEMENTS" >&2; exit 1; }
+if [[ -n "${APPLE_NOTARY_PROFILE:-}" && "${APPLE_SIGNING_IDENTITY:--}" == "-" ]]; then
+  echo "error: notarization requires APPLE_SIGNING_IDENTITY" >&2
+  exit 1
+fi
+
+export MACOSX_DEPLOYMENT_TARGET=13.0
 for target in "${TARGETS[@]}"; do rustup target add "$target"; done
 
 for target in "${TARGETS[@]}"; do
@@ -26,12 +51,13 @@ for target in "${TARGETS[@]}"; do
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" --bin jcode
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" \
     --package jcode-harness-api-server --bin jcode-harness-api-bridge
- done
+done
 
-rm -rf "$APP"
+rm -rf "$APP" "$DMG_ROOT"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$OUT/icon.iconset"
 sed -e "s/__VERSION__/$VERSION/g" -e "s/__BUILD__/$BUILD_NUMBER/g" \
   "$ROOT/packaging/macos/Info.plist.in" > "$APP/Contents/Info.plist"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 for bin in "${BINS[@]}"; do
   if [[ "$bin" == jcode-desktop ]]; then base="$ROOT/target"; else base="$JCODE_REPO/target"; fi
@@ -50,10 +76,11 @@ done
 iconutil -c icns "$OUT/icon.iconset" -o "$APP/Contents/Resources/Jcode.icns"
 rm -rf "$OUT/icon.iconset"
 
-# Sign inner executables before the bundle. Without release credentials this
-# creates an ad-hoc signed artifact suitable for local beta testing.
+# Use the hardened runtime without broad exceptions. The explicit empty
+# entitlement set makes accidental privilege additions visible in review and in
+# verify-macos-package.sh. Ad-hoc signing remains available for local builds.
 IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
-SIGN_ARGS=(--force --options runtime --sign "$IDENTITY")
+SIGN_ARGS=(--force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY")
 if [[ "$IDENTITY" != "-" ]]; then SIGN_ARGS+=(--timestamp); fi
 for bin in jcode jcode-harness-api-bridge jcode-desktop; do
   codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/$bin"
@@ -61,16 +88,37 @@ done
 codesign "${SIGN_ARGS[@]}" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-rm -f "$OUT/Jcode-macOS-universal.zip" "$OUT/Jcode-macOS-universal.dmg"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/Jcode-macOS-universal.zip"
-hdiutil create -volname "Jcode" -srcfolder "$APP" -ov -format UDZO "$OUT/Jcode-macOS-universal.dmg" >/dev/null
-
+# Notarize and staple the application before creating the final archives. The
+# temporary ZIP is only the transport accepted by notarytool.
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
-  xcrun notarytool submit "$OUT/Jcode-macOS-universal.zip" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
+  rm -f "$ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+  xcrun notarytool submit "$ZIP" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
   xcrun stapler staple "$APP"
-  ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/Jcode-macOS-universal.zip"
-  hdiutil create -volname "Jcode" -srcfolder "$APP" -ov -format UDZO "$OUT/Jcode-macOS-universal.dmg" >/dev/null
+  xcrun stapler validate "$APP"
 fi
 
-shasum -a 256 "$OUT/Jcode-macOS-universal.zip" "$OUT/Jcode-macOS-universal.dmg" > "$OUT/SHA256SUMS"
+# A top-level Applications link gives Finder users the expected drag-to-install
+# target. Copy the app so the source bundle remains available for local testing.
+mkdir -p "$DMG_ROOT"
+ditto "$APP" "$DMG_ROOT/Jcode.app"
+ln -s /Applications "$DMG_ROOT/Applications"
+
+rm -f "$ZIP" "$DMG"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+hdiutil create -volname "Jcode" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$DMG_ROOT"
+
+if [[ "$IDENTITY" != "-" ]]; then
+  codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+fi
+if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
+  xcrun notarytool submit "$DMG" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  xcrun stapler validate "$DMG"
+fi
+
+EXPECT_NOTARIZED="$([[ -n "${APPLE_NOTARY_PROFILE:-}" ]] && echo 1 || echo 0)" \
+  "$ROOT/scripts/verify-macos-package.sh" "$APP" "$DMG"
+shasum -a 256 "$ZIP" "$DMG" > "$OUT/SHA256SUMS"
 echo "macOS beta artifacts: $OUT"

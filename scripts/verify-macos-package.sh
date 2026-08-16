@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo "error: macOS package verification must run on macOS" >&2
+  exit 1
+fi
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="${1:-$ROOT/dist/macos/Jcode.app}"
+DMG="${2:-$ROOT/dist/macos/Jcode-macOS-universal.dmg}"
+EXPECTED_ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
+BINS=(jcode-desktop jcode jcode-harness-api-bridge)
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+plist_value() {
+  /usr/libexec/PlistBuddy -c "Print :$2" "$1"
+}
+
+verify_bundle() {
+  local app="$1"
+  local plist="$app/Contents/Info.plist"
+
+  [[ -d "$app" ]] || fail "app bundle is missing: $app"
+  plutil -lint "$plist" >/dev/null
+  [[ "$(plist_value "$plist" CFBundleIdentifier)" == "dev.solosystems.jcode.desktop" ]] || fail "unexpected bundle identifier"
+  [[ "$(plist_value "$plist" CFBundleExecutable)" == "jcode-desktop" ]] || fail "unexpected bundle executable"
+  [[ "$(plist_value "$plist" CFBundlePackageType)" == "APPL" ]] || fail "unexpected bundle package type"
+  [[ "$(plist_value "$plist" LSMinimumSystemVersion)" == "13.0" ]] || fail "unexpected deployment target"
+  [[ "$(plist_value "$plist" LSMultipleInstancesProhibited)" == "true" ]] || fail "multiple app instances are not prohibited"
+  [[ "$(plist_value "$plist" CFBundleShortVersionString)" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid short version"
+  [[ "$(plist_value "$plist" CFBundleVersion)" =~ ^[1-9][0-9]*$ ]] || fail "invalid build number"
+  [[ "$(cat "$app/Contents/PkgInfo")" == "APPL????" ]] || fail "invalid PkgInfo"
+  [[ -s "$app/Contents/Resources/Jcode.icns" ]] || fail "app icon is missing"
+
+  for bin in "${BINS[@]}"; do
+    local executable="$app/Contents/MacOS/$bin"
+    [[ -x "$executable" ]] || fail "missing executable companion: $bin"
+    lipo -verify_arch arm64 x86_64 "$executable" || fail "$bin is not universal"
+    codesign --verify --strict --verbose=2 "$executable"
+
+    local actual_entitlements
+    actual_entitlements="$(mktemp)"
+    codesign -d --entitlements :- "$executable" >"$actual_entitlements" 2>/dev/null || fail "could not read $bin entitlements"
+    python3 - "$EXPECTED_ENTITLEMENTS" "$actual_entitlements" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as expected_file:
+    expected = plistlib.load(expected_file)
+with open(sys.argv[2], "rb") as actual_file:
+    actual = plistlib.load(actual_file)
+if actual != expected:
+    raise SystemExit(f"unexpected entitlements: {actual!r}")
+PY
+    rm -f "$actual_entitlements"
+  done
+
+  codesign --verify --deep --strict --verbose=2 "$app"
+}
+
+for command in codesign hdiutil lipo plutil python3; do
+  command -v "$command" >/dev/null || fail "missing required command: $command"
+done
+[[ -f "$EXPECTED_ENTITLEMENTS" ]] || fail "expected entitlements are missing"
+[[ -f "$DMG" ]] || fail "DMG is missing: $DMG"
+
+verify_bundle "$APP"
+hdiutil verify "$DMG" >/dev/null
+
+MOUNT="$(mktemp -d)"
+SCRATCH="$(mktemp -d)"
+cleanup() {
+  hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true
+  rm -rf "$MOUNT" "$SCRATCH"
+}
+trap cleanup EXIT
+
+hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null
+[[ -L "$MOUNT/Applications" ]] || fail "DMG is missing its Applications link"
+[[ "$(readlink "$MOUNT/Applications")" == "/Applications" ]] || fail "DMG Applications link has the wrong target"
+verify_bundle "$MOUNT/Jcode.app"
+
+# Finder launches do not inherit an interactive shell PATH. Running the bundled
+# CLI in an empty environment proves that the app ships a usable companion and
+# does not accidentally resolve a Homebrew or developer checkout executable.
+env -i HOME="$SCRATCH" TMPDIR="$SCRATCH" PATH=/usr/bin:/bin \
+  "$MOUNT/Jcode.app/Contents/MacOS/jcode" --version >/dev/null
+
+if [[ "${EXPECT_NOTARIZED:-0}" == 1 ]]; then
+  xcrun stapler validate "$APP"
+  xcrun stapler validate "$DMG"
+  spctl --assess --type execute --verbose=2 "$APP"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+fi
+
+echo "verified macOS app bundle, bundled CLI bridge layout, and drag-to-Applications DMG"

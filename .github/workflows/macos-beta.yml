@@ -17,6 +17,9 @@ jobs:
   build:
     runs-on: macos-14
     timeout-minutes: 90
+    env:
+      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      HAS_APPLE_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
     steps:
       - name: Check out Jcode Desktop
         uses: actions/checkout@v4
@@ -36,8 +39,38 @@ jobs:
           workspaces: |
             jcode-desktop
             jcode
+      - name: Validate release credentials
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          signing=0
+          notarization=0
+          [[ -n "$CERTIFICATE_P12" && -n "$CERTIFICATE_PASSWORD" && -n "$SIGNING_IDENTITY" ]] && signing=1
+          [[ -n "$API_KEY_P8" && -n "$API_KEY_ID" && -n "$API_ISSUER_ID" ]] && notarization=1
+
+          if [[ $signing -eq 0 && -n "$CERTIFICATE_P12$CERTIFICATE_PASSWORD$SIGNING_IDENTITY" ]]; then
+            echo "Signing credentials must be configured as a complete set." >&2
+            exit 1
+          fi
+          if [[ $notarization -eq 0 && -n "$API_KEY_P8$API_KEY_ID$API_ISSUER_ID" ]]; then
+            echo "Notarization credentials must be configured as a complete set." >&2
+            exit 1
+          fi
+          if [[ $notarization -eq 1 && $signing -eq 0 ]]; then
+            echo "Notarization requires Developer ID signing credentials." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* && ($signing -eq 0 || $notarization -eq 0) ]]; then
+            echo "Tagged releases must be Developer ID signed and notarized." >&2
+            exit 1
+          fi
       - name: Import Developer ID certificate
-        if: env.APPLE_CERTIFICATE_P12 != ''
+        if: env.HAS_APPLE_CERTIFICATE == 'true'
         env:
           CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -51,7 +84,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -s -k runner "$KEYCHAIN"
       - name: Configure notarization
-        if: env.APPLE_API_KEY_P8 != ''
+        if: env.HAS_APPLE_NOTARY_KEY == 'true'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -68,10 +101,15 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_API_KEY_P8 != '' && 'jcode-notary' || '' }}
         run: jcode-desktop/scripts/package-macos.sh
+      - name: Verify app bundle and DMG install path
+        env:
+          EXPECT_NOTARIZED: ${{ secrets.APPLE_API_KEY_P8 != '' && '1' || '0' }}
+        run: jcode-desktop/scripts/verify-macos-package.sh
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: Jcode-macOS-beta
+          if-no-files-found: error
           path: |
             jcode-desktop/dist/macos/Jcode-macOS-universal.dmg
             jcode-desktop/dist/macos/Jcode-macOS-universal.zip
