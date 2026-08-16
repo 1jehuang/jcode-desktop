@@ -274,11 +274,18 @@ impl Workspace {
         &self.coach
     }
 
+    /// The panel entity at `index`, so tests can drive real events through it.
+    #[cfg(test)]
+    pub fn test_panel(&self, index: usize) -> Option<Entity<Panel>> {
+        self.slots.get(index).map(|slot| slot.panel.clone())
+    }
+
     #[cfg(test)]
     pub fn test_focus_position(&self) -> Option<usize> {
         self.row_indices(self.active_row)
             .position(|index| index == self.active)
     }
+
 
     fn apply(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {

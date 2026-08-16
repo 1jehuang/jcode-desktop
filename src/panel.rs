@@ -703,6 +703,9 @@ impl Render for Panel {
             // "which model is this?" mid-conversation.
             .children(meta_line.map(|text| {
                 div()
+                    // Tagged so a render test can prove the footer painted,
+                    // not just that meta_line() produced a string.
+                    .debug_selector(|| "panel-meta".into())
                     .px_3()
                     .py_1()
                     .overflow_hidden()
@@ -1101,6 +1104,73 @@ mod tests {
         assert_eq!(format_tokens(950), "950");
         assert_eq!(format_tokens(12_500), "12.5k");
         assert_eq!(format_tokens(1_048_576), "1.0m");
+    }
+
+    /// The acceptance path: real events land in a real panel inside a painted
+    /// window, and the footer element occupies space on screen. Without this,
+    /// the tests above only prove the string is right, not that anyone sees it.
+    #[gpui::test]
+    fn the_identity_footer_paints_after_runtime_info_and_token_events(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            let _ = window;
+            workspace
+        });
+        vcx.run_until_parked();
+
+        // A fresh panel knows nothing: no footer may be painted.
+        assert!(
+            vcx.debug_bounds("panel-meta").is_none(),
+            "no identity footer before any identity is known"
+        );
+
+        // The events the harness worker forwards after attach and during a turn.
+        workspace.update(vcx, |workspace, cx| {
+            let panel = workspace.test_panel(0).expect("panel exists");
+            panel.update(cx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::RuntimeInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6-sol".into()),
+                        routes: vec![jcode_sdk::ModelRouteInfo {
+                            model: "gpt-5.6-sol".into(),
+                            provider: "openai".into(),
+                            api_method: "openai-oauth".into(),
+                            available: true,
+                            detail: String::new(),
+                        }],
+                    },
+                    cx,
+                );
+                panel.apply(
+                    &ApiEvent::TokenUsage {
+                        session_id: "session-a".into(),
+                        input: 100_000,
+                        output: 8_000,
+                        cache_read_input: Some(28_000),
+                    },
+                    cx,
+                );
+                assert_eq!(panel.model.as_deref(), Some("gpt-5.6-sol"));
+                assert_eq!(panel.provider.as_deref(), Some("openai"));
+                assert_eq!(panel.auth_method.as_deref(), Some("oauth"));
+            });
+        });
+        vcx.run_until_parked();
+
+        let bounds = vcx
+            .debug_bounds("panel-meta")
+            .expect("the identity footer should have painted");
+        assert!(
+            bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
+            "the footer must occupy real space, got {bounds:?}"
+        );
     }
 }
 
