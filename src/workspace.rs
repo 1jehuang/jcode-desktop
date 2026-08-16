@@ -1497,6 +1497,48 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// A mouse-friendly spawn target at the canvas edge. It stays invisible
+    /// until the pointer reaches the far right, then reveals the same `+`
+    /// affordance as the session sidebar.
+    fn render_edge_new_session(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .id("edge-new-session")
+            .debug_selector(|| "edge-new-session".into())
+            .absolute()
+            .right_0()
+            .top_0()
+            .bottom_0()
+            .w(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .opacity(0.0)
+            .hover(|el| el.opacity(1.0))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    this.missed("new_panel", cx);
+                    this.open_new_session(cx);
+                }),
+            )
+            .child(
+                div()
+                    .size(px(28.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(Theme::PANEL_BORDER)
+                    .bg(Theme::HEADER_BG)
+                    .text_size(px(20.0))
+                    .text_color(Theme::TEXT)
+                    .child("+"),
+            )
+            .into_any_element()
+    }
+
     /// The connected-accounts strip: one row per configured credential, led
     /// by the provider's logo, with the auth method (OAuth / API key) and
     /// state. Only configured providers appear, so the section stays honest
@@ -2271,6 +2313,9 @@ impl Render for Workspace {
                     .child(self.render_workspace_bar(cx))
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
                         el.child(self.render_minimap(viewport_w, viewport_h, cx))
+                    })
+                    .when(overview_progress <= 0.0, |el| {
+                        el.child(self.render_edge_new_session(cx))
                     }),
             )
             .when(hints_progress > 0.0, |root| {
