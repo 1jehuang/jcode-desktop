@@ -37,7 +37,7 @@ jobs:
             jcode-desktop
             jcode
       - name: Import Developer ID certificate
-        if: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+        if: env.APPLE_CERTIFICATE_P12 != ''
         env:
           CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -51,7 +51,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -s -k runner "$KEYCHAIN"
       - name: Configure notarization
-        if: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+        if: env.APPLE_API_KEY_P8 != ''
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
