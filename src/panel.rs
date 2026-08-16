@@ -1138,6 +1138,7 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: None,
                         routes: vec![jcode_sdk::ModelRouteInfo {
                             model: "gpt-5.6-sol".into(),
                             provider: "openai".into(),

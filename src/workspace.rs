@@ -3052,6 +3052,34 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn right_edge_is_a_full_height_click_target_for_a_new_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+
+        let edge = vcx
+            .debug_bounds("edge-new-session")
+            .expect("the right-edge new-session target should paint");
+        assert_eq!(f32::from(edge.size.width), 32.0);
+        assert!(f32::from(edge.size.height) > 100.0);
+        vcx.simulate_click(edge.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        workspace.update(vcx, |workspace, _| {
+            assert!(
+                workspace.test_coach().trace("new_panel").slow_paths > 0,
+                "clicking the edge target should invoke the pointer spawn path"
+            );
+        });
+    }
+
     /// Clicking the panel that is already focused is not a missed shortcut: no
     /// keypress would have done anything, so it must not be held against them.
     #[gpui::test]
