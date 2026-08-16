@@ -20,7 +20,7 @@ use workspace::{
     ClosePanel, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious, FocusRight,
     FocusUp, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight, MovePanelToFirst,
     MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel, Quit, ToggleHints, ToggleOverview,
-    WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
+    OpenFolder, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
 /// The workspace keymap. Extracted so tests can dispatch through exactly the
@@ -79,6 +79,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-shift-q", Quit, None),
         KeyBinding::new("ctrl-shift-n", NewPanel, None),
         KeyBinding::new("ctrl-t", NewPanel, None),
+        KeyBinding::new("ctrl-o", OpenFolder, None),
     ]);
 
     // GPUI names the native macOS Command modifier `cmd`. Keep these explicit
@@ -98,6 +99,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-t", NewPanel, None),
         KeyBinding::new("cmd-w", ClosePanel, None),
         KeyBinding::new("cmd-o", ToggleOverview, None),
+        KeyBinding::new("cmd-shift-o", OpenFolder, None),
         KeyBinding::new("cmd-/", ToggleHints, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);

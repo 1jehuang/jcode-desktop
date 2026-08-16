@@ -34,6 +34,7 @@ actions!(
         MovePanelToFirst,
         MovePanelToLast,
         NewPanel,
+        OpenFolder,
         ClosePanel,
         ToggleOverview,
         ToggleHints,
@@ -69,6 +70,7 @@ The jcode-desktop shortcuts are:
 - Super+H/J/K/L: navigate panels
 - Super+Shift+H/J/K/L: move panels
 - Super+N: open a session to the right
+- Ctrl+O: choose a folder and open a session there
 - Super+Tab: return to the previous panel
 - Super+R: cycle panel width
 - Super+F: maximize or restore panel width
@@ -883,6 +885,35 @@ impl Workspace {
         self.open_new_session(cx);
     }
 
+    /// Ask the platform for a directory, then create a session rooted there.
+    /// A session's working directory is fixed by the runtime, so choosing a
+    /// different folder intentionally opens a new session instead of silently
+    /// changing the meaning of an existing transcript.
+    fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open folder in Jcode".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = selection.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, _window, cx| {
+                this.bridge.send(Command::CreateSession {
+                    working_dir: Some(path.to_string_lossy().into_owned()),
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Open a session without attributing the choice to the keyboard. Pointer
     /// paths call this directly, so clicking never earns keyboard credit.
     fn open_new_session(&mut self, _cx: &mut Context<Self>) {
@@ -1365,16 +1396,13 @@ impl Workspace {
         for (sidebar_index, session) in self.sessions.iter().rev().cloned().enumerate() {
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
             let open = open_ids.contains(&session.session_id);
-            let title = session
-                .title
-                .clone()
-                .filter(|title| !title.trim().is_empty())
-                .unwrap_or_else(|| format!("session {}", short_session_id(&session.session_id)));
+            let (icon, title) = sidebar_session_title(&session);
             let directory = session
                 .working_dir
                 .as_deref()
-                .map(compact_working_dir)
-                .unwrap_or_else(|| "unknown folder".into());
+                .map(str::trim)
+                .filter(|directory| !directory.is_empty())
+                .map(compact_working_dir);
 
             list = list.child(
                 div()
@@ -1411,6 +1439,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_2()
+                            .child(div().text_size(px(14.0)).child(icon))
                             .child(div().size(px(6.0)).rounded_full().bg(if open {
                                 Theme::TEXT
                             } else {
@@ -1424,14 +1453,16 @@ impl Workspace {
                                     .child(title),
                             ),
                     )
-                    .child(
-                        div()
-                            .pl(px(14.0))
-                            .overflow_hidden()
-                            .text_size(px(10.0))
-                            .text_color(Theme::TEXT_DIM)
-                            .child(directory),
-                    ),
+                    .when_some(directory, |row, directory| {
+                        row.child(
+                            div()
+                                .pl(px(36.0))
+                                .overflow_hidden()
+                                .text_size(px(10.0))
+                                .text_color(Theme::TEXT_DIM)
+                                .child(directory),
+                        )
+                    }),
             );
         }
 
@@ -1470,26 +1501,51 @@ impl Workspace {
                     .child(div().text_size(px(13.0)).child("sessions"))
                     .child(
                         div()
-                            .id("sidebar-new-session")
-                            // Tagged so a render test can click the real button
-                            // and confirm it counts as a slow path, not as
-                            // knowledge of super-n.
-                            .debug_selector(|| "sidebar-new-session".into())
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_size(px(16.0))
-                            .text_color(Theme::TEXT_DIM)
-                            .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.missed("new_panel", cx);
-                                    this.open_new_session(cx);
-                                }),
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .id("sidebar-open-folder")
+                                    .debug_selector(|| "sidebar-open-folder".into())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::TEXT_DIM)
+                                    .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _event, window, cx| {
+                                            this.open_folder(&OpenFolder, window, cx);
+                                        }),
+                                    )
+                                    .child("folder"),
                             )
-                            .child("+"),
+                            .child(
+                                div()
+                                    .id("sidebar-new-session")
+                                    // Tagged so a render test can click the real button
+                                    // and confirm it counts as a slow path, not as
+                                    // knowledge of super-n.
+                                    .debug_selector(|| "sidebar-new-session".into())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(16.0))
+                                    .text_color(Theme::TEXT_DIM)
+                                    .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.missed("new_panel", cx);
+                                            this.open_new_session(cx);
+                                        }),
+                                    )
+                                    .child("+"),
+                            ),
                     ),
             )
             .child(list)
@@ -2292,6 +2348,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_panel_to_first))
             .on_action(cx.listener(Self::move_panel_to_last))
             .on_action(cx.listener(Self::new_panel))
+            .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
             .on_action(cx.listener(Self::toggle_hints))
@@ -2337,8 +2394,18 @@ fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
 }
 
-fn short_session_id(session_id: &str) -> String {
-    session_id.chars().take(8).collect()
+fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, String) {
+    let animal = jcode_core::id::extract_session_name(&session.session_id);
+    let icon = animal.map(jcode_core::id::session_icon).unwrap_or("💫");
+    let title = session
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_owned)
+        .or_else(|| animal.map(str::to_owned))
+        .unwrap_or_else(|| session.session_id.chars().take(12).collect());
+    (icon, title)
 }
 
 fn compact_working_dir(path: &str) -> String {
