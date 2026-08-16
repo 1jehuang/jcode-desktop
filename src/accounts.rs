@@ -202,6 +202,33 @@ mod tests {
         assert!(parse("{}").is_none());
     }
 
+    /// Acceptance path: the real CLI's real report must parse and yield the
+    /// credentials the runtime actually has. Ignored by default because it
+    /// needs `jcode` on PATH and the user's credentials; run explicitly with
+    /// `cargo test -- --ignored live_cli`.
+    #[test]
+    #[ignore = "requires the jcode CLI and user credentials"]
+    fn live_cli_report_parses_and_lists_configured_accounts() {
+        let accounts = fetch().expect("jcode auth status --json should run and parse");
+        assert!(
+            !accounts.is_empty(),
+            "this machine has configured credentials, so the list must not be empty"
+        );
+        for account in &accounts {
+            assert!(matches!(account.status.as_str(), "available" | "expired"));
+            assert!(!account.display_name.is_empty());
+            assert!(!account.auth_kind.is_empty());
+        }
+        let mut seen_expired = false;
+        for account in &accounts {
+            if account.available() {
+                assert!(!seen_expired, "available accounts must sort before expired");
+            } else {
+                seen_expired = true;
+            }
+        }
+    }
+
     #[test]
     fn every_shippable_provider_has_a_logo_and_the_rest_fall_back() {
         for id in [
