@@ -87,13 +87,21 @@ Composer shortcuts ported from the TUI:
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
 
-// Minimap: a rounded card in the top right that maps every strip to scale.
-const MINIMAP_WIDTH: f32 = 176.0;
+// Minimap: a rounded square card in the top right that maps every strip to
+// scale, preserving the canvas aspect ratio so panels taller than wide on
+// screen stay taller than wide on the map.
+const MINIMAP_SIZE: f32 = 176.0;
 const MINIMAP_PADDING: f32 = 8.0;
-const MINIMAP_ROW_HEIGHT: f32 = 14.0;
 const MINIMAP_ROW_GAP: f32 = 5.0;
 const MINIMAP_TOP: f32 = 8.0;
 const MINIMAP_RIGHT: f32 = 16.0;
+/// Rows split the square's inner height evenly, one per strip.
+const MINIMAP_ROW_HEIGHT: f32 = (MINIMAP_SIZE
+    - MINIMAP_PADDING * 2.0
+    - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
+    / STRIP_COUNT as f32;
+/// Vertical inset between a panel rectangle and its track edge.
+const MINIMAP_PANEL_INSET: f32 = 2.0;
 
 struct Slot {
     panel: Entity<Panel>,
@@ -1701,8 +1709,14 @@ impl Workspace {
     /// lens shows where the camera is looking, clicking a panel jumps to it,
     /// clicking a track switches strips, and scrolling over the map pans the
     /// active strip.
-    fn render_minimap(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let track_w = MINIMAP_WIDTH - MINIMAP_PADDING * 2.0;
+    fn render_minimap(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let track_w = MINIMAP_SIZE - MINIMAP_PADDING * 2.0;
+        let panel_track_h = MINIMAP_ROW_HEIGHT - MINIMAP_PANEL_INSET * 2.0;
         let widest = (0..STRIP_COUNT)
             .map(|row| {
                 self.row_indices(row)
@@ -1711,7 +1725,7 @@ impl Workspace {
                     + STRUT * 2.0
             })
             .fold(viewport_w, f32::max);
-        let scale = minimap_scale(track_w, viewport_w, widest);
+        let scale = minimap_scale(track_w, panel_track_h, viewport_w, viewport_h, widest);
 
         let mut card = div()
             .id("minimap")
@@ -1719,7 +1733,8 @@ impl Workspace {
             .absolute()
             .top(px(MINIMAP_TOP))
             .right(px(MINIMAP_RIGHT))
-            .w(px(MINIMAP_WIDTH))
+            .w(px(MINIMAP_SIZE))
+            .h(px(MINIMAP_SIZE))
             .p(px(MINIMAP_PADDING))
             .flex()
             .flex_col()
@@ -1788,6 +1803,11 @@ impl Workspace {
             for index in self.row_indices(row) {
                 let left = self.slot_left(index, viewport_w) * scale;
                 let width = (self.slot_width(index, viewport_w) * scale - 1.0).max(2.0);
+                // Panels keep the canvas aspect ratio: the height is the real
+                // panel height under the same scale, so a panel taller than
+                // wide on screen reads taller than wide here too.
+                let height = (viewport_h * scale).clamp(4.0, panel_track_h);
+                let top = MINIMAP_PANEL_INSET + (panel_track_h - height) / 2.0;
                 let focused = index == self.active;
                 let busy = self.slots[index].panel.read(cx).is_busy();
                 track = track.child(
@@ -1796,9 +1816,9 @@ impl Workspace {
                         .debug_selector(move || format!("minimap-panel-{index}"))
                         .absolute()
                         .left(px(left))
-                        .top(px(2.0))
+                        .top(px(top))
                         .w(px(width))
-                        .h(px(MINIMAP_ROW_HEIGHT - 4.0))
+                        .h(px(height))
                         .rounded(px(2.0))
                         .cursor_pointer()
                         .bg(if focused {
@@ -2250,7 +2270,7 @@ impl Render for Workspace {
                     .child(content)
                     .child(self.render_workspace_bar(cx))
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
-                        el.child(self.render_minimap(viewport_w, cx))
+                        el.child(self.render_minimap(viewport_w, viewport_h, cx))
                     }),
             )
             .when(hints_progress > 0.0, |root| {
@@ -2454,11 +2474,19 @@ fn pan_camera(current: f32, delta: f32, total_width: f32, viewport: f32) -> f32 
 }
 
 /// Pixels-per-canvas-pixel for the minimap: fit the widest strip (never less
-/// than one viewport) into the track, so every strip shares one scale and the
-/// map stays proportional.
-fn minimap_scale(track_width: f32, viewport: f32, widest_strip: f32) -> f32 {
-    let canvas = widest_strip.max(viewport).max(1.0);
-    track_width / canvas
+/// than one viewport) into the track width, then cap the scale so a panel's
+/// mapped height fits the track. One shared scale on both axes keeps every
+/// rectangle at the true canvas aspect ratio, so panels taller than wide on
+/// screen stay taller than wide on the map.
+fn minimap_scale(
+    track_width: f32,
+    track_height: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    widest_strip: f32,
+) -> f32 {
+    let canvas = widest_strip.max(viewport_w).max(1.0);
+    (track_width / canvas).min(track_height / viewport_h.max(1.0))
 }
 
 /// Choose the panel underneath the camera's focal point after a direct pan.
@@ -3476,13 +3504,36 @@ mod tests {
 
     #[test]
     fn the_minimap_scale_fits_the_widest_strip() {
-        // A canvas narrower than the viewport still maps the full viewport, so
-        // the lens can never overflow the track.
-        assert_eq!(minimap_scale(160.0, 1000.0, 500.0), 160.0 / 1000.0);
+        // A tall track never constrains these cases, so the width rule alone
+        // decides the scale. A canvas narrower than the viewport still maps
+        // the full viewport, so the lens can never overflow the track.
+        assert_eq!(
+            minimap_scale(160.0, 1000.0, 1000.0, 800.0, 500.0),
+            160.0 / 1000.0
+        );
         // A wide canvas is compressed to fit the track exactly.
-        assert_eq!(minimap_scale(160.0, 1000.0, 4000.0), 160.0 / 4000.0);
+        assert_eq!(
+            minimap_scale(160.0, 1000.0, 1000.0, 800.0, 4000.0),
+            160.0 / 4000.0
+        );
         // Degenerate inputs never divide by zero.
-        assert!(minimap_scale(160.0, 0.0, 0.0).is_finite());
+        assert!(minimap_scale(160.0, 1.0, 0.0, 0.0, 0.0).is_finite());
+    }
+
+    #[test]
+    fn the_minimap_keeps_the_canvas_aspect_ratio() {
+        // On a common landscape canvas the height cap wins, and a half-width
+        // panel maps taller than wide, matching how it looks on screen.
+        let scale = minimap_scale(160.0, 32.0, 1656.0, 1000.0, 1656.0);
+        assert_eq!(scale, 32.0 / 1000.0);
+        let mapped_w = 1656.0 * 0.5 * scale;
+        let mapped_h = 1000.0 * scale;
+        assert!(
+            mapped_w < mapped_h,
+            "a half-width panel should read taller than wide ({mapped_w} vs {mapped_h})"
+        );
+        // A full-width panel is wider than tall on screen, and stays that way.
+        assert!(1656.0 * scale > mapped_h);
     }
 
     /// The minimap must actually paint in the top right and jumping through it
