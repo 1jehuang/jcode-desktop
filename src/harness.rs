@@ -327,3 +327,36 @@ fn collect_disconnected_commands(
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_are_retained_while_the_runtime_is_disconnected() {
+        let (tx, rx) = channel();
+        tx.send(SessionCommand::Send {
+            content: "hi".into(),
+        })
+        .unwrap();
+        tx.send(SessionCommand::Cancel).unwrap();
+        let mut pending = VecDeque::new();
+
+        assert!(!collect_disconnected_commands(&rx, &mut pending));
+        assert_eq!(pending.len(), 2);
+        assert!(
+            matches!(pending.pop_front(), Some(SessionCommand::Send { content }) if content == "hi")
+        );
+        assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));
+    }
+
+    #[test]
+    fn closing_a_disconnected_panel_stops_its_worker() {
+        let (tx, rx) = channel();
+        tx.send(SessionCommand::Stop).unwrap();
+        let mut pending = VecDeque::new();
+
+        assert!(collect_disconnected_commands(&rx, &mut pending));
+        assert!(pending.is_empty());
+    }
+}
