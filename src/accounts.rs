@@ -202,6 +202,34 @@ mod tests {
         assert!(parse("{}").is_none());
     }
 
+    /// The refresh path: a poll between snapshots sees the latest one, stale
+    /// intermediate snapshots are skipped, and an idle feed yields nothing, so
+    /// the UI only repaints when the login state actually changed.
+    #[test]
+    fn the_feed_drains_to_the_newest_snapshot() {
+        let (tx, rx) = channel();
+        let feed = Feed {
+            updates: Arc::new(Mutex::new(rx)),
+        };
+        assert_eq!(feed.latest(), None, "an idle feed reports no change");
+
+        let snapshot = |id: &str| {
+            vec![Account {
+                id: id.into(),
+                display_name: id.into(),
+                status: "available".into(),
+                auth_kind: "OAuth".into(),
+                method: "OAuth".into(),
+            }]
+        };
+        tx.send(snapshot("stale")).unwrap();
+        tx.send(snapshot("fresh")).unwrap();
+
+        let latest = feed.latest().expect("two snapshots are pending");
+        assert_eq!(latest[0].id, "fresh", "the poll skips stale snapshots");
+        assert_eq!(feed.latest(), None, "and the queue is now drained");
+    }
+
     /// Acceptance path: the real CLI's real report must parse and yield the
     /// credentials the runtime actually has. Ignored by default because it
     /// needs `jcode` on PATH and the user's credentials; run explicitly with
