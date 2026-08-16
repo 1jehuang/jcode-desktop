@@ -658,6 +658,69 @@ impl Workspace {
             .child(grid)
             .into_any_element()
     }
+
+    /// A persistent, compact map of the four strips. Panel lengths hint at
+    /// their viewport width, while the bright panel is the current target.
+    fn render_minimap(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut map = div()
+            .id("workspace-minimap")
+            .w(px(156.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0));
+
+        for row in 0..STRIP_COUNT {
+            let active_row = row == self.active_row;
+            let mut track = div()
+                .id(("minimap-row", row))
+                .h(px(4.0))
+                .w_full()
+                .flex()
+                .flex_row()
+                .gap(px(2.0))
+                .rounded_full()
+                .bg(if active_row {
+                    Theme::ACCENT_DIM
+                } else {
+                    Theme::PANEL_BORDER
+                });
+
+            for index in self.row_indices(row) {
+                let focused = index == self.active;
+                let width = 8.0 + self.slots[index].width_fraction * 24.0;
+                track = track.child(
+                    div()
+                        .id(("minimap-panel", index))
+                        .w(px(width))
+                        .h_full()
+                        .flex_none()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(if focused {
+                            Theme::ACCENT
+                        } else {
+                            Theme::TEXT_DIM
+                        })
+                        .hover(|el| el.bg(Theme::ACCENT))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _event, window, cx| {
+                                this.active = index;
+                                this.active_row = this.slots[index].row;
+                                this.overview = false;
+                                this.retarget_camera();
+                                this.focus_active(window, cx);
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+
+            map = map.child(track);
+        }
+
+        map.into_any_element()
+    }
 }
 
 impl Render for Workspace {
@@ -741,6 +804,7 @@ impl Render for Workspace {
                     }))
                     .child(self.status.clone())
                     .child(div().flex_1())
+                    .child(self.render_minimap(cx))
                     .child(format!(
                         "strip {}/{} · {} panel{}",
                         self.active_row + 1,
