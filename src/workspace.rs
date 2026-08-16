@@ -1000,6 +1000,9 @@ impl Workspace {
             strip = strip.child(
                 div()
                     .id(("panel", index))
+                    // Tagged so a render test can click the real panel element
+                    // and exercise the pointer slow-path detection.
+                    .debug_selector(move || format!("panel-{index}"))
                     .w(px(width))
                     .h(px(panel_h))
                     .flex_none()
@@ -1475,6 +1478,9 @@ impl Workspace {
             .child(
                 div()
                     .id("coach-toast")
+                    // Tagged so a render test can assert the toast actually
+                    // painted, rather than only that the coach decided to teach.
+                    .debug_selector(|| "coach-toast".into())
                     .relative()
                     .top(px((1.0 - progress) * 10.0))
                     .flex()
@@ -1582,6 +1588,7 @@ impl Workspace {
 
         let mut card = div()
             .id("hints-card")
+            .debug_selector(|| "coach-card".into())
             .relative()
             .top(px((1.0 - progress) * 12.0))
             .w(px(560.0))
@@ -2145,6 +2152,199 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    /// Clicking a panel that a keypress would have focused is the pointer slow
+    /// path. This clicks the real panel element in a real rendered frame, rather
+    /// than testing the classification helper in isolation.
+    #[gpui::test]
+    fn clicking_a_neighbouring_panel_is_recorded_as_a_missed_shortcut(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two", "three"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+
+        // Focus starts on the first panel; the second is its neighbour.
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(workspace.test_focus_position(), Some(0));
+            assert_eq!(workspace.test_coach().effort_wasted, 0);
+        });
+
+        let neighbour = cx
+            .debug_bounds("panel-1")
+            .expect("the second panel should have painted");
+        cx.simulate_click(neighbour.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.test_focus_position(),
+                Some(1),
+                "the click should have moved focus"
+            );
+            let coach = workspace.test_coach();
+            assert!(
+                coach.effort_wasted > 0,
+                "clicking a neighbour should count as work done the long way"
+            );
+            assert_eq!(
+                coach.active_hint_id(),
+                Some("focus_left_right"),
+                "and should teach the navigation keys"
+            );
+        });
+    }
+
+    /// Clicking the panel that is already focused is not a missed shortcut: no
+    /// keypress would have done anything, so it must not be held against them.
+    #[gpui::test]
+    fn clicking_the_focused_panel_is_not_a_missed_shortcut(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+
+        let focused = cx
+            .debug_bounds("panel-0")
+            .expect("the focused panel should have painted");
+        cx.simulate_click(focused.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            let coach = workspace.test_coach();
+            assert_eq!(
+                coach.effort_wasted, 0,
+                "clicking into the panel you are already in is not a slow path"
+            );
+            assert_eq!(coach.active_hint_id(), None, "and should not be lectured");
+        });
+    }
+
+    /// The toast must actually paint. Earlier live-screenshot attempts always
+    /// caught the window after the hint had expired, so this drives the real
+    /// render pipeline and asserts the element was laid out on screen.
+    #[gpui::test]
+    fn the_hint_toast_actually_paints_when_the_coach_teaches(cx: &mut gpui::TestAppContext) {
+        let now = learning::now();
+        let mut coach = learning::Coach::new();
+        for step in 0..8 {
+            coach.used_shortcut("focus_left_right", now - (8 - step) * 3 * 86_400);
+        }
+
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(coach, cx);
+            for name in ["one", "two", "three", "four", "five"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+
+        // Nothing is being taught yet, so no toast should be on screen.
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("coach-toast").is_none(),
+            "no toast before anything is taught"
+        );
+
+        // Grind along the strip, which is what someone without the jump key does.
+        cx.simulate_keystrokes("super-end super-h super-h super-h");
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.test_coach().active_hint_id(),
+                Some("focus_first_last"),
+                "grinding should have produced a hint to render"
+            );
+        });
+
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds("coach-toast")
+            .expect("the hint toast should have painted");
+        assert!(
+            bounds.size.width > px(0.) && bounds.size.height > px(0.),
+            "the toast must occupy real space, got {bounds:?}"
+        );
+    }
+
+    /// The coach view must paint too, and only while it is open.
+    #[gpui::test]
+    fn the_coach_view_paints_only_when_opened(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("only", cx);
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("coach-card").is_none(),
+            "the coach view starts closed"
+        );
+
+        cx.simulate_keystrokes("super-/");
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("coach-card").is_some(),
+            "super-/ should open the coach view"
+        );
+
+        // Closing animates out over MODAL_DURATION, so the card is still painted
+        // mid-fade; it must be gone once the transition has finished. The
+        // animations are driven by the wall clock rather than the test clock, so
+        // this waits out the real duration.
+        cx.simulate_keystrokes("super-/");
+        cx.run_until_parked();
+        std::thread::sleep(transition::policy(Transition::Hints).duration * 2);
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("coach-card").is_none(),
+            "super-/ should close it again"
+        );
     }
 
     /// Moving onto a populated strip is real navigation and should be credited,
