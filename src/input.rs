@@ -97,6 +97,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-e", End, Some("PromptInput")),
         KeyBinding::new("ctrl-k", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("ctrl-j", HistoryNext, Some("PromptInput")),
+        KeyBinding::new("ctrl-[", HistoryPrev, Some("PromptInput")),
+        KeyBinding::new("ctrl-]", HistoryNext, Some("PromptInput")),
         KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
         KeyBinding::new("down", HistoryNext, Some("PromptInput")),
         KeyBinding::new("escape", Clear, Some("PromptInput")),
@@ -1016,7 +1018,7 @@ mod tests {
         cx.simulate_input(*window, "first");
         cx.simulate_keystrokes(*window, "enter");
         cx.simulate_input(*window, "draft");
-        cx.simulate_keystrokes(*window, "up down up escape");
+        cx.simulate_keystrokes(*window, "ctrl-[ ctrl-] up escape");
 
         assert_eq!(&*submitted.lock().unwrap(), &["first"]);
         window
