@@ -64,6 +64,7 @@ impl Theme {
     pub const MINIMAP_VIEWPORT: Rgba = rgba_c(0xffffff_26);
     pub const MINIMAP_PANEL: Rgba = rgb_c(0x616161);
     pub const MINIMAP_PANEL_BUSY: Rgba = rgb_c(0xaaaaaa);
+    pub const MINIMAP_BG: Rgba = rgba_c(0x171717_e6);
 
     pub const FONT_UI: &'static str = "JetBrainsMono Nerd Font";
     pub const FONT_MONO: &'static str = "JetBrainsMono Nerd Font";

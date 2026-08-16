@@ -1105,4 +1105,49 @@ mod tests {
             .update(cx, |input, _, _| assert!(input.content.is_empty()))
             .unwrap();
     }
+
+    #[gpui::test]
+    fn image_only_prompt_submits_the_attachment_and_clears_the_composer(
+        cx: &mut TestAppContext,
+    ) {
+        let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = submitted.clone();
+        cx.update(|cx| bind_keys(cx));
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|cx| {
+                    PromptInput::new(cx, "test", move |text, images, _, _| {
+                        seen.lock().unwrap().push((text, images));
+                    })
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| {
+                input.attachments.push(Attachment {
+                    media_type: "image/png".into(),
+                    encoded: "cG5n".into(),
+                    label: "4×3".into(),
+                });
+                window.focus(&input.focus_handle, cx);
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "enter");
+
+        assert_eq!(
+            &*submitted.lock().unwrap(),
+            &[(
+                "[image]".to_string(),
+                vec![("image/png".to_string(), "cG5n".to_string())]
+            )]
+        );
+        window
+            .update(cx, |input, _, _| {
+                assert!(input.content.is_empty());
+                assert!(input.attachments.is_empty());
+            })
+            .unwrap();
+    }
 }
