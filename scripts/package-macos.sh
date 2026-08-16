@@ -23,7 +23,9 @@ for target in "${TARGETS[@]}"; do rustup target add "$target"; done
 
 for target in "${TARGETS[@]}"; do
   cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$target"
-  cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" --bin jcode --bin jcode-harness-api-bridge
+  cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" --bin jcode
+  cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$target" \
+    --package jcode-harness-api-server --bin jcode-harness-api-bridge
  done
 
 rm -rf "$APP"
