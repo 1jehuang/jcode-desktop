@@ -12,6 +12,7 @@ use jcode_sdk::ApiEvent;
 use crate::harness::{Bridge, Command};
 use crate::input::PromptInput;
 use crate::markdown;
+use crate::terminal::TerminalPanel;
 use crate::theme::Theme;
 
 /// One transcript entry, in display order.
@@ -65,6 +66,7 @@ pub struct Panel {
     expanded_reasoning: HashSet<usize>,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
+    terminal: Option<Entity<TerminalPanel>>,
 }
 
 impl Panel {
@@ -78,13 +80,17 @@ impl Panel {
         let send_bridge = bridge.clone();
         let send_session = session_id.clone();
         let input = cx.new(|cx| {
-            PromptInput::new(cx, "message jcode...", move |content, images, _window, _app| {
-                send_bridge.send(Command::Send {
-                    session_id: send_session.clone(),
-                    content,
-                    images,
-                });
-            })
+            PromptInput::new(
+                cx,
+                "message jcode...",
+                move |content, images, _window, _app| {
+                    send_bridge.send(Command::Send {
+                        session_id: send_session.clone(),
+                        content,
+                        images,
+                    });
+                },
+            )
         });
         // Local echo is appended by the workspace when submit fires; simplest
         // is to observe our own input entity... but the closure above has no
@@ -116,7 +122,25 @@ impl Panel {
             expanded_reasoning: HashSet::new(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
+            terminal: None,
         }
+    }
+
+    pub fn new_terminal(
+        working_dir: Option<String>,
+        bridge: Bridge,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let terminal = cx.new(|cx| TerminalPanel::new(working_dir.clone(), cx));
+        let mut panel = Self::new(
+            "terminal".into(),
+            Some("terminal".into()),
+            working_dir,
+            bridge,
+            cx,
+        );
+        panel.terminal = Some(terminal);
+        panel
     }
 
     /// Wire the input's submit to also echo locally. Called once after
@@ -127,23 +151,27 @@ impl Panel {
             let bridge = this.bridge.clone();
             let session_id = this.session_id.clone();
             this.input = cx.new(|cx| {
-                PromptInput::new(cx, "message jcode...", move |content, images, _window, app| {
-                    bridge.send(Command::Send {
-                        session_id: session_id.clone(),
-                        content: content.clone(),
-                        images,
-                    });
-                    if let Some(panel) = weak.upgrade() {
-                        panel.update(app, |this, cx| {
-                            let index = this.items.len();
-                            this.items.push(Item::User(content));
-                            this.pending_users.push_back(index);
-                            this.stick_to_bottom = true;
-                            this.scroll.scroll_to_bottom();
-                            cx.notify();
+                PromptInput::new(
+                    cx,
+                    "message jcode...",
+                    move |content, images, _window, app| {
+                        bridge.send(Command::Send {
+                            session_id: session_id.clone(),
+                            content: content.clone(),
+                            images,
                         });
-                    }
-                })
+                        if let Some(panel) = weak.upgrade() {
+                            panel.update(app, |this, cx| {
+                                let index = this.items.len();
+                                this.items.push(Item::User(content));
+                                this.pending_users.push_back(index);
+                                this.stick_to_bottom = true;
+                                this.scroll.scroll_to_bottom();
+                                cx.notify();
+                            });
+                        }
+                    },
+                )
             });
         });
     }
@@ -196,7 +224,11 @@ impl Panel {
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         match event {
             ApiEvent::MessageAccepted { .. } => {
-                acknowledge_next(&mut self.pending_users, &mut self.accepted_users, Instant::now());
+                acknowledge_next(
+                    &mut self.pending_users,
+                    &mut self.accepted_users,
+                    Instant::now(),
+                );
             }
             ApiEvent::TextDelta { text, .. } => {
                 self.flush_reasoning();
@@ -392,9 +424,19 @@ impl Panel {
             Item::User(text) => {
                 let now = Instant::now();
                 let pending = self.pending_users.contains(&index);
-                let (offset, opacity, animating) = self.accepted_users.get(&index)
+                let (offset, opacity, animating) = self
+                    .accepted_users
+                    .get(&index)
                     .map(|at| crate::ack::motion(*at, now))
-                    .unwrap_or((0.0, if pending { crate::ack::PENDING_TONE } else { 1.0 }, false));
+                    .unwrap_or((
+                        0.0,
+                        if pending {
+                            crate::ack::PENDING_TONE
+                        } else {
+                            1.0
+                        },
+                        false,
+                    ));
                 if animating {
                     window.request_animation_frame();
                 }
@@ -606,13 +648,25 @@ impl Panel {
     }
 
     pub fn focus_input(&self, window: &mut Window, cx: &mut App) {
+        if let Some(terminal) = &self.terminal {
+            let handle = terminal.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
         let handle = self.input.read(cx).focus_handle.clone();
         window.focus(&handle, cx);
     }
 }
 
 impl Render for Panel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if let Some(terminal) = &self.terminal {
+            return div()
+                .size_full()
+                .track_focus(&self.focus_handle)
+                .child(terminal.clone())
+                .into_any_element();
+        }
         let mut transcript = div()
             .id("transcript")
             .flex()
@@ -745,6 +799,7 @@ impl Render for Panel {
                     cx.notify();
                 }),
             )
+            .into_any_element()
     }
 }
 

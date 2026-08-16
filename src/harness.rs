@@ -226,15 +226,9 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
                 images,
             } => {
                 let command = SessionCommand::Send { content, images };
-                let worker = ensure_session_worker(&mut workers, session_id.clone(), &updates);
-                if let Err(error) = worker.send(command) {
-                    // A worker can disconnect between the map lookup and send.
-                    // Replace it and retain the user's message instead of
-                    // silently dropping the submission.
-                    workers.remove(&session_id);
-                    let worker = ensure_session_worker(&mut workers, session_id, &updates);
-                    let _ = worker.send(error.0);
-                }
+                send_to_session_worker(&mut workers, session_id, command, |session_id| {
+                    spawn_session_worker(session_id, &updates)
+                });
             }
             Command::Cancel { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
@@ -253,14 +247,40 @@ fn ensure_session_worker(
     if let Some(worker) = workers.get(&session_id) {
         return worker.clone();
     }
+    let tx = spawn_session_worker(session_id.clone(), updates);
+    workers.insert(session_id, tx.clone());
+    tx
+}
+
+fn spawn_session_worker(session_id: String, updates: &Sender<Update>) -> Sender<SessionCommand> {
     let (tx, rx) = channel::<SessionCommand>();
-    workers.insert(session_id.clone(), tx.clone());
     let updates = updates.clone();
     std::thread::Builder::new()
         .name(format!("jcode-session-{session_id}"))
         .spawn(move || session_worker(session_id, rx, updates))
         .expect("spawn session worker");
     tx
+}
+
+fn send_to_session_worker<F>(
+    workers: &mut HashMap<String, Sender<SessionCommand>>,
+    session_id: String,
+    command: SessionCommand,
+    mut spawn: F,
+) where
+    F: FnMut(String) -> Sender<SessionCommand>,
+{
+    let worker = workers
+        .entry(session_id.clone())
+        .or_insert_with(|| spawn(session_id.clone()))
+        .clone();
+    if let Err(error) = worker.send(command) {
+        // A worker can disconnect between the map lookup and send. Replace it
+        // and retain the user's message instead of silently dropping it.
+        let worker = spawn(session_id.clone());
+        workers.insert(session_id, worker.clone());
+        let _ = worker.send(error.0);
+    }
 }
 
 /// One session's dedicated connection: attach, history, events, commands.
@@ -398,6 +418,56 @@ fn collect_disconnected_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sending_without_a_watched_worker_starts_one_and_delivers() {
+        let mut workers = HashMap::new();
+        let (tx, rx) = channel();
+        send_to_session_worker(
+            &mut workers,
+            "new-session".into(),
+            SessionCommand::Send {
+                content: "hello".into(),
+                images: vec![],
+            },
+            |_| tx.clone(),
+        );
+
+        assert!(workers.contains_key("new-session"));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(100)),
+            Ok(SessionCommand::Send { content, .. }) if content == "hello"
+        ));
+    }
+
+    #[test]
+    fn sending_to_a_disconnected_worker_restarts_it_without_losing_the_message() {
+        let mut workers = HashMap::new();
+        let (stale_tx, stale_rx) = channel();
+        drop(stale_rx);
+        workers.insert("stale-session".into(), stale_tx);
+        let (replacement_tx, replacement_rx) = channel();
+        let mut starts = 0;
+
+        send_to_session_worker(
+            &mut workers,
+            "stale-session".into(),
+            SessionCommand::Send {
+                content: "do not drop me".into(),
+                images: vec![],
+            },
+            |_| {
+                starts += 1;
+                replacement_tx.clone()
+            },
+        );
+
+        assert_eq!(starts, 1);
+        assert!(matches!(
+            replacement_rx.recv_timeout(Duration::from_millis(100)),
+            Ok(SessionCommand::Send { content, .. }) if content == "do not drop me"
+        ));
+    }
 
     #[test]
     fn messages_are_retained_while_the_runtime_is_disconnected() {

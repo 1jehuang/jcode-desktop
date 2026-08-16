@@ -86,6 +86,11 @@ fn parse(source: &str) -> Vec<Block> {
             blocks.push(Block::Math(latex_to_text(
                 trimmed[2..trimmed.len() - 2].trim(),
             )));
+        } else if trimmed.starts_with("\\[") && trimmed.ends_with("\\]") && trimmed.len() > 4 {
+            flush(&mut paragraph, &mut blocks);
+            blocks.push(Block::Math(latex_to_text(
+                trimmed[2..trimmed.len() - 2].trim(),
+            )));
         } else if let Some(rest) = trimmed
             .strip_prefix("```")
             .or_else(|| trimmed.strip_prefix("~~~"))
@@ -256,6 +261,24 @@ fn inline_spans(source: &str) -> Inline {
     };
 
     while i < bytes.len() {
+        // Inline math delimiters \( ... \) come before the generic escape
+        // rule, which would otherwise eat the opening parenthesis.
+        if source[i..].starts_with("\\(") {
+            if let Some(end) = source[i + 2..].find("\\)") {
+                let content = latex_to_text(&source[i + 2..i + 2 + end]);
+                let start = plain.len();
+                plain.push_str(&content);
+                highlights.push((
+                    start..plain.len(),
+                    HighlightStyle {
+                        color: Some(to_hsla(Theme::CODE_TEXT)),
+                        ..Default::default()
+                    },
+                ));
+                i += end + 4;
+                continue;
+            }
+        }
         // Escapes: \* keeps the literal character.
         if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_punctuation() {
             plain.push(bytes[i + 1] as char);
@@ -852,6 +875,11 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
     style.font_family = Theme::FONT_MONO.into();
     style.font_size = px(12.5).into();
     style.color = to_hsla(Theme::CODE_TEXT);
+    // Multi-line blocks always get the header so copy is reachable even when
+    // the fence carried no language.
+    let show_header = !lang.is_empty() || line_count > 1;
+    let copy_body = body.to_string();
+    let copy_id: SharedString = format!("md-copy-{:x}", hash(body)).into();
 
     div()
         .flex()
@@ -863,7 +891,7 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
         .border_1()
         .border_color(Theme::CODE_BORDER)
         .bg(Theme::CODE_BG)
-        .when(!lang.is_empty(), |el| {
+        .when(show_header, |el| {
             el.child(
                 div()
                     .flex()
@@ -878,11 +906,38 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
                     .text_size(px(10.5))
                     .text_color(Theme::TEXT_DIM)
                     .font_family(Theme::FONT_MONO)
-                    .child(lang.to_ascii_lowercase())
-                    .child(format!(
-                        "{line_count} line{}",
-                        if line_count == 1 { "" } else { "s" }
-                    )),
+                    .child(if lang.is_empty() {
+                        "code".to_string()
+                    } else {
+                        lang.to_ascii_lowercase()
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(format!(
+                                "{line_count} line{}",
+                                if line_count == 1 { "" } else { "s" }
+                            ))
+                            .child(
+                                div()
+                                    .id(copy_id)
+                                    .cursor_pointer()
+                                    .text_color(Theme::TEXT_FAINT)
+                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        move |_event, _window, cx| {
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                                copy_body.clone(),
+                                            ));
+                                        },
+                                    )
+                                    .child("copy"),
+                            ),
+                    ),
             )
         })
         .child(
@@ -992,12 +1047,17 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 .flex()
                 .flex_col()
                 .my_1()
+                .border_l_2()
+                .border_color(Theme::PANEL_BORDER)
+                .bg(Theme::QUOTE_BG)
+                .rounded_r_md()
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap_1()
                         .px_2p5()
+                        .py_1()
                         .flex_1()
                         .min_w_0()
                         .text_color(Theme::TEXT_DIM)
@@ -1173,6 +1233,19 @@ mod tests {
         let inline = inline_spans("Euler: $e^{i\\pi}+1=0$ and $x_2$");
         assert_eq!(inline.plain, "Euler: e^(iπ)+1=0 and x₂");
         assert_eq!(inline.highlights.len(), 2);
+    }
+
+    #[test]
+    fn renders_paren_delimited_inline_math() {
+        let inline = inline_spans(r"limit \(n \to \infty\) holds");
+        assert_eq!(inline.plain, "limit n → ∞ holds");
+        assert_eq!(inline.highlights.len(), 1);
+    }
+
+    #[test]
+    fn parses_single_line_bracket_math() {
+        let blocks = parse(r"\[ e^{i\pi}+1=0 \]");
+        assert_eq!(blocks[0], Block::Math("e^(iπ)+1=0".into()));
     }
 
     #[test]
