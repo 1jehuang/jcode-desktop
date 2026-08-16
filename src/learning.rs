@@ -1250,11 +1250,104 @@ mod tests {
         assert_eq!(restored.effort_wasted, coach.effort_wasted);
     }
 
+    /// `load` and `save` are the only paths that touch the disk, and were
+    /// previously exercised only by running the desktop app. This drives them
+    /// directly against a real temporary state directory, so persistence is
+    /// verified without needing a compositor.
+    #[test]
+    fn save_and_load_round_trip_through_the_real_filesystem() {
+        // state_path() reads XDG_STATE_HOME, so point it at a scratch dir.
+        // Tests share a process, so use a unique directory and restore the env.
+        let scratch = std::env::temp_dir().join(format!(
+            "jcode-desktop-learning-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("create scratch dir");
+
+        // SAFETY: single-threaded within this test's scope; the variable is
+        // restored before returning.
+        let previous = std::env::var_os("XDG_STATE_HOME");
+        unsafe { std::env::set_var("XDG_STATE_HOME", &scratch) };
+
+        let outcome = std::panic::catch_unwind(|| {
+            // Nothing saved yet: a fresh model, and no file on disk.
+            let path = state_path().expect("a state path");
+            assert!(!path.exists(), "no state should exist yet");
+            assert_eq!(load().overall_mastery(1_000_000), 0.0);
+
+            // Record real activity, save it, and read it back.
+            let now = 1_700_000_000;
+            let mut coach = Coach::new();
+            coach.used_shortcut("maximize", now);
+            coach.used_slow_path("new_panel", now + 10);
+            coach.used_shortcut("focus_left_right", now + 20);
+            save(&coach);
+
+            assert!(path.exists(), "save should have written the state file");
+            let restored = load();
+            for skill in SKILLS {
+                let before = coach.mastery(skill.id, now + 100);
+                let after = restored.mastery(skill.id, now + 100);
+                assert!(
+                    (before - after).abs() < 0.001,
+                    "{} drifted through the filesystem: {before} vs {after}",
+                    skill.id
+                );
+            }
+            assert_eq!(restored.effort_saved, coach.effort_saved);
+            assert_eq!(restored.effort_wasted, coach.effort_wasted);
+
+            // A corrupted file must not prevent startup.
+            std::fs::write(&path, "this is not a model").expect("write garbage");
+            assert_eq!(load().overall_mastery(now), 0.0, "damaged state resets");
+        });
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+        if let Err(payload) = outcome {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
     #[test]
     fn a_damaged_state_file_yields_a_fresh_model() {
         let coach = Coach::deserialize("garbage\nskill nonexistent 1 1 1 1 1 1 1 1 1\nv9 ?");
         assert_eq!(coach.overall_mastery(1_000_000), 0.0);
         assert_eq!(coach.effort_saved, 0);
+    }
+
+    #[test]
+    fn skills_dropped_from_the_catalog_do_not_linger_in_the_model() {
+        // A skill removed from the catalog (renamed, retired) must not be
+        // carried forward: it would accumulate in the state file forever and be
+        // written back out on every save. Checking overall mastery cannot see
+        // this, since that only sums catalog skills, so inspect what survives a
+        // load-then-save cycle directly.
+        let saved = "v1 effort 5 2\n\
+                     skill maximize 0.9000 4.0000 4.0000 1700000000 3 0 0 0 0\n\
+                     skill retired_skill 0.9000 4.0000 4.0000 1700000000 3 0 0 0 0";
+        let coach = Coach::deserialize(saved);
+
+        assert!(
+            coach.trace("maximize").recalled > 0,
+            "a known skill should survive the round trip"
+        );
+        let rewritten = coach.serialize();
+        assert!(
+            rewritten.contains("maximize"),
+            "known skills should be written back"
+        );
+        assert!(
+            !rewritten.contains("retired_skill"),
+            "a skill no longer in the catalog must be dropped, got: {rewritten}"
+        );
     }
 
     #[test]
