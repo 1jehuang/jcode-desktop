@@ -302,7 +302,6 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     session_id: session_id.clone(),
                     provider: info.provider,
                     model: info.model,
-                    reasoning_effort: info.reasoning_effort,
                     routes: info.routes,
                 },
             });
