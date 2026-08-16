@@ -334,14 +334,6 @@ impl Panel {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let busy = self.is_busy();
-        let status_color = if busy { Theme::WARN } else { Theme::OK };
-        let phase = if self.connection_phase.is_empty() {
-            self.status.clone()
-        } else {
-            self.connection_phase.clone()
-        };
-
         let mut transcript = div()
             .id("transcript")
             .flex()
@@ -388,35 +380,6 @@ impl Render for Panel {
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            // Header
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
-                    .bg(Theme::HEADER_BG)
-                    .border_b_1()
-                    .border_color(Theme::PANEL_BORDER)
-                    .child(div().size(px(8.0)).rounded_full().bg(status_color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(Theme::TEXT)
-                            .overflow_hidden()
-                            .child(self.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(Theme::TEXT_DIM)
-                            .child(phase),
-                    ),
-            )
             .child(transcript)
             // Input
             .child(
