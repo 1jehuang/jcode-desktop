@@ -62,6 +62,7 @@ pub struct PromptInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    horizontal_scroll: Pixels,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -81,6 +82,7 @@ impl PromptInput {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            horizontal_scroll: px(0.),
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -96,6 +98,7 @@ impl PromptInput {
         self.content = "".into();
         self.selected_range = 0..0;
         self.marked_range = None;
+        self.horizontal_scroll = px(0.);
         (self.on_submit)(content, window, cx);
         cx.notify();
     }
@@ -432,6 +435,27 @@ struct PrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    text_bounds: Bounds<Pixels>,
+    horizontal_scroll: Pixels,
+}
+
+fn scroll_to_reveal_cursor(
+    current: Pixels,
+    cursor_x: Pixels,
+    line_width: Pixels,
+    viewport_width: Pixels,
+) -> Pixels {
+    let margin = px(2.);
+    let max_scroll = (line_width - viewport_width + margin).max(px(0.));
+    let mut scroll = current.min(max_scroll).max(px(0.));
+
+    if cursor_x < scroll {
+        scroll = cursor_x;
+    } else if cursor_x - scroll > viewport_width - margin {
+        scroll = cursor_x - viewport_width + margin;
+    }
+
+    scroll.min(max_scroll).max(px(0.))
 }
 
 impl IntoElement for TextElement {
@@ -528,12 +552,22 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let cursor_pos = line.x_for_index(cursor);
+        let horizontal_scroll = scroll_to_reveal_cursor(
+            input.horizontal_scroll,
+            cursor_pos,
+            line.width(),
+            bounds.size.width,
+        );
+        let text_bounds = Bounds::new(
+            point(bounds.left() - horizontal_scroll, bounds.top()),
+            bounds.size,
+        );
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
+                        point(text_bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     to_hsla(Theme::CURSOR),
@@ -544,11 +578,11 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            text_bounds.left() + line.x_for_index(selected_range.start),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            text_bounds.left() + line.x_for_index(selected_range.end),
                             bounds.bottom(),
                         ),
                     ),
@@ -561,6 +595,8 @@ impl Element for TextElement {
             line: Some(line),
             cursor,
             selection,
+            text_bounds,
+            horizontal_scroll,
         }
     }
 
@@ -585,7 +621,7 @@ impl Element for TextElement {
         }
         let line = prepaint.line.take().unwrap();
         line.paint(
-            bounds.origin,
+            prepaint.text_bounds.origin,
             window.line_height(),
             gpui::TextAlign::Left,
             None,
@@ -602,7 +638,8 @@ impl Element for TextElement {
 
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
-            input.last_bounds = Some(bounds);
+            input.last_bounds = Some(prepaint.text_bounds);
+            input.horizontal_scroll = prepaint.horizontal_scroll;
         });
     }
 }
@@ -633,6 +670,7 @@ impl Render for PromptInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
+            .overflow_hidden()
             .bg(Theme::INPUT_BG)
             .border_1()
             .border_color(if focused {
@@ -652,5 +690,30 @@ impl Render for PromptInput {
 impl Focusable for PromptInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn horizontal_scroll_keeps_cursor_in_view() {
+        assert_eq!(
+            scroll_to_reveal_cursor(px(0.), px(140.), px(200.), px(100.)),
+            px(42.)
+        );
+        assert_eq!(
+            scroll_to_reveal_cursor(px(42.), px(20.), px(200.), px(100.)),
+            px(20.)
+        );
+    }
+
+    #[test]
+    fn horizontal_scroll_resets_when_text_fits() {
+        assert_eq!(
+            scroll_to_reveal_cursor(px(60.), px(40.), px(80.), px(100.)),
+            px(0.)
+        );
     }
 }
