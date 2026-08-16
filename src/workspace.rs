@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::harness::{self, Bridge, Command, Update};
+use crate::learning;
 use crate::panel::Panel;
 use crate::theme::Theme;
 use crate::transition::{self, AnimatedValue, Transition};
@@ -74,6 +75,14 @@ The jcode-desktop shortcuts are:
 - Super+/ or F1: toggle the hints overlay
 - Super+Shift+/: open this documentation-aware help session
 
+Composer shortcuts ported from the TUI:
+- Up/Down or Ctrl+K/J: recall older/newer prompts
+- Ctrl/Alt+Left/Right or Alt+B/F: move by word
+- Ctrl+W, Ctrl/Alt/Super+Backspace, Alt+D: delete by word
+- Ctrl+U: delete to the start; Ctrl+E: move to the end
+- Ctrl/Cmd+Z and Ctrl+Shift+Z: undo and redo
+- Escape: clear the draft
+
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
 
@@ -108,6 +117,10 @@ pub struct Workspace {
     overview_progress: AnimatedValue,
     hints_overlay: bool,
     hints_progress: AnimatedValue,
+    /// Models which shortcuts the user knows, and teaches the ones they don't.
+    coach: learning::Coach,
+    /// Fade for the coach's hint toast.
+    coach_progress: AnimatedValue,
     pending_help_session: bool,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
@@ -167,6 +180,8 @@ impl Workspace {
             ),
             hints_overlay: false,
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
+            coach: learning::load(),
+            coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             pending_help_session: false,
             sessions: Vec::new(),
             status: "starting...".into(),
@@ -175,6 +190,70 @@ impl Workspace {
             focus_pending: false,
             _poll_task: poll_task,
         }
+    }
+
+    /// A workspace with no runtime and a caller-supplied coach, for tests that
+    /// drive real keystrokes through the real keymap.
+    #[cfg(test)]
+    pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
+        crate::input::bind_keys(cx);
+        Self {
+            bridge: harness::spawn_inert(),
+            slots: Vec::new(),
+            active: 0,
+            active_row: 0,
+            previous: None,
+            camera_x: [0.0; STRIP_COUNT],
+            camera_target: [0.0; STRIP_COUNT],
+            camera_from: [0.0; STRIP_COUNT],
+            camera_started: [None; STRIP_COUNT],
+            camera_dirty: [true; STRIP_COUNT],
+            overview: false,
+            overview_progress: AnimatedValue::new(
+                0.0,
+                transition::policy(Transition::Overview).duration,
+            ),
+            hints_overlay: false,
+            hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
+            coach,
+            coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
+            pending_help_session: false,
+            sessions: Vec::new(),
+            status: "test".into(),
+            connected: true,
+            focus_handle: cx.focus_handle(),
+            focus_pending: false,
+            _poll_task: cx.spawn(async move |_, _| {}),
+        }
+    }
+
+    /// Add a bare panel for tests, bypassing the runtime.
+    #[cfg(test)]
+    pub fn push_test_panel(&mut self, name: &str, cx: &mut Context<Self>) {
+        let bridge = self.bridge.clone();
+        let panel =
+            cx.new(|cx| Panel::new(name.to_string(), Some(name.to_string()), None, bridge, cx));
+        self.slots.push(Slot {
+            panel,
+            row: self.active_row,
+            width_fraction: DEFAULT_WIDTH,
+            animated_width: AnimatedValue::new(
+                DEFAULT_WIDTH,
+                transition::policy(Transition::PanelWidth).duration,
+            ),
+            restore_fraction: None,
+        });
+    }
+
+    #[cfg(test)]
+    pub fn test_coach(&self) -> &learning::Coach {
+        &self.coach
+    }
+
+    #[cfg(test)]
+    pub fn test_focus_position(&self) -> Option<usize> {
+        self.row_indices(self.active_row)
+            .position(|index| index == self.active)
     }
 
     fn apply(&mut self, update: Update, cx: &mut Context<Self>) {
@@ -455,6 +534,64 @@ impl Workspace {
 
     // --- Actions --------------------------------------------------------
 
+    // --- Learning -------------------------------------------------------
+
+    /// Record that the user reached an outcome by its keyboard shortcut.
+    fn learned(&mut self, skill_id: &str, cx: &mut Context<Self>) {
+        self.coach.used_shortcut(skill_id, learning::now());
+        self.after_coach_update(cx);
+    }
+
+    /// Record that the user reached the same outcome the long way, which is the
+    /// evidence that they do not know (or have forgotten) the shortcut.
+    fn missed(&mut self, skill_id: &str, cx: &mut Context<Self>) {
+        self.coach.used_slow_path(skill_id, learning::now());
+        self.after_coach_update(cx);
+    }
+
+    /// Reveal or retire the hint toast and persist the model when it changed.
+    fn after_coach_update(&mut self, cx: &mut Context<Self>) {
+        let now = learning::now();
+        let visible = self.coach.active_hint(now).is_some();
+        self.coach_progress
+            .set(if visible { 1.0 } else { 0.0 }, Instant::now());
+        if self.coach.take_dirty() {
+            learning::save(&self.coach);
+        }
+        cx.notify();
+    }
+
+    fn dismiss_coach_hint(&mut self, cx: &mut Context<Self>) {
+        self.coach.dismiss_hint();
+        self.coach_progress.set(0.0, Instant::now());
+        cx.notify();
+    }
+
+    /// Clicking a panel to focus it. Only counted as a slow path when the
+    /// keyboard would genuinely have done the same job: clicking the already
+    /// focused panel, or reaching into another strip, is not a missed shortcut.
+    /// Distance matters too, since crossing a strip is what `super-end` is for.
+    fn clicked_to_focus(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index == self.active {
+            return;
+        }
+        let Some(target_row) = self.slots.get(index).map(|slot| slot.row) else {
+            return;
+        };
+        if target_row != self.active_row {
+            // Another strip: the pointer is a reasonable way to get there.
+            return;
+        }
+        let indices: Vec<_> = self.row_indices(self.active_row).collect();
+        let from = indices.iter().position(|&i| i == self.active);
+        let to = indices.iter().position(|&i| i == index);
+        let Some((from, to)) = from.zip(to) else {
+            return;
+        };
+        let steps = from.abs_diff(to);
+        self.missed(click_skill(steps, to, indices.len()), cx);
+    }
+
     fn focus_left(&mut self, _: &FocusLeft, window: &mut Window, cx: &mut Context<Self>) {
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
@@ -462,6 +599,9 @@ impl Workspace {
         {
             self.set_active(indices[position - 1], cx);
             self.focus_active(window, cx);
+            // Credit only when the key did something: pressing into the edge of
+            // a strip is a no-op and proves nothing either way.
+            self.learned("focus_left_right", cx);
             cx.notify();
         }
     }
@@ -473,6 +613,7 @@ impl Workspace {
         {
             self.set_active(indices[position + 1], cx);
             self.focus_active(window, cx);
+            self.learned("focus_left_right", cx);
             cx.notify();
         }
     }
@@ -480,9 +621,10 @@ impl Workspace {
     /// niri `focus-column-first`.
     fn focus_first(&mut self, _: &FocusFirst, window: &mut Window, cx: &mut Context<Self>) {
         let first = self.row_indices(self.active_row).next();
-        if let Some(index) = first {
+        if let Some(index) = first.filter(|index| *index != self.active) {
             self.set_active(index, cx);
             self.focus_active(window, cx);
+            self.learned("focus_first_last", cx);
             cx.notify();
         }
     }
@@ -490,9 +632,10 @@ impl Workspace {
     /// niri `focus-column-last`.
     fn focus_last(&mut self, _: &FocusLast, window: &mut Window, cx: &mut Context<Self>) {
         let last = self.row_indices(self.active_row).last();
-        if let Some(index) = last {
+        if let Some(index) = last.filter(|index| *index != self.active) {
             self.set_active(index, cx);
             self.focus_active(window, cx);
+            self.learned("focus_first_last", cx);
             cx.notify();
         }
     }
@@ -513,25 +656,43 @@ impl Workspace {
         };
         self.set_active(index, cx);
         self.focus_active(window, cx);
+        self.learned("focus_previous", cx);
         cx.notify();
     }
 
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_row > 0 {
-            let position = self.active_position_in_row();
-            self.select_row(self.active_row - 1, position);
-            self.focus_active(window, cx);
-            cx.notify();
+            self.change_row(self.active_row - 1, window, cx);
         }
     }
 
     fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_row + 1 < STRIP_COUNT {
-            let position = self.active_position_in_row();
-            self.select_row(self.active_row + 1, position);
-            self.focus_active(window, cx);
-            cx.notify();
+            self.change_row(self.active_row + 1, window, cx);
         }
+    }
+
+    /// Move focus to another strip, crediting the shortcut only when the move
+    /// was meaningful. Stepping onto an empty strip when there is nothing else
+    /// open shows the user pressed a key, not that they navigated anywhere, so
+    /// it must not be taken as evidence of skill.
+    fn change_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let position = self.active_position_in_row();
+        let was_active = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+        self.select_row(row, position);
+        self.focus_active(window, cx);
+        let is_active = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+        let landed_somewhere = self.row_indices(self.active_row).next().is_some();
+        if landed_somewhere && was_active != is_active {
+            self.learned("focus_up_down", cx);
+        }
+        cx.notify();
     }
 
     fn move_panel_left(&mut self, _: &MovePanelLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -543,6 +704,7 @@ impl Workspace {
             self.slots.swap(self.active, previous);
             self.active = previous;
             self.retarget_camera();
+            self.learned("move_panel", cx);
             cx.notify();
         }
     }
@@ -556,6 +718,7 @@ impl Workspace {
             self.slots.swap(self.active, next);
             self.active = next;
             self.retarget_camera();
+            self.learned("move_panel", cx);
             cx.notify();
         }
     }
@@ -583,6 +746,7 @@ impl Workspace {
         self.slots.insert(first, slot);
         self.active = first;
         self.retarget_camera();
+        self.learned("move_panel_end", cx);
         cx.notify();
     }
 
@@ -600,6 +764,7 @@ impl Workspace {
         self.slots.insert(last, slot);
         self.active = last;
         self.retarget_camera();
+        self.learned("move_panel_end", cx);
         cx.notify();
     }
 
@@ -622,10 +787,18 @@ impl Workspace {
         self.active_row = target as usize;
         self.retarget_camera();
         self.focus_active(window, cx);
+        self.learned("move_panel_strip", cx);
         cx.notify();
     }
 
-    fn new_panel(&mut self, _: &NewPanel, _: &mut Window, _cx: &mut Context<Self>) {
+    fn new_panel(&mut self, _: &NewPanel, _: &mut Window, cx: &mut Context<Self>) {
+        self.learned("new_panel", cx);
+        self.open_new_session(cx);
+    }
+
+    /// Open a session without attributing the choice to the keyboard. Pointer
+    /// paths call this directly, so clicking never earns keyboard credit.
+    fn open_new_session(&mut self, _cx: &mut Context<Self>) {
         self.bridge.send(Command::CreateSession {
             working_dir: default_working_dir(),
         });
@@ -639,6 +812,7 @@ impl Workspace {
         {
             return;
         }
+        self.learned("close_panel", cx);
         let removed = self.slots.remove(self.active);
         let session_id = removed.panel.read(cx).session_id.clone();
         self.bridge.send(Command::Unwatch { session_id });
@@ -653,6 +827,7 @@ impl Workspace {
     }
 
     fn toggle_overview(&mut self, _: &ToggleOverview, _: &mut Window, cx: &mut Context<Self>) {
+        self.learned("overview", cx);
         self.overview = !self.overview;
         self.overview_progress
             .set(if self.overview { 1.0 } else { 0.0 }, Instant::now());
@@ -688,7 +863,7 @@ impl Workspace {
             slot.animated_width.set(fraction, Instant::now());
             slot.restore_fraction = None;
             self.retarget_camera();
-            cx.notify();
+            self.learned("width_presets", cx);
         }
     }
 
@@ -706,7 +881,7 @@ impl Workspace {
         slot.animated_width.set(slot.width_fraction, Instant::now());
         slot.restore_fraction = None;
         self.retarget_camera();
-        cx.notify();
+        self.learned("cycle_width", cx);
     }
 
     /// niri `maximize-column` (Alt+F): fill the viewport, or restore the
@@ -724,7 +899,7 @@ impl Workspace {
         slot.animated_width.set(width, Instant::now());
         slot.restore_fraction = restore;
         self.retarget_camera();
-        cx.notify();
+        self.learned("maximize", cx);
     }
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
@@ -758,7 +933,16 @@ impl Workspace {
             .row_indices(self.active_row)
             .position(|index| index == self.active);
         let line = describe_strip(&widths, focus, self.active_row);
-        let _ = std::fs::write(path, format!("{line}\n"));
+        // The coach's decisions are also dumped, so an automated check can see
+        // what the running app believes the user knows and what it is teaching.
+        let now = learning::now();
+        let coach = describe_coach(
+            self.coach.overall_mastery(now),
+            self.coach.effort_saved,
+            self.coach.effort_wasted,
+            self.coach.active_hint_id(),
+        );
+        let _ = std::fs::write(path, format!("{line}\n{coach}\n"));
     }
 
     fn render_strip(
@@ -831,6 +1015,7 @@ impl Workspace {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
+                            this.clicked_to_focus(index, cx);
                             this.set_active(index, cx);
                             this.focus_active(window, cx);
                             cx.notify();
@@ -968,9 +1153,8 @@ impl Workspace {
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| {
-                        this.bridge.send(Command::CreateSession {
-                            working_dir: default_working_dir(),
-                        });
+                        this.missed("new_panel", cx);
+                        this.open_new_session(cx);
                         this.overview = false;
                         this.overview_progress.set(0.0, Instant::now());
                         cx.notify();
@@ -1123,8 +1307,9 @@ impl Workspace {
                             .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, _event, window, cx| {
-                                    this.new_panel(&NewPanel, window, cx);
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.missed("new_panel", cx);
+                                    this.open_new_session(cx);
                                 }),
                             )
                             .child("+"),
@@ -1134,58 +1319,32 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A small persistent map of the strips, anchored over the bottom-left of
-    /// the workspace and drawn to scale. Track lengths reflect each strip's
-    /// total content width, segments sit at their true positions, and a wash
-    /// marks the slice of each strip that is currently on screen.
-    fn render_minimap(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
-        const MAP_W: f32 = 148.0;
-        const ROW_H: f32 = 6.0;
-        const MIN_SEG: f32 = 5.0;
-
-        // One shared scale keeps the strips comparable: the widest strip (or
-        // the viewport, whichever is larger) spans the full map width.
-        let row_totals: [f32; STRIP_COUNT] = std::array::from_fn(|row| {
-            self.row_indices(row)
-                .map(|index| self.slot_width(index, viewport_w) + GAP)
-                .sum::<f32>()
-                + STRUT * 2.0
-        });
-        let denom = row_totals
-            .iter()
-            .fold(viewport_w, |acc, &total| acc.max(total))
-            .max(1.0);
-        let scale = MAP_W / denom;
-
-        let mut map = div()
-            .id("workspace-minimap")
-            .absolute()
-            .left(px(8.0))
-            .bottom(px(8.0))
-            .w(px(MAP_W + 8.0))
-            .p(px(4.0))
-            .flex()
-            .flex_col()
-            .gap(px(3.0))
-            .rounded_md()
-            .bg(Theme::HEADER_BG);
+    /// Compact workspace switcher modeled after the user's Waybar module.
+    /// Each visible group is a strip and each vertical mark is a session. The
+    /// focused session is solid and wider, while the remembered session in an
+    /// inactive strip is a half-strength mark. Empty inactive strips stay out
+    /// of the way; the active empty strip remains available as a dot.
+    fn render_workspace_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut workspaces = div().flex().items_center().gap(px(8.0));
 
         for row in 0..STRIP_COUNT {
+            let indices: Vec<_> = self.row_indices(row).collect();
             let active_row = row == self.active_row;
-            let has_panels = self.row_indices(row).next().is_some();
-            let track_w = if has_panels {
-                (row_totals[row] * scale).clamp(MIN_SEG, MAP_W)
-            } else {
-                MIN_SEG
-            };
+            if indices.is_empty() && !active_row {
+                continue;
+            }
 
-            let mut track = div()
-                .id(("minimap-row", row))
-                .relative()
-                .h(px(ROW_H))
-                .w(px(MAP_W))
+            let mut workspace = div()
+                .id(("workspace-row", row))
+                .h(px(18.0))
+                .px(px(3.0))
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .rounded_full()
                 .cursor_pointer()
-                // Clicking a track (not a segment) jumps to that strip.
+                .when(active_row, |el| el.bg(Theme::ACCENT_DIM))
+                .hover(|el| el.bg(Theme::MINIMAP_TRACK_ACTIVE))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {
@@ -1196,63 +1355,36 @@ impl Workspace {
                         this.focus_active(window, cx);
                         cx.notify();
                     }),
-                )
-                // The strip's extent, to scale. Empty strips show a stub.
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .w(px(track_w))
-                        .h_full()
-                        .rounded_full()
-                        .bg(if active_row {
-                            Theme::MINIMAP_TRACK_ACTIVE
-                        } else {
-                            Theme::MINIMAP_TRACK
-                        }),
                 );
 
-            // Viewport wash under the segments: the on-screen slice.
-            if has_panels && row_totals[row] > viewport_w + 1.0 {
-                let view_left = ((self.camera_x[row] + STRUT) * scale).max(0.0);
-                let view_w = (viewport_w * scale).min(MAP_W - view_left).max(0.0);
-                track = track.child(
+            if indices.is_empty() {
+                workspace = workspace.child(
                     div()
-                        .absolute()
-                        .left(px(view_left))
-                        .top_0()
-                        .w(px(view_w))
-                        .h_full()
+                        .w(px(4.0))
+                        .h(px(4.0))
                         .rounded_full()
-                        .bg(Theme::MINIMAP_VIEWPORT),
+                        .bg(Theme::TEXT_DIM),
                 );
             }
 
-            // Panel segments at their true positions and proportions.
-            for index in self.row_indices(row) {
+            for index in indices {
                 let focused = index == self.active;
                 let busy = self.slots[index].panel.read(cx).is_busy();
-                let left = (STRUT + self.slot_left(index, viewport_w)) * scale;
-                let width = (self.slot_width(index, viewport_w) * scale - 1.0).max(MIN_SEG);
-                track = track.child(
+                workspace = workspace.child(
                     div()
-                        .id(("minimap-panel", index))
-                        .absolute()
-                        .left(px(left.min(MAP_W - MIN_SEG)))
-                        .top(px(1.0))
-                        .w(px(width))
-                        .h(px(ROW_H - 2.0))
+                        .id(("workspace-session", index))
+                        .w(px(if focused { 6.0 } else { 2.0 }))
+                        .h(px(12.0))
                         .rounded_full()
                         .cursor_pointer()
                         .bg(if focused {
                             Theme::ACCENT
-                        } else if busy {
+                        } else if active_row || busy {
                             Theme::MINIMAP_PANEL_BUSY
                         } else {
                             Theme::MINIMAP_PANEL
                         })
-                        .hover(|el| el.bg(Theme::ACCENT))
+                        .hover(|el| el.w(px(6.0)).bg(Theme::ACCENT))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
@@ -1266,22 +1398,274 @@ impl Workspace {
                 );
             }
 
-            map = map.child(track);
+            workspaces = workspaces.child(workspace);
         }
 
-        map.into_any_element()
+        div()
+            .absolute()
+            .top(px(8.0))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("workspace-bar")
+                    .h(px(26.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .bg(Theme::HEADER_BG)
+                    .child(workspaces),
+            )
+            .into_any_element()
     }
 
+    /// The coach's just-in-time hint. It appears next to the status bar rather
+    /// than over the transcript, so a suggestion never covers the work that
+    /// prompted it, and it states what was observed so the advice is legible.
+    fn render_coach_toast(
+        &self,
+        hint: &learning::Hint,
+        progress: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .absolute()
+            .bottom(px(44.0))
+            .right(px(16.0))
+            .w(px(320.0))
+            .opacity(progress)
+            .child(
+                div()
+                    .id("coach-toast")
+                    .relative()
+                    .top(px((1.0 - progress) * 10.0))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_3()
+                    .bg(Theme::PANEL_BG)
+                    .border_1()
+                    .border_color(Theme::PANEL_BORDER_FOCUS)
+                    .rounded_lg()
+                    .shadow_lg()
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.dismiss_coach_hint(cx)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(Theme::HEADER_BG)
+                                    .text_size(px(12.0))
+                                    .font_family(Theme::FONT_MONO)
+                                    .text_color(Theme::TEXT)
+                                    .child(hint.keys),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(12.0))
+                                    .text_color(Theme::TEXT)
+                                    .child(hint.label),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::TEXT_DIM)
+                            .child(hint.because.clone()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// A single skill row: the keys, what they do, and a bar showing how well
+    /// the model believes this shortcut is known right now.
+    fn render_skill_row(&self, skill: &learning::Skill, mastery: f32) -> gpui::AnyElement {
+        let known = mastery >= 0.7;
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(150.0))
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .font_family(Theme::FONT_MONO)
+                    .text_color(if known { Theme::TEXT_DIM } else { Theme::TEXT })
+                    .child(skill.keys),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.0))
+                    .text_color(if known { Theme::TEXT_DIM } else { Theme::TEXT })
+                    .child(skill.label),
+            )
+            // The bar is the model's belief, not a usage count: it decays when
+            // a shortcut goes unused, so it reads as "how well you know this".
+            .child(
+                div()
+                    .w(px(56.0))
+                    .h(px(4.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(Theme::PANEL_BORDER)
+                    .child(
+                        div()
+                            .w(relative(mastery.clamp(0.02, 1.0)))
+                            .h_full()
+                            .rounded_full()
+                            .bg(if known { Theme::OK } else { Theme::ACCENT }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The coach view: what the user knows, what they do not, and what to learn
+    /// next. This replaces a flat cheat sheet, because the useful information is
+    /// which of these the user has not yet made their own.
     fn render_hints_overlay(&self, progress: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let shortcut = |keys: &'static str, description: &'static str| {
+        let now = learning::now();
+        let overall = self.coach.overall_mastery(now);
+        let next = self.coach.next_lesson(now);
+
+        let mut card = div()
+            .id("hints-card")
+            .relative()
+            .top(px((1.0 - progress) * 12.0))
+            .w(px(560.0))
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .bg(Theme::PANEL_BG)
+            .border_1()
+            .border_color(Theme::PANEL_BORDER_FOCUS)
+            .rounded_xl()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(div().text_size(px(18.0)).child("Your workspace fluency"))
+                    .child(
+                        div()
+                            .text_color(Theme::TEXT_DIM)
+                            .text_size(px(11.0))
+                            .child("Super+/ or F1 to close"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_4()
+                    .text_size(px(11.0))
+                    .text_color(Theme::TEXT_DIM)
+                    .child(format!("{}% learned", (overall * 100.0).round() as u32))
+                    .child(format!("{} keystrokes saved", self.coach.effort_saved))
+                    .child(format!("{} spent the long way", self.coach.effort_wasted)),
+            );
+
+        if let Some(next) = next {
+            card = card.child(
+                div()
+                    .p_2p5()
+                    .rounded_lg()
+                    .bg(Theme::HEADER_BG)
+                    .border_1()
+                    .border_color(Theme::PANEL_BORDER)
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::TEXT_DIM)
+                            .child("learn next"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .font_family(Theme::FONT_MONO)
+                                    .text_size(px(12.0))
+                                    .child(next.keys),
+                            )
+                            .child(div().text_size(px(12.0)).child(next.label)),
+                    ),
+            );
+        }
+
+        card = card.child(
             div()
-                .flex()
-                .flex_row()
-                .justify_between()
-                .gap_8()
-                .child(div().text_color(Theme::TEXT).child(description))
-                .child(div().text_color(Theme::TEXT_DIM).child(keys))
-        };
+                .p_2p5()
+                .rounded_lg()
+                .bg(Theme::HEADER_BG)
+                .text_size(px(11.0))
+                .text_color(Theme::TEXT_DIM)
+                .child("Composer: ↑/↓ history · Ctrl+K/J prompts · Ctrl+W word delete · Alt+B/F word move · Ctrl+U delete to start · Ctrl/Cmd+Z undo · Esc clear"),
+        );
+
+        for (area, rows) in self.coach.report(now) {
+            card = card.child(
+                div()
+                    .mt_1()
+                    .text_size(px(10.0))
+                    .text_color(Theme::TEXT_DIM)
+                    .child(area.label()),
+            );
+            for (skill, mastery) in rows {
+                card = card.child(self.render_skill_row(skill, mastery));
+            }
+        }
+
+        card = card.child(
+            div()
+                .id("new-help-session")
+                .mt_3()
+                .p_3()
+                .rounded_lg()
+                .bg(Theme::HEADER_BG)
+                .border_1()
+                .border_color(Theme::PANEL_BORDER)
+                .cursor_pointer()
+                .hover(|el| el.border_color(Theme::ACCENT))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, window, cx| {
+                        this.new_help_session(&NewHelpSession, window, cx);
+                    }),
+                )
+                .child("Ask Jcode about the app")
+                .child(
+                    div()
+                        .mt_1()
+                        .text_size(px(11.0))
+                        .text_color(Theme::TEXT_DIM)
+                        .child("Opens a new session with the hints and bundled docs loaded into context."),
+                ),
+        );
 
         div()
             .absolute()
@@ -1291,61 +1675,7 @@ impl Workspace {
             .justify_center()
             .opacity(progress)
             .bg(gpui::rgba(0x000000b8))
-            .child(
-                div()
-                    .id("hints-card")
-                    .relative()
-                    .top(px((1.0 - progress) * 12.0))
-                    .w(px(480.0))
-                    .p_6()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .bg(Theme::PANEL_BG)
-                    .border_1()
-                    .border_color(Theme::PANEL_BORDER_FOCUS)
-                    .rounded_xl()
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .items_center()
-                            .child(div().text_size(px(18.0)).child("Jcode hints"))
-                            .child(div().text_color(Theme::TEXT_DIM).child("Super+/ or F1 to close")),
-                    )
-                    .child(shortcut("Super+H/J/K/L", "Navigate panels"))
-                    .child(shortcut("Super+Shift+H/J/K/L", "Move panels"))
-                    .child(shortcut("Super+N", "Open a session to the right"))
-                    .child(shortcut("Super+Tab", "Return to the previous panel"))
-                    .child(shortcut("Super+R / Super+F", "Cycle width / maximize"))
-                    .child(shortcut("Super+O", "Open overview"))
-                    .child(
-                        div()
-                            .id("new-help-session")
-                            .mt_3()
-                            .p_3()
-                            .rounded_lg()
-                            .bg(Theme::HEADER_BG)
-                            .border_1()
-                            .border_color(Theme::PANEL_BORDER)
-                            .cursor_pointer()
-                            .hover(|el| el.border_color(Theme::ACCENT))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _event, window, cx| {
-                                    this.new_help_session(&NewHelpSession, window, cx);
-                                }),
-                            )
-                            .child("Ask Jcode about the app")
-                            .child(
-                                div()
-                                    .mt_1()
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::TEXT_DIM)
-                                    .child("Opens a new session with the hints and bundled docs loaded into context."),
-                            ),
-                    ),
-            )
+            .child(card)
             .into_any_element()
     }
 }
@@ -1364,7 +1694,19 @@ impl Render for Workspace {
         let now = Instant::now();
         let overview_progress = self.overview_progress.sample(now);
         let hints_progress = self.hints_progress.sample(now);
-        if self.overview_progress.is_animating() || self.hints_progress.is_animating() {
+        // Expire the hint on a schedule of its own, so a suggestion the user
+        // ignores fades without needing another input to clear it.
+        let coach_hint = self.coach.active_hint(learning::now());
+        if coach_hint.is_none() {
+            self.coach_progress.set(0.0, now);
+        }
+        let coach_progress = self.coach_progress.sample(now);
+        if self.overview_progress.is_animating()
+            || self.hints_progress.is_animating()
+            || self.coach_progress.is_animating()
+            // Keep ticking while a hint is up so it can expire on its own.
+            || coach_hint.is_some()
+        {
             window.request_animation_frame();
         }
 
@@ -1438,10 +1780,13 @@ impl Render for Workspace {
                     .min_w_0()
                     .min_h_0()
                     .child(content)
-                    .child(self.render_minimap(viewport_w, cx)),
+                    .child(self.render_workspace_bar(cx)),
             )
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
+            })
+            .when_some(coach_hint.filter(|_| coach_progress > 0.0), |root, hint| {
+                root.child(self.render_coach_toast(&hint, coach_progress, cx))
             })
     }
 }
@@ -1484,6 +1829,15 @@ fn describe_strip(widths: &[f32], focus_position: Option<usize>, row: usize) -> 
     format!("strip={row} focus={focus} widths={widths}")
 }
 
+/// The coach's observable state, for the diagnostic dump.
+fn describe_coach(mastery: f32, saved: u32, wasted: u32, teaching: Option<&'static str>) -> String {
+    format!(
+        "coach mastery={:.2} saved={saved} wasted={wasted} teaching={}",
+        mastery,
+        teaching.unwrap_or("-")
+    )
+}
+
 /// CSS `ease-out-expo`, the curve used across the user's niri animations.
 fn ease_out_expo(t: f32) -> f32 {
     if t >= 1.0 {
@@ -1496,6 +1850,22 @@ fn ease_out_expo(t: f32) -> f32 {
 /// Where a newly created panel is inserted: directly right of the focused
 /// panel when it is on this strip, otherwise after the strip's last panel.
 /// `row_last` is the index of the strip's rightmost panel, if any.
+/// A click that jumps this many panels or more, landing on an end of the strip,
+/// is the work `super-home`/`super-end` exists for. Shorter hops are ordinary
+/// left/right navigation.
+const LONG_HOP: usize = 3;
+
+/// Which shortcut a click-to-focus bypassed, given how far it jumped and where
+/// it landed.
+fn click_skill(steps: usize, landed_at: usize, strip_len: usize) -> &'static str {
+    let at_end = landed_at == 0 || landed_at + 1 == strip_len;
+    if steps >= LONG_HOP && at_end {
+        "focus_first_last"
+    } else {
+        "focus_left_right"
+    }
+}
+
 fn insert_index(
     active: usize,
     active_is_on_strip: bool,
@@ -1660,5 +2030,254 @@ mod tests {
         assert!(HELP_SESSION_PROMPT.contains("Super+H/J/K/L"));
         assert!(HELP_SESSION_PROMPT.contains("Super+/ or F1"));
         assert!(HELP_SESSION_PROMPT.contains("Super+Shift+/"));
+    }
+
+    /// Drive real keystrokes through the real keymap and confirm the coach
+    /// draws the right conclusions. This is the acceptance path: it exercises
+    /// the bindings the user actually presses, not the handlers directly.
+    #[gpui::test]
+    fn real_keystrokes_teach_the_jump_shortcut_when_the_user_grinds(cx: &mut gpui::TestAppContext) {
+        // A user who knows super-h/l well but has never used super-home/end.
+        let now = learning::now();
+        let mut coach = learning::Coach::new();
+        for step in 0..8 {
+            coach.used_shortcut("focus_left_right", now - (8 - step) * 3 * 86_400);
+        }
+        assert!(coach.mastery("focus_left_right", now) >= 0.7);
+
+        let window = cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::for_test(coach, cx);
+                    for name in ["one", "two", "three", "four", "five"] {
+                        workspace.push_test_panel(name, cx);
+                    }
+                    let _ = window;
+                    workspace
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |workspace, window, cx| {
+                window.focus(&workspace.focus_handle, cx);
+            })
+            .unwrap();
+
+        // Start at the right-hand end of the strip.
+        cx.simulate_keystrokes(*window, "super-end");
+        window
+            .update(cx, |workspace, _, _| {
+                assert_eq!(workspace.test_focus_position(), Some(4));
+            })
+            .unwrap();
+
+        // Now grind back one panel at a time, which is what someone who does
+        // not know super-home does.
+        cx.simulate_keystrokes(*window, "super-h super-h super-h");
+        window
+            .update(cx, |workspace, _, _| {
+                assert_eq!(workspace.test_focus_position(), Some(1));
+                let coach = workspace.test_coach();
+                assert_eq!(
+                    coach.active_hint_id(),
+                    Some("focus_first_last"),
+                    "grinding should teach the jump shortcut"
+                );
+                assert!(
+                    coach.effort_wasted > 0,
+                    "grinding should be counted as wasted effort"
+                );
+            })
+            .unwrap();
+    }
+
+    /// Moving onto a populated strip is real navigation and should be credited,
+    /// which is the counterpart to the no-op case below.
+    #[gpui::test]
+    fn moving_to_a_populated_strip_is_credited(cx: &mut gpui::TestAppContext) {
+        let window = cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                    workspace.push_test_panel("top", cx);
+                    // A panel on the strip below.
+                    workspace.active_row = 1;
+                    workspace.push_test_panel("below", cx);
+                    workspace.active_row = 0;
+                    workspace.active = 0;
+                    let _ = window;
+                    workspace
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |workspace, window, cx| {
+                window.focus(&workspace.focus_handle, cx);
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "super-j");
+        window
+            .update(cx, |workspace, _, _| {
+                assert_eq!(workspace.active_row, 1);
+                assert!(
+                    workspace
+                        .test_coach()
+                        .mastery("focus_up_down", learning::now())
+                        > 0.0,
+                    "landing on a populated strip should count"
+                );
+            })
+            .unwrap();
+    }
+
+    /// The same harness, confirming a no-op keypress teaches nothing and earns
+    /// nothing: pressing into the edge of a strip is not evidence either way.
+    #[gpui::test]
+    fn a_keypress_that_does_nothing_changes_no_belief(cx: &mut gpui::TestAppContext) {
+        let window = cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                    workspace.push_test_panel("only", cx);
+                    let _ = window;
+                    workspace
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |workspace, window, cx| {
+                window.focus(&workspace.focus_handle, cx);
+            })
+            .unwrap();
+
+        // One panel: every navigation key is a no-op.
+        cx.simulate_keystrokes(*window, "super-h super-l super-j super-k");
+        window
+            .update(cx, |workspace, _, _| {
+                let coach = workspace.test_coach();
+                assert_eq!(coach.overall_mastery(learning::now()), 0.0);
+                assert_eq!(coach.effort_saved, 0);
+                assert_eq!(coach.effort_wasted, 0);
+                assert_eq!(coach.active_hint_id(), None);
+            })
+            .unwrap();
+    }
+
+    /// Using a shortcut for real should register as knowledge, through the same
+    /// keymap the user types on.
+    #[gpui::test]
+    fn real_keystrokes_build_recognized_mastery(cx: &mut gpui::TestAppContext) {
+        let window = cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                    for name in ["one", "two", "three"] {
+                        workspace.push_test_panel(name, cx);
+                    }
+                    let _ = window;
+                    workspace
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |workspace, window, cx| {
+                window.focus(&workspace.focus_handle, cx);
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "super-l super-l super-f super-r");
+        window
+            .update(cx, |workspace, _, _| {
+                let coach = workspace.test_coach();
+                let now = learning::now();
+                assert!(
+                    coach.mastery("focus_left_right", now) > 0.0,
+                    "navigating should register"
+                );
+                assert!(
+                    coach.mastery("maximize", now) > 0.0,
+                    "super-f should register"
+                );
+                assert!(
+                    coach.mastery("cycle_width", now) > 0.0,
+                    "super-r should register"
+                );
+                assert!(coach.effort_saved > 0);
+                assert_eq!(coach.effort_wasted, 0, "no slow paths were taken");
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_short_click_hop_is_read_as_plain_navigation() {
+        // Clicking the neighbour is what super-h/l would have done.
+        assert_eq!(click_skill(1, 1, 5), "focus_left_right");
+        assert_eq!(click_skill(2, 2, 5), "focus_left_right");
+        // A long hop that stops mid-strip is still ordinary navigation: no
+        // single "jump" key would have landed there.
+        assert_eq!(click_skill(4, 4, 9), "focus_left_right");
+    }
+
+    #[test]
+    fn a_long_click_hop_to_an_end_is_read_as_a_missed_jump() {
+        // Crossing the strip to its far end is what super-end exists for.
+        assert_eq!(click_skill(4, 4, 5), "focus_first_last");
+        assert_eq!(click_skill(3, 0, 5), "focus_first_last");
+    }
+
+    #[test]
+    fn every_instrumented_skill_id_exists_in_the_catalog() {
+        // The instrumentation refers to skills by string, so a typo would
+        // silently stop teaching. Keep the two in step.
+        for id in [
+            "focus_left_right",
+            "focus_up_down",
+            "focus_first_last",
+            "focus_previous",
+            "overview",
+            "move_panel",
+            "move_panel_strip",
+            "move_panel_end",
+            "cycle_width",
+            "maximize",
+            "width_presets",
+            "new_panel",
+            "close_panel",
+        ] {
+            assert!(learning::skill(id).is_some(), "unknown skill id {id}");
+        }
+    }
+
+    #[test]
+    fn the_catalog_covers_every_bound_workspace_action() {
+        // Every shortcut the app binds should be teachable, or the coach will
+        // report fluency it never actually measured.
+        let taught: Vec<&str> = learning::SKILLS.iter().map(|skill| skill.keys).collect();
+        for keys in [
+            "super-h / super-l",
+            "super-j / super-k",
+            "super-home / super-end",
+            "super-tab",
+            "super-o",
+            "super-shift-h / super-shift-l",
+            "super-shift-j / super-shift-k",
+            "super-shift-home / super-shift-end",
+            "super-r",
+            "super-f",
+            "super-1 .. super-4",
+            "super-n",
+            "super-q",
+        ] {
+            assert!(taught.contains(&keys), "{keys} is bound but never taught");
+        }
     }
 }

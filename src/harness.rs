@@ -108,6 +108,22 @@ pub fn spawn() -> Bridge {
     }
 }
 
+/// A bridge with no runtime behind it. Commands are accepted and dropped, so a
+/// test can drive the UI without a jcode daemon.
+#[cfg(test)]
+pub fn spawn_inert() -> Bridge {
+    let (_update_tx, update_rx) = channel::<Update>();
+    let (command_tx, _command_rx) = channel::<Command>();
+    // Leak the receiving ends: nothing should observe or service them, and the
+    // senders must stay usable for the lifetime of the test.
+    std::mem::forget(_command_rx);
+    std::mem::forget(_update_tx);
+    Bridge {
+        commands: command_tx,
+        updates: Arc::new(Mutex::new(update_rx)),
+    }
+}
+
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     JcodeClient::connect(ConnectOptions {
         client_name: format!("jcode-desktop-{client_name}/{}", env!("CARGO_PKG_VERSION")),

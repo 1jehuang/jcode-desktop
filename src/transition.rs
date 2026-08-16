@@ -19,6 +19,8 @@ pub enum Transition {
     PanelWidth,
     Overview,
     Hints,
+    /// The learning coach's just-in-time hint toast.
+    Coach,
     Connection,
     Transcript,
 }
@@ -36,7 +38,7 @@ pub struct Policy {
     pub duration: Duration,
 }
 
-pub const POLICIES: [Policy; 10] = [
+pub const POLICIES: [Policy; 11] = [
     Policy {
         transition: Transition::Focus,
         motion: Motion::Animate,
@@ -74,6 +76,11 @@ pub const POLICIES: [Policy; 10] = [
     },
     Policy {
         transition: Transition::Hints,
+        motion: Motion::Animate,
+        duration: MODAL_DURATION,
+    },
+    Policy {
+        transition: Transition::Coach,
         motion: Motion::Animate,
         duration: MODAL_DURATION,
     },
@@ -177,6 +184,7 @@ mod tests {
             Transition::PanelWidth,
             Transition::Overview,
             Transition::Hints,
+            Transition::Coach,
             Transition::Connection,
             Transition::Transcript,
         ];
