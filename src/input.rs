@@ -29,6 +29,19 @@ actions!(
         Paste,
         Cut,
         Copy,
+        MoveWordLeft,
+        MoveWordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordBack,
+        DeleteWordForward,
+        KillToStart,
+        KillToEnd,
+        Undo,
+        Redo,
+        HistoryPrev,
+        HistoryNext,
+        Clear,
         Submit,
     ]
 );
@@ -41,6 +54,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, Some("PromptInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("PromptInput")),
         KeyBinding::new("shift-right", SelectRight, Some("PromptInput")),
+        KeyBinding::new("ctrl-left", MoveWordLeft, Some("PromptInput")),
+        KeyBinding::new("ctrl-right", MoveWordRight, Some("PromptInput")),
+        KeyBinding::new("alt-left", MoveWordLeft, Some("PromptInput")),
+        KeyBinding::new("alt-right", MoveWordRight, Some("PromptInput")),
+        KeyBinding::new("alt-b", MoveWordLeft, Some("PromptInput")),
+        KeyBinding::new("alt-f", MoveWordRight, Some("PromptInput")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("PromptInput")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("PromptInput")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("PromptInput")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("PromptInput")),
         KeyBinding::new("ctrl-a", SelectAll, Some("PromptInput")),
         KeyBinding::new("cmd-a", SelectAll, Some("PromptInput")),
         KeyBinding::new("ctrl-v", Paste, Some("PromptInput")),
@@ -49,6 +72,24 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-c", Copy, Some("PromptInput")),
         KeyBinding::new("ctrl-x", Cut, Some("PromptInput")),
         KeyBinding::new("cmd-x", Cut, Some("PromptInput")),
+        KeyBinding::new("ctrl-z", Undo, Some("PromptInput")),
+        KeyBinding::new("cmd-z", Undo, Some("PromptInput")),
+        KeyBinding::new("ctrl-shift-z", Redo, Some("PromptInput")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("PromptInput")),
+        KeyBinding::new("ctrl-y", Redo, Some("PromptInput")),
+        KeyBinding::new("ctrl-w", DeleteWordBack, Some("PromptInput")),
+        KeyBinding::new("ctrl-backspace", DeleteWordBack, Some("PromptInput")),
+        KeyBinding::new("alt-backspace", DeleteWordBack, Some("PromptInput")),
+        KeyBinding::new("cmd-backspace", DeleteWordBack, Some("PromptInput")),
+        KeyBinding::new("ctrl-delete", DeleteWordForward, Some("PromptInput")),
+        KeyBinding::new("alt-d", DeleteWordForward, Some("PromptInput")),
+        KeyBinding::new("ctrl-u", KillToStart, Some("PromptInput")),
+        KeyBinding::new("ctrl-e", End, Some("PromptInput")),
+        KeyBinding::new("ctrl-k", HistoryPrev, Some("PromptInput")),
+        KeyBinding::new("ctrl-j", HistoryNext, Some("PromptInput")),
+        KeyBinding::new("up", HistoryPrev, Some("PromptInput")),
+        KeyBinding::new("down", HistoryNext, Some("PromptInput")),
+        KeyBinding::new("escape", Clear, Some("PromptInput")),
         KeyBinding::new("home", Home, Some("PromptInput")),
         KeyBinding::new("end", End, Some("PromptInput")),
         KeyBinding::new("enter", Submit, Some("PromptInput")),
@@ -66,6 +107,11 @@ pub struct PromptInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    undo: Vec<String>,
+    redo: Vec<String>,
+    history: Vec<String>,
+    history_index: Option<usize>,
+    live_draft: String,
     on_submit: Box<dyn Fn(String, &mut Window, &mut App)>,
 }
 
@@ -86,6 +132,11 @@ impl PromptInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            history: Vec::new(),
+            history_index: None,
+            live_draft: String::new(),
             on_submit: Box::new(on_submit),
         }
     }
@@ -99,6 +150,9 @@ impl PromptInput {
         self.selected_range = 0..0;
         self.marked_range = None;
         self.horizontal_scroll = px(0.);
+        self.history.push(content.clone());
+        self.history_index = None;
+        self.live_draft.clear();
         (self.on_submit)(content, window, cx);
         cx.notify();
     }
@@ -183,6 +237,111 @@ impl PromptInput {
             ));
             self.replace_text_in_range(None, "", window, cx)
         }
+    }
+
+    fn word_left(&mut self, _: &MoveWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn word_right(&mut self, _: &MoveWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn delete_word_back(
+        &mut self,
+        _: &DeleteWordBack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_word_forward(
+        &mut self,
+        _: &DeleteWordForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn kill_to_start(&mut self, _: &KillToStart, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn kill_to_end(&mut self, _: &KillToEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self.undo.pop() {
+            self.redo.push(self.content.to_string());
+            self.set_content(previous, cx);
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(next) = self.redo.pop() {
+            self.undo.push(self.content.to_string());
+            self.set_content(next, cx);
+        }
+    }
+
+    fn history_prev(&mut self, _: &HistoryPrev, _: &mut Window, cx: &mut Context<Self>) {
+        if self.history.is_empty() {
+            return;
+        }
+        let index = match self.history_index {
+            Some(index) => index.saturating_sub(1),
+            None => {
+                self.live_draft = self.content.to_string();
+                self.history.len() - 1
+            }
+        };
+        self.history_index = Some(index);
+        self.set_content(self.history[index].clone(), cx);
+    }
+
+    fn history_next(&mut self, _: &HistoryNext, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.history_index else {
+            return;
+        };
+        if index + 1 < self.history.len() {
+            self.history_index = Some(index + 1);
+            self.set_content(self.history[index + 1].clone(), cx);
+        } else {
+            self.history_index = None;
+            self.set_content(self.live_draft.clone(), cx);
+        }
+    }
+
+    fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.content.is_empty() {
+            self.set_content(String::new(), cx);
+        }
+    }
+
+    fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+        self.content = content.into();
+        self.selected_range = self.content.len()..self.content.len();
+        self.selection_reversed = false;
+        cx.notify();
     }
 
     fn on_mouse_down(
@@ -300,6 +459,31 @@ impl PromptInput {
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
     }
+
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        let prefix = &self.content[..offset];
+        let trimmed = prefix.trim_end_matches(char::is_whitespace);
+        trimmed
+            .char_indices()
+            .rev()
+            .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
+            .unwrap_or(0)
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        let suffix = &self.content[offset..];
+        let word_end = suffix
+            .char_indices()
+            .find_map(|(index, ch)| ch.is_whitespace().then_some(index))
+            .unwrap_or(suffix.len());
+        let rest = &suffix[word_end..];
+        offset
+            + word_end
+            + rest
+                .char_indices()
+                .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
+                .unwrap_or(rest.len())
+    }
 }
 
 impl EntityInputHandler for PromptInput {
@@ -354,6 +538,8 @@ impl EntityInputHandler for PromptInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        self.undo.push(self.content.to_string());
+        self.redo.clear();
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -664,6 +850,19 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_back))
+            .on_action(cx.listener(Self::delete_word_forward))
+            .on_action(cx.listener(Self::kill_to_start))
+            .on_action(cx.listener(Self::kill_to_end))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::history_prev))
+            .on_action(cx.listener(Self::history_next))
+            .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::submit))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
