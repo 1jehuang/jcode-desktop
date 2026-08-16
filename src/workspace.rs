@@ -3319,6 +3319,53 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn moving_a_panel_between_strips_animates_and_stops_at_boundaries(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("moving", cx);
+            workspace.active_row = 1;
+            workspace.push_test_panel("already-below", cx);
+            workspace.set_active(0, cx);
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.run_until_parked();
+
+        vcx.simulate_keystrokes("super-shift-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active_row, 1);
+            assert_eq!(workspace.slots[workspace.active].row, 1);
+            assert!(workspace.row_progress.is_animating());
+        });
+        let outgoing = vcx.debug_bounds("row-transition-outgoing").unwrap();
+        let incoming = vcx.debug_bounds("row-transition-incoming").unwrap();
+        assert!(incoming.origin.y > outgoing.origin.y);
+
+        // Repeated moves stop at the fourth strip without corrupting focus or
+        // starting a transition for the impossible fifth move.
+        vcx.simulate_keystrokes("super-shift-j super-shift-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| assert_eq!(workspace.active_row, 3));
+        std::thread::sleep(transition::policy(Transition::Row).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("super-shift-j");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active_row, 3);
+            assert_eq!(workspace.outgoing_row, None);
+            assert!(!workspace.row_progress.is_animating());
+        });
+    }
+
     /// The same harness, confirming a no-op keypress teaches nothing and earns
     /// nothing: pressing into the edge of a strip is not evidence either way.
     #[gpui::test]
