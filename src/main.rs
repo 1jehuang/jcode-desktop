@@ -7,15 +7,13 @@ mod panel;
 mod theme;
 mod workspace;
 
-use gpui::{
-    App, Bounds, KeyBinding, WindowBounds, WindowOptions, prelude::*, px, size,
-};
+use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, prelude::*, px, size};
 use gpui_platform::application;
 
 use workspace::{
-    ClosePanel, FocusDown, FocusLeft, FocusRight, FocusUp, MovePanelLeft, MovePanelRight,
-    NewPanel, Quit, ToggleOverview, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4,
-    Workspace,
+    ClosePanel, FocusDown, FocusLeft, FocusRight, FocusUp, MovePanelDown, MovePanelLeft,
+    MovePanelRight, MovePanelUp, NewPanel, Quit, ToggleOverview, WidthPreset1, WidthPreset2,
+    WidthPreset3, WidthPreset4, Workspace,
 };
 
 fn main() {
@@ -33,6 +31,8 @@ fn main() {
             KeyBinding::new("super-up", FocusUp, None),
             KeyBinding::new("super-shift-h", MovePanelLeft, None),
             KeyBinding::new("super-shift-l", MovePanelRight, None),
+            KeyBinding::new("super-shift-k", MovePanelUp, None),
+            KeyBinding::new("super-shift-j", MovePanelDown, None),
             KeyBinding::new("super-n", NewPanel, None),
             KeyBinding::new("super-t", NewPanel, None),
             KeyBinding::new("super-q", ClosePanel, None),

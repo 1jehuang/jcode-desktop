@@ -1,9 +1,8 @@
-//! Workspace: a niri-inspired horizontal strip of session panels with a
+//! Workspace: four niri-inspired horizontal strips of session panels with a
 //! smooth camera and a zoomed-out overview.
 //!
-//! Panels live on an infinite horizontal strip. Focus moves left/right;
-//! the camera glides so the focused panel is visible. The overview zooms
-//! out to show every panel; clicking one focuses it.
+//! Panels live on one of four infinite horizontal strips. Focus moves
+//! left/right within a strip and up/down between strips.
 
 use std::time::Duration;
 
@@ -24,6 +23,8 @@ actions!(
         FocusDown,
         MovePanelLeft,
         MovePanelRight,
+        MovePanelUp,
+        MovePanelDown,
         NewPanel,
         ClosePanel,
         ToggleOverview,
@@ -40,9 +41,11 @@ actions!(
 const CAMERA_LERP: f32 = 0.22;
 const GAP: f32 = 16.0;
 const STRIP_PADDING_Y: f32 = 20.0;
+const STRIP_COUNT: usize = 4;
 
 struct Slot {
     panel: Entity<Panel>,
+    row: usize,
     /// Width as a fraction of the viewport (0.25, 0.5, 0.75, 1.0).
     width_fraction: f32,
 }
@@ -51,6 +54,7 @@ pub struct Workspace {
     bridge: Bridge,
     slots: Vec<Slot>,
     active: usize,
+    active_row: usize,
     /// Camera offset in strip pixels; animated toward `camera_target`.
     camera_x: f32,
     camera_target: f32,
@@ -99,6 +103,7 @@ impl Workspace {
             bridge,
             slots: Vec::new(),
             active: 0,
+            active_row: 0,
             camera_x: 0.0,
             camera_target: 0.0,
             overview: false,
@@ -144,6 +149,7 @@ impl Workspace {
             Update::SessionCreated { session } => {
                 self.open_session(session, cx);
                 self.active = self.slots.len().saturating_sub(1);
+                self.active_row = self.slots[self.active].row;
                 self.retarget_camera();
                 self.focus_pending = true;
             }
@@ -212,6 +218,7 @@ impl Workspace {
         self.bridge.send(Command::Watch { session_id });
         self.slots.push(Slot {
             panel,
+            row: self.active_row,
             width_fraction: 0.5,
         });
     }
@@ -225,10 +232,38 @@ impl Workspace {
 
     fn slot_left(&self, index: usize, viewport: f32) -> f32 {
         let mut x = GAP;
-        for i in 0..index {
+        for i in self.row_indices(self.slots[index].row) {
+            if i == index {
+                break;
+            }
             x += self.slot_width(i, viewport) + GAP;
         }
         x
+    }
+
+    fn row_indices(&self, row: usize) -> impl Iterator<Item = usize> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, slot)| (slot.row == row).then_some(index))
+    }
+
+    fn active_position_in_row(&self) -> usize {
+        self.row_indices(self.active_row)
+            .position(|index| index == self.active)
+            .unwrap_or(0)
+    }
+
+    fn select_row(&mut self, row: usize, preferred_position: usize) {
+        self.active_row = row.min(STRIP_COUNT - 1);
+        let selected = self
+            .row_indices(self.active_row)
+            .nth(preferred_position)
+            .or_else(|| self.row_indices(self.active_row).last());
+        if let Some(index) = selected {
+            self.active = index;
+        }
+        self.retarget_camera();
     }
 
     fn retarget_camera(&mut self) {
@@ -238,15 +273,24 @@ impl Workspace {
     }
 
     fn resolve_camera_target(&mut self, viewport: f32) {
-        if self.slots.is_empty() {
+        if self.row_indices(self.active_row).next().is_none() {
             self.camera_target = 0.0;
             return;
         }
-        let active = self.active.min(self.slots.len() - 1);
+        let active = self
+            .slots
+            .get(self.active)
+            .filter(|slot| slot.row == self.active_row)
+            .map(|_| self.active)
+            .unwrap_or_else(|| self.row_indices(self.active_row).next().unwrap());
         let left = self.slot_left(active, viewport);
         let width = self.slot_width(active, viewport);
         // Center the active panel, clamped to strip bounds.
-        let total = self.slot_left(self.slots.len(), viewport);
+        let total = self
+            .row_indices(self.active_row)
+            .map(|index| self.slot_width(index, viewport) + GAP)
+            .sum::<f32>()
+            + GAP;
         let centered = left - (viewport - width) / 2.0;
         self.camera_target = centered.clamp(-GAP, (total - viewport).max(-GAP));
     }
@@ -254,8 +298,11 @@ impl Workspace {
     // --- Actions --------------------------------------------------------
 
     fn focus_left(&mut self, _: &FocusLeft, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active > 0 {
-            self.active -= 1;
+        let indices: Vec<_> = self.row_indices(self.active_row).collect();
+        if let Some(position) = indices.iter().position(|&index| index == self.active)
+            && position > 0
+        {
+            self.active = indices[position - 1];
             self.retarget_camera();
             self.focus_active(window, cx);
             cx.notify();
@@ -263,41 +310,85 @@ impl Workspace {
     }
 
     fn focus_right(&mut self, _: &FocusRight, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active + 1 < self.slots.len() {
-            self.active += 1;
+        let indices: Vec<_> = self.row_indices(self.active_row).collect();
+        if let Some(position) = indices.iter().position(|&index| index == self.active)
+            && position + 1 < indices.len()
+        {
+            self.active = indices[position + 1];
             self.retarget_camera();
             self.focus_active(window, cx);
             cx.notify();
         }
     }
 
-    fn focus_up(&mut self, _: &FocusUp, _window: &mut Window, cx: &mut Context<Self>) {
-        // Vertical focus maps to overview until vertical stacks exist.
-        self.overview = true;
-        cx.notify();
+    fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_row > 0 {
+            let position = self.active_position_in_row();
+            self.select_row(self.active_row - 1, position);
+            self.focus_active(window, cx);
+            cx.notify();
+        }
     }
 
-    fn focus_down(&mut self, _: &FocusDown, _window: &mut Window, cx: &mut Context<Self>) {
-        self.overview = false;
-        cx.notify();
+    fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_row + 1 < STRIP_COUNT {
+            let position = self.active_position_in_row();
+            self.select_row(self.active_row + 1, position);
+            self.focus_active(window, cx);
+            cx.notify();
+        }
     }
 
     fn move_panel_left(&mut self, _: &MovePanelLeft, _: &mut Window, cx: &mut Context<Self>) {
-        if self.active > 0 {
-            self.slots.swap(self.active, self.active - 1);
-            self.active -= 1;
+        let indices: Vec<_> = self.row_indices(self.active_row).collect();
+        if let Some(position) = indices.iter().position(|&index| index == self.active)
+            && position > 0
+        {
+            let previous = indices[position - 1];
+            self.slots.swap(self.active, previous);
+            self.active = previous;
             self.retarget_camera();
             cx.notify();
         }
     }
 
     fn move_panel_right(&mut self, _: &MovePanelRight, _: &mut Window, cx: &mut Context<Self>) {
-        if self.active + 1 < self.slots.len() {
-            self.slots.swap(self.active, self.active + 1);
-            self.active += 1;
+        let indices: Vec<_> = self.row_indices(self.active_row).collect();
+        if let Some(position) = indices.iter().position(|&index| index == self.active)
+            && position + 1 < indices.len()
+        {
+            let next = indices[position + 1];
+            self.slots.swap(self.active, next);
+            self.active = next;
             self.retarget_camera();
             cx.notify();
         }
+    }
+
+    fn move_panel_up(&mut self, _: &MovePanelUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_panel_to_row(-1, window, cx);
+    }
+
+    fn move_panel_down(&mut self, _: &MovePanelDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_panel_to_row(1, window, cx);
+    }
+
+    fn move_panel_to_row(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.active_row as isize + delta;
+        if !(0..STRIP_COUNT as isize).contains(&target) {
+            return;
+        }
+        let Some(slot) = self.slots.get_mut(self.active) else {
+            return;
+        };
+        if slot.row != self.active_row {
+            return;
+        }
+        slot.row = target as usize;
+        self.active_row = target as usize;
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     fn new_panel(&mut self, _: &NewPanel, _: &mut Window, _cx: &mut Context<Self>) {
@@ -307,14 +398,18 @@ impl Workspace {
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
-        if self.slots.is_empty() {
+        if self
+            .slots
+            .get(self.active)
+            .is_none_or(|slot| slot.row != self.active_row)
+        {
             return;
         }
         let removed = self.slots.remove(self.active);
         let session_id = removed.panel.read(cx).session_id.clone();
         self.bridge.send(Command::Unwatch { session_id });
-        if self.active >= self.slots.len() && self.active > 0 {
-            self.active -= 1;
+        if let Some(index) = self.row_indices(self.active_row).last() {
+            self.active = index;
         }
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -327,7 +422,11 @@ impl Workspace {
     }
 
     fn set_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
-        if let Some(slot) = self.slots.get_mut(self.active) {
+        if let Some(slot) = self
+            .slots
+            .get_mut(self.active)
+            .filter(|slot| slot.row == self.active_row)
+        {
             slot.width_fraction = fraction;
             self.retarget_camera();
             cx.notify();
@@ -335,7 +434,11 @@ impl Workspace {
     }
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
-        if let Some(slot) = self.slots.get(self.active) {
+        if let Some(slot) = self
+            .slots
+            .get(self.active)
+            .filter(|slot| slot.row == self.active_row)
+        {
             let panel = slot.panel.clone();
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
@@ -374,7 +477,8 @@ impl Workspace {
             .flex_row()
             .gap(px(GAP));
 
-        for (index, slot) in self.slots.iter().enumerate() {
+        for index in self.row_indices(self.active_row).collect::<Vec<_>>() {
+            let slot = &self.slots[index];
             let width = self.slot_width(index, viewport_w);
             let focused = index == self.active;
             strip = strip.child(
@@ -397,6 +501,7 @@ impl Workspace {
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
                             this.active = index;
+                            this.active_row = this.slots[index].row;
                             this.retarget_camera();
                             this.focus_active(window, cx);
                             cx.notify();
@@ -467,6 +572,7 @@ impl Workspace {
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
                             this.active = index;
+                            this.active_row = this.slots[index].row;
                             this.overview = false;
                             this.retarget_camera();
                             this.focus_active(window, cx);
@@ -566,7 +672,7 @@ impl Render for Workspace {
 
         let content = if self.overview {
             self.render_overview(cx)
-        } else if self.slots.is_empty() {
+        } else if self.row_indices(self.active_row).next().is_none() {
             div()
                 .size_full()
                 .flex()
@@ -576,9 +682,12 @@ impl Render for Workspace {
                 .justify_center()
                 .text_color(Theme::TEXT_DIM)
                 .child(if self.connected {
-                    "no sessions - super-n opens one"
+                    format!(
+                        "strip {} is empty - super-n opens a session here",
+                        self.active_row + 1
+                    )
                 } else {
-                    "connecting to jcode..."
+                    "connecting to jcode...".into()
                 })
                 .child(div().text_size(px(12.0)).child(self.status.clone()))
                 .into_any_element()
@@ -601,6 +710,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::focus_down))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))
+            .on_action(cx.listener(Self::move_panel_up))
+            .on_action(cx.listener(Self::move_panel_down))
             .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
@@ -631,11 +742,15 @@ impl Render for Workspace {
                     .child(self.status.clone())
                     .child(div().flex_1())
                     .child(format!(
-                        "{} panel{}",
+                        "strip {}/{} · {} panel{}",
+                        self.active_row + 1,
+                        STRIP_COUNT,
                         self.slots.len(),
                         if self.slots.len() == 1 { "" } else { "s" }
                     ))
-                    .child("super-hjkl move · super-n new · super-tab overview · super-1..4 width"),
+                    .child(
+                        "super-hjkl navigate · super-n new · super-tab overview · super-1..4 width",
+                    ),
             )
     }
 }
