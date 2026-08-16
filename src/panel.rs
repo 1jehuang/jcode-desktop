@@ -530,6 +530,9 @@ impl Render for Panel {
             .py_2p5()
             .text_size(px(13.5))
             .overflow_y_scroll()
+            // Vertical deltas only: horizontal two-finger swipes pan the
+            // workspace canvas instead of nudging the transcript.
+            .restrict_scroll_to_axis()
             .track_scroll(&self.scroll);
 
         // Live rows are appended after the settled ones and share the same

@@ -1025,11 +1025,45 @@ impl Workspace {
             );
         }
 
+        // Two-finger touchpad swipes (and horizontal mouse wheels) pan the
+        // strip directly, like grabbing the canvas. Vertical deltas are left
+        // for the panel transcripts, except when Shift redirects them here.
+        let total_width = self
+            .row_indices(row)
+            .map(|index| self.slot_width(index, viewport_w) + GAP)
+            .sum::<f32>()
+            + STRUT * 2.0;
         div()
             .relative()
             .size_full()
             .overflow_hidden()
             .pl(px(GAP))
+            .on_scroll_wheel(cx.listener(
+                move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    let delta = event.delta.pixel_delta(window.line_height());
+                    let mut dx = f32::from(delta.x);
+                    if dx == 0.0 && event.modifiers.shift {
+                        dx = f32::from(delta.y);
+                    }
+                    if dx == 0.0 {
+                        return;
+                    }
+                    // Natural scrolling: content follows the fingers, so the
+                    // camera moves opposite the delta. Panning cancels any
+                    // in-flight camera animation and becomes the new target,
+                    // otherwise the next frame would snap back.
+                    let next = pan_camera(this.camera_x[row], -dx, total_width, viewport_w);
+                    if (next - this.camera_x[row]).abs() < f32::EPSILON {
+                        return;
+                    }
+                    this.camera_x[row] = next;
+                    this.camera_target[row] = next;
+                    this.camera_from[row] = next;
+                    this.camera_started[row] = None;
+                    this.camera_dirty[row] = false;
+                    cx.notify();
+                },
+            ))
             .child(strip)
             .into_any_element()
     }
@@ -1187,6 +1221,7 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .restrict_scroll_to_axis()
             .py_2();
 
         for (sidebar_index, session) in self.sessions.iter().rev().cloned().enumerate() {
@@ -1926,6 +1961,13 @@ fn scroll_into_view(current: f32, left: f32, width: f32, viewport: f32) -> f32 {
     }
 }
 
+/// Two-finger pan: move the camera by `delta`, clamped to the same range the
+/// keyboard camera uses, so a swipe can never fling the strip off into space.
+fn pan_camera(current: f32, delta: f32, total_width: f32, viewport: f32) -> f32 {
+    let max_scroll = (total_width - viewport).max(-GAP).max(-STRUT);
+    (current + delta).clamp(-STRUT, max_scroll)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1989,6 +2031,18 @@ mod tests {
         );
         // An empty strip has no focused position.
         assert_eq!(describe_strip(&[], None, 0), "strip=0 focus=- widths=");
+    }
+
+    #[test]
+    fn two_finger_pan_moves_and_clamps_the_camera() {
+        // Total content 2000 wide in a 1000 viewport: pan freely inside range.
+        assert_eq!(pan_camera(100.0, 250.0, 2000.0, 1000.0), 350.0);
+        // Panning left of the start clamps at the strut.
+        assert_eq!(pan_camera(50.0, -500.0, 2000.0, 1000.0), -STRUT);
+        // Panning past the end clamps at the last panel's right edge.
+        assert_eq!(pan_camera(900.0, 500.0, 2000.0, 1000.0), 1000.0);
+        // Content narrower than the viewport cannot pan at all.
+        assert_eq!(pan_camera(0.0, 300.0, 500.0, 1000.0), -GAP);
     }
 
     #[test]
