@@ -356,6 +356,7 @@ impl Workspace {
     /// mirroring niri's "new column opens right of the focused column".
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
+        let width_fraction = spawned_panel_width(self.slots.len());
         let bridge = self.bridge.clone();
         let session_id = session.session_id.clone();
         let panel = cx.new(|cx| {
@@ -372,7 +373,7 @@ impl Workspace {
         let slot = Slot {
             panel,
             row: self.active_row,
-            width_fraction: DEFAULT_WIDTH,
+            width_fraction,
             animated_width: AnimatedValue::new(
                 0.0,
                 transition::policy(Transition::PanelOpen).duration,
@@ -388,7 +389,7 @@ impl Workspace {
         self.slots.insert(insert_at, slot);
         self.slots[insert_at]
             .animated_width
-            .set(DEFAULT_WIDTH, Instant::now());
+            .set(width_fraction, Instant::now());
         // Inserting shifts every later index, including the focused one.
         if self.active >= insert_at {
             self.active += 1;
@@ -1857,6 +1858,16 @@ fn compact_working_dir(path: &str) -> String {
     path.to_owned()
 }
 
+/// The first panel owns the viewport. Later panels use the normal column width
+/// so opening one reveals the scrolling layout rather than covering it.
+fn spawned_panel_width(existing_panels: usize) -> f32 {
+    if existing_panels == 0 {
+        1.0
+    } else {
+        DEFAULT_WIDTH
+    }
+}
+
 /// A one-line description of the strip layout, for tests and for the
 /// `JCODE_DESKTOP_STATE` debug dump: `strip=<row> focus=<pos> widths=a,b,c`.
 fn describe_strip(widths: &[f32], focus_position: Option<usize>, row: usize) -> String {
@@ -2533,5 +2544,12 @@ mod tests {
         ] {
             assert!(taught.contains(&keys), "{keys} is bound but never taught");
         }
+    }
+
+    #[test]
+    fn first_spawn_fills_the_viewport_and_later_spawns_use_the_default_width() {
+        assert_eq!(spawned_panel_width(0), 1.0);
+        assert_eq!(spawned_panel_width(1), DEFAULT_WIDTH);
+        assert_eq!(spawned_panel_width(4), DEFAULT_WIDTH);
     }
 }
