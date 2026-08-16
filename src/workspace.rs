@@ -1125,52 +1125,122 @@ impl Workspace {
     }
 
     /// A small persistent map of the strips, anchored over the bottom-left of
-    /// the workspace. Panel lengths hint at their configured widths.
-    fn render_minimap(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// the workspace and drawn to scale. Track lengths reflect each strip's
+    /// total content width, segments sit at their true positions, and a wash
+    /// marks the slice of each strip that is currently on screen.
+    fn render_minimap(&self, viewport_w: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        const MAP_W: f32 = 148.0;
+        const ROW_H: f32 = 6.0;
+        const MIN_SEG: f32 = 5.0;
+
+        // One shared scale keeps the strips comparable: the widest strip (or
+        // the viewport, whichever is larger) spans the full map width.
+        let row_totals: [f32; STRIP_COUNT] = std::array::from_fn(|row| {
+            self.row_indices(row)
+                .map(|index| self.slot_width(index, viewport_w) + GAP)
+                .sum::<f32>()
+                + STRUT * 2.0
+        });
+        let denom = row_totals
+            .iter()
+            .fold(viewport_w, |acc, &total| acc.max(total))
+            .max(1.0);
+        let scale = MAP_W / denom;
+
         let mut map = div()
             .id("workspace-minimap")
             .absolute()
             .left(px(8.0))
             .bottom(px(8.0))
-            .w(px(92.0))
+            .w(px(MAP_W + 8.0))
             .p(px(4.0))
             .flex()
             .flex_col()
-            .gap(px(2.0))
+            .gap(px(3.0))
             .rounded_md()
             .bg(Theme::HEADER_BG);
 
         for row in 0..STRIP_COUNT {
             let active_row = row == self.active_row;
+            let has_panels = self.row_indices(row).next().is_some();
+            let track_w = if has_panels {
+                (row_totals[row] * scale).clamp(MIN_SEG, MAP_W)
+            } else {
+                MIN_SEG
+            };
+
             let mut track = div()
                 .id(("minimap-row", row))
-                .h(px(3.0))
-                .w_full()
-                .flex()
-                .flex_row()
-                .gap(px(1.0))
-                .rounded_full()
-                .bg(if active_row {
-                    Theme::ACCENT_DIM
-                } else {
-                    Theme::PANEL_BORDER
-                });
+                .relative()
+                .h(px(ROW_H))
+                .w(px(MAP_W))
+                .cursor_pointer()
+                // Clicking a track (not a segment) jumps to that strip.
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _event, window, cx| {
+                        let position = this.active_position_in_row();
+                        this.select_row(row, position);
+                        this.overview = false;
+                        this.overview_progress.set(0.0, Instant::now());
+                        this.focus_active(window, cx);
+                        cx.notify();
+                    }),
+                )
+                // The strip's extent, to scale. Empty strips show a stub.
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .w(px(track_w))
+                        .h_full()
+                        .rounded_full()
+                        .bg(if active_row {
+                            Theme::MINIMAP_TRACK_ACTIVE
+                        } else {
+                            Theme::MINIMAP_TRACK
+                        }),
+                );
 
+            // Viewport wash under the segments: the on-screen slice.
+            if has_panels && row_totals[row] > viewport_w + 1.0 {
+                let view_left = ((self.camera_x[row] + STRUT) * scale).max(0.0);
+                let view_w = (viewport_w * scale).min(MAP_W - view_left).max(0.0);
+                track = track.child(
+                    div()
+                        .absolute()
+                        .left(px(view_left))
+                        .top_0()
+                        .w(px(view_w))
+                        .h_full()
+                        .rounded_full()
+                        .bg(Theme::MINIMAP_VIEWPORT),
+                );
+            }
+
+            // Panel segments at their true positions and proportions.
             for index in self.row_indices(row) {
                 let focused = index == self.active;
-                let width = 4.0 + self.slots[index].width_fraction * 14.0;
+                let busy = self.slots[index].panel.read(cx).is_busy();
+                let left = (STRUT + self.slot_left(index, viewport_w)) * scale;
+                let width = (self.slot_width(index, viewport_w) * scale - 1.0).max(MIN_SEG);
                 track = track.child(
                     div()
                         .id(("minimap-panel", index))
+                        .absolute()
+                        .left(px(left.min(MAP_W - MIN_SEG)))
+                        .top(px(1.0))
                         .w(px(width))
-                        .h_full()
-                        .flex_none()
+                        .h(px(ROW_H - 2.0))
                         .rounded_full()
                         .cursor_pointer()
                         .bg(if focused {
                             Theme::ACCENT
+                        } else if busy {
+                            Theme::MINIMAP_PANEL_BUSY
                         } else {
-                            Theme::TEXT_DIM
+                            Theme::MINIMAP_PANEL
                         })
                         .hover(|el| el.bg(Theme::ACCENT))
                         .on_mouse_down(
@@ -1358,7 +1428,7 @@ impl Render for Workspace {
                     .min_w_0()
                     .min_h_0()
                     .child(content)
-                    .child(self.render_minimap(cx)),
+                    .child(self.render_minimap(viewport_w, cx)),
             )
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))

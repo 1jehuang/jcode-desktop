@@ -40,6 +40,14 @@ impl Theme {
     pub const HEADING: Rgba = rgb_c(0xffffff);
     pub const LINK: Rgba = rgb_c(0xcccccc);
 
+    // Minimap: monochrome washes so the map reads at a glance without
+    // competing with the content.
+    pub const MINIMAP_TRACK: Rgba = rgba_c(0xffffff_0f);
+    pub const MINIMAP_TRACK_ACTIVE: Rgba = rgba_c(0xffffff_1c);
+    pub const MINIMAP_VIEWPORT: Rgba = rgba_c(0xffffff_26);
+    pub const MINIMAP_PANEL: Rgba = rgb_c(0x616161);
+    pub const MINIMAP_PANEL_BUSY: Rgba = rgb_c(0xaaaaaa);
+
     pub const FONT_UI: &'static str = "JetBrainsMono Nerd Font";
     pub const FONT_MONO: &'static str = "JetBrainsMono Nerd Font";
 }
