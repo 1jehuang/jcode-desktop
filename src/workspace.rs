@@ -111,6 +111,12 @@ pub struct Workspace {
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
+    /// Last focused panel on each strip, so vertical navigation restores the
+    /// place the user left instead of choosing by column position.
+    row_focus: [Option<gpui::EntityId>; STRIP_COUNT],
+    /// Row being animated out and progress of the incoming row.
+    outgoing_row: Option<usize>,
+    row_progress: AnimatedValue,
     /// Previously focused panel, for niri's `focus-window-previous`.
     previous: Option<gpui::EntityId>,
     /// Each strip retains its own horizontal camera position.
@@ -183,6 +189,9 @@ impl Workspace {
             slots: Vec::new(),
             active: 0,
             active_row: 0,
+            row_focus: [None; STRIP_COUNT],
+            outgoing_row: None,
+            row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
             previous: None,
             camera_x: [0.0; STRIP_COUNT],
             camera_target: [0.0; STRIP_COUNT],
@@ -219,6 +228,9 @@ impl Workspace {
             slots: Vec::new(),
             active: 0,
             active_row: 0,
+            row_focus: [None; STRIP_COUNT],
+            outgoing_row: None,
+            row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
             previous: None,
             camera_x: [0.0; STRIP_COUNT],
             camera_target: [0.0; STRIP_COUNT],
@@ -285,7 +297,6 @@ impl Workspace {
         self.row_indices(self.active_row)
             .position(|index| index == self.active)
     }
-
 
     fn apply(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
@@ -463,6 +474,7 @@ impl Workspace {
         }
         self.active = index;
         self.active_row = self.slots[index].row;
+        self.row_focus[self.active_row] = Some(self.slots[index].panel.entity_id());
         self.retarget_camera();
         cx.notify();
     }
@@ -506,10 +518,16 @@ impl Workspace {
 
     fn select_row(&mut self, row: usize, preferred_position: usize) {
         self.active_row = row.min(STRIP_COUNT - 1);
-        let selected = self
-            .row_indices(self.active_row)
-            .nth(preferred_position)
-            .or_else(|| self.row_indices(self.active_row).last());
+        let remembered = self.row_focus[self.active_row].and_then(|entity_id| {
+            self.slots
+                .iter()
+                .position(|slot| slot.row == self.active_row && slot.panel.entity_id() == entity_id)
+        });
+        let selected = remembered.or_else(|| {
+            self.row_indices(self.active_row)
+                .nth(preferred_position)
+                .or_else(|| self.row_indices(self.active_row).last())
+        });
         if let Some(index) = selected {
             if let Some(outgoing) = self
                 .slots
@@ -520,6 +538,7 @@ impl Workspace {
                 self.previous = Some(outgoing);
             }
             self.active = index;
+            self.row_focus[self.active_row] = Some(self.slots[index].panel.entity_id());
         }
         self.retarget_camera();
     }
@@ -710,12 +729,17 @@ impl Workspace {
     /// open shows the user pressed a key, not that they navigated anywhere, so
     /// it must not be taken as evidence of skill.
     fn change_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let outgoing_row = self.active_row;
         let position = self.active_position_in_row();
         let was_active = self
             .slots
             .get(self.active)
             .map(|slot| slot.panel.entity_id());
         self.select_row(row, position);
+        self.outgoing_row = Some(outgoing_row);
+        let now = Instant::now();
+        self.row_progress = AnimatedValue::new(0.0, transition::policy(Transition::Row).duration);
+        self.row_progress.set(1.0, now);
         self.focus_active(window, cx);
         let is_active = self
             .slots
@@ -806,6 +830,7 @@ impl Workspace {
     }
 
     fn move_panel_to_row(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let outgoing_row = self.active_row;
         let target = self.active_row as isize + delta;
         if !(0..STRIP_COUNT as isize).contains(&target) {
             return;
@@ -818,6 +843,11 @@ impl Workspace {
         }
         slot.row = target as usize;
         self.active_row = target as usize;
+        self.row_focus[self.active_row] = Some(slot.panel.entity_id());
+        self.outgoing_row = Some(outgoing_row);
+        let now = Instant::now();
+        self.row_progress = AnimatedValue::new(0.0, transition::policy(Transition::Row).duration);
+        self.row_progress.set(1.0, now);
         self.retarget_camera();
         self.focus_active(window, cx);
         self.learned("move_panel_strip", cx);
@@ -951,6 +981,35 @@ impl Workspace {
 
     // --- Rendering ------------------------------------------------------
 
+    fn render_row(
+        &mut self,
+        row: usize,
+        viewport_w: f32,
+        viewport_h: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if self.row_indices(row).next().is_some() {
+            self.render_strip(row, viewport_w, viewport_h, window, cx)
+        } else {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .items_center()
+                .justify_center()
+                .text_color(Theme::TEXT_DIM)
+                .child(if self.connected {
+                    format!("strip {} is empty - super-n opens a session here", row + 1)
+                } else {
+                    "connecting to jcode...".into()
+                })
+                .child(div().text_size(px(12.0)).child(self.status.clone()))
+                .into_any_element()
+        }
+    }
+
     /// A one-line snapshot of the strip layout. Written to the path in
     /// `JCODE_DESKTOP_STATE` on every render so an automated check can observe
     /// what the running window is actually doing.
@@ -980,17 +1039,17 @@ impl Workspace {
 
     fn render_strip(
         &mut self,
+        row: usize,
         viewport_w: f32,
         viewport_h: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if self.camera_dirty[self.active_row] {
+        if row == self.active_row && self.camera_dirty[row] {
             self.resolve_camera_target(viewport_w);
         }
         // Animate the camera over CAMERA_DURATION on an ease-out-expo curve,
         // matching niri's animation settings.
-        let row = self.active_row;
         match self.camera_started[row] {
             Some(started) => {
                 let elapsed = started.elapsed();
@@ -1009,7 +1068,7 @@ impl Workspace {
         }
 
         let panel_h = viewport_h - STRIP_PADDING_Y * 2.0;
-        let indices = self.row_indices(self.active_row).collect::<Vec<_>>();
+        let indices = self.row_indices(row).collect::<Vec<_>>();
         let now = Instant::now();
         let mut animated_widths = Vec::with_capacity(indices.len());
         for &index in &indices {
@@ -1022,7 +1081,7 @@ impl Workspace {
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_Y))
-            .left(px(-self.camera_x[self.active_row]))
+            .left(px(-self.camera_x[row]))
             .flex()
             .flex_row()
             .gap(px(GAP));
@@ -1501,13 +1560,17 @@ impl Workspace {
                                 format!("{} · expired", account.auth_kind)
                             }),
                     )
-                    .child(div().flex_none().size(px(5.0)).rounded_full().bg(
-                        if available {
-                            Theme::OK
-                        } else {
-                            Theme::TEXT_FAINT
-                        },
-                    )),
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(5.0))
+                            .rounded_full()
+                            .bg(if available {
+                                Theme::OK
+                            } else {
+                                Theme::TEXT_FAINT
+                            }),
+                    ),
             );
         }
 
@@ -2051,9 +2114,14 @@ impl Render for Workspace {
             self.coach_progress.set(0.0, now);
         }
         let coach_progress = self.coach_progress.sample(now);
+        let row_progress = self.row_progress.sample(now);
+        if !self.row_progress.is_animating() {
+            self.outgoing_row = None;
+        }
         if self.overview_progress.is_animating()
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
+            || self.row_progress.is_animating()
             // Keep ticking while a hint is up so it can expire on its own.
             || coach_hint.is_some()
         {
@@ -2065,6 +2133,38 @@ impl Render for Workspace {
                 .size_full()
                 .opacity(overview_progress)
                 .child(self.render_overview(cx))
+                .into_any_element()
+        } else if self.outgoing_row.is_some() {
+            let outgoing_row = self.outgoing_row.unwrap();
+            let direction = if self.active_row > outgoing_row {
+                1.0
+            } else {
+                -1.0
+            };
+            let outgoing_y = -direction * row_progress * viewport_h;
+            let incoming_y = direction * (1.0 - row_progress) * viewport_h;
+            let outgoing = self.render_row(outgoing_row, viewport_w, viewport_h, window, cx);
+            let incoming = self.render_row(self.active_row, viewport_w, viewport_h, window, cx);
+            div()
+                .relative()
+                .size_full()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(outgoing_y))
+                        .left_0()
+                        .size_full()
+                        .child(outgoing),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(incoming_y))
+                        .left_0()
+                        .size_full()
+                        .child(incoming),
+                )
                 .into_any_element()
         } else if self.row_indices(self.active_row).next().is_none() {
             div()
@@ -2086,7 +2186,7 @@ impl Render for Workspace {
                 .child(div().text_size(px(12.0)).child(self.status.clone()))
                 .into_any_element()
         } else {
-            self.render_strip(viewport_w, viewport_h, window, cx)
+            self.render_strip(self.active_row, viewport_w, viewport_h, window, cx)
         };
 
         div()
@@ -3230,7 +3330,9 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let map = cx.debug_bounds("minimap").expect("the minimap should paint");
+        let map = cx
+            .debug_bounds("minimap")
+            .expect("the minimap should paint");
         let window_width = cx.update(|window, _| f32::from(window.viewport_size().width));
         assert!(
             f32::from(map.right()) <= window_width + 1.0

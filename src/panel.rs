@@ -1207,3 +1207,4 @@ fn demo_items() -> Vec<Item> {
         Item::Error("provider returned 429: rate limited, retrying".into()),
     ]
 }
+                        reasoning_effort: None,
