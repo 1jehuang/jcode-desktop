@@ -1065,6 +1065,25 @@ impl Workspace {
                     this.camera_from[row] = next;
                     this.camera_started[row] = None;
                     this.camera_dirty[row] = false;
+                    // Keep keyboard/input focus attached to what the gesture has
+                    // actually brought under the camera. Without this, a swipe
+                    // only moved the pixels: the old off-screen panel remained
+                    // active and the next keyboard action snapped back to it.
+                    if let Some(index) = panel_at_viewport_center(
+                        this.slots.iter().enumerate().filter_map(|(index, slot)| {
+                            (slot.row == row).then_some((index, slot.width_fraction))
+                        }),
+                        next,
+                        viewport_w,
+                    ) && index != this.active
+                    {
+                        if let Some(outgoing) = this.slots.get(this.active) {
+                            this.previous = Some(outgoing.panel.entity_id());
+                        }
+                        this.active = index;
+                        this.active_row = row;
+                        this.focus_active(window, cx);
+                    }
                     cx.notify();
                 },
             ))
@@ -2017,6 +2036,32 @@ fn pan_camera(current: f32, delta: f32, total_width: f32, viewport: f32) -> f32 
     (current + delta).clamp(-STRUT, max_scroll)
 }
 
+/// Choose the panel underneath the camera's focal point after a direct pan.
+/// Gaps belong to the closest adjacent panel, which avoids a dead zone and
+/// makes small, high-resolution touchpad deltas behave consistently.
+fn panel_at_viewport_center(
+    panels: impl IntoIterator<Item = (usize, f32)>,
+    camera: f32,
+    viewport: f32,
+) -> Option<usize> {
+    let focal_x = camera + viewport / 2.0;
+    let mut left = STRUT;
+    let mut closest = None;
+    let mut closest_distance = f32::INFINITY;
+
+    for (index, width_fraction) in panels {
+        let width = Workspace::width_for_fraction(width_fraction, viewport);
+        let center = left + width / 2.0;
+        let distance = (center - focal_x).abs();
+        if distance < closest_distance {
+            closest = Some(index);
+            closest_distance = distance;
+        }
+        left += width + GAP;
+    }
+    closest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2092,6 +2137,17 @@ mod tests {
         assert_eq!(pan_camera(900.0, 500.0, 2000.0, 1000.0), 1000.0);
         // Content narrower than the viewport cannot pan at all.
         assert_eq!(pan_camera(0.0, 300.0, 500.0, 1000.0), -GAP);
+    }
+
+    #[test]
+    fn touchpad_camera_focuses_the_panel_nearest_the_viewport_center() {
+        let viewport = 1000.0;
+        let panels = || [(0, 0.5), (1, 0.5), (2, 0.5)];
+
+        assert_eq!(panel_at_viewport_center(panels(), 0.0, viewport), Some(0));
+        assert_eq!(panel_at_viewport_center(panels(), 400.0, viewport), Some(1));
+        assert_eq!(panel_at_viewport_center(panels(), 900.0, viewport), Some(2));
+        assert_eq!(panel_at_viewport_center([], 0.0, viewport), None);
     }
 
     #[test]
