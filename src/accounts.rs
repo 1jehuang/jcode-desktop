@@ -70,7 +70,7 @@ pub fn spawn() -> Feed {
 }
 
 fn fetch() -> Option<Vec<Account>> {
-    let output = std::process::Command::new("jcode")
+    let output = std::process::Command::new(crate::platform::companion_executable("jcode"))
         .args(["auth", "status", "--json"])
         .output()
         .ok()?;

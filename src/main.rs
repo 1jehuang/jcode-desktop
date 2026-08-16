@@ -8,6 +8,7 @@ mod input;
 mod learning;
 mod markdown;
 mod panel;
+mod platform;
 mod theme;
 mod transition;
 mod workspace;
@@ -78,6 +79,27 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-shift-q", Quit, None),
         KeyBinding::new("ctrl-shift-n", NewPanel, None),
         KeyBinding::new("ctrl-t", NewPanel, None),
+    ]);
+
+    // GPUI names the native macOS Command modifier `cmd`. Keep these explicit
+    // instead of relying on Super translation so the app feels native when it
+    // is launched from Finder.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-left", FocusLeft, None),
+        KeyBinding::new("cmd-right", FocusRight, None),
+        KeyBinding::new("cmd-down", FocusDown, None),
+        KeyBinding::new("cmd-up", FocusUp, None),
+        KeyBinding::new("cmd-shift-left", MovePanelLeft, None),
+        KeyBinding::new("cmd-shift-right", MovePanelRight, None),
+        KeyBinding::new("cmd-shift-up", MovePanelUp, None),
+        KeyBinding::new("cmd-shift-down", MovePanelDown, None),
+        KeyBinding::new("cmd-n", NewPanel, None),
+        KeyBinding::new("cmd-t", NewPanel, None),
+        KeyBinding::new("cmd-w", ClosePanel, None),
+        KeyBinding::new("cmd-o", ToggleOverview, None),
+        KeyBinding::new("cmd-/", ToggleHints, None),
+        KeyBinding::new("cmd-q", Quit, None),
     ]);
 }
 

@@ -1,0 +1,89 @@
+name: macOS beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Beta version (for example 0.1.0-beta.1)
+        required: true
+        default: 0.1.0-beta.1
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Check out Jcode Desktop
+        uses: actions/checkout@v4
+        with:
+          path: jcode-desktop
+      - name: Check out Jcode runtime
+        uses: actions/checkout@v4
+        with:
+          repository: 1jehuang/jcode
+          path: jcode
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            jcode-desktop
+            jcode
+      - name: Import Developer ID certificate
+        if: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/jcode-signing.keychain-db"
+          security create-keychain -p runner "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p runner "$KEYCHAIN"
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k runner "$KEYCHAIN"
+      - name: Configure notarization
+        if: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool store-credentials jcode-notary \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID"
+      - name: Build universal app, DMG, and ZIP
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+          JCODE_REPO: ${{ github.workspace }}/jcode
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_API_KEY_P8 != '' && 'jcode-notary' || '' }}
+        run: jcode-desktop/scripts/package-macos.sh
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jcode-macOS-beta
+          path: |
+            jcode-desktop/dist/macos/Jcode-macOS-universal.dmg
+            jcode-desktop/dist/macos/Jcode-macOS-universal.zip
+            jcode-desktop/dist/macos/SHA256SUMS
+      - name: Publish tagged beta release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" --prerelease \
+            --notes "macOS beta for Apple Silicon and Intel Macs. Download the DMG, drag Jcode to Applications, and open it. The Jcode runtime is included." \
+            jcode-desktop/dist/macos/Jcode-macOS-universal.dmg \
+            jcode-desktop/dist/macos/Jcode-macOS-universal.zip \
+            jcode-desktop/dist/macos/SHA256SUMS

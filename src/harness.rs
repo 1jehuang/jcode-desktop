@@ -65,7 +65,10 @@ pub enum Command {
 }
 
 enum SessionCommand {
-    Send { content: String, images: Vec<(String, String)> },
+    Send {
+        content: String,
+        images: Vec<(String, String)>,
+    },
     Cancel,
     Stop,
 }
@@ -140,7 +143,11 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
     // desktop window.
     loop {
         let _ = updates.send(Update::Status("starting jcode runtime...".into()));
-        match jcode_sdk::ensure_runtime(&LaunchOptions::default(), &|status| {
+        let options = LaunchOptions {
+            binary: Some(crate::platform::companion_executable("jcode")),
+            ..Default::default()
+        };
+        match jcode_sdk::ensure_runtime(&options, &|status| {
             let _ = updates.send(Update::Status(status.to_string()));
         }) {
             Ok(()) => break,
@@ -295,6 +302,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     session_id: session_id.clone(),
                     provider: info.provider,
                     model: info.model,
+                    reasoning_effort: info.reasoning_effort,
                     routes: info.routes,
                 },
             });
@@ -388,13 +396,11 @@ mod tests {
 
         assert!(!collect_disconnected_commands(&rx, &mut pending));
         assert_eq!(pending.len(), 2);
-        assert!(
-            matches!(
-                pending.pop_front(),
-                Some(SessionCommand::Send { content, images })
-                    if content == "hi" && images == [("image/png".into(), "cG5n".into())]
-            )
-        );
+        assert!(matches!(
+            pending.pop_front(),
+            Some(SessionCommand::Send { content, images })
+                if content == "hi" && images == [("image/png".into(), "cG5n".into())]
+        ));
         assert!(matches!(pending.pop_front(), Some(SessionCommand::Cancel)));
     }
 
