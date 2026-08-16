@@ -228,6 +228,16 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if let jcode_sdk::ApiEvent::SessionRenamed { display_title, .. } = &event
+                    && let Some(session) = self
+                        .sessions
+                        .iter_mut()
+                        .find(|session| session.session_id == session_id)
+                {
+                    // SessionInfo carries the effective display title, so keep
+                    // the sidebar's cached copy in sync with the live panel.
+                    session.title = Some(display_title.clone());
+                }
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| panel.apply(&event, cx));
