@@ -213,16 +213,7 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
                     .expect("spawn create thread");
             }
             Command::Watch { session_id } => {
-                if workers.contains_key(&session_id) {
-                    continue;
-                }
-                let (tx, rx) = channel::<SessionCommand>();
-                workers.insert(session_id.clone(), tx);
-                let updates = updates.clone();
-                std::thread::Builder::new()
-                    .name(format!("jcode-session-{session_id}"))
-                    .spawn(move || session_worker(session_id, rx, updates))
-                    .expect("spawn session worker");
+                ensure_session_worker(&mut workers, session_id, &updates);
             }
             Command::Unwatch { session_id } => {
                 if let Some(worker) = workers.remove(&session_id) {
@@ -234,8 +225,15 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
                 content,
                 images,
             } => {
-                if let Some(worker) = workers.get(&session_id) {
-                    let _ = worker.send(SessionCommand::Send { content, images });
+                let command = SessionCommand::Send { content, images };
+                let worker = ensure_session_worker(&mut workers, session_id.clone(), &updates);
+                if let Err(error) = worker.send(command) {
+                    // A worker can disconnect between the map lookup and send.
+                    // Replace it and retain the user's message instead of
+                    // silently dropping the submission.
+                    workers.remove(&session_id);
+                    let worker = ensure_session_worker(&mut workers, session_id, &updates);
+                    let _ = worker.send(error.0);
                 }
             }
             Command::Cancel { session_id } => {
@@ -245,6 +243,24 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
             }
         }
     }
+}
+
+fn ensure_session_worker(
+    workers: &mut HashMap<String, Sender<SessionCommand>>,
+    session_id: String,
+    updates: &Sender<Update>,
+) -> Sender<SessionCommand> {
+    if let Some(worker) = workers.get(&session_id) {
+        return worker.clone();
+    }
+    let (tx, rx) = channel::<SessionCommand>();
+    workers.insert(session_id.clone(), tx.clone());
+    let updates = updates.clone();
+    std::thread::Builder::new()
+        .name(format!("jcode-session-{session_id}"))
+        .spawn(move || session_worker(session_id, rx, updates))
+        .expect("spawn session worker");
+    tx
 }
 
 /// One session's dedicated connection: attach, history, events, commands.
