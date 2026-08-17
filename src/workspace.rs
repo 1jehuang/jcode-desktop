@@ -92,18 +92,19 @@ const SIDEBAR_WIDTH: f32 = 264.0;
 // Minimap: a rounded square card in the top right that maps every strip to
 // scale, preserving the canvas aspect ratio so panels taller than wide on
 // screen stay taller than wide on the map.
-const MINIMAP_SIZE: f32 = 176.0;
-const MINIMAP_PADDING: f32 = 8.0;
-const MINIMAP_ROW_GAP: f32 = 5.0;
+const MINIMAP_SIZE: f32 = 96.0;
+const MINIMAP_PADDING: f32 = 5.0;
+const MINIMAP_ROW_GAP: f32 = 3.0;
 const MINIMAP_TOP: f32 = 8.0;
-const MINIMAP_RIGHT: f32 = 16.0;
+const MINIMAP_RIGHT: f32 = 12.0;
+const COACH_TOAST_GAP: f32 = 8.0;
+const COACH_TOAST_WIDTH: f32 = 288.0;
 /// Rows split the square's inner height evenly, one per strip.
-const MINIMAP_ROW_HEIGHT: f32 = (MINIMAP_SIZE
-    - MINIMAP_PADDING * 2.0
-    - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
-    / STRIP_COUNT as f32;
+const MINIMAP_ROW_HEIGHT: f32 =
+    (MINIMAP_SIZE - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
+        / STRIP_COUNT as f32;
 /// Vertical inset between a panel rectangle and its track edge.
-const MINIMAP_PANEL_INSET: f32 = 2.0;
+const MINIMAP_PANEL_INSET: f32 = 1.5;
 
 struct Slot {
     panel: Entity<Panel>,
@@ -1904,7 +1905,7 @@ impl Workspace {
                 // Panels keep the canvas aspect ratio: the height is the real
                 // panel height under the same scale, so a panel taller than
                 // wide on screen reads taller than wide here too.
-                let height = (viewport_h * scale).clamp(4.0, panel_track_h);
+                let height = (viewport_h * scale).clamp(3.0, panel_track_h);
                 let top = MINIMAP_PANEL_INSET + (panel_track_h - height) / 2.0;
                 let focused = index == self.active;
                 let busy = self.slots[index].panel.read(cx).is_busy();
@@ -1944,7 +1945,7 @@ impl Workspace {
             // The lens: where the camera is looking on the active strip.
             if active_row {
                 let lens_left = ((self.camera_x[row] + STRUT) * scale).max(0.0);
-                let lens_width = (viewport_w * scale).min(track_w - lens_left).max(4.0);
+                let lens_width = (viewport_w * scale).min(track_w - lens_left).max(3.0);
                 track = track.child(
                     div()
                         .absolute()
@@ -1965,9 +1966,8 @@ impl Workspace {
         card.into_any_element()
     }
 
-    /// The coach's just-in-time hint. It appears next to the status bar rather
-    /// than over the transcript, so a suggestion never covers the work that
-    /// prompted it, and it states what was observed so the advice is legible.
+    /// The coach's just-in-time hint. It sits directly below the minimap so the
+    /// workspace's transient navigation aids stay together in the top right.
     fn render_coach_toast(
         &self,
         hint: &learning::Hint,
@@ -1976,9 +1976,11 @@ impl Workspace {
     ) -> gpui::AnyElement {
         div()
             .absolute()
-            .bottom(px(44.0))
-            .right(px(16.0))
-            .w(px(320.0))
+            .top(px(MINIMAP_TOP + MINIMAP_SIZE + COACH_TOAST_GAP))
+            .right(px(MINIMAP_RIGHT))
+            .w(px(COACH_TOAST_WIDTH))
+            .min_w_0()
+            .overflow_hidden()
             .opacity(progress)
             .child(
                 div()
@@ -3269,9 +3271,25 @@ mod tests {
         let bounds = cx
             .debug_bounds("coach-toast")
             .expect("the hint toast should have painted");
+        let minimap = cx
+            .debug_bounds("minimap")
+            .expect("the minimap should have painted above the hint");
         assert!(
             bounds.size.width > px(0.) && bounds.size.height > px(0.),
             "the toast must occupy real space, got {bounds:?}"
+        );
+        assert!(
+            bounds.origin.y >= minimap.origin.y + minimap.size.height,
+            "the toast should sit below the minimap: toast={bounds:?}, minimap={minimap:?}"
+        );
+        assert_eq!(
+            bounds.origin.x + bounds.size.width,
+            minimap.origin.x + minimap.size.width,
+            "the toast and minimap should share their right edge"
+        );
+        assert!(
+            bounds.origin.x >= px(SIDEBAR_WIDTH),
+            "the toast should remain inside the workspace instead of spilling into the sidebar"
         );
     }
 
