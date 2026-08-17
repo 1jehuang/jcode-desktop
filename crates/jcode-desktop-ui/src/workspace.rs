@@ -2185,19 +2185,11 @@ impl Workspace {
                     .into_any_element(),
             };
 
-            section = section.child(
+            let mut details = div().flex().flex_col().flex_1().min_w_0().child(
                 div()
-                    .id(("account", index))
-                    .debug_selector(|| format!("account-{}", account.id))
-                    .mx_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .hover(|el| el.bg(Theme::HEADER_BG))
-                    .child(logo)
                     .child(
                         div()
                             .flex_1()
@@ -2217,7 +2209,67 @@ impl Workspace {
                             } else {
                                 format!("{} · expired", account.auth_kind)
                             }),
-                    )
+                    ),
+            );
+
+            for (limit_index, limit) in account.limits.iter().enumerate() {
+                let used = limit.usage_percent.clamp(0.0, 100.0);
+                let label = match &limit.reset_in {
+                    Some(reset) => format!("{} · {:.0}% · {reset}", limit.name, used),
+                    None => format!("{} · {:.0}%", limit.name, used),
+                };
+                details = details.child(
+                    div()
+                        .id(("account-limit", index * 1000 + limit_index))
+                        .debug_selector({
+                            let id = account.id.clone();
+                            move || format!("account-{id}-limit-{limit_index}")
+                        })
+                        .mt(px(3.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .text_size(px(8.0))
+                                .text_color(Theme::TEXT_DIM)
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(3.0))
+                                .rounded_full()
+                                .overflow_hidden()
+                                .bg(Theme::INLINE_CODE_BG)
+                                .child(div().h_full().w(relative(used / 100.0)).rounded_full().bg(
+                                    if used >= 90.0 {
+                                        Theme::ERROR
+                                    } else if used >= 70.0 {
+                                        Theme::WARN
+                                    } else {
+                                        Theme::ACCENT
+                                    },
+                                )),
+                        ),
+                );
+            }
+
+            section = section.child(
+                div()
+                    .id(("account", index))
+                    .debug_selector(|| format!("account-{}", account.id))
+                    .mx_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .hover(|el| el.bg(Theme::HEADER_BG))
+                    .child(logo)
+                    .child(details)
                     .child(
                         div()
                             .flex_none()
@@ -3705,6 +3757,18 @@ mod tests {
                     status: "available".into(),
                     auth_kind: "OAuth".into(),
                     method: "OAuth".into(),
+                    limits: vec![
+                        accounts::UsageLimit {
+                            name: "5 hour".into(),
+                            usage_percent: 25.0,
+                            reset_in: Some("2h".into()),
+                        },
+                        accounts::UsageLimit {
+                            name: "Weekly".into(),
+                            usage_percent: 80.0,
+                            reset_in: Some("4d".into()),
+                        },
+                    ],
                 },
                 accounts::Account {
                     id: "jcode".into(),
@@ -3712,6 +3776,7 @@ mod tests {
                     status: "expired".into(),
                     auth_kind: "API key".into(),
                     method: "API key (`JCODE_API_KEY`)".into(),
+                    limits: Vec::new(),
                 },
             ]);
             let _ = window;
@@ -3733,6 +3798,11 @@ mod tests {
         let jcode_row = vcx
             .debug_bounds("account-jcode")
             .expect("the Jcode account row and donut should have painted");
+        assert!(
+            vcx.debug_bounds("account-openai-limit-0").is_some()
+                && vcx.debug_bounds("account-openai-limit-1").is_some(),
+            "every reported usage limit should paint beneath its account"
+        );
         assert!(
             openai_row.origin.y < jcode_row.origin.y,
             "available accounts should be listed above expired ones"

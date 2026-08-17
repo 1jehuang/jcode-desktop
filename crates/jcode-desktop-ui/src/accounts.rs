@@ -21,6 +21,16 @@ pub struct Account {
     pub auth_kind: String,
     /// Human method line, e.g. "API key (`OPENAI_API_KEY`)".
     pub method: String,
+    /// Every rolling or model-specific limit reported by `jcode usage`.
+    pub limits: Vec<UsageLimit>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageLimit {
+    pub name: String,
+    /// Percentage consumed, clamped by the UI when painted.
+    pub usage_percent: f32,
+    pub reset_in: Option<String>,
 }
 
 impl Account {
@@ -77,7 +87,15 @@ fn fetch() -> Option<Vec<Account>> {
     if !output.status.success() {
         return None;
     }
-    parse(&String::from_utf8_lossy(&output.stdout))
+    let mut accounts = parse(&String::from_utf8_lossy(&output.stdout))?;
+    if let Ok(output) = std::process::Command::new(crate::platform::companion_executable("jcode"))
+        .args(["usage", "--json"])
+        .output()
+        && output.status.success()
+    {
+        merge_usage(&mut accounts, &String::from_utf8_lossy(&output.stdout));
+    }
+    Some(accounts)
 }
 
 /// Parse the CLI report, keeping only configured credentials, available first.
@@ -100,12 +118,70 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
                 status: text("status"),
                 auth_kind: text("auth_kind"),
                 method: text("method"),
+                limits: Vec::new(),
             };
             matches!(account.status.as_str(), "available" | "expired").then_some(account)
         })
         .collect();
     accounts.sort_by_key(|account| !account.available());
     Some(accounts)
+}
+
+/// Merge the usage command's provider reports into the canonical auth rows.
+/// The usage schema predates stable provider ids, so names are normalized here.
+fn merge_usage(accounts: &mut [Account], json: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    let Some(providers) = value.get("providers").and_then(|value| value.as_array()) else {
+        return;
+    };
+
+    for provider in providers {
+        let Some(provider_name) = provider
+            .get("provider_name")
+            .and_then(|value| value.as_str())
+        else {
+            continue;
+        };
+        let Some(account) = accounts
+            .iter_mut()
+            .find(|account| usage_provider_matches(account, provider_name))
+        else {
+            continue;
+        };
+        let Some(limits) = provider.get("limits").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        account.limits = limits
+            .iter()
+            .filter_map(|limit| {
+                Some(UsageLimit {
+                    name: limit.get("name")?.as_str()?.to_owned(),
+                    usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
+                    reset_in: limit
+                        .get("reset_in")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned),
+                })
+            })
+            .collect();
+    }
+}
+
+fn usage_provider_matches(account: &Account, provider_name: &str) -> bool {
+    let name = provider_name.to_ascii_lowercase();
+    match account.id.as_str() {
+        "claude" => name.starts_with("anthropic (claude)"),
+        "anthropic-api" => name.starts_with("anthropic api"),
+        "openai" => name.starts_with("openai (chatgpt)"),
+        "openai-api" => name.starts_with("openai api"),
+        "jcode" => name.starts_with("jcode subscription"),
+        id => {
+            let id = id.replace(['-', '_'], " ");
+            name == id || name.starts_with(&format!("{id} "))
+        }
+    }
 }
 
 /// The provider's logo, tinted at paint time by the element's text color.
@@ -203,6 +279,26 @@ mod tests {
         assert!(parse("{}").is_none());
     }
 
+    #[test]
+    fn usage_limits_merge_by_provider_and_preserve_every_limit() {
+        let mut accounts = parse(SAMPLE).unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"OpenAI (ChatGPT) (a***@example.com)","limits":[
+                {"name":"5 hour","usage_percent":24.5,"reset_in":"2h"},
+                {"name":"Weekly","usage_percent":81.0,"reset_in":"4d"}
+            ]}]}"#,
+        );
+        let openai = accounts
+            .iter()
+            .find(|account| account.id == "openai")
+            .unwrap();
+        assert_eq!(openai.limits.len(), 2);
+        assert_eq!(openai.limits[0].name, "5 hour");
+        assert_eq!(openai.limits[1].usage_percent, 81.0);
+        assert_eq!(openai.limits[1].reset_in.as_deref(), Some("4d"));
+    }
+
     /// The refresh path: a poll between snapshots sees the latest one, stale
     /// intermediate snapshots are skipped, and an idle feed yields nothing, so
     /// the UI only repaints when the login state actually changed.
@@ -221,6 +317,7 @@ mod tests {
                 status: "available".into(),
                 auth_kind: "OAuth".into(),
                 method: "OAuth".into(),
+                limits: Vec::new(),
             }]
         };
         tx.send(snapshot("stale")).unwrap();
