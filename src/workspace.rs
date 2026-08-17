@@ -2396,7 +2396,9 @@ impl Workspace {
             .border_b_1()
             .border_color(Theme::PANEL_BORDER);
 
-        if let Some(parent) = directory.parent().map(Path::to_path_buf) {
+        if !query.is_empty()
+            && let Some(parent) = directory.parent().map(Path::to_path_buf)
+        {
             list = list.child(
                 div()
                     .id("folder-picker-parent")
@@ -2414,7 +2416,7 @@ impl Workspace {
                     .child("↰  .."),
             );
         }
-        for (index, path) in entries.into_iter().enumerate() {
+        for (index, (path, reason)) in entries.into_iter().enumerate() {
             let label = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
