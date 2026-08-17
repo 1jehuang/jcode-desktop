@@ -1611,6 +1611,44 @@ mod tests {
         );
     }
 
+    /// The review fixture itself must paint: every transcript shape the demo
+    /// seeds (user, reasoning, running and finished tools with ANSI output,
+    /// full markdown, error) renders together in one painted window without
+    /// panicking, and the signature regions all occupy space.
+    #[gpui::test]
+    fn the_demo_transcript_paints_every_item_shape(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        // The same items JCODE_DESKTOP_DEMO_TRANSCRIPT=1 seeds, minus the
+        // env-var gate so the test is hermetic.
+        panel.update(vcx, |panel, cx| {
+            panel.items = demo_item_fixtures();
+            assert!(panel.items.len() >= 6, "demo covers every item shape");
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        for selector in ["tool-header", "tool-output-size", "md-quote", "code-copy"] {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} should paint in the demo"));
+            assert!(
+                bounds.size.width > px(0.) && bounds.size.height > px(0.),
+                "{selector} must occupy space"
+            );
+        }
+    }
+
     /// Blockquotes paint as a distinct region in a real assistant message.
     #[gpui::test]
     fn blockquotes_paint_in_a_real_transcript(cx: &mut gpui::TestAppContext) {
@@ -1810,6 +1848,12 @@ fn demo_items() -> Vec<Item> {
     if std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1") {
         return Vec::new();
     }
+    demo_item_fixtures()
+}
+
+/// The sample content behind `demo_items`, reachable from tests without
+/// mutating process environment.
+fn demo_item_fixtures() -> Vec<Item> {
     vec![
         Item::User("Explain **markdown** rendering and show `code`, a [link](https://example.com), ~~old~~ new.".into()),
         Item::Reasoning("The user wants a survey of the renderer. I should cover blocks, inline spans, and how streaming text is handled while a turn is still in flight, then mention the tables and code paths in order.".into()),
@@ -1829,8 +1873,20 @@ fn demo_items() -> Vec<Item> {
             done: false,
             error: None,
         },
+        // Long ANSI-colored output: exercises the size hint on the collapsed
+        // row and the stripped, head-and-tail detail when expanded.
+        Item::Tool {
+            call_id: "3".into(),
+            name: "bash".into(),
+            input: r#"{"command":"cargo build 2>&1","intent":"noisy build"}"#.into(),
+            output: (0..90)
+                .map(|n| format!("\u{1b}[32m   Compiling\u{1b}[0m crate-{n} v0.1.{n}\n"))
+                .collect(),
+            done: true,
+            error: None,
+        },
         Item::Assistant(
-            "# Heading one\n## Heading two\n\nA paragraph with *italic*, **bold**, `inline code`, and math $e^{i\\pi}+1=0$.\n\n- top level\n  - nested item\n- [x] finished task\n- [ ] pending task\n\n1. first\n2. second\n\n> A quote line\n> continued here\n\n| block | supported |\n| --- | --- |\n| tables | yes |\n| code | yes |\n\n```rust\nfn main() {\n    // a comment\n    let name = \"world\";\n    println!(\"hello {name}\");\n}\n```\n\n$$\n\\sum_{i=0}^{n} i^2\n$$\n\n---\n\nDone."
+            "# Heading one\n## Heading two\n\nA paragraph with *italic*, **bold**, `inline code`, and math $e^{i\\pi}+1=0$ plus \\(n \\to \\infty\\).\n\n- top level\n  - nested item\n- [x] finished task\n- [ ] pending task\n\n1. first\n2. second\n\n> A quote line\n> continued here\n\n| block | supported |\n| --- | --- |\n| tables | yes |\n| code | yes |\n\n```rust\nfn main() {\n    // a comment\n    let name = \"world\";\n    println!(\"hello {name}\");\n}\n```\n\n$$\n\\sum_{i=0}^{n} i^2\n$$\n\n\\[ E = mc^2 \\]\n\n---\n\nDone."
                 .into(),
         ),
         Item::Error("provider returned 429: rate limited, retrying".into()),
