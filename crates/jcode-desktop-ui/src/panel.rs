@@ -761,10 +761,17 @@ impl Panel {
             .as_ref()
             .map(|terminal| terminal.read(cx).screen_contents())
     }
+
+    /// The transcript's vertical scroll offset, so tests can prove a gesture
+    /// did or did not scroll it.
+    #[cfg(test)]
+    pub fn test_scroll_offset_y(&self) -> gpui::Pixels {
+        self.scroll.offset().y
+    }
 }
 
 impl Render for Panel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(terminal) = &self.terminal {
             return div()
                 .size_full()

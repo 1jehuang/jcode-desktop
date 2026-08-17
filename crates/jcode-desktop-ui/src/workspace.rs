@@ -121,6 +121,110 @@ const GESTURE_HOLD: Duration = Duration::from_millis(150);
 const GESTURE_FADE: Duration = Duration::from_millis(300);
 const GESTURE_RETICLE_SIZE: f32 = 44.0;
 const MINIMAP_GESTURE_DOT: f32 = 7.0;
+/// Travel before a touchpad gesture locks to its dominant axis. Below this,
+/// horizontal deltas pan and vertical deltas scroll, like before.
+const AXIS_LOCK: f32 = 12.0;
+/// Vertical travel, after a horizontal lock, that breaks the sticky axis and
+/// hops to the neighbouring strip. Resets per hop so a long drag steps
+/// through strips one threshold at a time.
+const STRIP_BREAK: f32 = 130.0;
+/// A pause this long between deltas ends the gesture, since not every
+/// platform reliably delivers an Ended touch phase.
+const GESTURE_RESET: Duration = Duration::from_millis(250);
+/// Fraction of the vertical pull the reticle follows while the sticky axis
+/// resists, so the rubber band is visible before it snaps.
+const PULL_RESISTANCE: f32 = 0.35;
+
+/// Which axis a touchpad gesture has committed to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum GestureAxis {
+    #[default]
+    Undecided,
+    Horizontal,
+    Vertical,
+}
+
+/// The sticky axis lock for two-finger strip gestures. A gesture that starts
+/// horizontally owns the strip: it pans, and once enough vertical travel
+/// accumulates it breaks the stickiness and hops strips. A gesture that
+/// starts vertically belongs to whatever is under the pointer and never pans.
+#[derive(Clone, Copy, Debug, Default)]
+struct StripGesture {
+    axis: GestureAxis,
+    travel_x: f32,
+    travel_y: f32,
+    /// Vertical pull accumulated while horizontally locked. Positive pulls
+    /// toward the strip below (natural: fingers up reveal what is beneath).
+    pull: f32,
+}
+
+/// Where one scroll delta goes, decided by the sticky axis lock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Routed {
+    /// The event belongs to whatever is under the pointer (a transcript).
+    ToPanel,
+    /// The strip takes it: pan by `dx`, hop `switch` strips, and when
+    /// `exclusive` the event must not also reach the transcript.
+    Strip { dx: f32, switch: i8, exclusive: bool },
+}
+
+impl StripGesture {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Advance the state machine by one precise (touchpad) delta.
+    fn feed(&mut self, dx: f32, dy: f32, phase: gpui::TouchPhase) -> Routed {
+        use gpui::TouchPhase::{Cancelled, Ended, Started};
+        if matches!(phase, Started | Cancelled) {
+            self.reset();
+        }
+        let routed = match self.axis {
+            GestureAxis::Undecided => {
+                self.travel_x += dx.abs();
+                self.travel_y += dy.abs();
+                if self.travel_x >= AXIS_LOCK || self.travel_y >= AXIS_LOCK {
+                    self.axis = if self.travel_x >= self.travel_y {
+                        GestureAxis::Horizontal
+                    } else {
+                        GestureAxis::Vertical
+                    };
+                }
+                match self.axis {
+                    GestureAxis::Vertical => Routed::ToPanel,
+                    // Pan horizontal motion immediately, but keep the event
+                    // shared until the lock resolves so the first few small
+                    // vertical pixels still reach the transcript.
+                    axis => Routed::Strip {
+                        dx,
+                        switch: 0,
+                        exclusive: axis == GestureAxis::Horizontal,
+                    },
+                }
+            }
+            GestureAxis::Vertical => Routed::ToPanel,
+            GestureAxis::Horizontal => {
+                self.pull += -dy;
+                let switch = if self.pull.abs() >= STRIP_BREAK {
+                    let direction = if self.pull > 0.0 { 1 } else { -1 };
+                    self.pull = 0.0;
+                    direction
+                } else {
+                    0
+                };
+                Routed::Strip {
+                    dx,
+                    switch,
+                    exclusive: true,
+                }
+            }
+        };
+        if phase == Ended {
+            self.reset();
+        }
+        routed
+    }
+}
 
 struct Slot {
     panel: Entity<Panel>,
@@ -255,6 +359,11 @@ pub struct Workspace {
     /// When the last touchpad pan delta arrived. Drives the gesture reticle
     /// that marks where focus will land while a swipe is in flight.
     gesture_last: Option<Instant>,
+    /// The sticky axis lock for the gesture currently on the strip.
+    gesture: StripGesture,
+    /// When the last precise delta of any axis arrived, so a stale gesture
+    /// can be ended by silence when no Ended phase is delivered.
+    gesture_seen: Option<Instant>,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
@@ -336,6 +445,8 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
+            gesture: StripGesture::default(),
+            gesture_seen: None,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -387,6 +498,8 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
+            gesture: StripGesture::default(),
+            gesture_seen: None,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -1126,6 +1239,22 @@ impl Workspace {
     /// open shows the user pressed a key, not that they navigated anywhere, so
     /// it must not be taken as evidence of skill.
     fn change_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let meaningful = self.switch_row_animated(row, window, cx);
+        if meaningful {
+            self.learned("focus_up_down", cx);
+        }
+        cx.notify();
+    }
+
+    /// Switch strips with the row transition animation. Returns whether the
+    /// move actually landed on a different panel, so callers can decide if it
+    /// counts as navigation.
+    fn switch_row_animated(
+        &mut self,
+        row: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let outgoing_row = self.active_row;
         let position = self.active_position_in_row();
         let was_active = self
@@ -1143,10 +1272,7 @@ impl Workspace {
             .get(self.active)
             .map(|slot| slot.panel.entity_id());
         let landed_somewhere = self.row_indices(self.active_row).next().is_some();
-        if landed_somewhere && was_active != is_active {
-            self.learned("focus_up_down", cx);
-        }
-        cx.notify();
+        landed_somewhere && was_active != is_active
     }
 
     fn move_panel_left(&mut self, _: &MovePanelLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -1690,8 +1816,9 @@ impl Workspace {
         }
 
         // Two-finger touchpad swipes (and horizontal mouse wheels) pan the
-        // strip directly, like grabbing the canvas. Vertical deltas are left
-        // for the panel transcripts, except when Shift redirects them here.
+        // strip directly, like grabbing the canvas. The sticky axis lock in
+        // `StripGesture` decides, per gesture, whether deltas pan the strip,
+        // scroll the transcript under the pointer, or hop strips vertically.
         let total_width = self
             .row_indices(row)
             .map(|index| self.slot_width(index, viewport_w) + GAP)
@@ -1705,60 +1832,60 @@ impl Workspace {
             // after the last scroll delta.
             window.request_animation_frame();
         }
+        // The reticle leans into an unbroken vertical pull, so the rubber
+        // band toward the next strip is visible before it snaps.
+        let reticle_pull = if self.gesture.axis == GestureAxis::Horizontal {
+            (self.gesture.pull * PULL_RESISTANCE)
+                .clamp(-viewport_h / 3.0, viewport_h / 3.0)
+        } else {
+            0.0
+        };
+        let entity = cx.entity();
         div()
             .relative()
             .size_full()
             .overflow_hidden()
             .pl(px(GAP))
-            .on_scroll_wheel(cx.listener(
-                move |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                    let delta = event.delta.pixel_delta(window.line_height());
-                    let mut dx = f32::from(delta.x);
-                    if dx == 0.0 && event.modifiers.shift {
-                        dx = f32::from(delta.y);
-                    }
-                    if dx == 0.0 {
-                        return;
-                    }
-                    // Light the gesture reticle: a circle on the canvas and a
-                    // dot on the minimap mark the camera's focal point while
-                    // the fingers are moving, so the user can see where focus
-                    // will land when the gesture settles.
-                    this.gesture_last = Some(Instant::now());
-                    // Natural scrolling: content follows the fingers, so the
-                    // camera moves opposite the delta. Panning cancels any
-                    // in-flight camera animation and becomes the new target,
-                    // otherwise the next frame would snap back.
-                    let next = pan_camera(this.camera_x[row], -dx, total_width, viewport_w);
-                    if (next - this.camera_x[row]).abs() >= f32::EPSILON {
-                        this.camera_x[row] = next;
-                        this.camera_target[row] = next;
-                        this.camera_from[row] = next;
-                        this.camera_started[row] = None;
-                        this.camera_dirty[row] = false;
-                        // Keep keyboard/input focus attached to what the gesture has
-                        // actually brought under the camera. Without this, a swipe
-                        // only moved the pixels: the old off-screen panel remained
-                        // active and the next keyboard action snapped back to it.
-                        if let Some(index) = panel_at_viewport_center(
-                            this.slots.iter().enumerate().filter_map(|(index, slot)| {
-                                (slot.row == row).then_some((index, slot.width_fraction))
-                            }),
-                            next,
-                            viewport_w,
-                        ) && index != this.active
-                        {
-                            if let Some(outgoing) = this.slots.get(this.active) {
-                                this.previous = Some(outgoing.panel.entity_id());
-                            }
-                            this.active = index;
-                            this.active_row = row;
-                            this.focus_active(window, cx);
-                        }
-                    }
-                    cx.notify();
-                },
-            ))
+            // A capture-phase router: it sees every scroll event over the
+            // strip before the transcripts do, so a gesture that committed
+            // to panning can consume its vertical deltas instead of leaking
+            // them into whichever panel happens to sit under the pointer.
+            // The hitbox respects occlusion, so the minimap keeps its own
+            // scroll behavior.
+            .child(
+                gpui::canvas(
+                    move |bounds, window, _| {
+                        window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                    },
+                    move |_, hitbox, window, _| {
+                        window.on_mouse_event(
+                            move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                                if phase != gpui::DispatchPhase::Capture
+                                    || !hitbox.should_handle_scroll(window)
+                                {
+                                    return;
+                                }
+                                entity.update(cx, |this, cx| {
+                                    // During a row transition both rows paint
+                                    // a router; only the active row's routes,
+                                    // and it also stops propagation for the
+                                    // outgoing row's transcripts.
+                                    if this.active_row != row {
+                                        return;
+                                    }
+                                    if this.route_strip_scroll(
+                                        row, event, total_width, viewport_w, window, cx,
+                                    ) {
+                                        cx.stop_propagation();
+                                    }
+                                });
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(strip)
             // The gesture reticle: while a touchpad swipe is panning this
             // strip, a ring at the camera's focal point shows exactly where
@@ -1770,7 +1897,7 @@ impl Workspace {
                         .debug_selector(|| "gesture-reticle".into())
                         .absolute()
                         .left(px((viewport_w - GESTURE_RETICLE_SIZE) / 2.0))
-                        .top(px((viewport_h - GESTURE_RETICLE_SIZE) / 2.0))
+                        .top(px((viewport_h - GESTURE_RETICLE_SIZE) / 2.0 + reticle_pull))
                         .w(px(GESTURE_RETICLE_SIZE))
                         .h(px(GESTURE_RETICLE_SIZE))
                         .rounded_full()
@@ -1792,6 +1919,124 @@ impl Workspace {
     fn gesture_reticle_alpha(&self) -> Option<f32> {
         self.gesture_last
             .and_then(|last| gesture_alpha(last.elapsed()))
+    }
+
+    /// Route one scroll event over the strip through the sticky axis lock.
+    /// Returns true when the strip consumed the event and the transcripts
+    /// underneath must not also scroll.
+    fn route_strip_scroll(
+        &mut self,
+        row: usize,
+        event: &gpui::ScrollWheelEvent,
+        total_width: f32,
+        viewport_w: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let delta = event.delta.pixel_delta(window.line_height());
+        let mut dx = f32::from(delta.x);
+        let mut dy = f32::from(delta.y);
+        if event.modifiers.shift {
+            // Shift redirects vertical scrolling into a horizontal pan.
+            if dx == 0.0 {
+                dx = dy;
+            }
+            dy = 0.0;
+        }
+        if !event.delta.precise() {
+            // Mouse wheels have no gesture continuity: horizontal clicks pan,
+            // vertical ones stay with the panel under the pointer.
+            if dx != 0.0 {
+                self.gesture_last = Some(Instant::now());
+                self.pan_strip(row, dx, total_width, viewport_w, window, cx);
+                cx.notify();
+            }
+            return false;
+        }
+        // Not every platform delivers an Ended phase, so silence also ends
+        // the gesture: a fresh burst of deltas starts a fresh axis decision.
+        let now = Instant::now();
+        if self
+            .gesture_seen
+            .is_none_or(|seen| seen.elapsed() > GESTURE_RESET)
+        {
+            self.gesture.reset();
+        }
+        self.gesture_seen = Some(now);
+        match self.gesture.feed(dx, dy, event.touch_phase) {
+            Routed::ToPanel => false,
+            Routed::Strip {
+                dx,
+                switch,
+                exclusive,
+            } => {
+                // Light the gesture reticle: a circle on the canvas and a
+                // dot on the minimap mark the camera's focal point while the
+                // fingers are moving, so the user can see where focus will
+                // land when the gesture settles.
+                self.gesture_last = Some(now);
+                if dx != 0.0 {
+                    self.pan_strip(row, dx, total_width, viewport_w, window, cx);
+                }
+                if switch != 0 {
+                    // The vertical pull broke the sticky axis: hop to the
+                    // neighbouring strip, keeping the gesture alive so a
+                    // longer drag steps through several strips.
+                    let target = if switch > 0 {
+                        (self.active_row + 1).min(STRIP_COUNT - 1)
+                    } else {
+                        self.active_row.saturating_sub(1)
+                    };
+                    if target != self.active_row {
+                        self.switch_row_animated(target, window, cx);
+                    }
+                }
+                cx.notify();
+                exclusive
+            }
+        }
+    }
+
+    /// Pan a strip's camera directly, cancelling any in-flight animation, and
+    /// keep focus attached to what the gesture has actually brought under the
+    /// camera. Without the focus follow, a swipe only moved the pixels: the
+    /// old off-screen panel remained active and the next keyboard action
+    /// snapped back to it.
+    fn pan_strip(
+        &mut self,
+        row: usize,
+        dx: f32,
+        total_width: f32,
+        viewport_w: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Natural scrolling: content follows the fingers, so the camera
+        // moves opposite the delta.
+        let next = pan_camera(self.camera_x[row], -dx, total_width, viewport_w);
+        if (next - self.camera_x[row]).abs() < f32::EPSILON {
+            return;
+        }
+        self.camera_x[row] = next;
+        self.camera_target[row] = next;
+        self.camera_from[row] = next;
+        self.camera_started[row] = None;
+        self.camera_dirty[row] = false;
+        if let Some(index) = panel_at_viewport_center(
+            self.slots.iter().enumerate().filter_map(|(index, slot)| {
+                (slot.row == row).then_some((index, slot.width_fraction))
+            }),
+            next,
+            viewport_w,
+        ) && index != self.active
+        {
+            if let Some(outgoing) = self.slots.get(self.active) {
+                self.previous = Some(outgoing.panel.entity_id());
+            }
+            self.active = index;
+            self.active_row = row;
+            self.focus_active(window, cx);
+        }
     }
 
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -4167,6 +4412,179 @@ mod tests {
         );
         assert_eq!(gesture_alpha(GESTURE_HOLD + GESTURE_FADE), None);
         assert_eq!(gesture_alpha(Duration::from_secs(60)), None);
+    }
+
+    /// A gesture that starts vertically belongs to the transcript for its
+    /// whole lifetime: no pan, no strip hop, even if it later drifts sideways.
+    #[test]
+    fn a_vertical_first_gesture_stays_with_the_panel() {
+        let mut gesture = StripGesture::default();
+        assert_eq!(
+            gesture.feed(0.0, -40.0, gpui::TouchPhase::Started),
+            Routed::ToPanel
+        );
+        assert_eq!(gesture.axis, GestureAxis::Vertical);
+        // Sideways drift after the lock must not start panning.
+        assert_eq!(
+            gesture.feed(-80.0, -10.0, gpui::TouchPhase::Moved),
+            Routed::ToPanel
+        );
+        assert_eq!(
+            gesture.feed(0.0, -300.0, gpui::TouchPhase::Moved),
+            Routed::ToPanel
+        );
+    }
+
+    /// A gesture that starts horizontally owns the strip exclusively, and
+    /// enough vertical pull breaks the sticky axis and hops one strip per
+    /// threshold, in the natural direction (fingers up reveal the strip
+    /// below), without ever leaking a delta into the transcript.
+    #[test]
+    fn a_horizontal_gesture_breaks_out_vertically_one_strip_per_threshold() {
+        let mut gesture = StripGesture::default();
+        assert_eq!(
+            gesture.feed(-40.0, 0.0, gpui::TouchPhase::Started),
+            Routed::Strip {
+                dx: -40.0,
+                switch: 0,
+                exclusive: true
+            }
+        );
+        assert_eq!(gesture.axis, GestureAxis::Horizontal);
+        // Pull short of the threshold: consumed, but no hop yet.
+        assert_eq!(
+            gesture.feed(0.0, -STRIP_BREAK * 0.6, gpui::TouchPhase::Moved),
+            Routed::Strip {
+                dx: 0.0,
+                switch: 0,
+                exclusive: true
+            }
+        );
+        // Crossing the threshold hops down and re-arms.
+        assert_eq!(
+            gesture.feed(0.0, -STRIP_BREAK * 0.6, gpui::TouchPhase::Moved),
+            Routed::Strip {
+                dx: 0.0,
+                switch: 1,
+                exclusive: true
+            }
+        );
+        // A second full pull, this time downward fingers, hops back up.
+        assert_eq!(
+            gesture.feed(0.0, STRIP_BREAK * 1.2, gpui::TouchPhase::Moved),
+            Routed::Strip {
+                dx: 0.0,
+                switch: -1,
+                exclusive: true
+            }
+        );
+        // Lifting the fingers ends the gesture: the next one decides afresh.
+        gesture.feed(0.0, 0.0, gpui::TouchPhase::Ended);
+        assert_eq!(gesture.axis, GestureAxis::Undecided);
+        assert_eq!(
+            gesture.feed(0.0, -40.0, gpui::TouchPhase::Moved),
+            Routed::ToPanel
+        );
+    }
+
+    /// Tiny diagonal jitter below the lock threshold keeps the event shared:
+    /// horizontal motion pans but the transcript still sees the event.
+    #[test]
+    fn an_undecided_gesture_shares_its_deltas() {
+        let mut gesture = StripGesture::default();
+        assert_eq!(
+            gesture.feed(-4.0, 3.0, gpui::TouchPhase::Started),
+            Routed::Strip {
+                dx: -4.0,
+                switch: 0,
+                exclusive: false
+            }
+        );
+        assert_eq!(gesture.axis, GestureAxis::Undecided);
+    }
+
+    /// The full breakout on a real rendered workspace: a horizontal swipe
+    /// commits the gesture to the strip, continued vertical pull within the
+    /// same gesture hops focus to the strip below, and the panel transcript
+    /// never scrolls.
+    #[gpui::test]
+    fn a_committed_pan_breaks_out_vertically_and_switches_strips(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        // A long transcript in the first panel, so a leaked vertical delta
+        // would visibly scroll it.
+        let panel = workspace
+            .read_with(cx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(cx, |panel, cx| {
+            for n in 0..80 {
+                panel.items.push(crate::panel::Item::Assistant(format!("message {n}")));
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let target = cx
+            .debug_bounds("panel-0")
+            .expect("the first panel should paint")
+            .center();
+        let swipe = |cx: &mut gpui::VisualTestContext, dx: f32, dy: f32, phase| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: target,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(dx), px(dy))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: phase,
+            });
+            cx.run_until_parked();
+        };
+
+        // Commit the gesture horizontally, then pull up past the threshold.
+        swipe(cx, -40.0, 0.0, gpui::TouchPhase::Started);
+        let scroll_before = panel.read_with(cx, |panel, _| panel.test_scroll_offset_y());
+        swipe(cx, 0.0, -STRIP_BREAK * 0.6, gpui::TouchPhase::Moved);
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 0,
+                "short of the threshold the sticky axis must hold"
+            );
+        });
+        swipe(cx, 0.0, -STRIP_BREAK * 0.6, gpui::TouchPhase::Moved);
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 1,
+                "enough vertical pull must break the axis and hop down a strip"
+            );
+        });
+        let scroll_after = panel.read_with(cx, |panel, _| panel.test_scroll_offset_y());
+        assert_eq!(
+            scroll_before, scroll_after,
+            "a committed pan must consume its vertical deltas, not scroll the transcript"
+        );
+
+        // A fresh vertical gesture, after the reset gap, stays with the
+        // panel: no further strip hop.
+        workspace.update(cx, |workspace, _| {
+            workspace.gesture.reset();
+            workspace.gesture_seen = None;
+        });
+        swipe(cx, 0.0, -STRIP_BREAK * 2.0, gpui::TouchPhase::Started);
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 1,
+                "a vertical-first gesture must never hop strips"
+            );
+        });
     }
 
     /// A real touchpad swipe must paint the reticle on the canvas and the dot
