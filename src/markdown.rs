@@ -523,11 +523,6 @@ fn latex_to_text(source: &str) -> String {
         ("\\exists", "∃"),
         ("\\ldots", "…"),
         ("\\cdots", "⋯"),
-        ("\\sqrt", "√"),
-        ("\\mathbf", ""),
-        ("\\mathrm", ""),
-        ("\\boxed", ""),
-        ("\\text", ""),
         ("\\beta", "β"),
         ("\\phi", "φ"),
         ("\\pi", "π"),
@@ -547,7 +542,11 @@ fn latex_to_text(source: &str) -> String {
         ("\\,", " "),
         ("\\!", ""),
     ];
-    let mut text = source.trim().to_string();
+    // Preserve the structure of commands whose arguments matter before the
+    // simple command replacement pass removes braces. In particular, merely
+    // stripping `\frac` and braces produced mangled output such as
+    // `x=\frac-b±√b²-4ac2a`.
+    let mut text = expand_latex_groups(source.trim());
     for (from, to) in REPLACEMENTS {
         text = text.replace(from, to);
     }
@@ -555,6 +554,86 @@ fn latex_to_text(source: &str) -> String {
     text = convert_scripts(&text, '^');
     text = convert_scripts(&text, '_');
     text.replace(['{', '}'], "")
+}
+
+/// Expand the small set of braced TeX commands that affect how an expression
+/// reads in plain text. This is intentionally not a TeX engine, but it keeps
+/// common model output mathematically unambiguous.
+fn expand_latex_groups(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < source.len() {
+        let rest = &source[i..];
+        if let Some(after_command) = rest.strip_prefix("\\frac") {
+            let offset = i + rest.len() - after_command.len();
+            if let Some((numerator, after_numerator)) = braced_group(source, offset)
+                && let Some((denominator, after_denominator)) =
+                    braced_group(source, after_numerator)
+            {
+                output.push('(');
+                output.push_str(&expand_latex_groups(numerator));
+                output.push_str(")/(");
+                output.push_str(&expand_latex_groups(denominator));
+                output.push(')');
+                i = after_denominator;
+                continue;
+            }
+        }
+        if let Some(after_command) = rest.strip_prefix("\\sqrt") {
+            let offset = i + rest.len() - after_command.len();
+            if let Some((radicand, after_radicand)) = braced_group(source, offset) {
+                output.push_str("√(");
+                output.push_str(&expand_latex_groups(radicand));
+                output.push(')');
+                i = after_radicand;
+                continue;
+            }
+        }
+        let wrapper = ["\\mathbf", "\\mathrm", "\\boxed", "\\text"]
+            .iter()
+            .find_map(|command| rest.strip_prefix(command));
+        if let Some(after_command) = wrapper {
+            let offset = i + rest.len() - after_command.len();
+            if let Some((content, after_content)) = braced_group(source, offset) {
+                output.push_str(&expand_latex_groups(content));
+                i = after_content;
+                continue;
+            }
+        }
+        let ch = rest.chars().next().expect("non-empty remainder");
+        output.push(ch);
+        i += ch.len_utf8();
+    }
+    output
+}
+
+fn braced_group(source: &str, mut start: usize) -> Option<(&str, usize)> {
+    while source[start..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        start += source[start..].chars().next()?.len_utf8();
+    }
+    if !source[start..].starts_with('{') {
+        return None;
+    }
+    let content_start = start + 1;
+    let mut depth = 1;
+    for (offset, ch) in source[content_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let end = content_start + offset;
+                    return Some((&source[content_start..end], end + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn convert_scripts(source: &str, marker: char) -> String {
@@ -1077,9 +1156,9 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
             Block::Table { header, rows } => table(header, rows, window),
             Block::Math(text) => div()
                 .w_full()
-                .my_1()
-                .px_3()
-                .py_2p5()
+                .my_0p5()
+                .px_2()
+                .py_1p5()
                 .rounded_md()
                 .border_1()
                 .border_color(Theme::CODE_BORDER)
@@ -1254,6 +1333,21 @@ mod tests {
     fn preserves_unknown_latex_readably() {
         assert_eq!(latex_to_text(r"\\unknown{x}^2"), r"\\unknownx²");
         assert_eq!(latex_to_text(r"a \rightarrow \infty"), "a → ∞");
+    }
+
+    #[test]
+    fn preserves_fraction_and_root_structure() {
+        assert_eq!(
+            latex_to_text(r"x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}"),
+            "x=(-b±√(b²-4ac))/(2a)"
+        );
+        assert_eq!(latex_to_text(r"\frac{1}{\frac{x}{2}}"), "(1)/((x)/(2))");
+    }
+
+    #[test]
+    fn unwraps_text_and_style_commands() {
+        assert_eq!(latex_to_text(r"\boxed{\mathbf{x^2}}"), "x²");
+        assert_eq!(latex_to_text(r"\text{area} = \pi r^2"), "area = π r²");
     }
 
     #[test]
