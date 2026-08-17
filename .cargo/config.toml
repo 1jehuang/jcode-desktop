@@ -6,9 +6,4 @@ rustc-wrapper = "scripts/rustc-wrapper"
 # mold is substantially faster than the system linker for this large GPUI
 # dependency graph. This setting is Linux-only, so macOS packaging is intact.
 [target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-[target.aarch64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+linker = "scripts/fast-linker"
