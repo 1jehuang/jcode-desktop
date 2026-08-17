@@ -74,6 +74,11 @@ jobs:
             echo "Notarization requires Developer ID signing credentials." >&2
             exit 1
           fi
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]] && \
+             [[ $signing -eq 0 || $notarization -eq 0 ]]; then
+            echo "Tagged macOS releases require Developer ID signing and notarization credentials." >&2
+            exit 1
+          fi
           if [[ $updates -eq 0 && -n "$SPARKLE_PUBLIC_KEY$SPARKLE_PRIVATE_KEY" ]]; then
             echo "Sparkle public and private keys must be configured together." >&2
             exit 1
