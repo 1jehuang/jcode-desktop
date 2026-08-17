@@ -40,7 +40,7 @@ verify_bundle() {
   local sparkle="$app/Contents/Frameworks/Sparkle.framework"
   local sparkle_executable="$sparkle/Versions/B/Sparkle"
   [[ -x "$sparkle_executable" ]] || fail "Sparkle framework is missing"
-  lipo -verify_arch arm64 x86_64 "$sparkle_executable" || fail "Sparkle is not universal"
+  lipo "$sparkle_executable" -verify_arch arm64 x86_64 || fail "Sparkle is not universal"
   codesign --verify --deep --strict --verbose=2 "$sparkle"
 
   local update_key=""
@@ -70,7 +70,7 @@ PY
   for bin in "${BINS[@]}"; do
     local executable="$app/Contents/MacOS/$bin"
     [[ -x "$executable" ]] || fail "missing executable companion: $bin"
-    lipo -verify_arch arm64 x86_64 "$executable" || fail "$bin is not universal"
+    lipo "$executable" -verify_arch arm64 x86_64 || fail "$bin is not universal"
     codesign --verify --strict --verbose=2 "$executable"
 
     local actual_entitlements
