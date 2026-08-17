@@ -37,6 +37,8 @@ pub enum Update {
     SendFailed { session_id: String, reason: String },
     /// A per-session connection died.
     SessionLost { session_id: String, reason: String },
+    /// A per-session connection was established again.
+    SessionConnected { session_id: String },
     /// The control connection died; the bridge will retry.
     Disconnected { reason: String },
 }
@@ -334,6 +336,9 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             std::thread::sleep(Duration::from_millis(300));
             continue;
         }
+        let _ = updates.send(Update::SessionConnected {
+            session_id: session_id.clone(),
+        });
 
         if let Ok(messages) = client.get_history(&session_id) {
             let _ = updates.send(Update::History {
@@ -393,6 +398,15 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             }
 
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
+                // The API bridge emits this event immediately before closing its
+                // stream when the legacy daemon connection disappears. It is a
+                // transport lifecycle notification, not a failed model turn.
+                // Reconnect now rather than rendering a scary transcript error
+                // and waiting for the socket reader to notice EOF separately.
+                if is_daemon_connection_closed(&event) {
+                    lost("runtime connection closed; reconnecting".into());
+                    break;
+                }
                 update_turn_activity(&event, &mut turn_active);
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
@@ -404,6 +418,14 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             }
         }
     }
+}
+
+fn is_daemon_connection_closed(event: &ApiEvent) -> bool {
+    matches!(
+        event,
+        ApiEvent::Error { message, .. }
+            if message.eq_ignore_ascii_case("daemon connection closed")
+    )
 }
 
 fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
@@ -433,6 +455,71 @@ fn collect_disconnected_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn daemon_connection_closed_is_a_transport_event() {
+        let event = ApiEvent::Error {
+            code: jcode_sdk::api::ErrorCode::Internal,
+            message: "daemon connection closed".into(),
+        };
+        assert!(is_daemon_connection_closed(&event));
+    }
+
+    /// Opt-in acceptance check against the real local runtime and configured
+    /// model. Run with `cargo test live_prompt_round_trip -- --ignored`.
+    #[test]
+    #[ignore = "requires a configured model and makes a real model request"]
+    fn live_prompt_round_trip() {
+        let bridge = spawn();
+        bridge.send(Command::CreateSession { working_dir: None });
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let session_id = loop {
+            assert!(Instant::now() < deadline, "runtime did not create a session");
+            if let Some(session_id) = bridge.drain().into_iter().find_map(|update| match update {
+                Update::SessionCreated { session } => Some(session.session_id),
+                _ => None,
+            }) {
+                break session_id;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+
+        bridge.send(Command::Watch {
+            session_id: session_id.clone(),
+        });
+        bridge.send(Command::Send {
+            session_id: session_id.clone(),
+            content: "Reply with exactly JCODE_DESKTOP_OK and nothing else.".into(),
+            images: Vec::new(),
+        });
+
+        let mut response = String::new();
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "model response timed out; received {response:?}"
+            );
+            for update in bridge.drain() {
+                match update {
+                    Update::Event {
+                        session_id: event_session,
+                        event: ApiEvent::TextDelta { text, .. },
+                    } if event_session == session_id => response.push_str(&text),
+                    Update::SendFailed {
+                        session_id: event_session,
+                        reason,
+                    } if event_session == session_id => panic!("send failed: {reason}"),
+                    _ => {}
+                }
+            }
+            if response.contains("JCODE_DESKTOP_OK") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 
     #[test]
     fn sending_without_a_watched_worker_starts_one_and_delivers() {

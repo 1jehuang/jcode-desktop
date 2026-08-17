@@ -411,6 +411,19 @@ impl Workspace {
                     }
                 }
             }
+            Update::SessionConnected { session_id } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            // A subsequent SessionStatus event will replace this
+                            // with idle/running. Clear the stale lost banner now.
+                            panel.status = "connected".into();
+                            cx.notify();
+                        });
+                        break;
+                    }
+                }
+            }
         }
     }
 
