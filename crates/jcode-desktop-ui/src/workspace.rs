@@ -165,7 +165,11 @@ enum Routed {
     ToPanel,
     /// The strip takes it: pan by `dx`, hop `switch` strips, and when
     /// `exclusive` the event must not also reach the transcript.
-    Strip { dx: f32, switch: i8, exclusive: bool },
+    Strip {
+        dx: f32,
+        switch: i8,
+        exclusive: bool,
+    },
 }
 
 impl StripGesture {
@@ -1682,6 +1686,43 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .text_color(Theme::TEXT_DIM)
+                // An empty strip has no transcripts to protect, so any
+                // vertical touchpad travel past the break threshold hops
+                // strips directly. Without this, a gesture that lands on an
+                // empty strip is stranded there until a keyboard shortcut.
+                .on_scroll_wheel(cx.listener(
+                    move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                        if this.active_row != row || !event.delta.precise() {
+                            return;
+                        }
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        let dy = f32::from(delta.y);
+                        if dy == 0.0 {
+                            return;
+                        }
+                        let now = Instant::now();
+                        if this
+                            .gesture_seen
+                            .is_none_or(|seen| seen.elapsed() > GESTURE_RESET)
+                        {
+                            this.gesture.reset();
+                        }
+                        this.gesture_seen = Some(now);
+                        this.gesture.pull += -dy;
+                        if this.gesture.pull.abs() >= STRIP_BREAK {
+                            let target = if this.gesture.pull > 0.0 {
+                                (this.active_row + 1).min(STRIP_COUNT - 1)
+                            } else {
+                                this.active_row.saturating_sub(1)
+                            };
+                            this.gesture.pull = 0.0;
+                            if target != this.active_row {
+                                this.switch_row_animated(target, window, cx);
+                            }
+                        }
+                        cx.notify();
+                    },
+                ))
                 .child(if self.connected {
                     format!("strip {} is empty - super-n opens a session here", row + 1)
                 } else {
@@ -1835,8 +1876,7 @@ impl Workspace {
         // The reticle leans into an unbroken vertical pull, so the rubber
         // band toward the next strip is visible before it snaps.
         let reticle_pull = if self.gesture.axis == GestureAxis::Horizontal {
-            (self.gesture.pull * PULL_RESISTANCE)
-                .clamp(-viewport_h / 3.0, viewport_h / 3.0)
+            (self.gesture.pull * PULL_RESISTANCE).clamp(-viewport_h / 3.0, viewport_h / 3.0)
         } else {
             0.0
         };
@@ -1874,7 +1914,12 @@ impl Workspace {
                                         return;
                                     }
                                     if this.route_strip_scroll(
-                                        row, event, total_width, viewport_w, window, cx,
+                                        row,
+                                        event,
+                                        total_width,
+                                        viewport_w,
+                                        window,
+                                        cx,
                                     ) {
                                         cx.stop_propagation();
                                     }
@@ -3420,27 +3465,10 @@ impl Render for Workspace {
                         .child(incoming),
                 )
                 .into_any_element()
-        } else if self.row_indices(self.active_row).next().is_none() {
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .items_center()
-                .justify_center()
-                .text_color(Theme::TEXT_DIM)
-                .child(if self.connected {
-                    format!(
-                        "strip {} is empty - super-n opens a session here",
-                        self.active_row + 1
-                    )
-                } else {
-                    "connecting to jcode...".into()
-                })
-                .child(div().text_size(px(12.0)).child(self.status.clone()))
-                .into_any_element()
         } else {
-            self.render_strip(self.active_row, viewport_w, viewport_h, window, cx)
+            // One path for both the populated and the empty strip, so the
+            // empty strip's gesture handling exists everywhere it paints.
+            self.render_row(self.active_row, viewport_w, viewport_h, window, cx)
         };
 
         div()
@@ -4541,7 +4569,9 @@ mod tests {
             .expect("panel exists");
         panel.update(cx, |panel, cx| {
             for n in 0..80 {
-                panel.items.push(crate::panel::Item::Assistant(format!("message {n}")));
+                panel
+                    .items
+                    .push(crate::panel::Item::Assistant(format!("message {n}")));
             }
             cx.notify();
         });
