@@ -454,14 +454,20 @@ impl Panel {
                     .into_any_element()
             }
             Item::Assistant(text) => div()
+                .debug_selector(|| "assistant-response".into())
                 .px_1()
                 .text_color(Theme::TEXT)
                 .child(markdown::render(text, window))
                 .into_any_element(),
             Item::Reasoning(text) => {
                 let expanded = self.expanded_reasoning.contains(&index);
+                // The live row shows its tail so the newest thought is always
+                // visible; settled rows show their head as a stable summary.
+                let live = index == usize::MAX - 1;
                 let body: String = if expanded {
                     text.clone()
+                } else if live {
+                    condense_tail(text, 200)
                 } else {
                     condense(text, 200)
                 };
@@ -494,8 +500,8 @@ impl Panel {
                             .items_center()
                             .text_size(px(10.0))
                             .text_color(Theme::TEXT_FAINT)
-                            .child("thinking")
-                            .when(long, |el| {
+                            .child(if live { "thinking…" } else { "thinking" })
+                            .when(long && !live, |el| {
                                 el.child(if expanded { "collapse" } else { "expand" })
                             }),
                     )
@@ -526,6 +532,7 @@ impl Panel {
                 let summary = tool_summary(input);
                 let detail = tool_detail(input, output);
                 let has_detail = !detail.is_empty();
+                let output_lines = output.lines().filter(|l| !l.trim().is_empty()).count();
                 let call_id = call_id.clone();
                 div()
                     .id(("tool", index))
@@ -584,6 +591,17 @@ impl Panel {
                                         .child("running"),
                                 )
                             })
+                            // Collapsed finished calls hint at how much output
+                            // is hiding behind the expander.
+                            .when(*done && !expanded && output_lines > 1, |el| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(10.0))
+                                        .text_color(Theme::TEXT_FAINT)
+                                        .child(format!("{output_lines} lines")),
+                                )
+                            })
                             .when(has_detail, |el| {
                                 el.child(
                                     div()
@@ -618,7 +636,7 @@ impl Panel {
                             .text_size(px(11.5))
                             .font_family(Theme::FONT_MONO)
                             .text_color(Theme::ERROR)
-                            .child(condense(&message, 300))
+                            .child(condense(&strip_ansi(&message), 300))
                     }))
                     .into_any_element()
             }
@@ -667,13 +685,26 @@ impl Render for Panel {
                 .child(terminal.clone())
                 .into_any_element();
         }
+        let scroll_handle = self.scroll.clone();
+        let streaming = !self.streaming_text.is_empty();
         let mut transcript = div()
-            .id("transcript")
+            .id(if streaming {
+                "transcript-with-response"
+            } else {
+                "transcript"
+            })
+            // Tagged so render tests can assert a streamed response painted.
+            .debug_selector(move || {
+                if streaming {
+                    "transcript-with-response".into()
+                } else {
+                    "transcript".into()
+                }
+            })
             .flex()
             .flex_col()
             .gap_2p5()
-            .flex_1()
-            .min_h_0()
+            .size_full()
             .px_3()
             .py_2p5()
             .text_size(px(13.5))
@@ -681,7 +712,28 @@ impl Render for Panel {
             // Vertical deltas only: horizontal two-finger swipes pan the
             // workspace canvas instead of nudging the transcript.
             .restrict_scroll_to_axis()
-            .track_scroll(&self.scroll);
+            .track_scroll(&self.scroll)
+            // Reading history must win over following the stream: scrolling
+            // up releases stick-to-bottom, and returning near the bottom
+            // re-engages it.
+            .on_scroll_wheel(cx.listener(
+                move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    let delta = event.delta.pixel_delta(window.line_height()).y;
+                    if delta > px(0.) {
+                        if this.stick_to_bottom {
+                            this.stick_to_bottom = false;
+                            cx.notify();
+                        }
+                    } else if delta < px(0.) && !this.stick_to_bottom {
+                        let distance = scroll_handle.max_offset().y + scroll_handle.offset().y;
+                        if distance <= px(48.) {
+                            this.stick_to_bottom = true;
+                            this.scroll.scroll_to_bottom();
+                            cx.notify();
+                        }
+                    }
+                },
+            ));
 
         // Live rows are appended after the settled ones and share the same
         // renderer, so a streaming turn looks identical to a finished one.
@@ -745,13 +797,52 @@ impl Render for Panel {
             self.token_usage,
         );
 
+        let show_jump_chip = !self.stick_to_bottom;
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            .child(transcript)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(transcript)
+                    // Detached from the live end: one tap catches back up.
+                    .when(show_jump_chip, |el| {
+                        el.child(
+                            div()
+                                .id("jump-to-latest")
+                                .absolute()
+                                .bottom_2()
+                                .right_3()
+                                .px_2p5()
+                                .py_1()
+                                .rounded_md()
+                                .bg(Theme::HEADER_BG)
+                                .border_1()
+                                .border_color(Theme::PANEL_BORDER)
+                                .text_size(px(10.5))
+                                .font_family(Theme::FONT_MONO)
+                                .text_color(Theme::TEXT_DIM)
+                                .cursor_pointer()
+                                .hover(|el| el.text_color(Theme::TEXT))
+                                .occlude()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.stick_to_bottom = true;
+                                        this.scroll.scroll_to_bottom();
+                                        cx.notify();
+                                    }),
+                                )
+                                .child("↓ latest"),
+                        )
+                    }),
+            )
             .children(status_line.map(|text| {
                 div()
                     .flex()
@@ -983,6 +1074,61 @@ fn condense(text: &str, limit: usize) -> String {
     format!("{}…", clipped.trim_end())
 }
 
+/// Like `condense`, but keeps the end: while reasoning streams, the newest
+/// words are the ones worth reading.
+fn condense_tail(text: &str, limit: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = flat.chars().count();
+    if count <= limit {
+        return flat;
+    }
+    let clipped: String = flat.chars().skip(count - limit).collect();
+    format!("…{}", clipped.trim_start())
+}
+
+/// Drop ANSI escape sequences (colors, cursor moves) so terminal output
+/// renders as text instead of garbage.
+fn strip_ansi(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            output.push(c);
+            continue;
+        }
+        match chars.peek() {
+            // CSI: ESC [ ... final byte in @-~
+            Some('[') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: ESC ] ... BEL or ESC \
+            Some(']') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // Two-character sequences like ESC ( B.
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    output
+}
+
 /// The most useful field of a tool call, rendered as a one-line summary.
 fn tool_summary(input: &str) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
@@ -1031,7 +1177,7 @@ fn tool_detail(input: &str, output: &str) -> String {
         parts.push(clip_lines(&pretty, 40));
     }
     if !output.trim().is_empty() {
-        parts.push(clip_lines(output.trim(), 40));
+        parts.push(clip_lines(strip_ansi(output).trim(), 40));
     }
     parts.join("\n\n")
 }
@@ -1047,14 +1193,19 @@ fn acknowledge_next(
     }
 }
 
+/// Keep a block short by keeping its head and tail: for command output the
+/// end (results, errors) usually matters more than the middle.
 fn clip_lines(text: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= max_lines {
         return text.to_string();
     }
-    let hidden = lines.len() - max_lines;
-    let mut kept = lines[..max_lines].join("\n");
-    kept.push_str(&format!("\n… {hidden} more lines"));
+    let head = max_lines * 2 / 3;
+    let tail = max_lines - head;
+    let hidden = lines.len() - head - tail;
+    let mut kept = lines[..head].join("\n");
+    kept.push_str(&format!("\n… {hidden} lines hidden …\n"));
+    kept.push_str(&lines[lines.len() - tail..].join("\n"));
     kept
 }
 
@@ -1093,7 +1244,28 @@ mod tests {
         assert!(detail.contains("\"a\": 1"));
         assert!(detail.contains("line2"));
         let long: String = (0..50).map(|n| format!("l{n}\n")).collect();
-        assert!(tool_detail("{}", &long).contains("more lines"));
+        let clipped = tool_detail("{}", &long);
+        assert!(clipped.contains("lines hidden"));
+        // The tail survives: results and errors live at the end of output.
+        assert!(clipped.contains("l49"));
+        assert!(clipped.contains("l0"));
+    }
+
+    #[test]
+    fn reasoning_tail_keeps_the_newest_words() {
+        assert_eq!(condense_tail("short", 200), "short");
+        let tail = condense_tail(&"word ".repeat(100), 20);
+        assert!(tail.starts_with('…'));
+        assert!(tail.ends_with("word"));
+    }
+
+    #[test]
+    fn ansi_escapes_are_stripped_from_tool_output() {
+        assert_eq!(strip_ansi("\u{1b}[1;32mok\u{1b}[0m done"), "ok done");
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{7}text"), "text");
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert!(tool_detail("{}", "\u{1b}[31mred\u{1b}[0m").contains("red"));
+        assert!(!tool_detail("{}", "\u{1b}[31mred\u{1b}[0m").contains('\u{1b}'));
     }
 
     fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
