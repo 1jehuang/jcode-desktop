@@ -10,13 +10,13 @@ Jcode Desktop supports Apple Silicon and Intel Macs running macOS 13 or newer.
 The release bundle includes the Jcode CLI and harness bridge, so Finder launches
 do not depend on Homebrew, shell startup files, or a separately installed CLI.
 
-Download the latest DMG from the [beta releases][releases], open it, and drag
-Jcode onto the Applications link. The beta is distributed as a universal,
-Developer ID signed, and notarized app, so its first launch follows the normal
-macOS Gatekeeper flow without a shell workaround. Packaged releases check for
-updates daily and use Sparkle's signed background download and install flow.
+Download the latest DMG from the [beta download page][releases], open it, and
+drag Jcode onto the Applications link. The download page identifies the current
+beta's signing status and any required Gatekeeper steps. New tagged releases
+fail closed unless they are Developer ID signed and notarized; credentialed
+tagged releases also check daily for Ed25519-signed updates through Sparkle.
 
-[releases]: https://github.com/1jehuang/jcode-desktop/releases/latest
+[releases]: https://jcode.sh/desktop
 
 ### Build the app locally
 
