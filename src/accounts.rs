@@ -120,6 +120,7 @@ pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
     }
     match provider_id {
         "claude" => icon!("claude"),
+        "jcode" => icon!("jcode"),
         "anthropic-api" => icon!("anthropic"),
         "openai" | "openai-api" | "openai-compatible" => icon!("openai"),
         "gemini" | "gemini-api" => icon!("gemini"),
@@ -153,7 +154,7 @@ pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
     }
 }
 
-/// The lettermark for providers without a vendored logo (e.g. `jcode`).
+/// The lettermark for providers without a vendored logo.
 pub fn lettermark(display_name: &str) -> String {
     display_name
         .chars()
@@ -261,6 +262,7 @@ mod tests {
     fn every_shippable_provider_has_a_logo_and_the_rest_fall_back() {
         for id in [
             "claude",
+            "jcode",
             "anthropic-api",
             "openai",
             "openai-api",
@@ -292,7 +294,7 @@ mod tests {
                 "{id}'s logo should be an svg document"
             );
         }
-        assert!(logo("jcode").is_none(), "jcode uses the lettermark");
+        assert!(logo("unknown-provider").is_none());
         assert_eq!(lettermark("jcode router"), "J");
         assert_eq!(lettermark(""), "?");
     }
