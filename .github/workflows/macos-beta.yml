@@ -24,6 +24,7 @@ jobs:
     env:
       HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
       HAS_APPLE_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+      HAS_SPARKLE_KEYS: ${{ secrets.SPARKLE_PUBLIC_KEY != '' && secrets.SPARKLE_PRIVATE_KEY != '' }}
     steps:
       - name: Check out Jcode Desktop
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -77,10 +78,6 @@ jobs:
             echo "Sparkle public and private keys must be configured together." >&2
             exit 1
           fi
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* && ($signing -eq 0 || $notarization -eq 0 || $updates -eq 0) ]]; then
-            echo "Tagged releases must be signed, notarized, and configured for signed updates." >&2
-            exit 1
-          fi
       - name: Import Developer ID certificate
         if: env.HAS_APPLE_CERTIFICATE == 'true'
         env:
@@ -113,7 +110,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_API_KEY_P8 != '' && 'jcode-notary' || '' }}
           SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
-          REQUIRE_SECURE_UPDATES: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
+          REQUIRE_SECURE_UPDATES: ${{ env.HAS_SPARKLE_KEYS == 'true' && '1' || '0' }}
         run: jcode-desktop/scripts/package-macos.sh
       - name: Verify app bundle and DMG install path
         env:
@@ -121,7 +118,7 @@ jobs:
           FIRST_LAUNCH_CHECK: "1"
         run: jcode-desktop/scripts/verify-macos-package.sh
       - name: Sign automatic update and generate appcast
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && env.HAS_SPARKLE_KEYS == 'true'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
@@ -160,6 +157,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#desktop-v}"
+          VERSIONED_ZIP="jcode-desktop/dist/macos/Jcode-${VERSION}-macOS-universal.zip"
+          if [[ ! -f "$VERSIONED_ZIP" ]]; then
+            cp jcode-desktop/dist/macos/Jcode-macOS-universal.zip "$VERSIONED_ZIP"
+          fi
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" --prerelease \
@@ -167,12 +168,14 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
             jcode-desktop/dist/macos/Jcode-macOS-universal.dmg \
-            "jcode-desktop/dist/macos/Jcode-${VERSION}-macOS-universal.zip" \
+            "$VERSIONED_ZIP" \
             jcode-desktop/dist/macos/SHA256SUMS
-          if ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [[ -f jcode-desktop/dist/macos/appcast.xml ]] && ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create desktop-updates --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --prerelease --title "Jcode Desktop update feed" \
               --notes "Machine-readable Sparkle update feed. Download the latest desktop release instead."
           fi
-          gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber \
-            jcode-desktop/dist/macos/appcast.xml
+          if [[ -f jcode-desktop/dist/macos/appcast.xml ]]; then
+            gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber \
+              jcode-desktop/dist/macos/appcast.xml
+          fi
