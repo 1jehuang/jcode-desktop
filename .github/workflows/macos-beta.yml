@@ -20,7 +20,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
       HAS_APPLE_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
