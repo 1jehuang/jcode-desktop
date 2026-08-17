@@ -130,6 +130,7 @@ pub struct PromptInput {
     attachments: Vec<Attachment>,
     attachment_notice: Option<SharedString>,
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
+    on_change: Option<Box<dyn Fn(&str, &mut App)>>,
 }
 
 #[derive(Clone)]
@@ -177,7 +178,16 @@ impl PromptInput {
             attachments: Vec::new(),
             attachment_notice: None,
             on_submit: Box::new(on_submit),
+            on_change: None,
         }
+    }
+
+    pub fn with_on_change(
+        mut self,
+        on_change: impl Fn(&str, &mut App) + 'static,
+    ) -> Self {
+        self.on_change = Some(Box::new(on_change));
+        self
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
@@ -185,7 +195,11 @@ impl PromptInput {
         if content.is_empty() && self.attachments.is_empty() {
             return;
         }
-        let content = if content.is_empty() { "[image]".to_string() } else { content };
+        let content = if content.is_empty() {
+            "[image]".to_string()
+        } else {
+            content
+        };
         let images = std::mem::take(&mut self.attachments)
             .into_iter()
             .map(|image| (image.media_type, image.encoded))
@@ -618,6 +632,9 @@ impl EntityInputHandler for PromptInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
         cx.notify();
     }
 
@@ -648,6 +665,10 @@ impl EntityInputHandler for PromptInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
 
         cx.notify();
     }

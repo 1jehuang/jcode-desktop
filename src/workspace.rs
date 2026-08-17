@@ -4,6 +4,7 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -967,14 +968,22 @@ impl Workspace {
         );
         self.folder_picker_error = None;
         let weak = cx.weak_entity();
+        let change_weak = weak.clone();
         let search = cx.new(|cx| {
             PromptInput::new(cx, "type a folder name or path, then press enter", move |query, _, _, app| {
                 let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
             })
+            .with_on_change(move |_, app| {
+                let _ = change_weak.update(app, |_, cx| cx.notify());
+            })
         });
-        let focus_handle = search.read(cx).focus_handle.clone();
-        window.focus(&focus_handle, cx);
         self.folder_search = Some(search);
+        cx.defer_in(window, |this, window, cx| {
+            if let Some(search) = &this.folder_search {
+                let focus_handle = search.read(cx).focus_handle.clone();
+                window.focus(&focus_handle, cx);
+            }
+        });
         cx.notify();
     }
 
@@ -992,10 +1001,14 @@ impl Workspace {
         };
         let matched = expanded.filter(|path| path.is_dir()).or_else(|| {
             let needle = query.to_lowercase();
-            directory_entries(base).ok()?.into_iter().find(|path| {
-                path.file_name()
-                    .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&needle))
-            })
+            let direct = base.join(query);
+            if direct.is_file() {
+                return direct.parent().map(Path::to_path_buf);
+            }
+            ranked_folder_matches_for_sessions(&self.sessions, base, &needle)
+                .into_iter()
+                .next()
+                .map(|(path, _)| path)
         });
         if let Some(path) = matched {
             self.folder_picker_dir = Some(path);
@@ -2351,11 +2364,20 @@ impl Workspace {
 }
 
 impl Workspace {
+    fn ranked_folder_matches(&self, base: &Path, query: &str) -> Vec<(PathBuf, String)> {
+        ranked_folder_matches_for_sessions(&self.sessions, base, query)
+    }
+
     fn render_folder_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(directory) = self.folder_picker_dir.clone() else {
             return div().into_any_element();
         };
-        let entries = directory_entries(&directory).unwrap_or_default();
+        let query = self
+            .folder_search
+            .as_ref()
+            .map(|search| search.read(cx).content.trim().to_lowercase())
+            .unwrap_or_default();
+        let entries = self.ranked_folder_matches(&directory, &query);
         let mut list = div()
             .id("folder-picker-list")
             .debug_selector(|| "folder-picker-list".into())
@@ -2687,6 +2709,76 @@ fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(entries)
 }
 
+fn ranked_folder_matches_for_sessions(
+    sessions: &[jcode_sdk::SessionInfo],
+    base: &Path,
+    query: &str,
+) -> Vec<(PathBuf, String)> {
+    let mut usage: HashMap<PathBuf, (usize, usize)> = HashMap::new();
+    for (recency, session) in sessions.iter().rev().enumerate() {
+        let Some(path) = session
+            .working_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+        else {
+            continue;
+        };
+        let entry = usage.entry(path).or_insert((0, recency));
+        entry.0 += 1;
+        entry.1 = entry.1.min(recency);
+    }
+
+    let common_names = ["projects", "code", "dev", "src", "workspace", "documents", "desktop"];
+    let children = directory_entries(base).unwrap_or_default();
+    let mut reasons = HashMap::<PathBuf, String>::new();
+    let mut candidates = usage.keys().cloned().collect::<Vec<_>>();
+    candidates.extend(children);
+    if !query.is_empty()
+        && let Ok(entries) = std::fs::read_dir(base)
+    {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file()
+                && entry.file_name().to_string_lossy().to_lowercase().contains(query)
+            {
+                reasons.insert(base.to_path_buf(), format!("contains file · {}", entry.file_name().to_string_lossy()));
+                candidates.push(base.to_path_buf());
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates.retain(|path| {
+        let searchable = path.to_string_lossy().to_lowercase();
+        if !query.is_empty() {
+            searchable.contains(query) || reasons.contains_key(path)
+        } else {
+            usage.contains_key(path)
+                || path.file_name().is_some_and(|name| {
+                    common_names.contains(&name.to_string_lossy().to_lowercase().as_str())
+                })
+        }
+    });
+    candidates.sort_by_key(|path| {
+        let file_match = reasons.contains_key(path);
+        let (count, recency) = usage.get(path).copied().unwrap_or((0, usize::MAX));
+        (std::cmp::Reverse(file_match), std::cmp::Reverse(count), recency, path.clone())
+    });
+    candidates
+        .into_iter()
+        .take(if query.is_empty() { 8 } else { 30 })
+        .map(|path| {
+            let reason = reasons.remove(&path).unwrap_or_else(|| match usage.get(&path).copied() {
+                Some((count, _)) if count > 1 => format!("frequent · {count} sessions"),
+                Some(_) => "recent".into(),
+                None => "likely".into(),
+            });
+            (path, reason)
+        })
+        .collect()
+}
+
 fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, String) {
     let animal = jcode_core::id::extract_session_name(&session.session_id);
     let icon = animal.map(jcode_core::id::session_icon).unwrap_or("💫");
@@ -3016,6 +3108,8 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+        vcx.simulate_keystrokes("a l p h a");
+        vcx.run_until_parked();
         let first_folder = vcx
             .debug_bounds("folder-picker-entry-0")
             .expect("the first child directory should paint");
@@ -3093,6 +3187,7 @@ mod tests {
         let selected = root.join("alpha-project");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&selected).unwrap();
+        std::fs::write(root.join("project-notes.md"), "test").unwrap();
 
         vcx.simulate_keystrokes("ctrl-o");
         workspace.update(vcx, |workspace, cx| {
@@ -3101,12 +3196,24 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("folder-picker-search").is_some());
+        vcx.update(|window, cx| {
+            let search = workspace.read(cx).folder_search.clone().unwrap();
+            assert!(search.read(cx).focus_handle.is_focused(window));
 
-        vcx.simulate_keystrokes("a l p h a enter");
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+        let search_bounds = vcx.debug_bounds("folder-picker-search").unwrap();
+        vcx.simulate_click(search_bounds.center(), gpui::Modifiers::default());
+        vcx.update(|window, cx| {
+            let search = workspace.read(cx).folder_search.clone().unwrap();
+            assert!(search.read(cx).focus_handle.is_focused(window));
+        });
+
+        vcx.simulate_keystrokes("n o t e s enter");
         vcx.run_until_parked();
         match commands.try_recv().expect("enter should open the search match") {
             Command::CreateSession { working_dir } => {
-                assert_eq!(working_dir.as_deref(), Some(selected.to_string_lossy().as_ref()));
+                assert_eq!(working_dir.as_deref(), Some(root.to_string_lossy().as_ref()));
             }
             _ => panic!("search submitted the wrong runtime command"),
         }
@@ -3115,6 +3222,38 @@ mod tests {
             assert!(workspace.folder_search.is_none());
         });
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn picker_starts_with_ranked_likely_recent_and_frequent_directories() {
+        let root = std::env::temp_dir().join(format!("jcode-picker-ranked-{}", std::process::id()));
+        let projects = root.join("projects");
+        let recent = root.join("recent-repo");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&recent).unwrap();
+        std::fs::write(root.join("important-notes.md"), "test").unwrap();
+
+        let mut sessions = Vec::new();
+        for id in ["one", "two"] {
+            let mut session = session_info(id, None);
+            session.working_dir = Some(recent.to_string_lossy().into_owned());
+            sessions.push(session);
+        }
+        let workspace = WorkspaceRankFixture { sessions };
+        let entries = ranked_folder_matches_for_sessions(&workspace.sessions, &root, "");
+        assert_eq!(entries[0], (recent.clone(), "frequent · 2 sessions".into()));
+        assert!(entries.contains(&(projects, "likely".into())));
+
+        let searched = ranked_folder_matches_for_sessions(&workspace.sessions, &root, "proj");
+        assert!(searched.iter().any(|(path, _)| path.ends_with("projects")));
+        let file_match = ranked_folder_matches_for_sessions(&workspace.sessions, &root, "notes");
+        assert_eq!(file_match[0].0, root);
+        assert!(file_match[0].1.starts_with("contains file"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    struct WorkspaceRankFixture {
+        sessions: Vec<jcode_sdk::SessionInfo>,
     }
 
     #[test]
