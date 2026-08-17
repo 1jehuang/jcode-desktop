@@ -2850,9 +2850,9 @@ fn panel_at_viewport_center(
 mod tests {
     use super::*;
 
-    /// The accounts strip must actually paint: a provider with a vendored
-    /// logo, and one without (which falls back to a lettermark). Seeding
-    /// bypasses the CLI so the test needs no runtime or credentials.
+    /// The accounts strip must actually paint both a regular provider logo and
+    /// Jcode's donut. Seeding bypasses the CLI so the test needs no runtime or
+    /// credentials.
     #[gpui::test]
     fn connected_accounts_paint_in_the_sidebar(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -2883,14 +2883,18 @@ mod tests {
             accounts::logo("openai").is_some(),
             "openai must have a vendored logo"
         );
-        let with_logo = vcx
+        assert!(
+            accounts::logo("jcode").is_some(),
+            "Jcode Subscription must use the donut logo, not a lettermark"
+        );
+        let openai_row = vcx
             .debug_bounds("account-openai")
             .expect("the OpenAI account row should have painted");
-        let with_lettermark = vcx
+        let jcode_row = vcx
             .debug_bounds("account-jcode")
-            .expect("the Jcode account row should have painted");
+            .expect("the Jcode account row and donut should have painted");
         assert!(
-            with_logo.origin.y < with_lettermark.origin.y,
+            openai_row.origin.y < jcode_row.origin.y,
             "available accounts should be listed above expired ones"
         );
     }
