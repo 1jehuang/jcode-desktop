@@ -45,6 +45,8 @@ pub fn bind_workspace_keys(cx: &mut App) {
         // niri focus-column-first / focus-column-last (Mod+Home/End).
         KeyBinding::new("super-home", FocusFirst, None),
         KeyBinding::new("super-end", FocusLast, None),
+        KeyBinding::new("super-u", FocusFirst, None),
+        KeyBinding::new("super-p", FocusLast, None),
         KeyBinding::new("super-shift-h", MovePanelLeft, None),
         KeyBinding::new("super-shift-l", MovePanelRight, None),
         KeyBinding::new("super-shift-k", MovePanelUp, None),

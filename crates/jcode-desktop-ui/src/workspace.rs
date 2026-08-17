@@ -128,6 +128,10 @@ struct Slot {
     width_fraction: f32,
     /// Rendered width, retargeted when the configured width changes.
     animated_width: AnimatedValue,
+    /// Signed progress from the panel's former horizontal position to its new
+    /// one. The distance uses the swapped neighbour's width at render time.
+    order_offset: AnimatedValue,
+    order_distance_fraction: f32,
     /// Width to restore when un-maximizing (niri `maximize-column` toggle).
     restore_fraction: Option<f32>,
 }
@@ -484,6 +488,11 @@ impl Workspace {
                     saved.width_fraction,
                     transition::policy(Transition::PanelWidth).duration,
                 ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: saved.width_fraction,
                 restore_fraction: saved.restore_fraction,
             });
         }
@@ -574,6 +583,11 @@ impl Workspace {
                 DEFAULT_WIDTH,
                 transition::policy(Transition::PanelWidth).duration,
             ),
+            order_offset: AnimatedValue::new(
+                0.0,
+                transition::policy(Transition::PanelOrder).duration,
+            ),
+            order_distance_fraction: DEFAULT_WIDTH,
             restore_fraction: None,
         });
     }
@@ -742,6 +756,11 @@ impl Workspace {
                 0.0,
                 transition::policy(Transition::PanelOpen).duration,
             ),
+            order_offset: AnimatedValue::new(
+                0.0,
+                transition::policy(Transition::PanelOrder).duration,
+            ),
+            order_distance_fraction: width_fraction,
             restore_fraction: None,
         };
         let active_is_on_strip = self
@@ -1103,8 +1122,12 @@ impl Workspace {
             && position > 0
         {
             let previous = indices[position - 1];
+            let moved_width = self.slots[self.active].width_fraction;
+            let neighbour_width = self.slots[previous].width_fraction;
             self.slots.swap(self.active, previous);
             self.active = previous;
+            self.start_order_animation(self.active, 1.0, neighbour_width);
+            self.start_order_animation(indices[position], -1.0, moved_width);
             self.retarget_camera();
             self.learned("move_panel", cx);
             cx.notify();
@@ -1117,12 +1140,23 @@ impl Workspace {
             && position + 1 < indices.len()
         {
             let next = indices[position + 1];
+            let moved_width = self.slots[self.active].width_fraction;
+            let neighbour_width = self.slots[next].width_fraction;
             self.slots.swap(self.active, next);
             self.active = next;
+            self.start_order_animation(self.active, -1.0, neighbour_width);
+            self.start_order_animation(indices[position], 1.0, moved_width);
             self.retarget_camera();
             self.learned("move_panel", cx);
             cx.notify();
         }
+    }
+
+    fn start_order_animation(&mut self, index: usize, offset: f32, distance_fraction: f32) {
+        let duration = transition::policy(Transition::PanelOrder).duration;
+        self.slots[index].order_offset = AnimatedValue::new(offset, duration);
+        self.slots[index].order_offset.set(0.0, Instant::now());
+        self.slots[index].order_distance_fraction = distance_fraction;
     }
 
     fn move_panel_up(&mut self, _: &MovePanelUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -1230,6 +1264,11 @@ impl Workspace {
                     width_fraction,
                     transition::policy(Transition::PanelOpen).duration,
                 ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
                 restore_fraction: None,
             },
         );
@@ -1555,12 +1594,21 @@ impl Workspace {
         let indices = self.row_indices(row).collect::<Vec<_>>();
         let now = Instant::now();
         let mut animated_widths = Vec::with_capacity(indices.len());
+        let mut order_offsets = Vec::with_capacity(indices.len());
         for &index in &indices {
             let fraction = self.slots[index].animated_width.sample(now);
             if self.slots[index].animated_width.is_animating() {
                 window.request_animation_frame();
             }
             animated_widths.push(Self::width_for_fraction(fraction, viewport_w));
+            let progress = self.slots[index].order_offset.sample(now);
+            if self.slots[index].order_offset.is_animating() {
+                window.request_animation_frame();
+            }
+            let distance =
+                Self::width_for_fraction(self.slots[index].order_distance_fraction, viewport_w)
+                    + GAP;
+            order_offsets.push(progress * distance);
         }
         let mut strip = div()
             .absolute()
@@ -1570,12 +1618,16 @@ impl Workspace {
             .flex_row()
             .gap(px(GAP));
 
-        for (index, width) in indices.into_iter().zip(animated_widths) {
+        for ((index, width), order_offset) in
+            indices.into_iter().zip(animated_widths).zip(order_offsets)
+        {
             let slot = &self.slots[index];
             let focused = index == self.active;
             strip = strip.child(
                 div()
                     .id(("panel", index))
+                    .relative()
+                    .left(px(order_offset))
                     // Tagged so a render test can click the real panel element
                     // and exercise the pointer slow-path detection.
                     .debug_selector(move || format!("panel-{index}"))
@@ -4263,8 +4315,8 @@ mod tests {
             ("focus_left_right", "super-l", Box::new(FocusRight)),
             ("focus_up_down", "super-j", Box::new(FocusDown)),
             ("focus_up_down", "super-k", Box::new(FocusUp)),
-            ("focus_first_last", "super-home", Box::new(FocusFirst)),
-            ("focus_first_last", "super-end", Box::new(FocusLast)),
+            ("focus_first_last", "super-u", Box::new(FocusFirst)),
+            ("focus_first_last", "super-p", Box::new(FocusLast)),
             ("focus_previous", "super-tab", Box::new(FocusPrevious)),
             ("overview", "super-o", Box::new(ToggleOverview)),
             ("move_panel", "super-shift-h", Box::new(MovePanelLeft)),
@@ -4792,6 +4844,47 @@ mod tests {
     }
 
     #[gpui::test]
+    fn horizontal_panel_moves_animate_both_swapped_panels(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("left", cx);
+            workspace.push_test_panel("right", cx);
+            workspace.set_active(1, cx);
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.run_until_parked();
+
+        vcx.simulate_keystrokes("super-shift-h");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active, 0);
+            assert!(workspace.slots[0].order_offset.is_animating());
+            assert!(workspace.slots[1].order_offset.is_animating());
+        });
+
+        std::thread::sleep(transition::policy(Transition::PanelOrder).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert!(!workspace.slots[0].order_offset.is_animating());
+            assert!(!workspace.slots[1].order_offset.is_animating());
+        });
+
+        vcx.simulate_keystrokes("super-shift-l");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.active, 1);
+            assert!(workspace.slots[0].order_offset.is_animating());
+            assert!(workspace.slots[1].order_offset.is_animating());
+        });
+    }
+
+    #[gpui::test]
     fn moving_a_panel_between_strips_animates_and_stops_at_boundaries(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -4983,7 +5076,7 @@ mod tests {
         for keys in [
             "super-h / super-l",
             "super-j / super-k",
-            "super-home / super-end",
+            "super-u / super-p",
             "super-tab",
             "super-o",
             "super-shift-h / super-shift-l",

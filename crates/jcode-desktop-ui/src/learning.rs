@@ -105,7 +105,7 @@ pub const SKILLS: &[Skill] = &[
     },
     Skill {
         id: "focus_first_last",
-        keys: "super-home / super-end",
+        keys: "super-u / super-p",
         label: "jump to the first or last panel",
         instead_of: "pressing super-h or super-l repeatedly",
         area: Area::Navigation,
