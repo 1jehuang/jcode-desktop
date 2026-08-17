@@ -182,6 +182,20 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         if self.history_loaded {
+            // Reattaching a session fetches history again. The runtime may have
+            // completed the active turn while its event stream was unavailable,
+            // so reconcile the newest assistant message instead of discarding
+            // the refresh and leaving the locally echoed prompt unanswered.
+            if let Some(response) = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "assistant" && !message.content.trim().is_empty())
+                .map(|message| message.content.as_str())
+            {
+                self.recover_response(response);
+                self.scroll.scroll_to_bottom();
+                cx.notify();
+            }
             return;
         }
         self.history_loaded = true;
@@ -218,6 +232,33 @@ impl Panel {
         self.items = items;
         self.scroll.scroll_to_bottom();
         cx.notify();
+    }
+
+    fn recover_response(&mut self, response: &str) {
+        if self.streaming_text == response {
+            return;
+        }
+        if !self.streaming_text.is_empty() && response.starts_with(&self.streaming_text) {
+            self.streaming_text = response.to_string();
+            return;
+        }
+
+        if let Some(existing) = self.items.iter_mut().rev().find_map(|item| match item {
+            Item::Assistant(text) => Some(text),
+            _ => None,
+        }) {
+            if existing == response {
+                return;
+            }
+            if response.starts_with(existing.as_str()) {
+                *existing = response.to_string();
+                return;
+            }
+        }
+
+        self.flush_reasoning();
+        self.flush_streaming();
+        self.items.push(Item::Assistant(response.to_string()));
     }
 
     /// Apply a streaming event addressed to this session.
@@ -1664,6 +1705,101 @@ mod tests {
             bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
             "the footer must occupy real space, got {bounds:?}"
         );
+    }
+
+    #[gpui::test]
+    fn reconnect_history_recovers_a_response_missed_by_the_event_stream(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.history_loaded = true;
+            panel.items = vec![Item::User("hello".into())];
+            panel.load_history(
+                vec![
+                    jcode_sdk::HistoryMessage {
+                        role: "user".into(),
+                        content: "hello".into(),
+                    },
+                    jcode_sdk::HistoryMessage {
+                        role: "assistant".into(),
+                        content: "recovered response".into(),
+                    },
+                ],
+                cx,
+            );
+            assert!(matches!(
+                panel.items.last(),
+                Some(Item::Assistant(text)) if text == "recovered response"
+            ));
+
+            panel.items = vec![Item::User("next".into())];
+            panel.streaming_text = "partial".into();
+            panel.load_history(
+                vec![jcode_sdk::HistoryMessage {
+                    role: "assistant".into(),
+                    content: "partial response completed".into(),
+                }],
+                cx,
+            );
+            assert_eq!(panel.streaming_text, "partial response completed");
+        });
+    }
+
+    #[gpui::test]
+    fn keyboard_submission_reaches_the_bridge_and_streamed_text_paints(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+        vcx.update(|window, cx| {
+            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        vcx.run_until_parked();
+
+        vcx.simulate_input("hello jcode");
+        vcx.simulate_keystrokes("enter");
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_millis(100)),
+            Ok(Command::Send { session_id, content, images })
+                if session_id == "session-a" && content == "hello jcode" && images.is_empty()
+        ));
+
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    session_id: "session-a".into(),
+                    text: "hello back".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+
+        let bounds = vcx
+            .debug_bounds("assistant-response")
+            .expect("streamed assistant response should paint");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
     }
 }
 
