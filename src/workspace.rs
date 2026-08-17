@@ -102,6 +102,9 @@ const MINIMAP_TOP: f32 = 8.0;
 const MINIMAP_RIGHT: f32 = 12.0;
 const COACH_TOAST_GAP: f32 = 8.0;
 const COACH_TOAST_WIDTH: f32 = 288.0;
+/// The coach keeps hints for nine seconds. Wake once after that deadline instead
+/// of rebuilding every transcript at display refresh rate for the full lifetime.
+const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(10);
 /// Rows split the square's inner height evenly, one per strip.
 const MINIMAP_ROW_HEIGHT: f32 =
     (MINIMAP_SIZE - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
@@ -150,6 +153,7 @@ pub struct Workspace {
     coach: learning::Coach,
     /// Fade for the coach's hint toast.
     coach_progress: AnimatedValue,
+    coach_expiry_task: Option<gpui::Task<()>>,
     pending_help_session: bool,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
@@ -225,6 +229,7 @@ impl Workspace {
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
             coach: learning::load(),
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
+            coach_expiry_task: None,
             pending_help_session: false,
             sessions: Vec::new(),
             accounts: Vec::new(),
@@ -267,6 +272,7 @@ impl Workspace {
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
             coach,
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
+            coach_expiry_task: None,
             pending_help_session: false,
             sessions: Vec::new(),
             accounts: Vec::new(),
@@ -660,6 +666,14 @@ impl Workspace {
         let visible = self.coach.active_hint(now).is_some();
         self.coach_progress
             .set(if visible { 1.0 } else { 0.0 }, Instant::now());
+        if visible {
+            self.coach_expiry_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(COACH_EXPIRY_WAKE).await;
+                let _ = this.update(cx, |workspace, cx| workspace.after_coach_update(cx));
+            }));
+        } else {
+            self.coach_expiry_task = None;
+        }
         if self.coach.take_dirty() {
             learning::save(&self.coach);
         }
@@ -2520,8 +2534,6 @@ impl Render for Workspace {
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
             || self.row_progress.is_animating()
-            // Keep ticking while a hint is up so it can expire on its own.
-            || coach_hint.is_some()
         {
             window.request_animation_frame();
         }
