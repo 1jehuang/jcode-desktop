@@ -2382,6 +2382,7 @@ impl Workspace {
                             .child(
                                 div()
                                     .id("folder-picker-cancel")
+                                    .debug_selector(|| "folder-picker-cancel".into())
                                     .cursor_pointer()
                                     .text_color(Theme::TEXT_DIM)
                                     .hover(|el| el.text_color(Theme::TEXT))
@@ -2926,10 +2927,52 @@ mod tests {
             "the picker should paint inside the Jcode window"
         );
 
+        let root = std::env::temp_dir().join(format!(
+            "jcode-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let selected = root.join("alpha");
+        std::fs::create_dir_all(&selected).unwrap();
+        std::fs::create_dir(root.join("beta")).unwrap();
+        std::fs::write(root.join("not-a-directory.txt"), "ignored").unwrap();
+
         workspace.update(vcx, |workspace, cx| {
-            workspace.folder_picker_dir = Some(PathBuf::from("/tmp/jcode-picker-test"));
-            workspace.choose_browsed_folder(cx);
+            workspace.folder_picker_dir = Some(root.clone());
+            cx.notify();
         });
+        vcx.run_until_parked();
+        let first_folder = vcx
+            .debug_bounds("folder-picker-entry-0")
+            .expect("the first child directory should paint");
+        vcx.simulate_click(first_folder.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert_eq!(workspace.folder_picker_dir.as_deref(), Some(selected.as_path()));
+        });
+
+        let cancel = vcx
+            .debug_bounds("folder-picker-cancel")
+            .expect("cancel should paint");
+        vcx.simulate_click(cancel.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            assert!(workspace.folder_picker_dir.is_none());
+        });
+
+        vcx.simulate_keystrokes("ctrl-o");
+        workspace.update(vcx, |workspace, cx| {
+            workspace.folder_picker_dir = Some(selected.clone());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let open = vcx
+            .debug_bounds("folder-picker-open")
+            .expect("open this folder should paint");
+        vcx.simulate_click(open.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
 
         match commands
@@ -2937,10 +2980,29 @@ mod tests {
             .expect("folder selection should create a session")
         {
             Command::CreateSession { working_dir } => {
-                assert_eq!(working_dir.as_deref(), Some("/tmp/jcode-picker-test"));
+                assert_eq!(working_dir.as_deref(), Some(selected.to_string_lossy().as_ref()));
             }
             _ => panic!("folder selection sent the wrong runtime command"),
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_browser_lists_only_sorted_directories_and_reports_missing_paths() {
+        let root = std::env::temp_dir().join(format!("jcode-picker-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("zeta")).unwrap();
+        std::fs::create_dir(root.join("Alpha")).unwrap();
+        std::fs::write(root.join("file.txt"), "ignored").unwrap();
+
+        let names = directory_entries(&root)
+            .unwrap()
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Alpha", "zeta"]);
+        assert!(directory_entries(&root.join("missing")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
