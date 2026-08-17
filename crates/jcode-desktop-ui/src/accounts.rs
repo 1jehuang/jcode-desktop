@@ -153,19 +153,16 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
         let Some(limits) = provider.get("limits").and_then(|value| value.as_array()) else {
             continue;
         };
-        account.limits = limits
-            .iter()
-            .filter_map(|limit| {
-                Some(UsageLimit {
-                    name: limit.get("name")?.as_str()?.to_owned(),
-                    usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
-                    reset_in: limit
-                        .get("reset_in")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_owned),
-                })
+        account.limits.extend(limits.iter().filter_map(|limit| {
+            Some(UsageLimit {
+                name: limit.get("name")?.as_str()?.to_owned(),
+                usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
+                reset_in: limit
+                    .get("reset_in")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned),
             })
-            .collect();
+        }));
     }
 }
 
@@ -297,6 +294,49 @@ mod tests {
         assert_eq!(openai.limits[0].name, "5 hour");
         assert_eq!(openai.limits[1].usage_percent, 81.0);
         assert_eq!(openai.limits[1].reset_in.as_deref(), Some("4d"));
+    }
+
+    #[test]
+    fn usage_merge_handles_duplicate_reports_empty_limits_and_bad_entries() {
+        let mut accounts = parse(SAMPLE).unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"OpenAI (ChatGPT) first","limits":[
+                    {"name":"5 hour","usage_percent":120.0,"reset_in":null},
+                    {"name":"missing percent"}
+                ]},
+                {"provider_name":"OpenAI (ChatGPT) second","limits":[]},
+                {"provider_name":"OpenAI (ChatGPT) third","limits":[
+                    {"name":"Weekly","usage_percent":10.0,"reset_in":"6d"}
+                ]},
+                {"provider_name":"Unknown provider","limits":[
+                    {"name":"Ignored","usage_percent":50.0}
+                ]}
+            ]}"#,
+        );
+        let openai = accounts
+            .iter()
+            .find(|account| account.id == "openai")
+            .unwrap();
+        assert_eq!(
+            openai
+                .limits
+                .iter()
+                .map(|limit| limit.name.as_str())
+                .collect::<Vec<_>>(),
+            ["5 hour", "Weekly"],
+            "valid limits from duplicate credential reports accumulate"
+        );
+        assert_eq!(openai.limits[0].usage_percent, 120.0);
+        assert_eq!(openai.limits[0].reset_in, None);
+        assert!(
+            accounts
+                .iter()
+                .filter(|account| account.id != "openai")
+                .all(|account| account.limits.is_empty()),
+            "unknown providers must not leak into another account"
+        );
     }
 
     /// The refresh path: a poll between snapshots sees the latest one, stale
