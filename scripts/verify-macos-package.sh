@@ -39,10 +39,24 @@ verify_bundle() {
 
   local sparkle="$app/Contents/Frameworks/Sparkle.framework"
   local sparkle_executable="$sparkle/Versions/B/Sparkle"
+  local autoupdate_executable="$sparkle/Versions/B/Autoupdate"
   [[ -x "$sparkle_executable" ]] || fail "Sparkle framework is missing"
+  [[ -x "$autoupdate_executable" ]] || fail "Sparkle Autoupdate is missing"
   local sparkle_archs
   sparkle_archs="$(lipo -archs "$sparkle_executable")"
   [[ " $sparkle_archs " == *" arm64 "* && " $sparkle_archs " == *" x86_64 "* ]] || fail "Sparkle is not universal"
+  local autoupdate_archs
+  autoupdate_archs="$(lipo -archs "$autoupdate_executable")"
+  [[ " $autoupdate_archs " == *" arm64 "* && " $autoupdate_archs " == *" x86_64 "* ]] || fail "Sparkle Autoupdate is not universal"
+  codesign --verify --strict --verbose=2 "$autoupdate_executable"
+  if [[ "${EXPECT_NOTARIZED:-0}" == 1 ]]; then
+    local autoupdate_signature
+    autoupdate_signature="$(codesign -d --verbose=4 "$autoupdate_executable" 2>&1)"
+    grep -q '^Authority=Developer ID Application:' <<<"$autoupdate_signature" || \
+      fail "Sparkle Autoupdate is not signed with Developer ID Application"
+    grep -q '^Timestamp=' <<<"$autoupdate_signature" || \
+      fail "Sparkle Autoupdate signature lacks a secure timestamp"
+  fi
   codesign --verify --deep --strict --verbose=2 "$sparkle"
 
   local update_key=""

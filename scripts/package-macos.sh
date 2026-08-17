@@ -131,6 +131,11 @@ if [[ "$IDENTITY" != "-" ]]; then SIGN_ARGS+=(--timestamp); fi
 # malformed or incompletely signed nested bundle.
 NESTED_SIGN_ARGS=(--force --options runtime --preserve-metadata=identifier,entitlements --sign "$IDENTITY")
 if [[ "$IDENTITY" != "-" ]]; then NESTED_SIGN_ARGS+=(--timestamp); fi
+# Autoupdate is a standalone Mach-O binary inside the framework rather than a
+# bundle, so sealing Sparkle.framework does not replace its upstream signature.
+# Sign it explicitly before the bundles that contain and seal it.
+codesign "${NESTED_SIGN_ARGS[@]}" \
+  "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
 for nested in \
   "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc" \
   "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc" \
