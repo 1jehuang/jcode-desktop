@@ -2485,48 +2485,55 @@ impl Workspace {
                     ),
             );
 
-            for (limit_index, limit) in account.limits.iter().enumerate() {
-                let used = limit.usage_percent.clamp(0.0, 100.0);
-                let label = match &limit.reset_in {
-                    Some(reset) => format!("{} · {:.0}% · {reset}", limit.name, used),
-                    None => format!("{} · {:.0}%", limit.name, used),
-                };
-                details = details.child(
-                    div()
-                        .id(("account-limit", index * 1000 + limit_index))
-                        .debug_selector({
-                            let id = account.id.clone();
-                            move || format!("account-{id}-limit-{limit_index}")
-                        })
-                        .mt(px(3.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .overflow_hidden()
-                                .text_size(px(8.0))
-                                .text_color(Theme::TEXT_DIM)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .h(px(3.0))
-                                .rounded_full()
-                                .overflow_hidden()
-                                .bg(Theme::INLINE_CODE_BG)
-                                .child(div().h_full().w(relative(used / 100.0)).rounded_full().bg(
-                                    if used >= 90.0 {
-                                        Theme::ERROR
-                                    } else if used >= 70.0 {
-                                        Theme::WARN
-                                    } else {
-                                        Theme::ACCENT
-                                    },
-                                )),
-                        ),
-                );
+            if !account.limits.is_empty() {
+                let mut limits = div().mt(px(3.0)).flex().gap(px(6.0));
+                for (limit_index, limit) in account.limits.iter().enumerate() {
+                    let used = limit.usage_percent.clamp(0.0, 100.0);
+                    let label = match &limit.reset_in {
+                        Some(reset) => format!("{} · {:.0}% · {reset}", limit.name, used),
+                        None => format!("{} · {:.0}%", limit.name, used),
+                    };
+                    limits = limits.child(
+                        div()
+                            .id(("account-limit", index * 1000 + limit_index))
+                            .debug_selector({
+                                let id = account.id.clone();
+                                move || format!("account-{id}-limit-{limit_index}")
+                            })
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .text_size(px(8.0))
+                                    .text_color(Theme::TEXT_DIM)
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px(3.0))
+                                    .rounded_full()
+                                    .overflow_hidden()
+                                    .bg(Theme::INLINE_CODE_BG)
+                                    .child(
+                                        div().h_full().w(relative(used / 100.0)).rounded_full().bg(
+                                            if used >= 90.0 {
+                                                Theme::ERROR
+                                            } else if used >= 70.0 {
+                                                Theme::WARN
+                                            } else {
+                                                Theme::ACCENT
+                                            },
+                                        ),
+                                    ),
+                            ),
+                    );
+                }
+                details = details.child(limits);
             }
 
             section = section.child(
