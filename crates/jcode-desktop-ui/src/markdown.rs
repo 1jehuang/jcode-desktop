@@ -547,13 +547,19 @@ fn latex_to_text(source: &str) -> String {
     // stripping `\frac` and braces produced mangled output such as
     // `x=\frac-b±√b²-4ac2a`.
     let mut text = expand_latex_groups(source.trim());
+    // Layout-only commands have no useful textual representation. Models
+    // commonly put `\displaystyle` at the start of inline formulas, and
+    // leaving it intact is especially distracting in transcript output.
+    for command in ["\\displaystyle", "\\textstyle", "\\scriptstyle"] {
+        text = text.replace(command, "");
+    }
     for (from, to) in REPLACEMENTS {
         text = text.replace(from, to);
     }
     text = text.replace("\\left", "").replace("\\right", "");
     text = convert_scripts(&text, '^');
     text = convert_scripts(&text, '_');
-    text.replace(['{', '}'], "")
+    text.replace(['{', '}'], "").trim().to_string()
 }
 
 /// Expand the small set of braced TeX commands that affect how an expression
@@ -1366,6 +1372,16 @@ mod tests {
                 Block::Math("e^(iπ)+1=0".into()),
             ]
         );
+    }
+
+    #[test]
+    fn strips_layout_commands_from_common_model_equations() {
+        let quadratic =
+            inline_spans(r"Quadratic: \(\displaystyle x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}\)");
+        assert_eq!(quadratic.plain, "Quadratic: x = (-b ± √(b²-4ac))/(2a)");
+
+        let derivative = inline_spans(r"Derivative: \(\displaystyle \frac{d}{dx}x^n=nx^{n-1}\)");
+        assert_eq!(derivative.plain, "Derivative: (d)/(dx)xⁿ=nxⁿ⁻¹");
     }
 
     #[test]
