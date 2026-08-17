@@ -4,6 +4,33 @@ A native, high-performance spatial desktop client built on the Jcode SDK.
 
 See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
+## Native UI hot reload
+
+The executable is a small, stable GPUI host. The application UI lives in the
+`jcode-desktop-ui` crate, which is linked into normal builds and can also be
+built as a development `cdylib`. This keeps GPUI's event loop and native window
+alive while replacing the real workspace root, rather than launching a demo or
+a second window.
+
+```sh
+cargo build -p jcode-desktop-ui
+cargo run -p jcode-desktop -- --hot-reload
+```
+
+After changing UI code, rebuild `jcode-desktop-ui` and press **F5**. The host
+checks the ABI, API-table size, pinned GPUI revision, and state schema before
+activation. A failed load leaves the current root intact. Press **F6** to roll
+back to the previous activated generation. Workspace panels, strip layout,
+focus, drafts and attachments, transcript scroll offsets, overlays, and folder
+picker state cross the handoff. Terminal processes and PTY streams are owned by
+the host and reattached by resource ID.
+
+Old dynamic libraries stay mapped until process exit because GPUI entities and
+callbacks may still contain their code pointers. Hot reload is therefore a
+development workflow. Release builds use the same UI through the linked API and
+remain a single `jcode-desktop` executable, so existing app packaging is
+unchanged.
+
 ## macOS beta
 
 Jcode Desktop supports Apple Silicon and Intel Macs running macOS 13 or newer.

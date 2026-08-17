@@ -11,12 +11,14 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Window, actions, div, prelude::*, px, relative,
 };
+use jcode_desktop_api::HostHandle;
+use serde::{Deserialize, Serialize};
 
 use crate::accounts;
 use crate::harness::{self, Bridge, Command, Update};
-use crate::input::PromptInput;
+use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
-use crate::panel::Panel;
+use crate::panel::{Panel, PanelSnapshot};
 use crate::theme::Theme;
 use crate::transition::{self, AnimatedValue, Transition};
 
@@ -112,6 +114,12 @@ const MINIMAP_ROW_HEIGHT: f32 =
         / STRIP_COUNT as f32;
 /// Vertical inset between a panel rectangle and its track edge.
 const MINIMAP_PANEL_INSET: f32 = 1.5;
+/// The gesture reticle: how long it stays fully lit after the last touchpad
+/// scroll delta, and how long the fade-out takes once the fingers lift.
+const GESTURE_HOLD: Duration = Duration::from_millis(150);
+const GESTURE_FADE: Duration = Duration::from_millis(300);
+const GESTURE_RETICLE_SIZE: f32 = 44.0;
+const MINIMAP_GESTURE_DOT: f32 = 7.0;
 
 struct Slot {
     panel: Entity<Panel>,
@@ -124,8 +132,80 @@ struct Slot {
     restore_fraction: Option<f32>,
 }
 
+const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct SlotSnapshot {
+    panel: PanelSnapshot,
+    row: usize,
+    width_fraction: f32,
+    restore_fraction: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+enum FocusSnapshot {
+    Panel(usize),
+    FolderSearch,
+    #[default]
+    Workspace,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct WorkspaceSnapshot {
+    format_version: u32,
+    slots: Vec<SlotSnapshot>,
+    active: usize,
+    active_row: usize,
+    row_focus: [Option<usize>; STRIP_COUNT],
+    previous: Option<usize>,
+    camera_x: [f32; STRIP_COUNT],
+    camera_target: [f32; STRIP_COUNT],
+    overview: bool,
+    hints_overlay: bool,
+    folder_picker_dir: Option<PathBuf>,
+    folder_picker_error: Option<String>,
+    folder_search: Option<PromptInputSnapshot>,
+    focus: FocusSnapshot,
+}
+
+impl WorkspaceSnapshot {
+    pub fn encode(&self) -> anyhow::Result<Vec<u8>> {
+        serde_json::to_vec(self).map_err(Into::into)
+    }
+
+    pub fn decode(bytes: &[u8]) -> anyhow::Result<Self> {
+        let snapshot: Self = serde_json::from_slice(bytes)?;
+        anyhow::ensure!(
+            snapshot.format_version == SNAPSHOT_FORMAT_VERSION,
+            "unsupported workspace snapshot format {}",
+            snapshot.format_version
+        );
+        anyhow::ensure!(
+            snapshot.active_row < STRIP_COUNT,
+            "active row is out of range"
+        );
+        anyhow::ensure!(
+            snapshot.slots.iter().all(|slot| {
+                slot.row < STRIP_COUNT
+                    && slot.width_fraction.is_finite()
+                    && (0.1..=1.0).contains(&slot.width_fraction)
+                    && slot
+                        .restore_fraction
+                        .is_none_or(|width| width.is_finite() && (0.1..=1.0).contains(&width))
+            }),
+            "snapshot contains an invalid panel layout"
+        );
+        anyhow::ensure!(
+            snapshot.slots.is_empty() || snapshot.active < snapshot.slots.len(),
+            "active panel is out of range"
+        );
+        Ok(snapshot)
+    }
+}
+
 pub struct Workspace {
     bridge: Bridge,
+    host: HostHandle,
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
@@ -166,15 +246,24 @@ pub struct Workspace {
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
+    /// When the last touchpad pan delta arrived. Drives the gesture reticle
+    /// that marks where focus will land while a swipe is in flight.
+    gesture_last: Option<Instant>,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
+    focus_restore: FocusSnapshot,
     _poll_task: gpui::Task<()>,
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        host: HostHandle,
+        snapshot: Option<WorkspaceSnapshot>,
+    ) -> Self {
         crate::input::bind_keys(cx);
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
@@ -207,8 +296,9 @@ impl Workspace {
         });
 
         let _ = window;
-        Self {
+        let mut workspace = Self {
             bridge,
+            host,
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -238,11 +328,17 @@ impl Workspace {
             connected: false,
             focus_handle: cx.focus_handle(),
             focus_pending: false,
+            gesture_last: None,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
+            focus_restore: FocusSnapshot::Workspace,
             _poll_task: poll_task,
+        };
+        if let Some(snapshot) = snapshot {
+            workspace.apply_snapshot(snapshot, cx);
         }
+        workspace
     }
 
     /// A workspace with no runtime and a caller-supplied coach, for tests that
@@ -252,6 +348,7 @@ impl Workspace {
         crate::input::bind_keys(cx);
         Self {
             bridge: harness::spawn_inert(),
+            host: HostHandle::inert(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -281,10 +378,184 @@ impl Workspace {
             connected: true,
             focus_handle: cx.focus_handle(),
             focus_pending: false,
+            gesture_last: None,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
+            focus_restore: FocusSnapshot::Workspace,
             _poll_task: cx.spawn(async move |_, _| {}),
+        }
+    }
+
+    pub fn snapshot(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
+        let index_for_id = |id: gpui::EntityId| {
+            self.slots
+                .iter()
+                .position(|slot| slot.panel.entity_id() == id)
+        };
+        let focus = if self
+            .folder_search
+            .as_ref()
+            .is_some_and(|search| search.read(cx).focus_handle.is_focused(window))
+        {
+            FocusSnapshot::FolderSearch
+        } else if let Some(index) = self.slots.iter().position(|slot| {
+            slot.panel
+                .read(cx)
+                .input_focus_handle(cx)
+                .is_focused(window)
+        }) {
+            FocusSnapshot::Panel(index)
+        } else {
+            FocusSnapshot::Workspace
+        };
+        let folder_search = self
+            .folder_search
+            .as_ref()
+            .map(|search| search.read(cx).snapshot());
+        Ok(WorkspaceSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            slots: self
+                .slots
+                .iter()
+                .map(|slot| SlotSnapshot {
+                    panel: slot.panel.read(cx).snapshot(cx),
+                    row: slot.row,
+                    width_fraction: slot.width_fraction,
+                    restore_fraction: slot.restore_fraction,
+                })
+                .collect(),
+            active: self.active,
+            active_row: self.active_row,
+            row_focus: self.row_focus.map(|id| id.and_then(index_for_id)),
+            previous: self.previous.and_then(index_for_id),
+            camera_x: self.camera_x,
+            camera_target: self.camera_target,
+            overview: self.overview,
+            hints_overlay: self.hints_overlay,
+            folder_picker_dir: self.folder_picker_dir.clone(),
+            folder_picker_error: self.folder_picker_error.clone(),
+            folder_search,
+            focus,
+        })
+    }
+
+    fn apply_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
+        self.slots.clear();
+        for saved in snapshot.slots {
+            let panel_state = saved.panel;
+            let terminal =
+                panel_state.terminal_resource_id.is_some() || panel_state.session_id == "terminal";
+            let panel = if terminal {
+                let working_dir = panel_state.working_dir.clone();
+                let resource_id = panel_state.terminal_resource_id;
+                cx.new(|cx| {
+                    Panel::new_terminal(
+                        working_dir,
+                        self.bridge.clone(),
+                        self.host,
+                        resource_id,
+                        cx,
+                    )
+                })
+            } else {
+                let session_id = panel_state.session_id.clone();
+                let title = Some(panel_state.title.clone());
+                let working_dir = panel_state.working_dir.clone();
+                let panel = cx.new(|cx| {
+                    Panel::new(
+                        session_id.clone(),
+                        title,
+                        working_dir,
+                        self.bridge.clone(),
+                        cx,
+                    )
+                });
+                self.bridge.send(Command::Watch { session_id });
+                panel
+            };
+            Panel::connect_input(&panel, cx);
+            panel.update(cx, |panel, cx| panel.restore_snapshot(panel_state, cx));
+            self.slots.push(Slot {
+                panel,
+                row: saved.row,
+                width_fraction: saved.width_fraction,
+                animated_width: AnimatedValue::new(
+                    saved.width_fraction,
+                    transition::policy(Transition::PanelWidth).duration,
+                ),
+                restore_fraction: saved.restore_fraction,
+            });
+        }
+        self.active = snapshot.active.min(self.slots.len().saturating_sub(1));
+        self.active_row = snapshot.active_row;
+        self.row_focus = snapshot.row_focus.map(|index| {
+            index.and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()))
+        });
+        self.previous = snapshot
+            .previous
+            .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
+        self.camera_x = snapshot.camera_x;
+        self.camera_target = snapshot.camera_target;
+        self.camera_from = snapshot.camera_x;
+        self.camera_started = [None; STRIP_COUNT];
+        self.camera_dirty = [false; STRIP_COUNT];
+        self.overview = snapshot.overview;
+        self.overview_progress = AnimatedValue::new(
+            if snapshot.overview { 1.0 } else { 0.0 },
+            transition::policy(Transition::Overview).duration,
+        );
+        self.hints_overlay = snapshot.hints_overlay;
+        self.hints_progress = AnimatedValue::new(
+            if snapshot.hints_overlay { 1.0 } else { 0.0 },
+            transition::policy(Transition::Hints).duration,
+        );
+        self.folder_picker_dir = snapshot.folder_picker_dir;
+        self.folder_picker_error = snapshot.folder_picker_error;
+        self.focus_restore = snapshot.focus;
+        if let Some(search_state) = snapshot.folder_search {
+            let search = self.create_folder_search(cx);
+            search.update(cx, |search, cx| search.restore(search_state, cx));
+            self.folder_search = Some(search);
+        }
+    }
+
+    fn create_folder_search(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
+        let weak = cx.weak_entity();
+        let change_weak = weak.clone();
+        cx.new(|cx| {
+            PromptInput::new(
+                cx,
+                "type a folder name or path, then press enter",
+                move |query, _, _, app| {
+                    let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
+                },
+            )
+            .with_on_change(move |_, app| {
+                let _ = change_weak.update(app, |_, cx| cx.notify());
+            })
+        })
+    }
+
+    pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.focus_restore.clone() {
+            FocusSnapshot::Panel(index) => {
+                if let Some(slot) = self.slots.get(index) {
+                    let handle = slot.panel.read(cx).input_focus_handle(cx);
+                    window.focus(&handle, cx);
+                } else {
+                    window.focus(&self.focus_handle, cx);
+                }
+            }
+            FocusSnapshot::FolderSearch => {
+                if let Some(search) = &self.folder_search {
+                    let handle = search.read(cx).focus_handle.clone();
+                    window.focus(&handle, cx);
+                } else {
+                    self.focus_active(window, cx);
+                }
+            }
+            FocusSnapshot::Workspace => self.focus_active(window, cx),
         }
     }
 
@@ -935,8 +1206,15 @@ impl Workspace {
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
         let width_fraction = spawned_panel_width(self.slots.len());
-        let panel =
-            cx.new(|cx| Panel::new_terminal(default_working_dir(), self.bridge.clone(), cx));
+        let panel = cx.new(|cx| {
+            Panel::new_terminal(
+                default_working_dir(),
+                self.bridge.clone(),
+                self.host,
+                None,
+                cx,
+            )
+        });
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -1334,6 +1612,14 @@ impl Workspace {
             .map(|index| self.slot_width(index, viewport_w) + GAP)
             .sum::<f32>()
             + STRUT * 2.0;
+        let reticle_alpha = (row == self.active_row)
+            .then(|| self.gesture_reticle_alpha())
+            .flatten();
+        if reticle_alpha.is_some() {
+            // Keep painting so the reticle's hold and fade actually play out
+            // after the last scroll delta.
+            window.request_animation_frame();
+        }
         div()
             .relative()
             .size_full()
@@ -1349,43 +1635,78 @@ impl Workspace {
                     if dx == 0.0 {
                         return;
                     }
+                    // Light the gesture reticle: a circle on the canvas and a
+                    // dot on the minimap mark the camera's focal point while
+                    // the fingers are moving, so the user can see where focus
+                    // will land when the gesture settles.
+                    this.gesture_last = Some(Instant::now());
                     // Natural scrolling: content follows the fingers, so the
                     // camera moves opposite the delta. Panning cancels any
                     // in-flight camera animation and becomes the new target,
                     // otherwise the next frame would snap back.
                     let next = pan_camera(this.camera_x[row], -dx, total_width, viewport_w);
-                    if (next - this.camera_x[row]).abs() < f32::EPSILON {
-                        return;
-                    }
-                    this.camera_x[row] = next;
-                    this.camera_target[row] = next;
-                    this.camera_from[row] = next;
-                    this.camera_started[row] = None;
-                    this.camera_dirty[row] = false;
-                    // Keep keyboard/input focus attached to what the gesture has
-                    // actually brought under the camera. Without this, a swipe
-                    // only moved the pixels: the old off-screen panel remained
-                    // active and the next keyboard action snapped back to it.
-                    if let Some(index) = panel_at_viewport_center(
-                        this.slots.iter().enumerate().filter_map(|(index, slot)| {
-                            (slot.row == row).then_some((index, slot.width_fraction))
-                        }),
-                        next,
-                        viewport_w,
-                    ) && index != this.active
-                    {
-                        if let Some(outgoing) = this.slots.get(this.active) {
-                            this.previous = Some(outgoing.panel.entity_id());
+                    if (next - this.camera_x[row]).abs() >= f32::EPSILON {
+                        this.camera_x[row] = next;
+                        this.camera_target[row] = next;
+                        this.camera_from[row] = next;
+                        this.camera_started[row] = None;
+                        this.camera_dirty[row] = false;
+                        // Keep keyboard/input focus attached to what the gesture has
+                        // actually brought under the camera. Without this, a swipe
+                        // only moved the pixels: the old off-screen panel remained
+                        // active and the next keyboard action snapped back to it.
+                        if let Some(index) = panel_at_viewport_center(
+                            this.slots.iter().enumerate().filter_map(|(index, slot)| {
+                                (slot.row == row).then_some((index, slot.width_fraction))
+                            }),
+                            next,
+                            viewport_w,
+                        ) && index != this.active
+                        {
+                            if let Some(outgoing) = this.slots.get(this.active) {
+                                this.previous = Some(outgoing.panel.entity_id());
+                            }
+                            this.active = index;
+                            this.active_row = row;
+                            this.focus_active(window, cx);
                         }
-                        this.active = index;
-                        this.active_row = row;
-                        this.focus_active(window, cx);
                     }
                     cx.notify();
                 },
             ))
             .child(strip)
+            // The gesture reticle: while a touchpad swipe is panning this
+            // strip, a ring at the camera's focal point shows exactly where
+            // focus will land when the gesture settles. It fades right after
+            // the fingers lift so it never lingers over content.
+            .when_some(reticle_alpha, |el, alpha| {
+                el.child(
+                    div()
+                        .debug_selector(|| "gesture-reticle".into())
+                        .absolute()
+                        .left(px((viewport_w - GESTURE_RETICLE_SIZE) / 2.0))
+                        .top(px((viewport_h - GESTURE_RETICLE_SIZE) / 2.0))
+                        .w(px(GESTURE_RETICLE_SIZE))
+                        .h(px(GESTURE_RETICLE_SIZE))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(Theme::ACCENT)
+                        .bg(gpui::rgba(0xffffff14))
+                        .opacity(alpha)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(div().w(px(5.0)).h(px(5.0)).rounded_full().bg(Theme::ACCENT)),
+                )
+            })
             .into_any_element()
+    }
+
+    /// Opacity of the gesture reticle right now, or `None` once it has fully
+    /// faded. Held bright while deltas keep arriving, then a short fade.
+    fn gesture_reticle_alpha(&self) -> Option<f32> {
+        self.gesture_last
+            .and_then(|last| gesture_alpha(last.elapsed()))
     }
 
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -2001,20 +2322,22 @@ impl Workspace {
                     if dx == 0.0 || scale <= f32::EPSILON {
                         return;
                     }
+                    // Panning through the map is still a gesture: light the
+                    // reticle so the focal point stays visible here too.
+                    this.gesture_last = Some(Instant::now());
                     let total = this
                         .row_indices(row)
                         .map(|index| this.slot_width(index, viewport_w) + GAP)
                         .sum::<f32>()
                         + STRUT * 2.0;
                     let next = pan_camera(this.camera_x[row], -dx / scale, total, viewport_w);
-                    if (next - this.camera_x[row]).abs() < f32::EPSILON {
-                        return;
+                    if (next - this.camera_x[row]).abs() >= f32::EPSILON {
+                        this.camera_x[row] = next;
+                        this.camera_target[row] = next;
+                        this.camera_from[row] = next;
+                        this.camera_started[row] = None;
+                        this.camera_dirty[row] = false;
                     }
-                    this.camera_x[row] = next;
-                    this.camera_target[row] = next;
-                    this.camera_from[row] = next;
-                    this.camera_started[row] = None;
-                    this.camera_dirty[row] = false;
                     cx.notify();
                 },
             ));
@@ -2103,6 +2426,27 @@ impl Workspace {
                         .border_color(Theme::MINIMAP_VIEWPORT)
                         .bg(gpui::rgba(0xffffff08)),
                 );
+
+                // The gesture dot: the same focal point the canvas reticle
+                // marks, mirrored onto the map at the lens center so the eye
+                // can track the swipe in either place.
+                if let Some(alpha) = self.gesture_reticle_alpha() {
+                    let dot_left = lens_left + lens_width / 2.0 - MINIMAP_GESTURE_DOT / 2.0;
+                    track = track.child(
+                        div()
+                            .debug_selector(|| "minimap-gesture-dot".into())
+                            .absolute()
+                            .left(px(dot_left))
+                            .top(px((MINIMAP_ROW_HEIGHT - MINIMAP_GESTURE_DOT) / 2.0))
+                            .w(px(MINIMAP_GESTURE_DOT))
+                            .h(px(MINIMAP_GESTURE_DOT))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(Theme::ACCENT)
+                            .bg(gpui::rgba(0xffffff66))
+                            .opacity(alpha),
+                    );
+                }
             }
 
             card = card.child(track);
@@ -3120,6 +3464,19 @@ fn minimap_scale(
     (track_width / canvas).min(track_height / viewport_h.max(1.0))
 }
 
+/// Opacity of the gesture reticle a given time after the last touchpad delta:
+/// fully lit through the hold window, a linear fade after, `None` once gone.
+fn gesture_alpha(since_last_delta: Duration) -> Option<f32> {
+    if since_last_delta <= GESTURE_HOLD {
+        return Some(1.0);
+    }
+    let fading = since_last_delta - GESTURE_HOLD;
+    if fading >= GESTURE_FADE {
+        return None;
+    }
+    Some(1.0 - fading.as_secs_f32() / GESTURE_FADE.as_secs_f32())
+}
+
 /// Choose the panel underneath the camera's focal point after a direct pan.
 /// Gaps belong to the closest adjacent panel, which avoids a dead zone and
 /// makes small, high-resolution touchpad deltas behave consistently.
@@ -3149,6 +3506,81 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_snapshot_round_trips_layout_focus_drafts_scroll_and_terminal_id() {
+        let draft = PromptInputSnapshot {
+            content: "unfinished prompt".into(),
+            selection_start: 3,
+            selection_end: 9,
+            selection_reversed: true,
+            history: vec!["older prompt".into()],
+            history_index: None,
+            live_draft: "unfinished prompt".into(),
+            attachments: vec![crate::input::AttachmentSnapshot {
+                media_type: "image/png".into(),
+                encoded: "aW1hZ2U=".into(),
+                label: "diagram.png".into(),
+            }],
+        };
+        let snapshot = WorkspaceSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            slots: vec![SlotSnapshot {
+                panel: PanelSnapshot {
+                    session_id: "terminal".into(),
+                    title: "build shell".into(),
+                    working_dir: Some("/workspace".into()),
+                    draft,
+                    scroll_x: -4.0,
+                    scroll_y: -128.5,
+                    stick_to_bottom: false,
+                    terminal_resource_id: Some(42),
+                },
+                row: 2,
+                width_fraction: 0.75,
+                restore_fraction: Some(0.5),
+            }],
+            active: 0,
+            active_row: 2,
+            row_focus: [None, None, Some(0), None],
+            previous: Some(0),
+            camera_x: [0.0, 10.0, 20.0, 30.0],
+            camera_target: [1.0, 11.0, 21.0, 31.0],
+            overview: true,
+            hints_overlay: true,
+            folder_picker_dir: Some(PathBuf::from("/workspace/src")),
+            folder_picker_error: Some("example".into()),
+            folder_search: None,
+            focus: FocusSnapshot::Panel(0),
+        };
+
+        let encoded = snapshot.encode().expect("encode workspace snapshot");
+        let decoded = WorkspaceSnapshot::decode(&encoded).expect("decode workspace snapshot");
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn workspace_snapshot_rejects_invalid_layout_before_root_replacement() {
+        let invalid = serde_json::json!({
+            "format_version": SNAPSHOT_FORMAT_VERSION,
+            "slots": [],
+            "active": 0,
+            "active_row": STRIP_COUNT,
+            "row_focus": [null, null, null, null],
+            "previous": null,
+            "camera_x": [0.0, 0.0, 0.0, 0.0],
+            "camera_target": [0.0, 0.0, 0.0, 0.0],
+            "overview": false,
+            "hints_overlay": false,
+            "folder_picker_dir": null,
+            "folder_picker_error": null,
+            "folder_search": null,
+            "focus": "Workspace"
+        });
+        let error = WorkspaceSnapshot::decode(&serde_json::to_vec(&invalid).unwrap())
+            .expect_err("out-of-range row must be rejected");
+        assert!(error.to_string().contains("active row"));
+    }
 
     fn session_info(id: &str, title: Option<&str>) -> jcode_sdk::SessionInfo {
         jcode_sdk::SessionInfo {
@@ -3550,6 +3982,85 @@ mod tests {
         assert_eq!(panel_at_viewport_center(panels(), 400.0, viewport), Some(1));
         assert_eq!(panel_at_viewport_center(panels(), 900.0, viewport), Some(2));
         assert_eq!(panel_at_viewport_center([], 0.0, viewport), None);
+    }
+
+    /// The reticle holds fully lit while deltas keep arriving, fades linearly
+    /// once they stop, and disappears entirely after the fade.
+    #[test]
+    fn the_gesture_reticle_holds_then_fades_then_vanishes() {
+        assert_eq!(gesture_alpha(Duration::ZERO), Some(1.0));
+        assert_eq!(gesture_alpha(GESTURE_HOLD), Some(1.0));
+        let mid =
+            gesture_alpha(GESTURE_HOLD + GESTURE_FADE / 2).expect("mid-fade must still be visible");
+        assert!(
+            (mid - 0.5).abs() < 0.01,
+            "halfway through the fade should be about half lit: {mid}"
+        );
+        assert_eq!(gesture_alpha(GESTURE_HOLD + GESTURE_FADE), None);
+        assert_eq!(gesture_alpha(Duration::from_secs(60)), None);
+    }
+
+    /// A real touchpad swipe must paint the reticle on the canvas and the dot
+    /// on the minimap, so the user can see where focus will land.
+    #[gpui::test]
+    fn a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two", "three"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("gesture-reticle").is_none(),
+            "no reticle before any gesture"
+        );
+
+        let panel = cx
+            .debug_bounds("panel-0")
+            .expect("the first panel should paint");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: panel.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(-120.), px(0.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("gesture-reticle").is_some(),
+            "the swipe should paint the canvas reticle"
+        );
+        assert!(
+            cx.debug_bounds("minimap-gesture-dot").is_some(),
+            "the swipe should paint the minimap dot"
+        );
+
+        workspace.update(cx, |workspace, _| {
+            workspace.gesture_last =
+                Some(Instant::now() - GESTURE_HOLD - GESTURE_FADE - Duration::from_millis(50));
+        });
+        cx.run_until_parked();
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        assert!(
+            cx.debug_bounds("gesture-reticle").is_none(),
+            "the reticle must vanish after the fade"
+        );
+        assert!(
+            cx.debug_bounds("minimap-gesture-dot").is_none(),
+            "the minimap dot must vanish after the fade"
+        );
     }
 
     #[test]

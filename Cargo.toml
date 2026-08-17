@@ -1,29 +1,35 @@
+[workspace]
+members = [".", "crates/jcode-desktop-api", "crates/jcode-desktop-ui"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
+jcode-desktop-api = { path = "crates/jcode-desktop-api" }
+
 [package]
 name = "jcode-desktop"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 description = "Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions"
+license.workspace = true
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed" }
-jcode-sdk = { path = "../jcode/crates/jcode-sdk" }
-jcode_core = { package = "jcode-core", path = "../jcode/crates/jcode-core" }
 anyhow = "1"
-arboard = "3"
-base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
-unicode-segmentation = "1"
-serde_json = "1.0.151"
+gpui.workspace = true
+gpui_platform.workspace = true
+jcode-desktop-api.workspace = true
+jcode-desktop-ui = { path = "crates/jcode-desktop-ui" }
+libloading = "0.8"
 portable-pty = "0.9"
-vt100 = "0.16"
+tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["wayland", "x11", "font-kit"] }
-arboard = { version = "3", features = ["wayland-data-control"] }
-
-[dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
+gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 
 [profile.dev]
 opt-level = 0

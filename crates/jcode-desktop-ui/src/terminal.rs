@@ -1,15 +1,13 @@
 //! A small embedded PTY terminal used by plain terminal panels.
 
-use std::io::{Read, Write};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use gpui::{
     Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, KeyBinding,
     KeyDownEvent, Pixels, Render, UTF16Selection, Window, actions, canvas, div, prelude::*, px,
 };
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use jcode_desktop_api::HostHandle;
 
 use crate::theme::Theme;
 
@@ -42,92 +40,48 @@ pub fn bind_keys(cx: &mut gpui::App) {
 pub struct TerminalPanel {
     focus: FocusHandle,
     parser: vt100::Parser,
-    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
-    // Keep the process handle alive for the lifetime of the panel. Some PTY
-    // backends terminate or reap the child when this handle is dropped.
-    _child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    host: HostHandle,
+    resource_id: Option<u64>,
     status: String,
     _poll: gpui::Task<()>,
 }
 
 impl TerminalPanel {
-    pub fn new(working_dir: Option<String>, cx: &mut Context<Self>) -> Self {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let mut writer = None;
-        let mut child = None;
-        let mut status = String::new();
-
-        match native_pty_system().openpty(PtySize {
-            rows: ROWS,
-            cols: COLS,
-            pixel_width: 0,
-            pixel_height: 0,
-        }) {
-            Ok(pair) => {
-                // Desktop terminals should be predictable rather than inheriting
-                // whichever login shell happened to launch the GUI. Fish is the
-                // default, with conservative fallbacks for systems without it.
-                let shell = default_shell();
-                let is_fish = shell.ends_with("/fish") || shell == "fish";
-                let mut command = CommandBuilder::new(shell);
-                if is_fish {
-                    command.arg("--interactive");
-                }
-                // vt100 parses display output but does not answer terminal capability
-                // queries. Advertising xterm makes fish wait 10 seconds for replies;
-                // dumb starts immediately and remains fully interactive.
-                command.env("TERM", "dumb");
-                if let Some(dir) = working_dir {
-                    command.cwd(dir);
-                }
-                match pair.slave.spawn_command(command) {
-                    Ok(pty_child) => {
-                        child = Some(pty_child);
-                        drop(pair.slave);
-                        match (pair.master.try_clone_reader(), pair.master.take_writer()) {
-                            (Ok(mut reader), Ok(pty_writer)) => {
-                                writer = Some(Arc::new(Mutex::new(pty_writer)));
-                                std::thread::Builder::new()
-                                    .name("jcode-terminal-reader".into())
-                                    .spawn(move || {
-                                        let mut buf = [0u8; 8192];
-                                        loop {
-                                            match reader.read(&mut buf) {
-                                                Ok(0) => break,
-                                                Ok(count) => {
-                                                    if tx.send(buf[..count].to_vec()).is_err() {
-                                                        break;
-                                                    }
-                                                }
-                                                Err(error)
-                                                    if error.kind()
-                                                        == std::io::ErrorKind::Interrupted => {}
-                                                // Linux PTY masters can briefly return EIO
-                                                // between spawn and the child opening the slave.
-                                                Err(error) if error.raw_os_error() == Some(5) => {
-                                                    std::thread::sleep(Duration::from_millis(10));
-                                                }
-                                                Err(_) => break,
-                                            }
-                                        }
-                                    })
-                                    .ok();
-                            }
-                            _ => status = "could not connect to terminal PTY".into(),
-                        }
-                    }
-                    Err(error) => status = format!("could not start shell: {error}"),
-                }
-            }
-            Err(error) => status = format!("could not open PTY: {error}"),
-        }
-
+    pub fn new(
+        working_dir: Option<String>,
+        requested_id: Option<u64>,
+        host: HostHandle,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let resource_id = host.terminal_create(requested_id, working_dir.as_deref());
+        let status = if resource_id.is_some() {
+            String::new()
+        } else if requested_id.is_some() {
+            "terminal session is no longer available".into()
+        } else {
+            "terminal unavailable".into()
+        };
+        let poll_id = resource_id;
         let poll = cx.spawn(async move |this, cx| {
+            let Some(resource_id) = poll_id else { return };
+            let mut cursor = 0;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
-                let chunks = rx.try_iter().collect::<Vec<_>>();
+                let mut chunks = Vec::new();
+                loop {
+                    let mut buffer = vec![0; 32 * 1024];
+                    let read = host.terminal_read(resource_id, cursor, &mut buffer);
+                    cursor = read.next_cursor;
+                    buffer.truncate(read.copied);
+                    if !buffer.is_empty() {
+                        chunks.push(buffer);
+                    }
+                    if read.copied < 32 * 1024 {
+                        break;
+                    }
+                }
                 if chunks.is_empty() {
                     continue;
                 }
@@ -148,19 +102,20 @@ impl TerminalPanel {
         Self {
             focus: cx.focus_handle(),
             parser: vt100::Parser::new(ROWS, COLS, 10_000),
-            writer,
-            _child: child,
+            host,
+            resource_id,
             status,
             _poll: poll,
         }
     }
 
+    pub fn resource_id(&self) -> Option<u64> {
+        self.resource_id
+    }
+
     fn send(&self, bytes: &[u8]) {
-        if let Some(writer) = &self.writer
-            && let Ok(mut writer) = writer.lock()
-        {
-            let _ = writer.write_all(bytes);
-            let _ = writer.flush();
+        if let Some(resource_id) = self.resource_id {
+            let _ = self.host.terminal_write(resource_id, bytes);
         }
     }
 
@@ -316,17 +271,12 @@ impl EntityInputHandler for TerminalPanel {
     }
 }
 
-fn default_shell() -> String {
-    ["/usr/bin/fish", "/bin/fish"]
-        .into_iter()
-        .find(|path| std::path::Path::new(path).is_file())
-        .map(str::to_owned)
-        .or_else(|| {
-            std::env::var("SHELL")
-                .ok()
-                .filter(|shell| !shell.is_empty())
-        })
-        .unwrap_or_else(|| "/bin/sh".into())
+impl Drop for TerminalPanel {
+    fn drop(&mut self) {
+        if let Some(resource_id) = self.resource_id {
+            self.host.terminal_release(resource_id);
+        }
+    }
 }
 
 impl Render for TerminalPanel {
@@ -395,16 +345,5 @@ impl Render for TerminalPanel {
 impl Focusable for TerminalPanel {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus.clone()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn fish_is_the_default_shell_when_installed() {
-        let shell = super::default_shell();
-        if std::path::Path::new("/usr/bin/fish").is_file() {
-            assert_eq!(shell, "/usr/bin/fish");
-        }
     }
 }

@@ -1,0 +1,30 @@
+[package]
+name = "jcode-desktop-ui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+jcode-desktop-api.workspace = true
+jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
+jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
+anyhow = "1"
+arboard = "3"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+unicode-segmentation = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+vt100 = "0.16"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
+arboard = { version = "3", features = ["wayland-data-control"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

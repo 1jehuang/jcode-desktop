@@ -5,12 +5,14 @@ use std::time::Instant;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, Window,
-    div, prelude::*, px, relative,
+    div, point, prelude::*, px, relative,
 };
+use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
+use serde::{Deserialize, Serialize};
 
 use crate::harness::{Bridge, Command};
-use crate::input::PromptInput;
+use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::markdown;
 use crate::terminal::TerminalPanel;
 use crate::theme::Theme;
@@ -32,6 +34,18 @@ pub enum Item {
         error: Option<String>,
     },
     Error(String),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PanelSnapshot {
+    pub session_id: String,
+    pub title: String,
+    pub working_dir: Option<String>,
+    pub draft: PromptInputSnapshot,
+    pub scroll_x: f32,
+    pub scroll_y: f32,
+    pub stick_to_bottom: bool,
+    pub terminal_resource_id: Option<u64>,
 }
 
 pub struct Panel {
@@ -129,9 +143,11 @@ impl Panel {
     pub fn new_terminal(
         working_dir: Option<String>,
         bridge: Bridge,
+        host: HostHandle,
+        resource_id: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let terminal = cx.new(|cx| TerminalPanel::new(working_dir.clone(), cx));
+        let terminal = cx.new(|cx| TerminalPanel::new(working_dir.clone(), resource_id, host, cx));
         let mut panel = Self::new(
             "terminal".into(),
             Some("terminal".into()),
@@ -141,6 +157,33 @@ impl Panel {
         );
         panel.terminal = Some(terminal);
         panel
+    }
+
+    pub fn snapshot(&self, cx: &App) -> PanelSnapshot {
+        let offset = self.scroll.offset();
+        PanelSnapshot {
+            session_id: self.session_id.clone(),
+            title: self.title.to_string(),
+            working_dir: self.working_dir.clone(),
+            draft: self.input.read(cx).snapshot(),
+            scroll_x: f32::from(offset.x),
+            scroll_y: f32::from(offset.y),
+            stick_to_bottom: self.stick_to_bottom,
+            terminal_resource_id: self
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.read(cx).resource_id()),
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: PanelSnapshot, cx: &mut Context<Self>) {
+        self.title = snapshot.title.into();
+        self.working_dir = snapshot.working_dir;
+        self.stick_to_bottom = snapshot.stick_to_bottom;
+        self.scroll
+            .set_offset(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
+        self.input
+            .update(cx, |input, cx| input.restore(snapshot.draft, cx));
     }
 
     /// Wire the input's submit to also echo locally. Called once after
@@ -342,16 +385,10 @@ impl Panel {
                 self.connection_phase = phase.clone();
             }
             ApiEvent::ModelInfo {
-                provider,
-                model,
-                reasoning_effort,
-                ..
+                provider, model, ..
             } => {
                 if provider.is_some() {
                     self.provider = provider.clone();
-                }
-                if reasoning_effort.is_some() {
-                    self.reasoning_effort = reasoning_effort.clone();
                 }
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
@@ -364,7 +401,6 @@ impl Panel {
             ApiEvent::RuntimeInfo {
                 provider,
                 model,
-                reasoning_effort,
                 routes,
                 ..
             } => {
@@ -373,9 +409,6 @@ impl Panel {
                 }
                 if model.is_some() {
                     self.model = model.clone();
-                }
-                if reasoning_effort.is_some() {
-                    self.reasoning_effort = reasoning_effort.clone();
                 }
                 self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
             }
@@ -1712,7 +1745,6 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
-                        reasoning_effort: Some("high".into()),
                         routes: vec![jcode_sdk::ModelRouteInfo {
                             model: "gpt-5.6-sol".into(),
                             provider: "openai".into(),
@@ -1735,21 +1767,17 @@ mod tests {
                 assert_eq!(panel.model.as_deref(), Some("gpt-5.6-sol"));
                 assert_eq!(panel.provider.as_deref(), Some("openai"));
                 assert_eq!(panel.auth_method.as_deref(), Some("oauth"));
-                assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
 
-                // An effort broadcast repeats the current model: it must update
-                // the effort without wiping the still-correct auth label. A
-                // real switch to another model must invalidate it.
+                // Repeating the current model must not wipe the still-correct
+                // auth label. A real switch to another model invalidates it.
                 panel.apply(
                     &ApiEvent::ModelInfo {
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
-                        reasoning_effort: Some("low".into()),
                     },
                     cx,
                 );
-                assert_eq!(panel.reasoning_effort.as_deref(), Some("low"));
                 assert_eq!(
                     panel.auth_method.as_deref(),
                     Some("oauth"),
@@ -1760,7 +1788,6 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("anthropic".into()),
                         model: Some("claude-fable-5".into()),
-                        reasoning_effort: None,
                     },
                     cx,
                 );

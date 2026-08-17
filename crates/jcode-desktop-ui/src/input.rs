@@ -11,6 +11,7 @@ use gpui::{
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
     point, prelude::*, px, relative, size,
 };
+use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{Theme, to_hsla};
@@ -140,7 +141,80 @@ struct Attachment {
     label: SharedString,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PromptInputSnapshot {
+    pub content: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
+    pub selection_reversed: bool,
+    pub history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub live_draft: String,
+    pub attachments: Vec<AttachmentSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AttachmentSnapshot {
+    pub media_type: String,
+    pub encoded: String,
+    pub label: String,
+}
+
 impl PromptInput {
+    pub fn snapshot(&self) -> PromptInputSnapshot {
+        PromptInputSnapshot {
+            content: self.content.to_string(),
+            selection_start: self.selected_range.start,
+            selection_end: self.selected_range.end,
+            selection_reversed: self.selection_reversed,
+            history: self.history.clone(),
+            history_index: self.history_index,
+            live_draft: self.live_draft.clone(),
+            attachments: self
+                .attachments
+                .iter()
+                .map(|attachment| AttachmentSnapshot {
+                    media_type: attachment.media_type.clone(),
+                    encoded: attachment.encoded.clone(),
+                    label: attachment.label.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
+        let len = snapshot.content.len();
+        self.content = snapshot.content.into();
+        self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
+        if self.selected_range.end < self.selected_range.start {
+            self.selected_range = self.selected_range.end..self.selected_range.start;
+        }
+        self.selection_reversed = snapshot.selection_reversed;
+        self.history = snapshot.history;
+        self.history_index = snapshot
+            .history_index
+            .filter(|index| *index < self.history.len());
+        self.live_draft = snapshot.live_draft;
+        self.attachments = snapshot
+            .attachments
+            .into_iter()
+            .map(|attachment| Attachment {
+                media_type: attachment.media_type,
+                encoded: attachment.encoded,
+                label: attachment.label.into(),
+            })
+            .collect();
+        self.attachment_notice = match self.attachments.len() {
+            0 => None,
+            1 => Some("1 image attached".into()),
+            count => Some(format!("{count} images attached").into()),
+        };
+        self.marked_range = None;
+        self.undo.clear();
+        self.redo.clear();
+        cx.notify();
+    }
+
     fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.attachments.len() {
             return;

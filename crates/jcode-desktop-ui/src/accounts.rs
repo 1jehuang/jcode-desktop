@@ -115,7 +115,7 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
 pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
     macro_rules! icon {
         ($name:literal) => {
-            Some(include_bytes!(concat!("../assets/icons/", $name, ".svg")) as &'static [u8])
+            Some(include_bytes!(concat!("../../../assets/icons/", $name, ".svg")) as &'static [u8])
         };
     }
     match provider_id {
