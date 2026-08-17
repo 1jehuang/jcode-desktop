@@ -4076,10 +4076,19 @@ mod tests {
         let jcode_row = vcx
             .debug_bounds("account-jcode")
             .expect("the Jcode account row and donut should have painted");
+        let first_limit = vcx
+            .debug_bounds("account-openai-limit-0")
+            .expect("the first usage limit should paint");
+        let second_limit = vcx
+            .debug_bounds("account-openai-limit-1")
+            .expect("the second usage limit should paint");
+        assert_eq!(
+            first_limit.origin.y, second_limit.origin.y,
+            "usage limits should share one compact horizontal row"
+        );
         assert!(
-            vcx.debug_bounds("account-openai-limit-0").is_some()
-                && vcx.debug_bounds("account-openai-limit-1").is_some(),
-            "every reported usage limit should paint beneath its account"
+            first_limit.origin.x < second_limit.origin.x,
+            "usage limits should occupy separate horizontal columns"
         );
         assert!(
             openai_row.origin.y < jcode_row.origin.y,
