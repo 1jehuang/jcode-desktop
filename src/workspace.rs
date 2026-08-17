@@ -2777,6 +2777,12 @@ fn filesystem_root() -> PathBuf {
     PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
 }
 
+fn contains_dot_directory(path: &Path, base: &Path) -> bool {
+    path.strip_prefix(base).unwrap_or(path).components().any(|component| {
+        matches!(component, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.'))
+    })
+}
+
 fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut entries = std::fs::read_dir(path)
         .map_err(|error| format!("could not open {}: {error}", path.display()))?
@@ -2807,7 +2813,7 @@ fn ranked_folder_matches_for_sessions(
             .working_dir
             .as_deref()
             .map(PathBuf::from)
-            .filter(|path| path.is_dir())
+            .filter(|path| path.is_dir() && !contains_dot_directory(path, base))
         else {
             continue;
         };
@@ -3355,11 +3361,16 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("jcode-picker-unrestricted-{}", std::process::id()));
         let ordinary = root.join("an-arbitrary-folder");
+        let hidden = root.join(".hidden").join("recent-project");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&ordinary).unwrap();
+        std::fs::create_dir_all(&hidden).unwrap();
 
-        let entries = ranked_folder_matches_for_sessions(&[], &root, "");
+        let mut hidden_session = session_info("session_fox_hidden", None);
+        hidden_session.working_dir = Some(hidden.to_string_lossy().into_owned());
+        let entries = ranked_folder_matches_for_sessions(&[hidden_session], &root, "");
         assert!(entries.contains(&(ordinary, String::new())));
+        assert!(!entries.iter().any(|(path, _)| path == &hidden));
         assert!(filesystem_root().is_absolute());
 
         std::fs::remove_dir_all(root).unwrap();
