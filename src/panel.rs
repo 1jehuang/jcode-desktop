@@ -353,10 +353,11 @@ impl Panel {
                 if reasoning_effort.is_some() {
                     self.reasoning_effort = reasoning_effort.clone();
                 }
-                if model.is_some() {
+                // Only an actual switch invalidates the auth method: the route
+                // catalog keyed it by model, but effort broadcasts repeat the
+                // current model and must not wipe a still-correct label.
+                if model.is_some() && *model != self.model {
                     self.model = model.clone();
-                    // The route catalog keyed the auth method by model, so a
-                    // switch invalidates it until the next RuntimeInfo.
                     self.auth_method = None;
                 }
             }
@@ -1742,6 +1743,38 @@ mod tests {
                 assert_eq!(panel.provider.as_deref(), Some("openai"));
                 assert_eq!(panel.auth_method.as_deref(), Some("oauth"));
                 assert_eq!(panel.reasoning_effort.as_deref(), Some("high"));
+
+                // An effort broadcast repeats the current model: it must update
+                // the effort without wiping the still-correct auth label. A
+                // real switch to another model must invalidate it.
+                panel.apply(
+                    &ApiEvent::ModelInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: Some("low".into()),
+                    },
+                    cx,
+                );
+                assert_eq!(panel.reasoning_effort.as_deref(), Some("low"));
+                assert_eq!(
+                    panel.auth_method.as_deref(),
+                    Some("oauth"),
+                    "same-model broadcast must not clear the auth label"
+                );
+                panel.apply(
+                    &ApiEvent::ModelInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("anthropic".into()),
+                        model: Some("claude-fable-5".into()),
+                        reasoning_effort: None,
+                    },
+                    cx,
+                );
+                assert_eq!(
+                    panel.auth_method, None,
+                    "a real model switch invalidates the auth label"
+                );
             });
         });
         vcx.run_until_parked();
