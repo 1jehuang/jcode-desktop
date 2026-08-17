@@ -148,5 +148,5 @@ fi
 
 EXPECT_NOTARIZED="$([[ -n "${APPLE_NOTARY_PROFILE:-}" ]] && echo 1 || echo 0)" \
   "$ROOT/scripts/verify-macos-package.sh" "$APP" "$DMG"
-shasum -a 256 "$ZIP" "$DMG" > "$OUT/SHA256SUMS"
+(cd "$OUT" && shasum -a 256 "$(basename "$ZIP")" "$(basename "$DMG")" > SHA256SUMS)
 echo "macOS beta artifacts: $OUT"
