@@ -407,6 +407,14 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     lost("runtime connection closed; reconnecting".into());
                     break;
                 }
+                // The API socket broadcasts streaming events for every live
+                // session. A busy TUI session must not make a newly-created
+                // desktop panel look busy: doing so routes its first prompt
+                // through soft_interrupt, where it waits forever because that
+                // new session has no active turn to interrupt.
+                if event_session_id(&event).is_some_and(|id| id != session_id) {
+                    continue;
+                }
                 update_turn_activity(&event, &mut turn_active);
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
@@ -417,6 +425,36 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 break;
             }
         }
+    }
+}
+
+fn event_session_id(event: &ApiEvent) -> Option<&str> {
+    match event {
+        ApiEvent::TextDelta { session_id, .. }
+        | ApiEvent::ReasoningDelta { session_id, .. }
+        | ApiEvent::ReasoningDone { session_id, .. }
+        | ApiEvent::ToolStart { session_id, .. }
+        | ApiEvent::ToolInputDelta { session_id, .. }
+        | ApiEvent::ToolExec { session_id, .. }
+        | ApiEvent::ToolDone { session_id, .. }
+        | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::TurnDone { session_id }
+        | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::MessageAccepted { session_id }
+        | ApiEvent::PermissionRequest { session_id, .. }
+        | ApiEvent::SessionStatus { session_id, .. }
+        | ApiEvent::ConnectionPhase { session_id, .. }
+        | ApiEvent::ModelInfo { session_id, .. }
+        | ApiEvent::Models { session_id, .. }
+        | ApiEvent::RuntimeInfo { session_id, .. }
+        | ApiEvent::FileContent { session_id, .. }
+        | ApiEvent::Files { session_id, .. }
+        | ApiEvent::TextMatches { session_id, .. }
+        | ApiEvent::FileStatus { session_id, .. }
+        | ApiEvent::Compacted { session_id, .. }
+        | ApiEvent::SessionRenamed { session_id, .. }
+        | ApiEvent::History { session_id, .. } => Some(session_id),
+        _ => None,
     }
 }
 
@@ -466,6 +504,16 @@ mod tests {
         assert!(is_daemon_connection_closed(&event));
     }
 
+    #[test]
+    fn session_event_identity_prevents_cross_session_activity() {
+        let event = ApiEvent::SessionStatus {
+            session_id: "other-session".into(),
+            status: "generating".into(),
+        };
+        assert_eq!(event_session_id(&event), Some("other-session"));
+        assert_ne!(event_session_id(&event), Some("this-session"));
+    }
+
     /// Opt-in acceptance check against the real local runtime and configured
     /// model. Run with `cargo test live_prompt_round_trip -- --ignored`.
     #[test]
@@ -476,7 +524,10 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(120);
         let session_id = loop {
-            assert!(Instant::now() < deadline, "runtime did not create a session");
+            assert!(
+                Instant::now() < deadline,
+                "runtime did not create a session"
+            );
             if let Some(session_id) = bridge.drain().into_iter().find_map(|update| match update {
                 Update::SessionCreated { session } => Some(session.session_id),
                 _ => None,
