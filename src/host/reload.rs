@@ -100,7 +100,7 @@ impl ReloadManager {
             label: staged_path.display().to_string(),
         });
 
-        self.activate_generation(index, Some(&snapshot), cx)?;
+        self.activate_or_restore(index, &snapshot, cx)?;
         self.generations[index].activated = true;
         self.active = index;
         self.activation_history.push(index);
@@ -129,7 +129,7 @@ impl ReloadManager {
                 api.state_schema
             );
         }
-        self.activate_generation(target, Some(&snapshot), cx)?;
+        self.activate_or_restore(target, &snapshot, cx)?;
         self.active = target;
         self.activation_history.pop();
         eprintln!("rolled back UI to {}", self.generations[target].label);
@@ -188,6 +188,37 @@ impl ReloadManager {
                 bail!("UI rejected state schema {schema}; existing root was preserved")
             }
             other => bail!("UI activation failed with status {other}; existing root was preserved"),
+        }
+    }
+
+    /// Activate a replacement as a transaction from the user's perspective.
+    ///
+    /// Plugins validate and build their root before `Window::replace_root`, so
+    /// ordinary failures leave the current root alone. A panic after that call
+    /// can still report failure after changing the root, however. Re-activating
+    /// the known-good generation from the same snapshot makes that edge case a
+    /// real rollback instead of leaving the manager and window on different
+    /// generations.
+    fn activate_or_restore(
+        &self,
+        target: usize,
+        snapshot: &(u32, Vec<u8>),
+        cx: &mut App,
+    ) -> Result<()> {
+        let Err(activation_error) = self.activate_generation(target, Some(snapshot), cx) else {
+            return Ok(());
+        };
+
+        let active = self.active;
+        match self.activate_generation(active, Some(snapshot), cx) {
+            Ok(()) => bail!(
+                "UI activation failed: {activation_error:#}; restored {}",
+                self.generations[active].label
+            ),
+            Err(restore_error) => bail!(
+                "UI activation failed: {activation_error:#}; restoring {} also failed: {restore_error:#}",
+                self.generations[active].label
+            ),
         }
     }
 
