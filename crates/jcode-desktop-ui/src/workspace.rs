@@ -2550,7 +2550,8 @@ impl Workspace {
 
                 // The gesture dot: the same focal point the canvas reticle
                 // marks, mirrored onto the map at the lens center so the eye
-                // can track the swipe in either place.
+                // can track the swipe in either place. The dark ring keeps it
+                // legible even over the lit focused-panel rectangle.
                 if let Some(alpha) = self.gesture_reticle_alpha() {
                     let dot_left = lens_left + lens_width / 2.0 - MINIMAP_GESTURE_DOT / 2.0;
                     track = track.child(
@@ -2562,9 +2563,9 @@ impl Workspace {
                             .w(px(MINIMAP_GESTURE_DOT))
                             .h(px(MINIMAP_GESTURE_DOT))
                             .rounded_full()
-                            .border_1()
-                            .border_color(Theme::ACCENT)
-                            .bg(gpui::rgba(0xffffff66))
+                            .border_2()
+                            .border_color(gpui::rgba(0x000000cc))
+                            .bg(Theme::ACCENT)
                             .opacity(alpha),
                     );
                 }
