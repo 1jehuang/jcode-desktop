@@ -13,6 +13,7 @@ use gpui::{
 
 use crate::accounts;
 use crate::harness::{self, Bridge, Command, Update};
+use crate::input::PromptInput;
 use crate::learning;
 use crate::panel::Panel;
 use crate::theme::Theme;
@@ -163,6 +164,7 @@ pub struct Workspace {
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
+    folder_search: Option<Entity<PromptInput>>,
     _poll_task: gpui::Task<()>,
 }
 
@@ -232,6 +234,7 @@ impl Workspace {
             focus_pending: false,
             folder_picker_dir: None,
             folder_picker_error: None,
+            folder_search: None,
             _poll_task: poll_task,
         }
     }
@@ -273,6 +276,7 @@ impl Workspace {
             focus_pending: false,
             folder_picker_dir: None,
             folder_picker_error: None,
+            folder_search: None,
             _poll_task: cx.spawn(async move |_, _| {}),
         }
     }
@@ -941,14 +945,51 @@ impl Workspace {
     /// A session's working directory is fixed by the runtime, so choosing a
     /// different folder intentionally opens a new session instead of silently
     /// changing the meaning of an existing transcript.
-    fn open_folder(&mut self, _: &OpenFolder, _: &mut Window, cx: &mut Context<Self>) {
+    fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
         self.folder_picker_dir = Some(
             default_working_dir()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/")),
         );
         self.folder_picker_error = None;
+        let weak = cx.weak_entity();
+        let search = cx.new(|cx| {
+            PromptInput::new(cx, "type a folder name or path, then press enter", move |query, _, _, app| {
+                let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
+            })
+        });
+        let focus_handle = search.read(cx).focus_handle.clone();
+        window.focus(&focus_handle, cx);
+        self.folder_search = Some(search);
         cx.notify();
+    }
+
+    fn open_searched_folder(&mut self, query: &str, cx: &mut Context<Self>) {
+        let Some(base) = self.folder_picker_dir.as_deref() else {
+            return;
+        };
+        let expanded = if query == "~" {
+            default_working_dir().map(PathBuf::from)
+        } else if let Some(rest) = query.strip_prefix("~/") {
+            default_working_dir().map(|home| PathBuf::from(home).join(rest))
+        } else {
+            let path = PathBuf::from(query);
+            Some(if path.is_absolute() { path } else { base.join(path) })
+        };
+        let matched = expanded.filter(|path| path.is_dir()).or_else(|| {
+            let needle = query.to_lowercase();
+            directory_entries(base).ok()?.into_iter().find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&needle))
+            })
+        });
+        if let Some(path) = matched {
+            self.folder_picker_dir = Some(path);
+            self.choose_browsed_folder(cx);
+        } else {
+            self.folder_picker_error = Some(format!("no folder matches ‘{query}’"));
+            cx.notify();
+        }
     }
 
     fn browse_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -967,6 +1008,7 @@ impl Workspace {
             return;
         };
         self.folder_picker_error = None;
+        self.folder_search = None;
         self.bridge.send(Command::CreateSession {
             working_dir: Some(path.to_string_lossy().into_owned()),
         });
@@ -976,6 +1018,7 @@ impl Workspace {
     fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
         self.folder_picker_dir = None;
         self.folder_picker_error = None;
+        self.folder_search = None;
         cx.notify();
     }
 
@@ -2403,6 +2446,22 @@ impl Workspace {
                             .text_color(Theme::TEXT_DIM)
                             .child(directory.display().to_string()),
                     )
+                    .when_some(self.folder_search.clone(), |el, search| {
+                        el.child(
+                            div()
+                                .id("folder-picker-search")
+                                .debug_selector(|| "folder-picker-search".into())
+                                .mx_4()
+                                .mb_3()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(Theme::INPUT_BORDER)
+                                .bg(Theme::INPUT_BG)
+                                .child(search),
+                        )
+                    })
                     .child(list)
                     .when_some(self.folder_picker_error.clone(), |el, error| {
                         el.child(div().px_4().py_2().text_color(Theme::ERROR).child(error))
@@ -3002,6 +3061,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, ["Alpha", "zeta"]);
         assert!(directory_entries(&root.join("missing")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn ctrl_o_focuses_search_and_enter_opens_the_matching_folder(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+
+        let root = std::env::temp_dir().join(format!("jcode-picker-search-{}", std::process::id()));
+        let selected = root.join("alpha-project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&selected).unwrap();
+
+        vcx.simulate_keystrokes("ctrl-o");
+        workspace.update(vcx, |workspace, cx| {
+            workspace.folder_picker_dir = Some(root.clone());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("folder-picker-search").is_some());
+
+        vcx.simulate_keystrokes("a l p h a enter");
+        vcx.run_until_parked();
+        match commands.try_recv().expect("enter should open the search match") {
+            Command::CreateSession { working_dir } => {
+                assert_eq!(working_dir.as_deref(), Some(selected.to_string_lossy().as_ref()));
+            }
+            _ => panic!("search submitted the wrong runtime command"),
+        }
+        workspace.update(vcx, |workspace, _| {
+            assert!(workspace.folder_picker_dir.is_none());
+            assert!(workspace.folder_search.is_none());
+        });
         std::fs::remove_dir_all(root).unwrap();
     }
 
