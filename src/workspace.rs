@@ -1540,12 +1540,7 @@ impl Workspace {
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
             let open = open_ids.contains(&session.session_id);
             let (icon, title) = sidebar_session_title(&session);
-            let directory = session
-                .working_dir
-                .as_deref()
-                .map(str::trim)
-                .filter(|directory| !directory.is_empty())
-                .map(compact_working_dir);
+            let directory = sidebar_session_directory(&session);
 
             list = list.child(
                 div()
@@ -2812,6 +2807,15 @@ fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, Str
     (icon, title)
 }
 
+fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
+    session
+        .working_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|directory| !directory.is_empty())
+        .map(compact_working_dir)
+}
+
 fn compact_working_dir(path: &str) -> String {
     let home = std::env::var("HOME").ok();
     if let Some(home) = home.as_deref()
@@ -3034,6 +3038,45 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_info(id: &str, title: Option<&str>) -> jcode_sdk::SessionInfo {
+        jcode_sdk::SessionInfo {
+            session_id: id.into(),
+            working_dir: None,
+            title: title.map(str::to_owned),
+            status: "idle".into(),
+            transcript_bytes: None,
+            archived: false,
+            archived_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn sidebar_prefers_the_sdk_title_and_uses_the_session_animal_icon() {
+        let session = session_info(
+            "session_tigress_1234567890_deadbeef",
+            Some("  Release planning  "),
+        );
+        assert_eq!(
+            sidebar_session_title(&session),
+            ("🐅", "Release planning".into())
+        );
+    }
+
+    #[test]
+    fn untitled_sidebar_session_falls_back_to_its_memorable_animal() {
+        let session = session_info("session_fox_1234567890_deadbeef", Some("  "));
+        assert_eq!(sidebar_session_title(&session), ("🦊", "fox".into()));
+    }
+
+    #[test]
+    fn missing_sidebar_directory_is_omitted_instead_of_rendering_a_placeholder() {
+        let mut session = session_info("session_fox_1234567890_deadbeef", None);
+        assert_eq!(sidebar_session_directory(&session), None);
+
+        session.working_dir = Some("   ".into());
+        assert_eq!(sidebar_session_directory(&session), None);
+    }
 
     /// The accounts strip must actually paint both a regular provider logo and
     /// Jcode's donut. Seeding bypasses the CLI so the test needs no runtime or
