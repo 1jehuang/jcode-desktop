@@ -2436,7 +2436,21 @@ impl Workspace {
                             this.browse_to(path.clone(), cx);
                         }),
                     )
-                    .child(format!("▸  {label}")),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(format!("▸  {label}"))
+                            .when(!reason.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(Theme::TEXT_DIM)
+                                        .child(reason),
+                                )
+                            }),
+                    ),
             );
         }
 
