@@ -22,9 +22,14 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern Jcode-macOS-universal.zip --pattern SHA256SUMS
+            --pattern Jcode-macOS-universal.dmg --pattern SHA256SUMS
           shasum -a 256 -c SHA256SUMS --ignore-missing
-          ditto -x -k Jcode-macOS-universal.zip .
+          mkdir -p "$RUNNER_TEMP/mount" "$RUNNER_TEMP/Applications"
+          hdiutil attach Jcode-macOS-universal.dmg -mountpoint "$RUNNER_TEMP/mount" -nobrowse
+          test -L "$RUNNER_TEMP/mount/Applications"
+          ditto "$RUNNER_TEMP/mount/Jcode.app" "$RUNNER_TEMP/Applications/Jcode.app"
+          hdiutil detach "$RUNNER_TEMP/mount"
+          ln -s "$RUNNER_TEMP/Applications/Jcode.app" Jcode.app
       - name: Verify installed bundle
         run: |
           codesign --verify --deep --strict --verbose=2 Jcode.app
