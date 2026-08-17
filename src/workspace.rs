@@ -976,9 +976,13 @@ impl Workspace {
         let weak = cx.weak_entity();
         let change_weak = weak.clone();
         let search = cx.new(|cx| {
-            PromptInput::new(cx, "type a folder name or path, then press enter", move |query, _, _, app| {
-                let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
-            })
+            PromptInput::new(
+                cx,
+                "type a folder name or path, then press enter",
+                move |query, _, _, app| {
+                    let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
+                },
+            )
             .with_on_change(move |_, app| {
                 let _ = change_weak.update(app, |_, cx| cx.notify());
             })
@@ -1003,7 +1007,11 @@ impl Workspace {
             default_working_dir().map(|home| PathBuf::from(home).join(rest))
         } else {
             let path = PathBuf::from(query);
-            Some(if path.is_absolute() { path } else { base.join(path) })
+            Some(if path.is_absolute() {
+                path
+            } else {
+                base.join(path)
+            })
         };
         let matched = expanded.filter(|path| path.is_dir()).or_else(|| {
             let needle = query.to_lowercase();
@@ -2757,7 +2765,15 @@ fn ranked_folder_matches_for_sessions(
         entry.1 = entry.1.min(recency);
     }
 
-    let common_names = ["projects", "code", "dev", "src", "workspace", "documents", "desktop"];
+    let common_names = [
+        "projects",
+        "code",
+        "dev",
+        "src",
+        "workspace",
+        "documents",
+        "desktop",
+    ];
     let children = directory_entries(base).unwrap_or_default();
     let mut reasons = HashMap::<PathBuf, String>::new();
     let mut candidates = usage.keys().cloned().collect::<Vec<_>>();
@@ -2768,9 +2784,16 @@ fn ranked_folder_matches_for_sessions(
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_file()
-                && entry.file_name().to_string_lossy().to_lowercase().contains(query)
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(query)
             {
-                reasons.insert(base.to_path_buf(), format!("contains file · {}", entry.file_name().to_string_lossy()));
+                reasons.insert(
+                    base.to_path_buf(),
+                    format!("contains file · {}", entry.file_name().to_string_lossy()),
+                );
                 candidates.push(base.to_path_buf());
             }
         }
@@ -2791,17 +2814,24 @@ fn ranked_folder_matches_for_sessions(
     candidates.sort_by_key(|path| {
         let file_match = reasons.contains_key(path);
         let (count, recency) = usage.get(path).copied().unwrap_or((0, usize::MAX));
-        (std::cmp::Reverse(file_match), std::cmp::Reverse(count), recency, path.clone())
+        (
+            std::cmp::Reverse(file_match),
+            std::cmp::Reverse(count),
+            recency,
+            path.clone(),
+        )
     });
     candidates
         .into_iter()
         .take(if query.is_empty() { 8 } else { 30 })
         .map(|path| {
-            let reason = reasons.remove(&path).unwrap_or_else(|| match usage.get(&path).copied() {
-                Some((count, _)) if count > 1 => format!("frequent · {count} sessions"),
-                Some(_) => "recent".into(),
-                None => "likely".into(),
-            });
+            let reason = reasons
+                .remove(&path)
+                .unwrap_or_else(|| match usage.get(&path).copied() {
+                    Some((count, _)) if count > 1 => format!("frequent · {count} sessions"),
+                    Some(_) => "recent".into(),
+                    None => "likely".into(),
+                });
             (path, reason)
         })
         .collect()
@@ -3192,7 +3222,10 @@ mod tests {
         vcx.simulate_click(first_folder.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.update(vcx, |workspace, _| {
-            assert_eq!(workspace.folder_picker_dir.as_deref(), Some(selected.as_path()));
+            assert_eq!(
+                workspace.folder_picker_dir.as_deref(),
+                Some(selected.as_path())
+            );
         });
 
         let cancel = vcx
@@ -3221,7 +3254,10 @@ mod tests {
             .expect("folder selection should create a session")
         {
             Command::CreateSession { working_dir } => {
-                assert_eq!(working_dir.as_deref(), Some(selected.to_string_lossy().as_ref()));
+                assert_eq!(
+                    working_dir.as_deref(),
+                    Some(selected.to_string_lossy().as_ref())
+                );
             }
             _ => panic!("folder selection sent the wrong runtime command"),
         }
@@ -3287,9 +3323,15 @@ mod tests {
 
         vcx.simulate_keystrokes("n o t e s enter");
         vcx.run_until_parked();
-        match commands.try_recv().expect("enter should open the search match") {
+        match commands
+            .try_recv()
+            .expect("enter should open the search match")
+        {
             Command::CreateSession { working_dir } => {
-                assert_eq!(working_dir.as_deref(), Some(root.to_string_lossy().as_ref()));
+                assert_eq!(
+                    working_dir.as_deref(),
+                    Some(root.to_string_lossy().as_ref())
+                );
             }
             _ => panic!("search submitted the wrong runtime command"),
         }
@@ -4533,7 +4575,10 @@ mod tests {
                 .read(cx)
                 .test_terminal_contents(cx)
                 .expect("terminal contents");
-            assert!(output.contains("hello"), "physical keys should echo visibly: {output:?}");
+            assert!(
+                output.contains("hello"),
+                "physical keys should echo visibly: {output:?}"
+            );
         });
         cx.simulate_keystrokes("ctrl-u");
 

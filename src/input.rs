@@ -182,10 +182,7 @@ impl PromptInput {
         }
     }
 
-    pub fn with_on_change(
-        mut self,
-        on_change: impl Fn(&str, &mut App) + 'static,
-    ) -> Self {
+    pub fn with_on_change(mut self, on_change: impl Fn(&str, &mut App) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
     }

@@ -728,7 +728,6 @@ impl Panel {
             .as_ref()
             .map(|terminal| terminal.read(cx).screen_contents())
     }
-
 }
 
 impl Render for Panel {
@@ -1422,9 +1421,7 @@ mod tests {
     /// paints, and clicking the chip re-engages following. Before the fix the
     /// panel yanked the view back down on every streamed event.
     #[gpui::test]
-    fn scrolling_up_releases_follow_mode_and_the_chip_restores_it(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn scrolling_up_releases_follow_mode_and_the_chip_restores_it(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -1455,9 +1452,7 @@ mod tests {
         );
 
         // A real upward wheel event over the transcript.
-        let transcript = vcx
-            .debug_bounds("transcript")
-            .expect("transcript painted");
+        let transcript = vcx.debug_bounds("transcript").expect("transcript painted");
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position: transcript.center(),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(60.))),
@@ -1546,9 +1541,7 @@ mod tests {
     /// finished call, a real click expands the detail (ANSI-clean, head and
     /// tail both present), and a second click collapses it again.
     #[gpui::test]
-    fn clicking_a_tool_row_expands_clean_detail_and_collapses_again(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn clicking_a_tool_row_expands_clean_detail_and_collapses_again(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
