@@ -2405,12 +2405,11 @@ impl Workspace {
             .border_b_1()
             .border_color(Theme::PANEL_BORDER);
 
-        if !query.is_empty()
-            && let Some(parent) = directory.parent().map(Path::to_path_buf)
-        {
+        if let Some(parent) = directory.parent().map(Path::to_path_buf) {
             list = list.child(
                 div()
                     .id("folder-picker-parent")
+                    .debug_selector(|| "folder-picker-parent".into())
                     .px_4()
                     .py_2()
                     .cursor_pointer()
@@ -2514,6 +2513,51 @@ impl Workspace {
                             .text_size(px(11.0))
                             .text_color(Theme::TEXT_DIM)
                             .child(directory.display().to_string()),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .pb_3()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("folder-picker-home")
+                                    .debug_selector(|| "folder-picker-home".into())
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .bg(Theme::HEADER_BG)
+                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            if let Some(home) = default_working_dir() {
+                                                this.browse_to(PathBuf::from(home), cx);
+                                            }
+                                        }),
+                                    )
+                                    .child("⌂  home"),
+                            )
+                            .child(
+                                div()
+                                    .id("folder-picker-computer")
+                                    .debug_selector(|| "folder-picker-computer".into())
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .bg(Theme::HEADER_BG)
+                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.browse_to(filesystem_root(), cx);
+                                        }),
+                                    )
+                                    .child("▣  computer"),
+                            ),
                     )
                     .when_some(self.folder_search.clone(), |el, search| {
                         el.child(
@@ -2729,6 +2773,10 @@ fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
 }
 
+fn filesystem_root() -> PathBuf {
+    PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+}
+
 fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut entries = std::fs::read_dir(path)
         .map_err(|error| format!("could not open {}: {error}", path.display()))?
@@ -2805,32 +2853,42 @@ fn ranked_folder_matches_for_sessions(
         if !query.is_empty() {
             searchable.contains(query) || reasons.contains_key(path)
         } else {
-            usage.contains_key(path)
-                || path.file_name().is_some_and(|name| {
-                    common_names.contains(&name.to_string_lossy().to_lowercase().as_str())
-                })
+            // An empty search is a real filesystem browser, not only a list of
+            // guesses. Keeping every direct child lets the user walk from home
+            // to its parent and all the way to the filesystem root.
+            true
         }
     });
     candidates.sort_by_key(|path| {
         let file_match = reasons.contains_key(path);
         let (count, recency) = usage.get(path).copied().unwrap_or((0, usize::MAX));
+        let likely = path.file_name().is_some_and(|name| {
+            common_names.contains(&name.to_string_lossy().to_lowercase().as_str())
+        });
         (
             std::cmp::Reverse(file_match),
             std::cmp::Reverse(count),
             recency,
+            std::cmp::Reverse(likely),
             path.clone(),
         )
     });
     candidates
         .into_iter()
-        .take(if query.is_empty() { 8 } else { 30 })
+        .take(if query.is_empty() { 200 } else { 30 })
         .map(|path| {
             let reason = reasons
                 .remove(&path)
                 .unwrap_or_else(|| match usage.get(&path).copied() {
                     Some((count, _)) if count > 1 => format!("frequent · {count} sessions"),
                     Some(_) => "recent".into(),
-                    None => "likely".into(),
+                    None if path.file_name().is_some_and(|name| {
+                        common_names.contains(&name.to_string_lossy().to_lowercase().as_str())
+                    }) =>
+                    {
+                        "likely".into()
+                    }
+                    None => String::new(),
                 });
             (path, reason)
         })
@@ -3214,6 +3272,12 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("folder-picker-parent").is_some(),
+            "the parent directory must be available without a search"
+        );
+        assert!(vcx.debug_bounds("folder-picker-home").is_some());
+        assert!(vcx.debug_bounds("folder-picker-computer").is_some());
         vcx.simulate_keystrokes("a l p h a");
         vcx.run_until_parked();
         let first_folder = vcx
@@ -3279,6 +3343,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, ["Alpha", "zeta"]);
         assert!(directory_entries(&root.join("missing")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_picker_search_exposes_every_directory_not_only_likely_ones() {
+        let root =
+            std::env::temp_dir().join(format!("jcode-picker-unrestricted-{}", std::process::id()));
+        let ordinary = root.join("an-arbitrary-folder");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&ordinary).unwrap();
+
+        let entries = ranked_folder_matches_for_sessions(&[], &root, "");
+        assert!(entries.contains(&(ordinary, String::new())));
+        assert!(filesystem_root().is_absolute());
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
