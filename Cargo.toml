@@ -26,10 +26,16 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
 
 [profile.dev]
-opt-level = 0
+# GPUI's layout, text shaping, and scene construction run on every animation
+# frame. Completely unoptimized development builds miss frame deadlines even
+# when the application code is otherwise idle, so keep our crate cheap to
+# rebuild while still optimizing the interactive hot path.
+opt-level = 1
 debug = "line-tables-only"
 incremental = true
 codegen-units = 256
 
 [profile.dev.package."*"]
-opt-level = 0
+# Dependencies change rarely and contain most of GPUI's render pipeline. This
+# is the largest win for smooth local `cargo run` builds.
+opt-level = 2
