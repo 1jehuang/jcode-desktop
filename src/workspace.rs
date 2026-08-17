@@ -2131,6 +2131,8 @@ impl Workspace {
                     // painted, rather than only that the coach decided to teach.
                     .debug_selector(|| "coach-toast".into())
                     .relative()
+                    .min_w_0()
+                    .overflow_hidden()
                     .top(px((1.0 - progress) * 10.0))
                     .flex()
                     .flex_col()
@@ -2166,6 +2168,8 @@ impl Workspace {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
                                     .text_size(px(12.0))
                                     .text_color(Theme::TEXT)
                                     .child(hint.label),
@@ -2173,6 +2177,8 @@ impl Workspace {
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .overflow_hidden()
                             .text_size(px(11.0))
                             .text_color(Theme::TEXT_DIM)
                             .child(hint.because.clone()),
@@ -2679,6 +2685,9 @@ impl Render for Workspace {
                     .child(self.render_workspace_bar(cx))
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
                         el.child(self.render_minimap(viewport_w, viewport_h, cx))
+                    })
+                    .when_some(coach_hint.filter(|_| coach_progress > 0.0), |el, hint| {
+                        el.child(self.render_coach_toast(&hint, coach_progress, cx))
                     })
                     .when(overview_progress <= 0.0, |el| {
                         el.child(self.render_edge_new_session(cx))
