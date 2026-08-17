@@ -1947,7 +1947,6 @@ impl Workspace {
             // Mouse wheels have no gesture continuity: horizontal clicks pan,
             // vertical ones stay with the panel under the pointer.
             if dx != 0.0 {
-                self.gesture_last = Some(Instant::now());
                 self.pan_strip(row, dx, total_width, viewport_w, window, cx);
                 cx.notify();
             }
@@ -1970,11 +1969,11 @@ impl Workspace {
                 switch,
                 exclusive,
             } => {
-                // Light the gesture reticle: a circle on the canvas and a
-                // dot on the minimap mark the camera's focal point while the
-                // fingers are moving, so the user can see where focus will
-                // land when the gesture settles.
-                self.gesture_last = Some(now);
+                // The reticle explains the resisted vertical pull that hops
+                // strips. A purely horizontal pan needs no visualization.
+                if self.gesture.axis == GestureAxis::Horizontal && dy != 0.0 {
+                    self.gesture_last = Some(now);
+                }
                 if dx != 0.0 {
                     self.pan_strip(row, dx, total_width, viewport_w, window, cx);
                 }
@@ -2717,9 +2716,6 @@ impl Workspace {
                     if dx == 0.0 || scale <= f32::EPSILON {
                         return;
                     }
-                    // Panning through the map is still a gesture: light the
-                    // reticle so the focal point stays visible here too.
-                    this.gesture_last = Some(Instant::now());
                     let total = this
                         .row_indices(row)
                         .map(|index| this.slot_width(index, viewport_w) + GAP)
@@ -4587,8 +4583,9 @@ mod tests {
         });
     }
 
-    /// A real touchpad swipe must paint the reticle on the canvas and the dot
-    /// on the minimap, so the user can see where focus will land.
+    /// Only the vertical pull during a horizontally locked touchpad gesture
+    /// paints the reticle and minimap dot. Horizontal movement alone stays
+    /// visually quiet.
     #[gpui::test]
     fn a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -4622,8 +4619,27 @@ mod tests {
         cx.run_until_parked();
 
         assert!(
+            cx.debug_bounds("gesture-reticle").is_none(),
+            "a horizontal swipe must not paint the canvas reticle"
+        );
+        assert!(
+            cx.debug_bounds("minimap-gesture-dot").is_none(),
+            "a horizontal swipe must not paint the minimap dot"
+        );
+
+        // Once the gesture is horizontally locked, vertical travel pulls
+        // toward another strip and should make both indicators visible.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: panel.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-20.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+
+        assert!(
             cx.debug_bounds("gesture-reticle").is_some(),
-            "the swipe should paint the canvas reticle"
+            "vertical pull should paint the canvas reticle"
         );
         assert!(
             cx.debug_bounds("minimap-gesture-dot").is_some(),
@@ -4681,11 +4697,10 @@ mod tests {
         );
     }
 
-    /// Panning through the minimap is the same gesture: both indicators must
-    /// light up from a swipe over the map, and a purely vertical wheel over a
-    /// panel (ordinary transcript scrolling) must not light them.
+    /// Neither ordinary transcript scrolling nor horizontal minimap panning
+    /// is a vertical strip pull, so neither should light the indicators.
     #[gpui::test]
-    fn minimap_swipes_light_the_indicators_but_vertical_scrolls_do_not(
+    fn transcript_scrolls_and_minimap_swipes_do_not_light_the_indicators(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -4720,7 +4735,8 @@ mod tests {
             "vertical transcript scrolling must not light the reticle"
         );
 
-        // A swipe over the minimap pans the strip: both indicators light.
+        // A swipe over the minimap pans horizontally without a vertical strip
+        // pull, so the indicators remain hidden.
         let map = cx
             .debug_bounds("minimap")
             .expect("the minimap should paint");
@@ -4732,12 +4748,12 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(
-            cx.debug_bounds("gesture-reticle").is_some(),
-            "a minimap swipe should light the canvas reticle"
+            cx.debug_bounds("gesture-reticle").is_none(),
+            "a minimap swipe must not light the canvas reticle"
         );
         assert!(
-            cx.debug_bounds("minimap-gesture-dot").is_some(),
-            "a minimap swipe should light the map dot"
+            cx.debug_bounds("minimap-gesture-dot").is_none(),
+            "a minimap swipe must not light the map dot"
         );
     }
 
