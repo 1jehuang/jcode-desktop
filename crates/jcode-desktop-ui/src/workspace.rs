@@ -4112,6 +4112,37 @@ mod tests {
             "the swipe should paint the minimap dot"
         );
 
+        // The promise of the reticle: the panel under it is the panel that
+        // holds focus. Swipe far enough to hand focus to the second panel
+        // (but not to the clamped end of the strip, where the focal point
+        // sits exactly on a panel boundary) and the ring must sit inside the
+        // focused panel's rectangle.
+        for _ in 0..4 {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: panel.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(-120.), px(0.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+        }
+        cx.run_until_parked();
+        let focused = workspace.read_with(cx, |workspace, _| workspace.active);
+        assert_eq!(
+            focused, 1,
+            "a 600px swipe over half-width panels should hand focus to the second panel"
+        );
+        let reticle = cx
+            .debug_bounds("gesture-reticle")
+            .expect("the reticle stays lit mid-swipe");
+        let focused_panel = cx
+            .debug_bounds("panel-1")
+            .expect("the focused panel should paint");
+        assert!(
+            focused_panel.contains(&reticle.center()),
+            "the reticle must sit over the panel that holds focus: \
+             reticle={reticle:?}, panel={focused_panel:?}"
+        );
+
         workspace.update(cx, |workspace, _| {
             workspace.gesture_last =
                 Some(Instant::now() - GESTURE_HOLD - GESTURE_FADE - Duration::from_millis(50));
@@ -4129,6 +4160,66 @@ mod tests {
         assert!(
             cx.debug_bounds("minimap-gesture-dot").is_none(),
             "the minimap dot must vanish after the fade"
+        );
+    }
+
+    /// Panning through the minimap is the same gesture: both indicators must
+    /// light up from a swipe over the map, and a purely vertical wheel over a
+    /// panel (ordinary transcript scrolling) must not light them.
+    #[gpui::test]
+    fn minimap_swipes_light_the_indicators_but_vertical_scrolls_do_not(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two", "three"] {
+                workspace.push_test_panel(name, cx);
+            }
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        cx.run_until_parked();
+
+        // A vertical wheel over the panel belongs to the transcript, not the
+        // pan gesture: no reticle.
+        let panel = cx
+            .debug_bounds("panel-0")
+            .expect("the first panel should paint");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: panel.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(60.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("gesture-reticle").is_none(),
+            "vertical transcript scrolling must not light the reticle"
+        );
+
+        // A swipe over the minimap pans the strip: both indicators light.
+        let map = cx
+            .debug_bounds("minimap")
+            .expect("the minimap should paint");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: map.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(-30.), px(0.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("gesture-reticle").is_some(),
+            "a minimap swipe should light the canvas reticle"
+        );
+        assert!(
+            cx.debug_bounds("minimap-gesture-dot").is_some(),
+            "a minimap swipe should light the map dot"
         );
     }
 
