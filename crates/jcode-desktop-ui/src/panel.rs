@@ -898,6 +898,10 @@ impl Render for Panel {
                     .min_h_0()
                     .relative()
                     .child(transcript)
+                    .child(crate::scrollbar::vertical(
+                        &self.scroll,
+                        "transcript-scrollbar",
+                    ))
                     // Detached from the live end: one tap catches back up.
                     .when(show_jump_chip, |el| {
                         el.child(

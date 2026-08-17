@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, Window, actions, div, prelude::*, px, relative,
+    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*,
+    px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -247,6 +248,7 @@ pub struct Workspace {
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
+    sidebar_scroll: ScrollHandle,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
@@ -331,6 +333,7 @@ impl Workspace {
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle(),
+            sidebar_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
             folder_picker_dir: None,
@@ -381,6 +384,7 @@ impl Workspace {
             status: "test".into(),
             connected: true,
             focus_handle: cx.focus_handle(),
+            sidebar_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
             folder_picker_dir: None,
@@ -1915,6 +1919,7 @@ impl Workspace {
             .min_h_0()
             .overflow_y_scroll()
             .restrict_scroll_to_axis()
+            .track_scroll(&self.sidebar_scroll)
             .py_2();
 
         for (sidebar_index, session) in self.sessions.iter().rev().cloned().enumerate() {
@@ -2067,7 +2072,19 @@ impl Workspace {
                             ),
                     ),
             )
-            .child(list)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .relative()
+                    .child(list)
+                    .child(crate::scrollbar::vertical(
+                        &self.sidebar_scroll,
+                        "sidebar-scrollbar",
+                    )),
+            )
             .when_some(self.render_accounts(), |el, accounts| el.child(accounts))
             .into_any_element()
     }
