@@ -924,6 +924,7 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
                             .child(
                                 div()
                                     .id(copy_id)
+                                    .debug_selector(|| "code-copy".into())
                                     .cursor_pointer()
                                     .text_color(Theme::TEXT_FAINT)
                                     .hover(|el| el.text_color(Theme::TEXT))

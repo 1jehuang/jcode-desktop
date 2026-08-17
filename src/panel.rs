@@ -816,6 +816,7 @@ impl Render for Panel {
                         el.child(
                             div()
                                 .id("jump-to-latest")
+                                .debug_selector(|| "jump-to-latest".into())
                                 .absolute()
                                 .bottom_2()
                                 .right_3()
@@ -1359,6 +1360,131 @@ mod tests {
         assert_eq!(format_tokens(950), "950");
         assert_eq!(format_tokens(12_500), "12.5k");
         assert_eq!(format_tokens(1_048_576), "1.0m");
+    }
+
+    /// The acceptance path for the scroll-lock fix: a real wheel event over a
+    /// real painted transcript releases stick-to-bottom, the "↓ latest" chip
+    /// paints, and clicking the chip re-engages following. Before the fix the
+    /// panel yanked the view back down on every streamed event.
+    #[gpui::test]
+    fn scrolling_up_releases_follow_mode_and_the_chip_restores_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        // A long transcript, so the scroll region actually overflows.
+        panel.update(vcx, |panel, cx| {
+            for n in 0..80 {
+                panel.items.push(Item::Assistant(format!("message {n}")));
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            panel.read_with(vcx, |panel, _| panel.stick_to_bottom),
+            "a fresh panel follows the stream"
+        );
+        assert!(
+            vcx.debug_bounds("jump-to-latest").is_none(),
+            "no chip while following"
+        );
+
+        // A real upward wheel event over the transcript.
+        let transcript = vcx
+            .debug_bounds("transcript")
+            .expect("transcript painted");
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: transcript.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(60.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        assert!(
+            !panel.read_with(vcx, |panel, _| panel.stick_to_bottom),
+            "scrolling up must release follow mode"
+        );
+        let chip = vcx
+            .debug_bounds("jump-to-latest")
+            .expect("the catch-up chip paints once detached");
+        assert!(chip.size.width > px(0.) && chip.size.height > px(0.));
+
+        // While detached, streamed events must not yank the view back down.
+        let offset_before = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    session_id: "session-a".into(),
+                    text: "more streamed text".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let offset_after = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        assert_eq!(
+            offset_before, offset_after,
+            "streaming must not move a detached viewport"
+        );
+
+        // Clicking the chip re-engages following and removes the chip.
+        vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            panel.read_with(vcx, |panel, _| panel.stick_to_bottom),
+            "the chip must restore follow mode"
+        );
+        assert!(
+            vcx.debug_bounds("jump-to-latest").is_none(),
+            "the chip disappears once following again"
+        );
+    }
+
+    /// The acceptance path for the code-copy affordance: the button paints in
+    /// a real assistant message and a real click puts the code body (not the
+    /// fence syntax) on the clipboard.
+    #[gpui::test]
+    fn clicking_copy_on_a_code_block_fills_the_clipboard(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Assistant(
+                "```rust\nfn main() {\n    println!(\"hi\");\n}\n```".into(),
+            ));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let button = vcx
+            .debug_bounds("code-copy")
+            .expect("the copy button paints on a fenced block");
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        let copied = vcx
+            .update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| item.text())
+            .expect("clicking copy fills the clipboard");
+        assert_eq!(copied, "fn main() {\n    println!(\"hi\");\n}");
     }
 
     /// The acceptance path: real events land in a real panel inside a painted
