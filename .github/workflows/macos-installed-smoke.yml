@@ -1,0 +1,48 @@
+name: macOS installed-beta smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published desktop release tag
+        required: true
+        default: desktop-v0.1.0-beta.2
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - name: Download published beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern Jcode-macOS-universal.zip --pattern SHA256SUMS
+          shasum -a 256 -c SHA256SUMS --ignore-missing
+          ditto -x -k Jcode-macOS-universal.zip .
+      - name: Verify installed bundle
+        run: |
+          codesign --verify --deep --strict --verbose=2 Jcode.app
+          test "$(defaults read "$PWD/Jcode.app/Contents/Info" CFBundleIdentifier)" = dev.solosystems.jcode.desktop
+          file Jcode.app/Contents/MacOS/{jcode-desktop,jcode,jcode-harness-api-bridge} | tee binaries.txt
+          test "$(grep -c 'universal binary with 2 architectures' binaries.txt)" = 3
+          Jcode.app/Contents/MacOS/jcode --version
+      - name: Launch the app bundle
+        run: |
+          set -euo pipefail
+          JCODE_DESKTOP_STATE="$RUNNER_TEMP/desktop-state.txt" \
+            Jcode.app/Contents/MacOS/jcode-desktop >"$RUNNER_TEMP/desktop.log" 2>&1 &
+          pid=$!
+          sleep 12
+          if ! kill -0 "$pid" 2>/dev/null; then
+            cat "$RUNNER_TEMP/desktop.log"
+            echo "Jcode Desktop exited during launch" >&2
+            exit 1
+          fi
+          kill "$pid"
+          wait "$pid" || true
