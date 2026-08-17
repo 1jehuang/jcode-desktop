@@ -31,6 +31,9 @@ tempfile = "3"
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [profile.dev]
 opt-level = 0
 debug = "line-tables-only"

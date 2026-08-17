@@ -271,7 +271,61 @@ pub fn default_plugin_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jcode_desktop_api::{GPUI_REVISION, STATE_SCHEMA_VERSION};
+    use gpui::{Render, TestAppContext, WindowOptions, div, prelude::*};
+    use jcode_desktop_api::{ACTIVATE_FAILED, GPUI_REVISION, HostApi, STATE_SCHEMA_VERSION};
+    use std::ffi::c_void;
+
+    struct StableRoot;
+
+    impl Render for StableRoot {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div().child("stable")
+        }
+    }
+
+    struct FailedRoot;
+
+    impl Render for FailedRoot {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div().child("failed")
+        }
+    }
+
+    unsafe extern "C-unwind" fn stable_activate(
+        window: *mut c_void,
+        app: *mut c_void,
+        _: *const HostApi,
+        _: *const u8,
+        _: usize,
+        _: u32,
+    ) -> i32 {
+        let window = unsafe { &mut *window.cast::<Window>() };
+        let app = unsafe { &mut *app.cast::<App>() };
+        window.replace_root(app, |_, _| StableRoot);
+        ACTIVATE_OK
+    }
+
+    unsafe extern "C-unwind" fn failed_after_replacing_root(
+        window: *mut c_void,
+        app: *mut c_void,
+        _: *const HostApi,
+        _: *const u8,
+        _: usize,
+        _: u32,
+    ) -> i32 {
+        let window = unsafe { &mut *window.cast::<Window>() };
+        let app = unsafe { &mut *app.cast::<App>() };
+        window.replace_root(app, |_, _| FailedRoot);
+        ACTIVATE_FAILED
+    }
+
+    unsafe extern "C-unwind" fn no_snapshot(
+        _: *mut c_void,
+        _: *mut c_void,
+        _: *const HostApi,
+    ) -> i32 {
+        ACTIVATE_FAILED
+    }
 
     #[test]
     fn version_validation_rejects_wrong_abi_before_loading_code() {
@@ -291,5 +345,39 @@ mod tests {
         assert_eq!(api.gpui_revision, GPUI_REVISION);
         assert!(api.accepts_state(STATE_SCHEMA_VERSION));
         validate_api(api).unwrap();
+    }
+
+    #[gpui::test]
+    fn failed_activation_restores_the_previous_root_in_the_same_window(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| StableRoot))
+                .unwrap()
+        });
+        let mut manager = ReloadManager::new(
+            PluginApi::new(stable_activate, no_snapshot),
+            None,
+            window.into(),
+            Rc::new(HostState::default()),
+        )
+        .unwrap();
+        cx.update(|cx| manager.activate_initial(cx)).unwrap();
+        manager.generations.push(Generation {
+            api: PluginApi::new(failed_after_replacing_root, no_snapshot),
+            _library: None,
+            _staged_path: None,
+            activated: false,
+            label: "failing test UI".into(),
+        });
+
+        let error = cx
+            .update(|cx| {
+                manager.activate_or_restore(1, &(STATE_SCHEMA_VERSION, b"workspace".to_vec()), cx)
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("restored linked release UI"));
+        window
+            .update(cx, |_: &mut StableRoot, _, _| {})
+            .expect("the stable root must be restored in the original native window");
     }
 }
