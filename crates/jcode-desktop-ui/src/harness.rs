@@ -45,6 +45,7 @@ pub enum Update {
 
 /// Commands flowing from the UI into the bridge.
 pub enum Command {
+    RefreshSessions,
     CreateSession {
         working_dir: Option<String>,
     },
@@ -181,30 +182,14 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
     // The session list can be slow (the daemon serializes it behind live
     // sessions), so it must not gate startup: fetch it on its own connection
     // and deliver whenever it lands.
-    {
-        let updates = updates.clone();
-        std::thread::Builder::new()
-            .name("jcode-bridge-sessions".into())
-            .spawn(move || {
-                let Ok(client) = connect("sessions") else {
-                    return;
-                };
-                if let Ok(sessions) = client.list_sessions() {
-                    let sessions = sessions
-                        .into_iter()
-                        .filter(|s| !s.archived)
-                        .collect::<Vec<_>>();
-                    let _ = updates.send(Update::Sessions { sessions });
-                }
-            })
-            .expect("spawn session list thread");
-    }
+    refresh_sessions(updates.clone());
 
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
 
     while let Ok(command) = commands.recv() {
         match command {
+            Command::RefreshSessions => refresh_sessions(updates.clone()),
             Command::CreateSession { working_dir } => {
                 // A fresh connection per creation: an existing connection
                 // returns its already-attached session instead of a new one.
@@ -254,6 +239,24 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
             }
         }
     }
+}
+
+fn refresh_sessions(updates: Sender<Update>) {
+    std::thread::Builder::new()
+        .name("jcode-bridge-sessions".into())
+        .spawn(move || {
+            let Ok(client) = connect("sessions") else {
+                return;
+            };
+            if let Ok(sessions) = client.list_sessions() {
+                let sessions = sessions
+                    .into_iter()
+                    .filter(|s| !s.archived)
+                    .collect::<Vec<_>>();
+                let _ = updates.send(Update::Sessions { sessions });
+            }
+        })
+        .expect("spawn session list thread");
 }
 
 fn ensure_session_worker(

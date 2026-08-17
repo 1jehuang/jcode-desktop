@@ -639,6 +639,20 @@ impl Workspace {
                 }
             }
             Update::Sessions { sessions } => {
+                for session in &sessions {
+                    let Some(title) = session.title.as_ref() else {
+                        continue;
+                    };
+                    for slot in &self.slots {
+                        if slot.panel.read(cx).session_id == session.session_id {
+                            slot.panel.update(cx, |panel, cx| {
+                                panel.title = title.clone().into();
+                                cx.notify();
+                            });
+                            break;
+                        }
+                    }
+                }
                 self.sessions = sessions;
             }
             Update::SessionCreated { session } => {
@@ -676,7 +690,22 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
-                if let jcode_sdk::ApiEvent::SessionRenamed { display_title, .. } = &event
+                let updated_title = match &event {
+                    jcode_sdk::ApiEvent::SessionRenamed { display_title, .. } => {
+                        Some(display_title.clone())
+                    }
+                    jcode_sdk::ApiEvent::ToolDone { name, error, .. }
+                        if name == "todo" && error.is_none() =>
+                    {
+                        // Todo-derived titles are SDK session metadata rather
+                        // than explicit RenameSession events. Refresh the list
+                        // as soon as the SDK reports a successful todo write.
+                        self.bridge.send(Command::RefreshSessions);
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(display_title) = updated_title
                     && let Some(session) = self
                         .sessions
                         .iter_mut()
