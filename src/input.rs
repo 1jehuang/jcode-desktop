@@ -3,6 +3,7 @@
 
 use std::ops::Range;
 
+use base64::Engine as _;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
@@ -10,7 +11,6 @@ use gpui::{
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
     point, prelude::*, px, relative, size,
 };
-use base64::Engine as _;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{Theme, to_hsla};
@@ -943,9 +943,12 @@ impl Render for PromptInput {
                 .child(image.label.clone())
                 .child(div().text_color(Theme::TEXT_FAINT).child("×"))
                 .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                    this.remove_attachment(index, cx);
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.remove_attachment(index, cx);
+                    }),
+                )
         });
         div()
             .flex()
@@ -1005,12 +1008,23 @@ impl Render for PromptInput {
                 )
             })
             .children(self.attachment_notice.clone().map(|notice| {
-                div().px_3().pt_1().text_size(px(10.0)).text_color(Theme::TEXT_FAINT).child(notice)
+                div()
+                    .px_3()
+                    .pt_1()
+                    .text_size(px(10.0))
+                    .text_color(Theme::TEXT_FAINT)
+                    .child(notice)
             }))
-            .child(div().w_full().overflow_hidden().px_3().py_2()
-            .text_size(px(14.0))
-            .text_color(Theme::TEXT)
-            .child(TextElement { input: cx.entity() }))
+            .child(
+                div()
+                    .w_full()
+                    .overflow_hidden()
+                    .px_3()
+                    .py_2()
+                    .text_size(px(14.0))
+                    .text_color(Theme::TEXT)
+                    .child(TextElement { input: cx.entity() }),
+            )
     }
 }
 
@@ -1133,9 +1147,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn image_only_prompt_submits_the_attachment_and_clears_the_composer(
-        cx: &mut TestAppContext,
-    ) {
+    fn image_only_prompt_submits_the_attachment_and_clears_the_composer(cx: &mut TestAppContext) {
         let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = submitted.clone();
         cx.update(|cx| bind_keys(cx));

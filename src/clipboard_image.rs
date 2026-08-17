@@ -79,13 +79,20 @@ fn decode_metadata(media_type: String, bytes: Vec<u8>) -> Result<ClipboardImage,
     let (width, height) = reader
         .into_dimensions()
         .map_err(|error| format!("could not read clipboard image: {error}"))?;
-    Ok(ClipboardImage { media_type, bytes, width, height })
+    Ok(ClipboardImage {
+        media_type,
+        bytes,
+        width,
+        height,
+    })
 }
 
 fn preferred_type<'a>(offered: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let offered: Vec<_> = offered.into_iter().collect();
     IMAGE_TYPES.into_iter().find(|wanted| {
-        offered.iter().any(|kind| kind.trim().eq_ignore_ascii_case(wanted))
+        offered
+            .iter()
+            .any(|kind| kind.trim().eq_ignore_ascii_case(wanted))
     })
 }
 
@@ -95,7 +102,10 @@ mod tests {
 
     #[test]
     fn png_is_preferred_and_text_is_ignored() {
-        assert_eq!(preferred_type(["image/jpeg", "image/png"]), Some("image/png"));
+        assert_eq!(
+            preferred_type(["image/jpeg", "image/png"]),
+            Some("image/png")
+        );
         assert_eq!(preferred_type(["text/plain", "text/uri-list"]), None);
     }
 }

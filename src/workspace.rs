@@ -3776,9 +3776,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn right_edge_is_a_full_height_click_target_for_a_new_session(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn right_edge_is_a_full_height_click_target_for_a_new_session(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -4098,28 +4096,43 @@ mod tests {
         vcx.simulate_keystrokes("super-j");
         vcx.run_until_parked();
         workspace.update(vcx, |workspace, _| {
-            assert_eq!((workspace.active_row, workspace.test_focus_position()), (1, Some(1)));
+            assert_eq!(
+                (workspace.active_row, workspace.test_focus_position()),
+                (1, Some(1))
+            );
             assert!(workspace.row_progress.is_animating());
         });
         let outgoing = vcx.debug_bounds("row-transition-outgoing").unwrap();
         let incoming = vcx.debug_bounds("row-transition-incoming").unwrap();
-        assert!(incoming.origin.y > outgoing.origin.y, "down enters from below");
+        assert!(
+            incoming.origin.y > outgoing.origin.y,
+            "down enters from below"
+        );
 
         vcx.simulate_keystrokes("super-h");
         vcx.run_until_parked();
         vcx.simulate_keystrokes("super-k");
         vcx.run_until_parked();
         workspace.update(vcx, |workspace, _| {
-            assert_eq!((workspace.active_row, workspace.test_focus_position()), (0, Some(1)));
+            assert_eq!(
+                (workspace.active_row, workspace.test_focus_position()),
+                (0, Some(1))
+            );
         });
         let outgoing = vcx.debug_bounds("row-transition-outgoing").unwrap();
         let incoming = vcx.debug_bounds("row-transition-incoming").unwrap();
-        assert!(incoming.origin.y < outgoing.origin.y, "up enters from above");
+        assert!(
+            incoming.origin.y < outgoing.origin.y,
+            "up enters from above"
+        );
 
         vcx.simulate_keystrokes("super-j");
         vcx.run_until_parked();
         workspace.update(vcx, |workspace, _| {
-            assert_eq!((workspace.active_row, workspace.test_focus_position()), (1, Some(0)));
+            assert_eq!(
+                (workspace.active_row, workspace.test_focus_position()),
+                (1, Some(0))
+            );
         });
 
         std::thread::sleep(transition::policy(Transition::Row).duration * 2);
