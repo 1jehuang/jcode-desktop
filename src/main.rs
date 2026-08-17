@@ -9,6 +9,7 @@ mod learning;
 mod markdown;
 mod panel;
 mod platform;
+mod terminal;
 mod theme;
 mod transition;
 mod workspace;
