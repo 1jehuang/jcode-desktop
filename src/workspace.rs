@@ -2782,6 +2782,9 @@ fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
         .map_err(|error| format!("could not open {}: {error}", path.display()))?
         .filter_map(Result::ok)
         .filter_map(|entry| {
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                return None;
+            }
             entry
                 .file_type()
                 .ok()
@@ -3334,6 +3337,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("zeta")).unwrap();
         std::fs::create_dir(root.join("Alpha")).unwrap();
+        std::fs::create_dir(root.join(".hidden")).unwrap();
         std::fs::write(root.join("file.txt"), "ignored").unwrap();
 
         let names = directory_entries(&root)
