@@ -40,7 +40,7 @@ verify_bundle() {
   local sparkle="$app/Contents/Frameworks/Sparkle.framework"
   local sparkle_executable="$sparkle/Versions/B/Sparkle"
   [[ -x "$sparkle_executable" ]] || fail "Sparkle framework is missing"
-  lipo -verify_arch arm64 x86_64 "$sparkle_executable" || fail "Sparkle is not universal"
+  lipo "$sparkle_executable" -verify_arch arm64 x86_64 || fail "Sparkle is not universal"
   codesign --verify --deep --strict --verbose=2 "$sparkle"
 
   local update_key=""
@@ -70,7 +70,7 @@ PY
   for bin in "${BINS[@]}"; do
     local executable="$app/Contents/MacOS/$bin"
     [[ -x "$executable" ]] || fail "missing executable companion: $bin"
-    lipo -verify_arch arm64 x86_64 "$executable" || fail "$bin is not universal"
+    lipo "$executable" -verify_arch arm64 x86_64 || fail "$bin is not universal"
     codesign --verify --strict --verbose=2 "$executable"
 
     local actual_entitlements
@@ -93,7 +93,7 @@ PY
   codesign --verify --deep --strict --verbose=2 "$app"
 }
 
-for command in codesign hdiutil lipo plutil python3; do
+for command in codesign ditto hdiutil lipo open pgrep plutil python3; do
   command -v "$command" >/dev/null || fail "missing required command: $command"
 done
 [[ -f "$EXPECTED_ENTITLEMENTS" ]] || fail "expected entitlements are missing"
@@ -104,7 +104,11 @@ hdiutil verify "$DMG" >/dev/null
 
 MOUNT="$(mktemp -d)"
 SCRATCH="$(mktemp -d)"
+APP_PID=""
 cleanup() {
+  if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
+    kill "$APP_PID" 2>/dev/null || true
+  fi
   hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true
   rm -rf "$MOUNT" "$SCRATCH"
 }
@@ -120,6 +124,29 @@ verify_bundle "$MOUNT/Jcode.app"
 # does not accidentally resolve a Homebrew or developer checkout executable.
 env -i HOME="$SCRATCH" TMPDIR="$SCRATCH" PATH=/usr/bin:/bin \
   "$MOUNT/Jcode.app/Contents/MacOS/jcode" --version >/dev/null
+
+if [[ "${FIRST_LAUNCH_CHECK:-0}" == 1 ]]; then
+  # Exercise the actual Finder/LaunchServices path after a drag-style install,
+  # not only the bundle's executable. A healthy first launch must create the
+  # desktop process and keep it alive long enough to initialize its first
+  # window and bundled runtime discovery.
+  INSTALLED_APP="$SCRATCH/Applications/Jcode.app"
+  mkdir -p "$(dirname "$INSTALLED_APP")"
+  ditto "$MOUNT/Jcode.app" "$INSTALLED_APP"
+  codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP"
+
+  open -n "$INSTALLED_APP"
+  for _ in {1..40}; do
+    APP_PID="$(pgrep -f "$INSTALLED_APP/Contents/MacOS/jcode-desktop" | head -1 || true)"
+    [[ -n "$APP_PID" ]] && break
+    sleep 0.25
+  done
+  [[ -n "$APP_PID" ]] || fail "LaunchServices did not start the installed app"
+  sleep 3
+  kill -0 "$APP_PID" 2>/dev/null || fail "the installed app exited during first launch"
+  kill "$APP_PID"
+  APP_PID=""
+fi
 
 if [[ "${EXPECT_NOTARIZED:-0}" == 1 ]]; then
   xcrun stapler validate "$APP"
