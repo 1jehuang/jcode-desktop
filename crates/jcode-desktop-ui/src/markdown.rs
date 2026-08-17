@@ -637,12 +637,11 @@ fn braced_group(source: &str, mut start: usize) -> Option<(&str, usize)> {
 }
 
 fn convert_scripts(source: &str, marker: char) -> String {
-    let table = if marker == '^' {
-        "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ"
+    let (keys, table) = if marker == '^' {
+        ("0123456789+-=()niab", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱᵃᵇ")
     } else {
-        "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₙᵢ"
+        ("0123456789+-=()nia", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₙᵢₐ")
     };
-    let keys = "0123456789+-=()ni";
     let map = |c: char| keys.find(c).and_then(|i| table.chars().nth(i));
     let chars: Vec<char> = source.chars().collect();
     let mut output = String::new();
@@ -1342,6 +1341,31 @@ mod tests {
             "x=(-b±√(b²-4ac))/(2a)"
         );
         assert_eq!(latex_to_text(r"\frac{1}{\frac{x}{2}}"), "(1)/((x)/(2))");
+    }
+
+    #[test]
+    fn transcript_equation_examples_remain_readable() {
+        let source = concat!(
+            r"\[E=mc^2\]",
+            "\n\n",
+            r"\[a^2+b^2=c^2\]",
+            "\n\n",
+            r"\[x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}\]",
+            "\n\n",
+            r"\[\int_a^b f(x)\,dx=F(b)-F(a)\]",
+            "\n\n",
+            r"\[e^{i\pi}+1=0\]",
+        );
+        assert_eq!(
+            parse(source),
+            vec![
+                Block::Math("E=mc²".into()),
+                Block::Math("a²+b²=c²".into()),
+                Block::Math("x=(-b±√(b²-4ac))/(2a)".into()),
+                Block::Math("∫ₐᵇ f(x) dx=F(b)-F(a)".into()),
+                Block::Math("e^(iπ)+1=0".into()),
+            ]
+        );
     }
 
     #[test]

@@ -82,17 +82,25 @@ fn main() {
         cx.on_action({
             let manager = manager.clone();
             move |_: &ReloadUi, cx| {
-                if let Err(error) = manager.borrow_mut().reload(cx) {
-                    eprintln!("UI reload failed: {error:#}");
-                }
+                let manager = manager.clone();
+                // Action dispatch already holds the window update. Defer the
+                // root swap so `AnyWindowHandle::update` can enter it cleanly.
+                cx.defer(move |cx| {
+                    if let Err(error) = manager.borrow_mut().reload(cx) {
+                        eprintln!("UI reload failed: {error:#}");
+                    }
+                });
             }
         });
         cx.on_action({
             let manager = manager.clone();
             move |_: &RollbackUi, cx| {
-                if let Err(error) = manager.borrow_mut().rollback(cx) {
-                    eprintln!("UI rollback failed: {error:#}");
-                }
+                let manager = manager.clone();
+                cx.defer(move |cx| {
+                    if let Err(error) = manager.borrow_mut().rollback(cx) {
+                        eprintln!("UI rollback failed: {error:#}");
+                    }
+                });
             }
         });
 
