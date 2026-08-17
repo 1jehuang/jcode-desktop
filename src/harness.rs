@@ -470,7 +470,16 @@ fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
     match event {
         ApiEvent::MessageAccepted { .. } => *turn_active = true,
         ApiEvent::TurnDone { .. } => *turn_active = false,
-        ApiEvent::SessionStatus { status, .. } => *turn_active = status != "idle",
+        // `attached` describes the transport, not a model turn. Treating every
+        // non-idle status as active routed the first prompt in a fresh desktop
+        // panel through `soft_interrupt`; with no turn to interrupt, the prompt
+        // stayed queued forever and the panel showed only its local echo.
+        ApiEvent::SessionStatus { status, .. } if status == "idle" => *turn_active = false,
+        ApiEvent::SessionStatus { status, .. }
+            if matches!(status.as_str(), "generating" | "running") =>
+        {
+            *turn_active = true;
+        }
         _ => {}
     }
 }
@@ -540,6 +549,30 @@ mod tests {
         bridge.send(Command::Watch {
             session_id: session_id.clone(),
         });
+
+        // Match the real UI: the user types after the panel says "attached".
+        // Sending immediately after Watch used to race ahead of that status and
+        // accidentally hide the first-prompt soft-interrupt bug.
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "panel never reached attached status"
+            );
+            let attached = bridge.drain().into_iter().any(|update| {
+                matches!(
+                    update,
+                    Update::Event {
+                        session_id: ref event_session,
+                        event: ApiEvent::SessionStatus { ref status, .. },
+                    } if event_session == &session_id && status == "attached"
+                )
+            });
+            if attached {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
         bridge.send(Command::Send {
             session_id: session_id.clone(),
             content: "Reply with exactly JCODE_DESKTOP_OK and nothing else.".into(),
@@ -656,6 +689,15 @@ mod tests {
     #[test]
     fn turn_activity_tracks_acceptance_completion_and_session_status() {
         let mut active = false;
+        update_turn_activity(
+            &ApiEvent::SessionStatus {
+                session_id: "s1".into(),
+                status: "attached".into(),
+            },
+            &mut active,
+        );
+        assert!(!active, "attaching an idle session is not an active turn");
+
         update_turn_activity(
             &ApiEvent::MessageAccepted {
                 session_id: "s1".into(),
