@@ -4,6 +4,7 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -158,6 +159,9 @@ pub struct Workspace {
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
+    /// Directory currently shown by the in-app folder browser. `None` closes it.
+    folder_picker_dir: Option<PathBuf>,
+    folder_picker_error: Option<String>,
     _poll_task: gpui::Task<()>,
 }
 
@@ -225,6 +229,8 @@ impl Workspace {
             connected: false,
             focus_handle: cx.focus_handle(),
             focus_pending: false,
+            folder_picker_dir: None,
+            folder_picker_error: None,
             _poll_task: poll_task,
         }
     }
@@ -264,6 +270,8 @@ impl Workspace {
             connected: true,
             focus_handle: cx.focus_handle(),
             focus_pending: false,
+            folder_picker_dir: None,
+            folder_picker_error: None,
             _poll_task: cx.spawn(async move |_, _| {}),
         }
     }
@@ -886,33 +894,75 @@ impl Workspace {
         self.open_new_session(cx);
     }
 
-    /// Ask the platform for a directory, then create a session rooted there.
+    fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let panel =
+            cx.new(|cx| Panel::new_terminal(default_working_dir(), self.bridge.clone(), cx));
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                restore_fraction: None,
+            },
+        );
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// Open Jcode's own directory browser. This deliberately does not call the
+    /// platform path prompt, so the workflow stays inside the application.
     /// A session's working directory is fixed by the runtime, so choosing a
     /// different folder intentionally opens a new session instead of silently
     /// changing the meaning of an existing transcript.
-    fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
-        let selection = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open folder in Jcode".into()),
+    fn open_folder(&mut self, _: &OpenFolder, _: &mut Window, cx: &mut Context<Self>) {
+        self.folder_picker_dir = Some(
+            default_working_dir()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/")),
+        );
+        self.folder_picker_error = None;
+        cx.notify();
+    }
+
+    fn browse_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        match directory_entries(&path) {
+            Ok(_) => {
+                self.folder_picker_dir = Some(path);
+                self.folder_picker_error = None;
+            }
+            Err(error) => self.folder_picker_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn choose_browsed_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.folder_picker_dir.take() else {
+            return;
+        };
+        self.folder_picker_error = None;
+        self.bridge.send(Command::CreateSession {
+            working_dir: Some(path.to_string_lossy().into_owned()),
         });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = selection.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            this.update_in(cx, |this, _window, cx| {
-                this.bridge.send(Command::CreateSession {
-                    working_dir: Some(path.to_string_lossy().into_owned()),
-                });
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        cx.notify();
+    }
+
+    fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
+        self.folder_picker_dir = None;
+        self.folder_picker_error = None;
+        cx.notify();
     }
 
     /// Open a session without attributing the choice to the keyboard. Pointer
@@ -2229,6 +2279,144 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    fn render_folder_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(directory) = self.folder_picker_dir.clone() else {
+            return div().into_any_element();
+        };
+        let entries = directory_entries(&directory).unwrap_or_default();
+        let mut list = div()
+            .id("folder-picker-list")
+            .debug_selector(|| "folder-picker-list".into())
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .border_t_1()
+            .border_b_1()
+            .border_color(Theme::PANEL_BORDER);
+
+        if let Some(parent) = directory.parent().map(Path::to_path_buf) {
+            list = list.child(
+                div()
+                    .id("folder-picker-parent")
+                    .px_4()
+                    .py_2()
+                    .cursor_pointer()
+                    .text_color(Theme::TEXT_DIM)
+                    .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.browse_to(parent.clone(), cx);
+                        }),
+                    )
+                    .child("↰  .."),
+            );
+        }
+        for (index, path) in entries.into_iter().enumerate() {
+            let label = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            list = list.child(
+                div()
+                    .id(("folder-picker-entry", index))
+                    .debug_selector(move || format!("folder-picker-entry-{index}").into())
+                    .px_4()
+                    .py_2()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(Theme::HEADER_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.browse_to(path.clone(), cx);
+                        }),
+                    )
+                    .child(format!("▸  {label}")),
+            );
+        }
+
+        div()
+            .id("folder-picker-overlay")
+            .debug_selector(|| "folder-picker-overlay".into())
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::rgba(0x000000cc))
+            .child(
+                div()
+                    .w(px(680.0))
+                    .h(px(560.0))
+                    .max_w(relative(0.9))
+                    .max_h(relative(0.85))
+                    .flex()
+                    .flex_col()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(Theme::PANEL_BORDER_FOCUS)
+                    .bg(Theme::PANEL_BG)
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_size(px(14.0)).child("open folder"))
+                            .child(
+                                div()
+                                    .id("folder-picker-cancel")
+                                    .cursor_pointer()
+                                    .text_color(Theme::TEXT_DIM)
+                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.close_folder_picker(cx);
+                                        }),
+                                    )
+                                    .child("cancel"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .pb_3()
+                            .text_size(px(11.0))
+                            .text_color(Theme::TEXT_DIM)
+                            .child(directory.display().to_string()),
+                    )
+                    .child(list)
+                    .when_some(self.folder_picker_error.clone(), |el, error| {
+                        el.child(div().px_4().py_2().text_color(Theme::ERROR).child(error))
+                    })
+                    .child(
+                        div().p_3().flex().justify_end().child(
+                            div()
+                                .id("folder-picker-open")
+                                .debug_selector(|| "folder-picker-open".into())
+                                .px_4()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .bg(Theme::ACCENT)
+                                .text_color(Theme::BG)
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.choose_browsed_folder(cx);
+                                    }),
+                                )
+                                .child("open this folder"),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.dump_state();
@@ -2380,8 +2568,8 @@ impl Render for Workspace {
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
-            .when_some(coach_hint.filter(|_| coach_progress > 0.0), |root, hint| {
-                root.child(self.render_coach_toast(&hint, coach_progress, cx))
+            .when(self.folder_picker_dir.is_some(), |root| {
+                root.child(self.render_folder_picker(cx))
             })
     }
 }
@@ -2394,6 +2582,22 @@ impl Focusable for Workspace {
 
 fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
+}
+
+fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|error| format!("could not open {}: {error}", path.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(|kind| kind.is_dir())
+                .map(|_| entry.path())
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|path| path.file_name().map(|name| name.to_ascii_lowercase()));
+    Ok(entries)
 }
 
 fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, String) {
@@ -2679,7 +2883,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn ctrl_o_creates_a_session_in_the_selected_directory(cx: &mut gpui::TestAppContext) {
+    fn ctrl_o_uses_the_in_app_picker_and_creates_a_session(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(move |_window, cx| {
@@ -2694,10 +2898,18 @@ mod tests {
 
         vcx.simulate_keystrokes("ctrl-o");
         vcx.run_until_parked();
-        assert!(vcx.did_prompt_for_paths());
-        vcx.simulate_path_prompt_response(|options| {
-            assert!(options.directories && !options.files && !options.multiple);
-            Some(vec![std::path::PathBuf::from("/tmp/jcode-picker-test")])
+        assert!(
+            !vcx.did_prompt_for_paths(),
+            "directory selection must never invoke an OS path dialog"
+        );
+        assert!(
+            vcx.debug_bounds("folder-picker-overlay").is_some(),
+            "the picker should paint inside the Jcode window"
+        );
+
+        workspace.update(vcx, |workspace, cx| {
+            workspace.folder_picker_dir = Some(PathBuf::from("/tmp/jcode-picker-test"));
+            workspace.choose_browsed_folder(cx);
         });
         vcx.run_until_parked();
 
