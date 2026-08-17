@@ -9,6 +9,7 @@ mod learning;
 mod markdown;
 mod panel;
 mod platform;
+mod terminal;
 mod theme;
 mod transition;
 mod workspace;
@@ -19,13 +20,14 @@ use gpui_platform::application;
 use workspace::{
     ClosePanel, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious, FocusRight,
     FocusUp, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight, MovePanelToFirst,
-    MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel, Quit, ToggleHints, ToggleOverview,
-    OpenFolder, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
+    MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel, NewTerminal, OpenFolder, Quit,
+    ToggleHints, ToggleOverview, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
 /// The workspace keymap. Extracted so tests can dispatch through exactly the
 /// bindings the user presses, rather than a second copy that could drift.
 pub fn bind_workspace_keys(cx: &mut App) {
+    terminal::bind_keys(cx);
     cx.bind_keys([
         // Canonical Jcode TUI workspace bindings. On niri these are normally
         // intercepted by the compositor, so Super aliases remain below.
@@ -51,7 +53,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-shift-home", MovePanelToFirst, None),
         KeyBinding::new("super-shift-end", MovePanelToLast, None),
         KeyBinding::new("super-n", NewPanel, None),
-        KeyBinding::new("super-t", NewPanel, None),
+        KeyBinding::new("super-t", NewTerminal, None),
         KeyBinding::new("super-enter", NewPanel, None),
         KeyBinding::new("super-q", ClosePanel, None),
         // niri: Alt+Tab is focus-window-previous, Mod+Tab is the overview.

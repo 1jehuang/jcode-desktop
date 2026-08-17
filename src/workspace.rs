@@ -35,6 +35,7 @@ actions!(
         MovePanelToFirst,
         MovePanelToLast,
         NewPanel,
+        NewTerminal,
         OpenFolder,
         ClosePanel,
         ToggleOverview,
@@ -2551,6 +2552,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_panel_to_first))
             .on_action(cx.listener(Self::move_panel_to_last))
             .on_action(cx.listener(Self::new_panel))
+            .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
