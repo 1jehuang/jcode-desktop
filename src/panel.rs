@@ -545,6 +545,7 @@ impl Panel {
                     .overflow_hidden()
                     .child(
                         div()
+                            .debug_selector(|| "tool-header".into())
                             .flex()
                             .flex_row()
                             .gap_2()
@@ -596,6 +597,7 @@ impl Panel {
                             .when(*done && !expanded && output_lines > 1, |el| {
                                 el.child(
                                     div()
+                                        .debug_selector(|| "tool-output-size".into())
                                         .flex_none()
                                         .text_size(px(10.0))
                                         .text_color(Theme::TEXT_FAINT)
@@ -615,6 +617,7 @@ impl Panel {
                     .when(expanded && has_detail, |el| {
                         el.child(
                             div()
+                                .debug_selector(|| "tool-detail".into())
                                 .border_t_1()
                                 .border_color(Theme::TOOL_BORDER)
                                 .bg(Theme::CODE_BG)
@@ -1485,6 +1488,113 @@ mod tests {
             .and_then(|item| item.text())
             .expect("clicking copy fills the clipboard");
         assert_eq!(copied, "fn main() {\n    println!(\"hi\");\n}");
+    }
+
+    /// The acceptance path for tool rows: the size hint paints on a collapsed
+    /// finished call, a real click expands the detail (ANSI-clean, head and
+    /// tail both present), and a second click collapses it again.
+    #[gpui::test]
+    fn clicking_a_tool_row_expands_clean_detail_and_collapses_again(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        // A finished call with long, ANSI-colored output: the shapes the
+        // clipping and stripping paths exist for.
+        let output: String = (0..60)
+            .map(|n| format!("\u{1b}[32mline {n}\u{1b}[0m\n"))
+            .collect();
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Tool {
+                call_id: "call-1".into(),
+                name: "bash".into(),
+                input: r#"{"command":"make build","intent":"compile"}"#.into(),
+                output,
+                done: true,
+                error: None,
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        // Collapsed: the size hint paints, the detail does not.
+        let hint = vcx
+            .debug_bounds("tool-output-size")
+            .expect("a collapsed finished call shows its output size");
+        assert!(hint.size.width > px(0.));
+        assert!(
+            vcx.debug_bounds("tool-detail").is_none(),
+            "detail stays hidden until expanded"
+        );
+
+        // A real click on the header expands it.
+        let header = vcx
+            .debug_bounds("tool-header")
+            .expect("tool header painted");
+        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let detail = vcx
+            .debug_bounds("tool-detail")
+            .expect("clicking the header expands the detail");
+        assert!(detail.size.height > px(0.));
+        assert!(
+            vcx.debug_bounds("tool-output-size").is_none(),
+            "the size hint yields to the expanded detail"
+        );
+        // The rendered detail is the formatted string: ANSI-free, head and
+        // tail kept around the fold marker.
+        let rendered = panel.read_with(vcx, |panel, _| match &panel.items[0] {
+            Item::Tool { input, output, .. } => tool_detail(input, output),
+            other => panic!("expected the tool row, got {other:?}"),
+        });
+        assert!(!rendered.contains('\u{1b}'), "detail must be ANSI-free");
+        assert!(rendered.contains("line 0") && rendered.contains("line 59"));
+        assert!(rendered.contains("lines hidden"));
+
+        // A second click collapses it again.
+        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("tool-detail").is_none(),
+            "a second click collapses the detail"
+        );
+    }
+
+    /// Blockquotes paint as a distinct region in a real assistant message.
+    #[gpui::test]
+    fn blockquotes_paint_in_a_real_transcript(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(vcx, |panel, cx| {
+            panel
+                .items
+                .push(Item::Assistant("> a quoted line\n> and another".into()));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let quote = vcx
+            .debug_bounds("md-quote")
+            .expect("the quote region paints");
+        assert!(quote.size.width > px(0.) && quote.size.height > px(0.));
     }
 
     /// The acceptance path: real events land in a real panel inside a painted

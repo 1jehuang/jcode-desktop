@@ -1045,6 +1045,7 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 None,
             ),
             Block::Quote(lines) => div()
+                .debug_selector(|| "md-quote".into())
                 .flex()
                 .flex_col()
                 .my_1()
