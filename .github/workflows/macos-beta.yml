@@ -161,6 +161,10 @@ jobs:
           if [[ ! -f "$VERSIONED_ZIP" ]]; then
             cp jcode-desktop/dist/macos/Jcode-macOS-universal.zip "$VERSIONED_ZIP"
           fi
+          (
+            cd jcode-desktop/dist/macos
+            shasum -a 256 "$(basename "$VERSIONED_ZIP")" Jcode-macOS-universal.dmg > SHA256SUMS
+          )
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" --prerelease \
