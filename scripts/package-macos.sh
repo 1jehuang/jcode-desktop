@@ -21,6 +21,34 @@ UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/1jehuang/jcode-desktop/re
 TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
+notarize() {
+  local artifact="$1"
+  local result submission_id
+  result="$(mktemp "${TMPDIR:-/tmp}/jcode-notary.XXXXXX")"
+  if xcrun notarytool submit "$artifact" --keychain-profile "$APPLE_NOTARY_PROFILE" \
+      --wait --output-format json | tee "$result"; then
+    rm -f "$result"
+    return 0
+  fi
+
+  submission_id="$(python3 - "$result" <<'PY'
+import json
+import sys
+
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("id", ""))
+except (OSError, json.JSONDecodeError):
+    pass
+PY
+)"
+  if [[ -n "$submission_id" ]]; then
+    echo "Apple rejected $(basename "$artifact"); fetching notarization log..." >&2
+    xcrun notarytool log "$submission_id" --keychain-profile "$APPLE_NOTARY_PROFILE" || true
+  fi
+  rm -f "$result"
+  return 1
+}
+
 # Release tags and beta labels are valid artifact versions, but Apple's bundle
 # short version must be exactly three numeric components.
 VERSION="${VERSION#desktop-v}"
@@ -121,7 +149,7 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   rm -f "$ZIP"
   ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
-  xcrun notarytool submit "$ZIP" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
+  notarize "$ZIP"
   xcrun stapler staple "$APP"
   xcrun stapler validate "$APP"
 fi
@@ -141,7 +169,7 @@ if [[ "$IDENTITY" != "-" ]]; then
   codesign --force --timestamp --sign "$IDENTITY" "$DMG"
 fi
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
-  xcrun notarytool submit "$DMG" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait
+  notarize "$DMG"
   xcrun stapler staple "$DMG"
   xcrun stapler validate "$DMG"
 fi
