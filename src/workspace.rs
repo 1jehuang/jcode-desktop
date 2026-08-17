@@ -294,6 +294,7 @@ impl Workspace {
         let bridge = self.bridge.clone();
         let panel =
             cx.new(|cx| Panel::new(name.to_string(), Some(name.to_string()), None, bridge, cx));
+        Panel::connect_input(&panel, cx);
         self.slots.push(Slot {
             panel,
             row: self.active_row,
@@ -304,6 +305,11 @@ impl Workspace {
             ),
             restore_fraction: None,
         });
+    }
+
+    #[cfg(test)]
+    pub fn set_test_bridge(&mut self, bridge: Bridge) {
+        self.bridge = bridge;
     }
 
     /// Seed accounts for tests, bypassing the CLI.
@@ -1068,7 +1074,9 @@ impl Workspace {
         self.learned("close_panel", cx);
         let removed = self.slots.remove(self.active);
         let session_id = removed.panel.read(cx).session_id.clone();
-        self.bridge.send(Command::Unwatch { session_id });
+        if session_id != "terminal" {
+            self.bridge.send(Command::Unwatch { session_id });
+        }
         if self.previous == Some(removed.panel.entity_id()) {
             self.previous = None;
         }
@@ -1162,7 +1170,7 @@ impl Workspace {
             .filter(|slot| slot.row == self.active_row)
         {
             let panel = slot.panel.clone();
-            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            let handle = panel.read(cx).input_focus_handle(cx);
             window.focus(&handle, cx);
         } else {
             window.focus(&self.focus_handle, cx);
@@ -4395,6 +4403,85 @@ mod tests {
             assert_eq!(
                 workspace.active_row, 2,
                 "clicking the third track should select strip 3"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn super_t_opens_and_paints_a_plain_terminal_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let workspace = Workspace::for_test(learning::Coach::new(), cx);
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+
+        cx.simulate_keystrokes("super-t");
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 1);
+            assert_eq!(workspace.slots[0].panel.read(cx).session_id, "terminal");
+        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("plain-terminal").is_some(),
+            "the terminal surface should paint in the newly created panel"
+        );
+
+        std::thread::sleep(Duration::from_millis(500));
+        cx.executor().advance_clock(Duration::from_millis(64));
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("h e l l o");
+        std::thread::sleep(Duration::from_millis(100));
+        cx.executor().advance_clock(Duration::from_millis(32));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| {
+            let output = workspace.slots[0]
+                .panel
+                .read(cx)
+                .test_terminal_contents(cx)
+                .expect("terminal contents");
+            assert!(output.contains("hello"), "physical keys should echo visibly: {output:?}");
+        });
+        cx.simulate_keystrokes("ctrl-u");
+
+        // This goes through GPUI's real text-input handler, then Enter goes
+        // through the terminal key handler and into the live fish PTY.
+        cx.simulate_input("printf '\\x4a\\x43\\x4f\\x44\\x45\\x5f\\x54\\x45\\x52\\x4d\\x49\\x4e\\x41\\x4c\\x5f\\x4f\\x4b'\n");
+        std::thread::sleep(Duration::from_millis(1000));
+        cx.executor().advance_clock(Duration::from_millis(64));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| {
+            let output = workspace.slots[0]
+                .panel
+                .read(cx)
+                .test_terminal_contents(cx)
+                .expect("terminal contents");
+            assert!(
+                output.contains("JCODE_TERMINAL_OK"),
+                "typed command should execute in the PTY; output was {output:?}"
+            );
+        });
+
+        // Global workspace actions must continue to bubble while the terminal
+        // owns keyboard focus rather than being swallowed as shell input.
+        cx.simulate_keystrokes("super-o");
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert!(
+                workspace.overview,
+                "Super+O should still open overview from a terminal"
             );
         });
     }

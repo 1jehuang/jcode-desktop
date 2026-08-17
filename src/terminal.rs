@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui::{
     Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, KeyBinding,
-    Pixels, Render, UTF16Selection, Window, actions, canvas, div, prelude::*, px,
+    KeyDownEvent, Pixels, Render, UTF16Selection, Window, actions, canvas, div, prelude::*, px,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
@@ -164,6 +164,35 @@ impl TerminalPanel {
         }
     }
 
+    fn send_text(&self, text: &str) {
+        if text.contains('\n') || text.contains('\r') {
+            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+            self.send(normalized.as_bytes());
+        } else {
+            self.send(text.as_bytes());
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
+        let modifiers = event.keystroke.modifiers;
+        // Super combinations belong to the workspace. Do not turn Super+O/N/Q
+        // into shell input or stop their action from bubbling.
+        if modifiers.platform || modifiers.function {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        if modifiers.control && !modifiers.alt {
+            if let Some(ch) = key.chars().next().filter(|ch| ch.is_ascii_alphabetic()) {
+                self.send(&[(ch.to_ascii_uppercase() as u8) - b'@']);
+            }
+        } else if !modifiers.alt && event.keystroke.key_char.is_none() && key.chars().count() == 1 {
+            // Synthetic/raw keyboard sources may not generate an IME commit.
+            // Normal text still comes through EntityInputHandler, avoiding
+            // duplicate characters on Wayland.
+            self.send(key.as_bytes());
+        }
+    }
+
     fn enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {
         self.send(b"\r");
     }
@@ -253,7 +282,7 @@ impl EntityInputHandler for TerminalPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        self.send(new_text.as_bytes());
+        self.send_text(new_text);
     }
 
     fn replace_and_mark_text_in_range(
@@ -264,7 +293,7 @@ impl EntityInputHandler for TerminalPanel {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        self.send(new_text.as_bytes());
+        self.send_text(new_text);
     }
 
     fn bounds_for_range(
@@ -355,6 +384,7 @@ impl Render for TerminalPanel {
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::delete))
+            .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.focus(window, cx)),

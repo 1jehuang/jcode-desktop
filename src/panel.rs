@@ -710,14 +710,24 @@ impl Panel {
     }
 
     pub fn focus_input(&self, window: &mut Window, cx: &mut App) {
-        if let Some(terminal) = &self.terminal {
-            let handle = terminal.read(cx).focus_handle(cx);
-            window.focus(&handle, cx);
-            return;
-        }
-        let handle = self.input.read(cx).focus_handle.clone();
+        let handle = self.input_focus_handle(cx);
         window.focus(&handle, cx);
     }
+
+    pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.terminal
+            .as_ref()
+            .map(|terminal| terminal.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| self.input.read(cx).focus_handle.clone())
+    }
+
+    #[cfg(test)]
+    pub fn test_terminal_contents(&self, cx: &App) -> Option<String> {
+        self.terminal
+            .as_ref()
+            .map(|terminal| terminal.read(cx).screen_contents())
+    }
+
 }
 
 impl Render for Panel {
