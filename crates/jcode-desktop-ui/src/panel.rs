@@ -704,6 +704,17 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         if !self.streaming_reasoning.trim().is_empty() {
+            let target_index = self
+                .items
+                .last()
+                .filter(|item| matches!(item, Item::Reasoning(_)))
+                .map(|_| self.items.len() - 1)
+                .unwrap_or(self.items.len());
+            // The live row uses a sentinel index. Preserve the user's disclosure
+            // choice when that row becomes a settled transcript item.
+            if self.expanded_reasoning.remove(&(usize::MAX - 1)) {
+                self.expanded_reasoning.insert(target_index);
+            }
             append_reasoning(
                 &mut self.items,
                 std::mem::take(&mut self.streaming_reasoning),
@@ -818,6 +829,24 @@ impl Panel {
                 .px_1()
                 .text_color(Theme::TEXT)
                 .child(markdown::render(text, window))
+                .when(index == usize::MAX, |el| {
+                    el.child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(Theme::ACCENT)
+                            .with_animation(
+                                "assistant-stream-caret",
+                                Animation::new(Duration::from_millis(900)).repeat(),
+                                |caret, delta| {
+                                    // A soft pulse communicates that text is still
+                                    // arriving without moving the surrounding copy.
+                                    let opacity =
+                                        0.28 + 0.72 * (delta * std::f32::consts::TAU).sin().abs();
+                                    caret.opacity(opacity).child("▍")
+                                },
+                            ),
+                    )
+                })
                 .into_any_element(),
             Item::Reasoning(text) => {
                 let expanded = self.expanded_reasoning.contains(&index);
@@ -868,9 +897,24 @@ impl Panel {
                             } else {
                                 Theme::TEXT_FAINT
                             })
-                            .child(if live { "● thinking…" } else { "thinking" })
-                            .when(long && !live, |el| {
-                                el.child(if expanded { "collapse" } else { "expand" })
+                            .child(if live {
+                                div()
+                                    .with_animation(
+                                        "reasoning-stream-pulse",
+                                        Animation::new(Duration::from_millis(1200)).repeat(),
+                                        |dot, delta| {
+                                            let opacity = 0.35
+                                                + 0.65
+                                                    * (delta * std::f32::consts::TAU).sin().abs();
+                                            dot.opacity(opacity).child("● thinking…")
+                                        },
+                                    )
+                                    .into_any_element()
+                            } else {
+                                div().child("thinking").into_any_element()
+                            })
+                            .when(long, |el| {
+                                el.child(if expanded { "show less" } else { "show all" })
                             }),
                     )
                     .child(
@@ -1755,6 +1799,30 @@ mod tests {
         let tail = condense_tail(&"word ".repeat(100), 20);
         assert!(tail.starts_with('…'));
         assert!(tail.ends_with("word"));
+    }
+
+    #[gpui::test]
+    fn expanded_live_reasoning_stays_expanded_after_it_settles(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, _| {
+            panel.items.clear();
+            panel.streaming_reasoning = "a complete train of thought".into();
+            panel.expanded_reasoning.insert(usize::MAX - 1);
+            panel.flush_reasoning();
+
+            assert!(panel.expanded_reasoning.contains(&0));
+            assert!(!panel.expanded_reasoning.contains(&(usize::MAX - 1)));
+            assert!(matches!(panel.items.as_slice(), [Item::Reasoning(text)] if text == "a complete train of thought"));
+        });
     }
 
     #[test]
