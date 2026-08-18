@@ -2311,10 +2311,11 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        // A fresh panel knows nothing: no footer may be painted.
+        // The footer owns stable layout space even before runtime identity
+        // arrives, so the composer does not jump when attach completes.
         assert!(
-            vcx.debug_bounds("panel-meta").is_none(),
-            "no identity footer before any identity is known"
+            vcx.debug_bounds("panel-meta").is_some(),
+            "identity footer reserves layout space before metadata arrives"
         );
 
         // The events the harness worker forwards after attach and during a turn.

@@ -476,6 +476,26 @@ fn send_to_session_worker<F>(
     }
 }
 
+enum WorkerCommand {
+    Command(SessionCommand),
+    Idle,
+    Disconnected,
+}
+
+fn next_worker_command(
+    commands: &Receiver<SessionCommand>,
+    pending: &mut VecDeque<SessionCommand>,
+) -> WorkerCommand {
+    if let Some(command) = pending.pop_front() {
+        return WorkerCommand::Command(command);
+    }
+    match commands.try_recv() {
+        Ok(command) => WorkerCommand::Command(command),
+        Err(std::sync::mpsc::TryRecvError::Empty) => WorkerCommand::Idle,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => WorkerCommand::Disconnected,
+    }
+}
+
 /// One session's dedicated connection: attach, history, events, commands.
 fn session_worker(session_id: String, commands: Receiver<SessionCommand>, updates: Sender<Update>) {
     let lost = |reason: String| {
@@ -543,17 +563,13 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
 
         loop {
             loop {
-                let command = if let Some(command) = pending.pop_front() {
-                    command
-                } else {
-                    match commands.try_recv() {
-                        Ok(command) => command,
-                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                        // Hot reload drops the old bridge and all of its command
-                        // senders. Do not leave one busy event loop behind for
-                        // every panel from every retained UI generation.
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
-                    }
+                let command = match next_worker_command(&commands, &mut pending) {
+                    WorkerCommand::Command(command) => command,
+                    WorkerCommand::Idle => break,
+                    // Hot reload drops the old bridge and all of its command
+                    // senders. Do not leave one busy event loop behind for
+                    // every panel from every retained UI generation.
+                    WorkerCommand::Disconnected => return,
                 };
                 match command {
                     SessionCommand::Send { content, images } => {
@@ -991,6 +1007,22 @@ mod tests {
 
         assert!(collect_disconnected_commands(&rx, &mut pending));
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn active_worker_observes_command_channel_disconnect_after_pending_work() {
+        let (tx, rx) = channel();
+        let mut pending = VecDeque::from([SessionCommand::Cancel]);
+        drop(tx);
+
+        assert!(matches!(
+            next_worker_command(&rx, &mut pending),
+            WorkerCommand::Command(SessionCommand::Cancel)
+        ));
+        assert!(matches!(
+            next_worker_command(&rx, &mut pending),
+            WorkerCommand::Disconnected
+        ));
     }
 
     #[test]
