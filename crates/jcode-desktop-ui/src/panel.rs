@@ -817,6 +817,10 @@ impl Panel {
                 div()
                     .id(("tool", index))
                     .flex()
+                    // Transcript rows live in a fixed-height flex column. Once
+                    // it overflows, flex items shrink by default, which can
+                    // squash tool cards instead of letting the column scroll.
+                    .flex_none()
                     .flex_col()
                     .rounded_md()
                     .bg(Theme::TOOL_BG)
@@ -1981,6 +1985,49 @@ mod tests {
         assert!(
             vcx.debug_bounds("tool-detail").is_none(),
             "a second click collapses the detail"
+        );
+    }
+
+    /// Tool cards must retain their intrinsic row height when enough of them
+    /// are appended to make the transcript scroll. Without `flex_none`, the
+    /// transcript's flex layout distributes the height deficit across every
+    /// card and visibly squashes their headers.
+    #[gpui::test]
+    fn tool_rows_do_not_shrink_when_the_transcript_overflows(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.items = (0..30)
+                .map(|index| Item::Tool {
+                    call_id: format!("call-{index}"),
+                    name: "bash".into(),
+                    input: format!(r#"{{"command":"echo {index}"}}"#),
+                    output: "done".into(),
+                    done: true,
+                    error: None,
+                })
+                .collect();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let first = vcx
+            .debug_bounds("tool-header")
+            .expect("an overflowing transcript still paints a tool header");
+        assert!(
+            first.size.height >= px(24.),
+            "tool header was flex-shrunk to {:?}",
+            first.size.height
         );
     }
 
