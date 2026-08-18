@@ -543,10 +543,7 @@ impl Panel {
                     self.model = model.clone();
                 }
                 self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
-                let mut models: Vec<String> =
-                    routes.iter().map(|route| route.model.clone()).collect();
-                models.sort();
-                models.dedup();
+                let models = available_model_names(routes);
                 self.input
                     .update(cx, |input, cx| input.set_command_models(models, cx));
             }
@@ -816,6 +813,7 @@ impl Panel {
                 let call_id = call_id.clone();
                 div()
                     .id(("tool", index))
+                    .debug_selector(|| "tool-card".into())
                     .flex()
                     // Transcript rows live in a fixed-height flex column. Once
                     // it overflows, flex items shrink by default, which can
@@ -1310,6 +1308,17 @@ fn auth_method_for_model(
     })
 }
 
+fn available_model_names(routes: &[jcode_sdk::ModelRouteInfo]) -> Vec<String> {
+    let mut models: Vec<String> = routes
+        .iter()
+        .filter(|route| route.available)
+        .map(|route| route.model.clone())
+        .collect();
+    models.sort();
+    models.dedup();
+    models
+}
+
 /// The identity footer: directory, model (provider, auth, effort), and
 /// context usage. Absent parts are simply omitted, so the line never shows
 /// placeholders.
@@ -1711,6 +1720,23 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_only_offers_available_routes() {
+        let mut unavailable = route("luna", "openai-api-key");
+        unavailable.available = false;
+        let routes = vec![
+            unavailable,
+            route("gpt-5.6-sol", "openai-api-key"),
+            route("gpt-5.6-sol", "openai-oauth"),
+            route("claude-fable-5", "anthropic-api-key"),
+        ];
+
+        assert_eq!(
+            available_model_names(&routes),
+            vec!["claude-fable-5", "gpt-5.6-sol"]
+        );
+    }
+
+    #[test]
     fn meta_line_shows_directory_model_auth_and_context() {
         let line = meta_line(
             Some("/srv/project"),
@@ -2019,8 +2045,8 @@ mod tests {
         });
         vcx.run_until_parked();
         let baseline_height = vcx
-            .debug_bounds("tool-header")
-            .expect("a tool header paints before the transcript overflows")
+            .debug_bounds("tool-card")
+            .expect("a tool card paints before the transcript overflows")
             .size
             .height;
 
@@ -2038,13 +2064,13 @@ mod tests {
         vcx.run_until_parked();
 
         let overflowing_height = vcx
-            .debug_bounds("tool-header")
-            .expect("an overflowing transcript still paints a tool header")
+            .debug_bounds("tool-card")
+            .expect("an overflowing transcript still paints a tool card")
             .size
             .height;
         assert_eq!(
             overflowing_height, baseline_height,
-            "overflow changed tool-header height from {baseline_height:?} to {overflowing_height:?}"
+            "overflow changed tool-card height from {baseline_height:?} to {overflowing_height:?}"
         );
     }
 
