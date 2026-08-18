@@ -1,0 +1,56 @@
+name: macOS public release acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published desktop release tag
+        required: true
+        default: desktop-v0.1.0-beta.10
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Download exact public artifacts anonymously
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          curl --fail --location --retry 3 --output Jcode-macOS-universal.dmg "$base/Jcode-macOS-universal.dmg"
+          curl --fail --location --retry 3 --output SHA256SUMS "$base/SHA256SUMS"
+          shasum -a 256 -c SHA256SUMS --ignore-missing
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");GitHubActions;" Jcode-macOS-universal.dmg
+      - name: Verify DMG notarization and Gatekeeper acceptance
+        run: |
+          set -euo pipefail
+          xcrun stapler validate Jcode-macOS-universal.dmg
+          spctl --assess --type open --context context:primary-signature --verbose=4 Jcode-macOS-universal.dmg
+          mkdir -p "$RUNNER_TEMP/mount" "$RUNNER_TEMP/Applications"
+          hdiutil attach Jcode-macOS-universal.dmg -mountpoint "$RUNNER_TEMP/mount" -nobrowse
+          test -L "$RUNNER_TEMP/mount/Applications"
+          ditto "$RUNNER_TEMP/mount/Jcode.app" "$RUNNER_TEMP/Applications/Jcode.app"
+          hdiutil detach "$RUNNER_TEMP/mount"
+      - name: Verify and launch installed app
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/Applications/Jcode.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          test "$(defaults read "$app/Contents/Info" CFBundleIdentifier)" = dev.solosystems.jcode.desktop
+          file "$app"/Contents/MacOS/{jcode-desktop,jcode,jcode-harness-api-bridge} | tee binaries.txt
+          test "$(grep -c 'universal binary with 2 architectures' binaries.txt)" = 3
+          "$app/Contents/MacOS/jcode" --version
+          JCODE_DESKTOP_STATE="$RUNNER_TEMP/desktop-state.txt" \
+            "$app/Contents/MacOS/jcode-desktop" >"$RUNNER_TEMP/desktop.log" 2>&1 &
+          pid=$!
+          sleep 12
+          kill -0 "$pid"
+          kill "$pid"
+          wait "$pid" || true
