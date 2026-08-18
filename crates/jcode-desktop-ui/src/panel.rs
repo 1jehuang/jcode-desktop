@@ -1,11 +1,14 @@
 //! Panel: one Jcode session as a spatial card with a live transcript.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use base64::Engine as _;
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, Window,
-    div, point, prelude::*, px, relative,
+    App, Context, Entity, FocusHandle, Focusable, FontWeight, ImageSource, ScrollHandle,
+    SharedString, StyledImage, Window, div, img, point, prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
@@ -21,6 +24,7 @@ use crate::theme::Theme;
 #[derive(Debug, Clone)]
 pub enum Item {
     User(String),
+    Image(TranscriptImage),
     Assistant(String),
     Reasoning(String),
     Tool {
@@ -34,6 +38,41 @@ pub enum Item {
         error: Option<String>,
     },
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptImage {
+    media_type: String,
+    data: String,
+    label: Option<String>,
+    preview: Option<Arc<gpui::Image>>,
+}
+
+static NEXT_TRANSCRIPT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+impl TranscriptImage {
+    fn new(media_type: String, data: String, label: Option<String>) -> Self {
+        let preview = base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .ok()
+            .and_then(|bytes| {
+                Some(Arc::new(gpui::Image {
+                    format: gpui::ImageFormat::from_mime_type(&media_type)?,
+                    bytes,
+                    id: NEXT_TRANSCRIPT_IMAGE_ID.fetch_add(1, Ordering::Relaxed),
+                }))
+            });
+        Self {
+            media_type,
+            data,
+            label,
+            preview,
+        }
+    }
+
+    fn from_rendered(image: jcode_sdk::RenderedImage) -> Self {
+        Self::new(image.media_type, image.data, image.label)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -198,15 +237,24 @@ impl Panel {
                     cx,
                     "message jcode...",
                     move |content, images, _window, app| {
-                        bridge.send(Command::Send {
-                            session_id: session_id.clone(),
-                            content: content.clone(),
-                            images,
-                        });
+                        let echoed_images = images.clone();
                         if let Some(panel) = weak.upgrade() {
                             panel.update(app, |this, cx| {
+                                if images.is_empty() && this.handle_slash_command(&content, cx) {
+                                    return;
+                                }
+                                bridge.send(Command::Send {
+                                    session_id: session_id.clone(),
+                                    content: content.clone(),
+                                    images,
+                                });
                                 let index = this.items.len();
                                 this.items.push(Item::User(content));
+                                this.items.extend(echoed_images.into_iter().map(
+                                    |(media_type, data)| {
+                                        Item::Image(TranscriptImage::new(media_type, data, None))
+                                    },
+                                ));
                                 this.pending_users.push_back(index);
                                 this.stick_to_bottom = true;
                                 this.scroll.scroll_to_bottom();
@@ -219,9 +267,55 @@ impl Panel {
         });
     }
 
+    fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        let trimmed = content.trim();
+        if let Some(model) = trimmed
+            .strip_prefix("/model ")
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            self.bridge.send(Command::SetModel {
+                session_id: self.session_id.clone(),
+                model: model.to_string(),
+            });
+            self.items
+                .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        } else {
+            match trimmed {
+                "/cancel" => {
+                    self.bridge.send(Command::Cancel {
+                        session_id: self.session_id.clone(),
+                    });
+                    self.items
+                        .push(Item::Assistant("Cancellation requested.".into()));
+                }
+                "/clear" => {
+                    self.items.clear();
+                    self.streaming_text.clear();
+                    self.streaming_reasoning.clear();
+                }
+                "/help" | "/commands" | "/?" => self.items.push(Item::Assistant(
+                    "**Desktop commands**\n\n- `/model` or `/models` — choose a model\n- `/model <name>` — switch directly\n- `/cancel` — cancel the current turn\n- `/clear` — clear this conversation view\n- `/help` — show this list".into(),
+                )),
+                "/model" | "/models" => self.items.push(Item::Error(
+                    "No models are available yet. Wait for the session to connect, then try `/model` again.".into(),
+                )),
+                _ if trimmed.starts_with('/') => self.items.push(Item::Error(format!(
+                    "Unknown command: `{trimmed}`. Type `/help` for available commands."
+                ))),
+                _ => return false,
+            }
+        }
+        self.stick_to_bottom = true;
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+        true
+    }
+
     pub fn load_history(
         &mut self,
         messages: Vec<jcode_sdk::HistoryMessage>,
+        images: Vec<jcode_sdk::RenderedImage>,
         cx: &mut Context<Self>,
     ) {
         if self.history_loaded {
@@ -236,16 +330,39 @@ impl Panel {
                 .map(|message| message.content.as_str())
             {
                 self.recover_response(response);
-                self.scroll.scroll_to_bottom();
+                if self.stick_to_bottom {
+                    self.scroll.scroll_to_bottom();
+                }
                 cx.notify();
             }
             return;
         }
         self.history_loaded = true;
-        let mut items = Vec::with_capacity(messages.len());
+        let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
+        let mut trailing_images = Vec::new();
+        for image in images {
+            match &image.anchor {
+                Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) => {
+                    images_by_prompt.entry(*ordinal).or_default().push(image);
+                }
+                _ => trailing_images.push(image),
+            }
+        }
+        let mut items = Vec::with_capacity(messages.len() + trailing_images.len());
+        let mut user_ordinal = 0;
         for message in messages {
             match message.role.as_str() {
-                "user" => items.push(Item::User(message.content)),
+                "user" => {
+                    items.push(Item::User(message.content));
+                    if let Some(images) = images_by_prompt.remove(&user_ordinal) {
+                        items.extend(
+                            images
+                                .into_iter()
+                                .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
+                        );
+                    }
+                    user_ordinal += 1;
+                }
                 "assistant" => {
                     if !message.content.trim().is_empty() {
                         items.push(Item::Assistant(message.content));
@@ -254,6 +371,14 @@ impl Panel {
                 _ => {}
             }
         }
+        for images in images_by_prompt.into_values() {
+            trailing_images.extend(images);
+        }
+        items.extend(
+            trailing_images
+                .into_iter()
+                .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
+        );
         // History goes first; anything echoed locally before it arrived is
         // appended, minus the duplicate the server already knows about.
         let mut existing = std::mem::take(&mut self.items);
@@ -273,7 +398,9 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.items = items;
-        self.scroll.scroll_to_bottom();
+        if self.stick_to_bottom {
+            self.scroll.scroll_to_bottom();
+        }
         cx.notify();
     }
 
@@ -368,6 +495,11 @@ impl Panel {
                     });
                 }
             }
+            ApiEvent::SidePaneImages { images, .. } => {
+                for image in images.iter().cloned() {
+                    self.insert_rendered_image(image);
+                }
+            }
             ApiEvent::TurnDone { .. } => {
                 self.flush_reasoning();
                 self.flush_streaming();
@@ -411,6 +543,12 @@ impl Panel {
                     self.model = model.clone();
                 }
                 self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
+                let mut models: Vec<String> =
+                    routes.iter().map(|route| route.model.clone()).collect();
+                models.sort();
+                models.dedup();
+                self.input
+                    .update(cx, |input, cx| input.set_command_models(models, cx));
             }
             ApiEvent::TokenUsage {
                 input,
@@ -448,6 +586,28 @@ impl Panel {
         self.items.iter_mut().rev().find(
             |item| matches!(item, Item::Tool { call_id: existing, .. } if existing == call_id),
         )
+    }
+
+    fn insert_rendered_image(&mut self, image: jcode_sdk::RenderedImage) {
+        if self.items.iter().any(|item| {
+            matches!(item, Item::Image(existing)
+                if existing.media_type == image.media_type && existing.data == image.data)
+        }) {
+            return;
+        }
+        let insertion = match image.anchor.as_ref() {
+            Some(jcode_sdk::RenderedImageAnchor::ToolCall { id }) => self
+                .items
+                .iter()
+                .rposition(|item| matches!(item, Item::Tool { call_id, .. } if call_id == id))
+                .map(|index| index + 1),
+            _ => None,
+        }
+        .unwrap_or(self.items.len());
+        self.items.insert(
+            insertion,
+            Item::Image(TranscriptImage::from_rendered(image)),
+        );
     }
 
     fn flush_reasoning(&mut self) {
@@ -527,6 +687,38 @@ impl Panel {
                     .py_2()
                     .text_color(Theme::TEXT_USER)
                     .child(markdown::render(text, window))
+                    .into_any_element()
+            }
+            Item::Image(image) => {
+                let label = image
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "image read by model".to_string());
+                div()
+                    .debug_selector(|| "transcript-image".into())
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_1()
+                    .rounded_md()
+                    .p_2()
+                    .bg(Theme::USER_BG)
+                    .when_some(image.preview.clone(), |el, preview| {
+                        el.child(
+                            img(ImageSource::Image(preview))
+                                .w_full()
+                                .h(px(320.0))
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .rounded_md(),
+                        )
+                    })
+                    .child(div().text_size(px(11.0)).text_color(Theme::TEXT_DIM).child(
+                        if image.preview.is_some() {
+                            label
+                        } else {
+                            format!("{label} (could not display {})", image.media_type)
+                        },
+                    ))
                     .into_any_element()
             }
             Item::Assistant(text) => div()
@@ -1061,7 +1253,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
     match item {
         Item::User(_) => Some("you"),
         Item::Assistant(_) => Some("jcode"),
-        Item::Reasoning(_) | Item::Tool { .. } | Item::Error(_) => None,
+        Item::Image(_) | Item::Reasoning(_) | Item::Tool { .. } | Item::Error(_) => None,
     }
 }
 
@@ -1357,6 +1549,29 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn restored_scroll_is_not_replaced_when_history_reattaches(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        let mut saved = panel.read_with(vcx, |panel, cx| panel.snapshot(cx));
+        saved.scroll_y = -137.0;
+        saved.stick_to_bottom = false;
+
+        panel.update(vcx, |panel, cx| {
+            panel.restore_snapshot(saved, cx);
+            panel.load_history(Vec::new(), Vec::new(), cx);
+            assert_eq!(f32::from(panel.scroll.offset().y), -137.0);
+            assert!(!panel.stick_to_bottom);
+        });
+    }
+
     #[test]
     fn message_acceptance_promotes_the_oldest_pending_prompt() {
         let now = Instant::now();
@@ -1569,6 +1784,10 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+        // Scroll metrics are produced during layout. Repaint once with those
+        // measured metrics, as the running app does on its next frame.
+        panel.update(vcx, |_panel, cx| cx.notify());
+        vcx.run_until_parked();
         assert!(
             panel.read_with(vcx, |panel, _| panel.stick_to_bottom),
             "a fresh panel follows the stream"
@@ -1577,6 +1796,11 @@ mod tests {
             vcx.debug_bounds("jump-to-latest").is_none(),
             "no chip while following"
         );
+        let scrollbar_before = vcx
+            .debug_bounds("transcript-scrollbar")
+            .expect("an overflowing transcript paints a scrollbar");
+        assert_eq!(scrollbar_before.size.width, px(4.0));
+        assert!(scrollbar_before.size.height >= px(28.0));
 
         // A real upward wheel event over the transcript.
         let transcript = vcx.debug_bounds("transcript").expect("transcript painted");
@@ -1587,10 +1811,16 @@ mod tests {
             touch_phase: gpui::TouchPhase::Moved,
         });
         vcx.run_until_parked();
+        panel.update(vcx, |_panel, cx| cx.notify());
+        vcx.run_until_parked();
         assert!(
             !panel.read_with(vcx, |panel, _| panel.stick_to_bottom),
             "scrolling up must release follow mode"
         );
+        let scrollbar_after = vcx
+            .debug_bounds("transcript-scrollbar")
+            .expect("the scrollbar remains visible after scrolling");
+        assert_eq!(scrollbar_after.size.width, px(4.0));
         let chip = vcx
             .debug_bounds("jump-to-latest")
             .expect("the catch-up chip paints once detached");
@@ -1846,6 +2076,7 @@ mod tests {
                             available: true,
                             detail: String::new(),
                         }],
+                        reasoning_effort: None,
                     },
                     cx,
                 );
@@ -1869,6 +2100,7 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: None,
                     },
                     cx,
                 );
@@ -1882,6 +2114,7 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("anthropic".into()),
                         model: Some("claude-fable-5".into()),
+                        reasoning_effort: None,
                     },
                     cx,
                 );
@@ -1930,6 +2163,7 @@ mod tests {
                         content: "recovered response".into(),
                     },
                 ],
+                Vec::new(),
                 cx,
             );
             assert!(matches!(
@@ -1944,9 +2178,90 @@ mod tests {
                     role: "assistant".into(),
                     content: "partial response completed".into(),
                 }],
+                Vec::new(),
                 cx,
             );
             assert_eq!(panel.streaming_text, "partial response completed");
+        });
+    }
+
+    #[gpui::test]
+    fn model_read_images_are_anchored_and_deduplicated_in_the_transcript(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.items = vec![Item::Tool {
+                call_id: "read-1".into(),
+                name: "read".into(),
+                input: r#"{"file_path":"chart.png"}"#.into(),
+                output: "image loaded".into(),
+                done: true,
+                error: None,
+            }];
+            let event = ApiEvent::SidePaneImages {
+                session_id: "session-a".into(),
+                images: vec![jcode_sdk::RenderedImage {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                    label: Some("chart.png".into()),
+                    source: jcode_sdk::RenderedImageSource::ToolResult {
+                        tool_name: "read".into(),
+                    },
+                    anchor: Some(jcode_sdk::RenderedImageAnchor::ToolCall {
+                        id: "read-1".into(),
+                    }),
+                }],
+            };
+            panel.apply(&event, cx);
+            panel.apply(&event, cx);
+
+            assert_eq!(panel.items.len(), 2, "replayed image events are deduplicated");
+            assert!(matches!(&panel.items[1], Item::Image(image) if image.label.as_deref() == Some("chart.png")));
+        });
+    }
+
+    #[gpui::test]
+    fn history_restores_pasted_images_after_their_user_prompt(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            panel.load_history(
+                vec![jcode_sdk::HistoryMessage {
+                    role: "user".into(),
+                    content: "what is in this?".into(),
+                }],
+                vec![jcode_sdk::RenderedImage {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                    label: None,
+                    source: jcode_sdk::RenderedImageSource::UserInput,
+                    anchor: Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+                }],
+                cx,
+            );
+            assert!(matches!(
+                panel.items.as_slice(),
+                [Item::User(_), Item::Image(_)]
+            ));
         });
     }
 

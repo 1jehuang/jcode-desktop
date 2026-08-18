@@ -1,15 +1,18 @@
-//! Prompt input: single-line text field with full IME support, adapted from
-//! gpui's input example. Enter submits via a callback.
+//! Prompt input with full IME support, adapted from gpui's input example.
+//! Long prompts soft-wrap and grow vertically. Enter submits via a callback.
 
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, size,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, ImageSource, KeyBinding, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    SharedString, Style, StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
+    actions, div, fill, img, point, prelude::*, px, relative, size,
 };
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
@@ -119,9 +122,9 @@ pub struct PromptInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    horizontal_scroll: Pixels,
-    last_layout: Option<ShapedLine>,
+    last_layout: Option<WrappedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    visual_line_count: usize,
     is_selecting: bool,
     undo: Vec<String>,
     redo: Vec<String>,
@@ -130,8 +133,57 @@ pub struct PromptInput {
     live_draft: String,
     attachments: Vec<Attachment>,
     attachment_notice: Option<SharedString>,
+    /// The newest paste briefly appears at reading size, then flies into its
+    /// thumbnail. The index keeps simultaneous attachments independent.
+    attachment_preview: Option<(usize, Instant)>,
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
+    command_models: Vec<String>,
+    command_selection: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommandSuggestion {
+    value: String,
+    help: String,
+}
+
+fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('/') || trimmed.contains('\n') {
+        return Vec::new();
+    }
+    if trimmed == "/model" || trimmed == "/models" || trimmed.starts_with("/model ") {
+        let query = trimmed
+            .split_once(' ')
+            .map(|(_, query)| query.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        return models
+            .iter()
+            .filter(|model| query.is_empty() || model.to_ascii_lowercase().contains(&query))
+            .take(8)
+            .map(|model| CommandSuggestion {
+                value: format!("/model {model}"),
+                help: "Switch this session".into(),
+            })
+            .collect();
+    }
+    const COMMANDS: &[(&str, &str)] = &[
+        ("/model", "List or switch models"),
+        ("/models", "Alias for /model"),
+        ("/help", "Show available desktop commands"),
+        ("/clear", "Clear the conversation view"),
+        ("/cancel", "Cancel the current turn"),
+    ];
+    let query = trimmed.to_ascii_lowercase();
+    COMMANDS
+        .iter()
+        .filter(|(command, _)| command.starts_with(&query))
+        .map(|(value, help)| CommandSuggestion {
+            value: (*value).into(),
+            help: (*help).into(),
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -139,6 +191,17 @@ struct Attachment {
     media_type: String,
     encoded: String,
     label: SharedString,
+    preview: Arc<gpui::Image>,
+}
+
+static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn preview_image(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
+    Some(Arc::new(gpui::Image {
+        format: gpui::ImageFormat::from_mime_type(media_type)?,
+        bytes,
+        id: NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed),
+    }))
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -198,12 +261,20 @@ impl PromptInput {
         self.attachments = snapshot
             .attachments
             .into_iter()
-            .map(|attachment| Attachment {
-                media_type: attachment.media_type,
-                encoded: attachment.encoded,
-                label: attachment.label.into(),
+            .filter_map(|attachment| {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&attachment.encoded)
+                    .ok()?;
+                let preview = preview_image(&attachment.media_type, bytes)?;
+                Some(Attachment {
+                    media_type: attachment.media_type,
+                    encoded: attachment.encoded,
+                    label: attachment.label.into(),
+                    preview,
+                })
             })
             .collect();
+        self.attachment_preview = None;
         self.attachment_notice = match self.attachments.len() {
             0 => None,
             1 => Some("1 image attached".into()),
@@ -220,6 +291,7 @@ impl PromptInput {
             return;
         }
         self.attachments.remove(index);
+        self.attachment_preview = None;
         self.attachment_notice = match self.attachments.len() {
             0 => None,
             1 => Some("1 image attached".into()),
@@ -240,9 +312,9 @@ impl PromptInput {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            horizontal_scroll: px(0.),
             last_layout: None,
             last_bounds: None,
+            visual_line_count: 1,
             is_selecting: false,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -251,8 +323,11 @@ impl PromptInput {
             live_draft: String::new(),
             attachments: Vec::new(),
             attachment_notice: None,
+            attachment_preview: None,
             on_submit: Box::new(on_submit),
             on_change: None,
+            command_models: Vec::new(),
+            command_selection: 0,
         }
     }
 
@@ -261,10 +336,37 @@ impl PromptInput {
         self
     }
 
+    pub fn set_command_models(&mut self, models: Vec<String>, cx: &mut Context<Self>) {
+        if self.command_models != models {
+            self.command_models = models;
+            self.command_selection = 0;
+            cx.notify();
+        }
+    }
+
+    fn command_suggestions(&self) -> Vec<CommandSuggestion> {
+        command_suggestions(&self.content, &self.command_models)
+    }
+
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        let content = self.content.trim().to_string();
+        let mut content = self.content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {
             return;
+        }
+        if self.attachments.is_empty() {
+            let suggestions = self.command_suggestions();
+            if let Some(suggestion) = suggestions.get(
+                self.command_selection
+                    .min(suggestions.len().saturating_sub(1)),
+            ) {
+                let trimmed = content.trim();
+                if trimmed == "/model"
+                    || trimmed == "/models"
+                    || (!trimmed.contains(' ') && suggestion.value.starts_with(trimmed))
+                {
+                    content = suggestion.value.clone();
+                }
+            }
         }
         let content = if content.is_empty() {
             "[image]".to_string()
@@ -276,13 +378,14 @@ impl PromptInput {
             .map(|image| (image.media_type, image.encoded))
             .collect();
         self.attachment_notice = None;
+        self.attachment_preview = None;
         self.content = "".into();
         self.selected_range = 0..0;
         self.marked_range = None;
-        self.horizontal_scroll = px(0.);
         self.history.push(content.clone());
         self.history_index = None;
         self.live_draft.clear();
+        self.command_selection = 0;
         (self.on_submit)(content, images, window, cx);
         cx.notify();
     }
@@ -350,11 +453,18 @@ impl PromptInput {
         match crate::clipboard_image::read() {
             Ok(Some(image)) => {
                 let label = image.label();
+                let Some(preview) = preview_image(&image.media_type, image.bytes.clone()) else {
+                    self.attachment_notice = Some("could not preview pasted image".into());
+                    cx.notify();
+                    return;
+                };
                 self.attachments.push(Attachment {
                     media_type: image.media_type,
                     encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes),
                     label: label.clone().into(),
+                    preview,
                 });
+                self.attachment_preview = Some((self.attachments.len() - 1, Instant::now()));
                 self.attachment_notice = Some(match self.attachments.len() {
                     1 => format!("image attached ({label})").into(),
                     count => format!("{count} images attached").into(),
@@ -454,6 +564,12 @@ impl PromptInput {
     }
 
     fn history_prev(&mut self, _: &HistoryPrev, _: &mut Window, cx: &mut Context<Self>) {
+        let suggestions = self.command_suggestions();
+        if !suggestions.is_empty() {
+            self.command_selection = self.command_selection.saturating_sub(1);
+            cx.notify();
+            return;
+        }
         if self.history.is_empty() {
             return;
         }
@@ -469,6 +585,12 @@ impl PromptInput {
     }
 
     fn history_next(&mut self, _: &HistoryNext, _: &mut Window, cx: &mut Context<Self>) {
+        let suggestions = self.command_suggestions();
+        if !suggestions.is_empty() {
+            self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
+            cx.notify();
+            return;
+        }
         let Some(index) = self.history_index else {
             return;
         };
@@ -497,14 +619,20 @@ impl PromptInput {
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.is_selecting = true;
         if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.select_to(
+                self.index_for_mouse_position(event.position, window.line_height()),
+                cx,
+            );
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx)
+            self.move_to(
+                self.index_for_mouse_position(event.position, window.line_height()),
+                cx,
+            )
         }
     }
 
@@ -512,9 +640,17 @@ impl PromptInput {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.select_to(
+                self.index_for_mouse_position(event.position, window.line_height()),
+                cx,
+            );
         }
     }
 
@@ -531,7 +667,7 @@ impl PromptInput {
         }
     }
 
-    fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+    fn index_for_mouse_position(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
         if self.content.is_empty() {
             return 0;
         }
@@ -545,7 +681,8 @@ impl PromptInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        line.closest_index_for_position(position - bounds.origin, line_height)
+            .unwrap_or_else(|index| index)
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -748,19 +885,18 @@ impl EntityInputHandler for PromptInput {
         &mut self,
         range_utf16: Range<usize>,
         bounds: Bounds<Pixels>,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        let start = last_layout.position_for_index(range.start, window.line_height())?;
+        let end = last_layout.position_for_index(range.end, window.line_height())?;
         Some(Bounds::from_corners(
+            bounds.origin + start,
             point(
-                bounds.left() + last_layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + last_layout.x_for_index(range.end),
-                bounds.bottom(),
+                bounds.left() + end.x,
+                bounds.top() + end.y + window.line_height(),
             ),
         ))
     }
@@ -771,9 +907,11 @@ impl EntityInputHandler for PromptInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let line_point = self.last_bounds?.localize(&point)?;
+        let local = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
+        let utf8_index = last_layout
+            .closest_index_for_position(local, _window.line_height())
+            .unwrap_or_else(|index| index);
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -783,30 +921,44 @@ struct TextElement {
 }
 
 struct PrepaintState {
-    line: Option<ShapedLine>,
+    line: Option<WrappedLine>,
     cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
+    selection: Vec<PaintQuad>,
     text_bounds: Bounds<Pixels>,
-    horizontal_scroll: Pixels,
+    visual_line_count: usize,
 }
 
-fn scroll_to_reveal_cursor(
-    current: Pixels,
-    cursor_x: Pixels,
-    line_width: Pixels,
-    viewport_width: Pixels,
-) -> Pixels {
-    let margin = px(2.);
-    let max_scroll = (line_width - viewport_width + margin).max(px(0.));
-    let mut scroll = current.min(max_scroll).max(px(0.));
-
-    if cursor_x < scroll {
-        scroll = cursor_x;
-    } else if cursor_x - scroll > viewport_width - margin {
-        scroll = cursor_x - viewport_width + margin;
-    }
-
-    scroll.min(max_scroll).max(px(0.))
+fn selection_quads(
+    line: &WrappedLine,
+    range: Range<usize>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+) -> Vec<PaintQuad> {
+    let Some(start) = line.position_for_index(range.start, line_height) else {
+        return Vec::new();
+    };
+    let Some(end) = line.position_for_index(range.end, line_height) else {
+        return Vec::new();
+    };
+    let first_row = (start.y / line_height) as usize;
+    let last_row = (end.y / line_height) as usize;
+    (first_row..=last_row)
+        .map(|row| {
+            let left = if row == first_row { start.x } else { px(0.) };
+            let right = if row == last_row {
+                end.x
+            } else {
+                bounds.size.width
+            };
+            fill(
+                Bounds::new(
+                    point(bounds.left() + left, bounds.top() + line_height * row),
+                    size((right - left).max(px(0.)), line_height),
+                ),
+                to_hsla(Theme::SELECTION),
+            )
+        })
+        .collect()
 }
 
 impl IntoElement for TextElement {
@@ -837,7 +989,8 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        let line_count = self.input.read(cx).visual_line_count.max(1);
+        style.size.height = (window.line_height() * line_count).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -900,45 +1053,37 @@ impl Element for TextElement {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line = window
             .text_system()
-            .shape_line(display_text, font_size, &runs, None);
-
-        let cursor_pos = line.x_for_index(cursor);
-        let horizontal_scroll = scroll_to_reveal_cursor(
-            input.horizontal_scroll,
-            cursor_pos,
-            line.width(),
-            bounds.size.width,
-        );
+            .shape_text(
+                display_text,
+                font_size,
+                &runs,
+                Some(bounds.size.width),
+                None,
+            )
+            .expect("prompt text should shape")
+            .into_iter()
+            .next()
+            .expect("shape_text always returns a line");
+        let line_height = window.line_height();
+        let cursor_pos = line
+            .position_for_index(cursor, line_height)
+            .unwrap_or_default();
+        let visual_line_count = line.wrap_boundaries().len() + 1;
         let text_bounds = Bounds::new(
-            point(bounds.left() - horizontal_scroll, bounds.top()),
-            bounds.size,
+            bounds.origin,
+            size(bounds.size.width, line_height * visual_line_count),
         );
         let (selection, cursor) = if selected_range.is_empty() {
             (
-                None,
+                Vec::new(),
                 Some(fill(
-                    Bounds::new(
-                        point(text_bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
-                    ),
+                    Bounds::new(text_bounds.origin + cursor_pos, size(px(2.), line_height)),
                     to_hsla(Theme::CURSOR),
                 )),
             )
         } else {
             (
-                Some(fill(
-                    Bounds::from_corners(
-                        point(
-                            text_bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            text_bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
-                    ),
-                    to_hsla(Theme::SELECTION),
-                )),
+                selection_quads(&line, selected_range, text_bounds, line_height),
                 None,
             )
         };
@@ -947,7 +1092,7 @@ impl Element for TextElement {
             cursor,
             selection,
             text_bounds,
-            horizontal_scroll,
+            visual_line_count,
         }
     }
 
@@ -967,7 +1112,7 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
+        for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection)
         }
         let line = prepaint.line.take().unwrap();
@@ -990,7 +1135,10 @@ impl Element for TextElement {
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
-            input.horizontal_scroll = prepaint.horizontal_scroll;
+            if input.visual_line_count != prepaint.visual_line_count {
+                input.visual_line_count = prepaint.visual_line_count;
+                _cx.notify();
+            }
         });
     }
 }
@@ -998,21 +1146,58 @@ impl Element for TextElement {
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        let suggestions = self.command_suggestions();
+        if self.command_selection >= suggestions.len() {
+            self.command_selection = 0;
+        }
+        let command_selection = self.command_selection;
+        const SETTLE: Duration = Duration::from_millis(280);
+        let settling_attachment = self.attachment_preview.and_then(|(index, started)| {
+            let elapsed = Instant::now().saturating_duration_since(started);
+            if elapsed >= SETTLE {
+                self.attachment_preview = None;
+                return None;
+            }
+            window.request_animation_frame();
+            let linear = (elapsed.as_secs_f32() / SETTLE.as_secs_f32()).clamp(0.0, 1.0);
+            let progress = linear * linear * (3.0 - 2.0 * linear);
+            Some((index, progress))
+        });
         let attachments = self.attachments.iter().enumerate().map(|(index, image)| {
+            // Keep the animation in normal layout flow. An absolutely positioned
+            // child here is positioned against a distant GPUI containing block,
+            // which can leave the pasted image floating at the top of the panel.
+            let progress = settling_attachment
+                .filter(|(settling_index, _)| *settling_index == index)
+                .map(|(_, progress)| progress)
+                .unwrap_or(1.0);
+            let preview_width = 64.0 + 20.0 * (1.0 - progress);
+            let preview_height = 52.0 + 16.0 * (1.0 - progress);
             div()
                 .id(("attachment", index))
                 .flex()
                 .items_center()
                 .gap_1()
                 .rounded_md()
-                .px_2()
-                .py_1()
+                .p_1()
                 .bg(Theme::USER_BG)
                 .text_size(px(11.0))
                 .text_color(Theme::TEXT_DIM)
-                .child("image")
-                .child(image.label.clone())
-                .child(div().text_color(Theme::TEXT_FAINT).child("×"))
+                .child(
+                    img(ImageSource::Image(image.preview.clone()))
+                        .w(px(preview_width))
+                        .h(px(preview_height))
+                        .object_fit(gpui::ObjectFit::Contain)
+                        .rounded_sm(),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(image.label.clone())
+                        .child(div().text_color(Theme::TEXT_FAINT).child("remove ×")),
+                )
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -1026,6 +1211,68 @@ impl Render for PromptInput {
             .flex_col()
             .key_context("PromptInput")
             .track_focus(&self.focus_handle(cx))
+            .relative()
+            .when(!suggestions.is_empty(), |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "slash-command-overlay".into())
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(42.0))
+                        .mb_1()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(Theme::PANEL_BORDER_FOCUS)
+                        .bg(Theme::HEADER_BG)
+                        .shadow_lg()
+                        .occlude()
+                        .children(suggestions.into_iter().enumerate().map(
+                            |(index, suggestion)| {
+                                let selected = index == command_selection;
+                                div()
+                                    .id(("slash-command", index))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_3()
+                                    .px_3()
+                                    .py_1p5()
+                                    .bg(if selected {
+                                        Theme::USER_BG
+                                    } else {
+                                        Theme::HEADER_BG
+                                    })
+                                    .text_size(px(12.0))
+                                    .cursor_pointer()
+                                    .child(
+                                        div()
+                                            .font_family(Theme::FONT_MONO)
+                                            .text_color(if selected {
+                                                Theme::TEXT
+                                            } else {
+                                                Theme::TEXT_DIM
+                                            })
+                                            .child(suggestion.value.clone()),
+                                    )
+                                    .child(
+                                        div().text_color(Theme::TEXT_FAINT).child(suggestion.help),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.set_content(suggestion.value.clone(), cx);
+                                            this.command_selection = 0;
+                                            this.submit(&Submit, window, cx);
+                                        }),
+                                    )
+                            },
+                        )),
+                )
+            })
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -1058,7 +1305,6 @@ impl Render for PromptInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .overflow_hidden()
             .bg(Theme::INPUT_BG)
             .border_1()
             .border_color(if focused {
@@ -1110,6 +1356,19 @@ mod tests {
     use super::*;
     use gpui::{TestAppContext, WindowOptions};
 
+    #[test]
+    fn slash_palette_filters_commands_and_models() {
+        let models = vec!["gpt-5.6-sol".into(), "claude-fable-5".into()];
+        let commands = command_suggestions("/m", &models);
+        assert_eq!(commands[0].value, "/model");
+        assert!(commands.iter().any(|entry| entry.value == "/models"));
+
+        let picker = command_suggestions("/model claude", &models);
+        assert_eq!(picker.len(), 1);
+        assert_eq!(picker[0].value, "/model claude-fable-5");
+        assert!(command_suggestions("hello /model", &models).is_empty());
+    }
+
     fn input_window(cx: &mut TestAppContext) -> gpui::WindowHandle<PromptInput> {
         cx.update(|cx| bind_keys(cx));
         let window = cx.update(|cx| {
@@ -1126,24 +1385,20 @@ mod tests {
         window
     }
 
-    #[test]
-    fn horizontal_scroll_keeps_cursor_in_view() {
-        assert_eq!(
-            scroll_to_reveal_cursor(px(0.), px(140.), px(200.), px(100.)),
-            px(42.)
-        );
-        assert_eq!(
-            scroll_to_reveal_cursor(px(42.), px(20.), px(200.), px(100.)),
-            px(20.)
-        );
-    }
+    #[gpui::test]
+    fn long_prompts_wrap_and_expand_vertically(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, &"a long prompt ".repeat(200));
+        cx.run_until_parked();
 
-    #[test]
-    fn horizontal_scroll_resets_when_text_fits() {
-        assert_eq!(
-            scroll_to_reveal_cursor(px(60.), px(40.), px(80.), px(100.)),
-            px(0.)
-        );
+        window
+            .update(cx, |input, _, _| {
+                assert!(
+                    input.visual_line_count > 1,
+                    "long prompt should occupy multiple visual lines"
+                );
+            })
+            .unwrap();
     }
 
     #[test]
@@ -1238,6 +1493,7 @@ mod tests {
                     media_type: "image/png".into(),
                     encoded: "cG5n".into(),
                     label: "4×3".into(),
+                    preview: preview_image("image/png", Vec::new()).unwrap(),
                 });
                 window.focus(&input.focus_handle, cx);
             })
@@ -1270,6 +1526,7 @@ mod tests {
                         media_type: "image/png".into(),
                         encoded: "cG5n".into(),
                         label: label.into(),
+                        preview: preview_image("image/png", Vec::new()).unwrap(),
                     });
                 }
                 input.remove_attachment(0, cx);

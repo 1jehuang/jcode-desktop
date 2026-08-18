@@ -22,25 +22,47 @@ pub enum Update {
     /// The runtime is up and reachable.
     Connected,
     /// The initial session list, fetched in the background.
-    Sessions { sessions: Vec<SessionInfo> },
+    Sessions {
+        sessions: Vec<SessionInfo>,
+    },
     /// A session was created (in reply to `Command::CreateSession`).
-    SessionCreated { session: SessionInfo },
+    SessionCreated {
+        session: SessionInfo,
+    },
     /// History fetched for a session after attach.
     History {
         session_id: String,
         messages: Vec<jcode_sdk::HistoryMessage>,
+        images: Vec<jcode_sdk::RenderedImage>,
     },
     /// A streaming event for one session. The worker supplies the session id
     /// because some important events (notably errors) do not include one.
-    Event { session_id: String, event: ApiEvent },
+    Event {
+        session_id: String,
+        event: ApiEvent,
+    },
     /// Sending a message failed before the harness accepted it.
-    SendFailed { session_id: String, reason: String },
+    SendFailed {
+        session_id: String,
+        reason: String,
+    },
+    CommandFailed {
+        session_id: String,
+        reason: String,
+    },
     /// A per-session connection died.
-    SessionLost { session_id: String, reason: String },
+    SessionLost {
+        session_id: String,
+        reason: String,
+    },
     /// A per-session connection was established again.
-    SessionConnected { session_id: String },
+    SessionConnected {
+        session_id: String,
+    },
     /// The control connection died; the bridge will retry.
-    Disconnected { reason: String },
+    Disconnected {
+        reason: String,
+    },
 }
 
 /// Commands flowing from the UI into the bridge.
@@ -65,6 +87,10 @@ pub enum Command {
     Cancel {
         session_id: String,
     },
+    SetModel {
+        session_id: String,
+        model: String,
+    },
 }
 
 enum SessionCommand {
@@ -73,6 +99,7 @@ enum SessionCommand {
         images: Vec<(String, String)>,
     },
     Cancel,
+    SetModel(String),
     Stop,
 }
 
@@ -237,6 +264,12 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
                     let _ = worker.send(SessionCommand::Cancel);
                 }
             }
+            Command::SetModel { session_id, model } => {
+                let command = SessionCommand::SetModel(model);
+                send_to_session_worker(&mut workers, session_id, command, |session_id| {
+                    spawn_session_worker(session_id, &updates)
+                });
+            }
         }
     }
 }
@@ -343,10 +376,11 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             session_id: session_id.clone(),
         });
 
-        if let Ok(messages) = client.get_history(&session_id) {
+        if let Ok((messages, images)) = client.get_history_with_images(&session_id) {
             let _ = updates.send(Update::History {
                 session_id: session_id.clone(),
                 messages,
+                images,
             });
         }
 
@@ -362,6 +396,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     provider: info.provider,
                     model: info.model,
                     routes: info.routes,
+                    reasoning_effort: info.reasoning_effort,
                 },
             });
         }
@@ -394,6 +429,14 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     }
                     SessionCommand::Cancel => {
                         let _ = client.cancel(&session_id);
+                    }
+                    SessionCommand::SetModel(model) => {
+                        if let Err(error) = client.set_model(&session_id, &model) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Failed to switch model: {error}"),
+                            });
+                        }
                     }
                     SessionCommand::Stop => return,
                 }

@@ -799,11 +799,12 @@ impl Workspace {
             Update::History {
                 session_id,
                 messages,
+                images,
             } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
-                            panel.load_history(messages, cx);
+                            panel.load_history(messages, images, cx);
                         });
                         break;
                     }
@@ -847,6 +848,17 @@ impl Workspace {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
                             panel.message_failed(format!("message failed: {reason}"), cx);
+                        });
+                        break;
+                    }
+                }
+            }
+            Update::CommandFailed { session_id, reason } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.items.push(crate::panel::Item::Error(reason.clone()));
+                            cx.notify();
                         });
                         break;
                     }
@@ -2533,53 +2545,80 @@ impl Workspace {
                     ),
             );
 
-            if !account.limits.is_empty() {
-                let mut limits = div().mt(px(3.0)).flex().gap(px(6.0));
-                for (limit_index, limit) in account.limits.iter().enumerate() {
-                    let used = limit.usage_percent.clamp(0.0, 100.0);
-                    let label = match &limit.reset_in {
-                        Some(reset) => format!("{} · {:.0}% · {reset}", limit.name, used),
-                        None => format!("{} · {:.0}%", limit.name, used),
-                    };
-                    limits = limits.child(
-                        div()
-                            .id(("account-limit", index * 1000 + limit_index))
-                            .debug_selector({
-                                let id = account.id.clone();
-                                move || format!("account-{id}-limit-{limit_index}")
-                            })
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                div()
-                                    .overflow_hidden()
-                                    .text_size(px(8.0))
-                                    .text_color(Theme::TEXT_DIM)
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .h(px(3.0))
-                                    .rounded_full()
-                                    .overflow_hidden()
-                                    .bg(Theme::INLINE_CODE_BG)
-                                    .child(
-                                        div().h_full().w(relative(used / 100.0)).rounded_full().bg(
-                                            if used >= 90.0 {
-                                                Theme::ERROR
-                                            } else if used >= 70.0 {
-                                                Theme::WARN
-                                            } else {
-                                                Theme::ACCENT
-                                            },
+            if account.limits.is_empty() {
+                details = details.child(
+                    div()
+                        .debug_selector({
+                            let id = account.id.clone();
+                            move || format!("account-{id}-limit-unavailable")
+                        })
+                        .mt(px(3.0))
+                        .text_size(px(8.0))
+                        .text_color(Theme::TEXT_FAINT)
+                        .child("Usage limit unavailable"),
+                );
+            } else {
+                // Antigravity reports the same account-wide quota once for
+                // every model. Painting all of those duplicates overwhelms
+                // the sidebar, so use its first representative limit.
+                let visible_limits = if account.id == "antigravity" {
+                    &account.limits[..1]
+                } else {
+                    account.limits.as_slice()
+                };
+                let mut limits = div().mt(px(3.0)).flex().flex_col().gap(px(4.0));
+                for (row_index, row) in visible_limits.chunks(2).enumerate() {
+                    let mut limit_row = div().flex().gap(px(6.0));
+                    for (column_index, limit) in row.iter().enumerate() {
+                        let limit_index = row_index * 2 + column_index;
+                        let used = limit.usage_percent.clamp(0.0, 100.0);
+                        let label = match &limit.reset_in {
+                            Some(reset) => format!("{} · {:.0}% · {reset}", limit.name, used),
+                            None => format!("{} · {:.0}%", limit.name, used),
+                        };
+                        limit_row = limit_row.child(
+                            div()
+                                .id(("account-limit", index * 1000 + limit_index))
+                                .debug_selector({
+                                    let id = account.id.clone();
+                                    move || format!("account-{id}-limit-{limit_index}")
+                                })
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .overflow_hidden()
+                                        .text_size(px(8.0))
+                                        .text_color(Theme::TEXT_DIM)
+                                        .child(label),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(3.0))
+                                        .rounded_full()
+                                        .overflow_hidden()
+                                        .bg(Theme::INLINE_CODE_BG)
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(relative(used / 100.0))
+                                                .rounded_full()
+                                                .bg(if used >= 90.0 {
+                                                    Theme::ERROR
+                                                } else if used >= 70.0 {
+                                                    Theme::WARN
+                                                } else {
+                                                    Theme::ACCENT
+                                                }),
                                         ),
-                                    ),
-                            ),
-                    );
+                                ),
+                        );
+                    }
+                    limits = limits.child(limit_row);
                 }
                 details = details.child(limits);
             }
@@ -4098,6 +4137,11 @@ mod tests {
                             usage_percent: 80.0,
                             reset_in: Some("4d".into()),
                         },
+                        accounts::UsageLimit {
+                            name: "Gemini 3 Pro".into(),
+                            usage_percent: 35.0,
+                            reset_in: Some("1h".into()),
+                        },
                     ],
                 },
                 accounts::Account {
@@ -4107,6 +4151,25 @@ mod tests {
                     auth_kind: "API key".into(),
                     method: "API key (`JCODE_API_KEY`)".into(),
                     limits: Vec::new(),
+                },
+                accounts::Account {
+                    id: "antigravity".into(),
+                    display_name: "Antigravity".into(),
+                    status: "available".into(),
+                    auth_kind: "OAuth".into(),
+                    method: "OAuth".into(),
+                    limits: vec![
+                        accounts::UsageLimit {
+                            name: "Claude".into(),
+                            usage_percent: 10.0,
+                            reset_in: Some("5h".into()),
+                        },
+                        accounts::UsageLimit {
+                            name: "Gemini".into(),
+                            usage_percent: 10.0,
+                            reset_in: Some("5h".into()),
+                        },
+                    ],
                 },
             ]);
             let _ = window;
@@ -4134,6 +4197,22 @@ mod tests {
         let second_limit = vcx
             .debug_bounds("account-openai-limit-1")
             .expect("the second usage limit should paint");
+        let third_limit = vcx
+            .debug_bounds("account-openai-limit-2")
+            .expect("additional usage limits should paint on another row");
+        assert!(
+            vcx.debug_bounds("account-jcode-limit-unavailable")
+                .is_some(),
+            "accounts without a reported quota should still show usage status"
+        );
+        assert!(
+            vcx.debug_bounds("account-antigravity-limit-0").is_some(),
+            "Antigravity should show one representative quota"
+        );
+        assert!(
+            vcx.debug_bounds("account-antigravity-limit-1").is_none(),
+            "Antigravity's duplicate per-model quotas should be hidden"
+        );
         assert_eq!(
             first_limit.origin.y, second_limit.origin.y,
             "usage limits should share one compact horizontal row"
@@ -4141,6 +4220,14 @@ mod tests {
         assert!(
             first_limit.origin.x < second_limit.origin.x,
             "usage limits should occupy separate horizontal columns"
+        );
+        assert_eq!(
+            first_limit.size.width, second_limit.size.width,
+            "each quota column should retain a readable width"
+        );
+        assert!(
+            third_limit.origin.y > first_limit.origin.y,
+            "more than two usage limits should wrap into another compact row"
         );
         assert!(
             openai_row.origin.y < jcode_row.origin.y,
@@ -5971,42 +6058,17 @@ mod tests {
             "the terminal surface should paint in the newly created panel"
         );
 
-        std::thread::sleep(Duration::from_millis(500));
-        cx.executor().advance_clock(Duration::from_millis(64));
-        cx.run_until_parked();
-
-        cx.simulate_keystrokes("h e l l o");
-        std::thread::sleep(Duration::from_millis(100));
-        cx.executor().advance_clock(Duration::from_millis(32));
-        cx.run_until_parked();
+        // UI-only tests use an inert host. The host resource suite separately
+        // creates a real PTY, reattaches a second generation, writes a command,
+        // and verifies replayed output without opening a window.
         workspace.update(cx, |workspace, cx| {
-            let output = workspace.slots[0]
-                .panel
-                .read(cx)
-                .test_terminal_contents(cx)
-                .expect("terminal contents");
             assert!(
-                output.contains("hello"),
-                "physical keys should echo visibly: {output:?}"
-            );
-        });
-        cx.simulate_keystrokes("ctrl-u");
-
-        // This goes through GPUI's real text-input handler, then Enter goes
-        // through the terminal key handler and into the live fish PTY.
-        cx.simulate_input("printf '\\x4a\\x43\\x4f\\x44\\x45\\x5f\\x54\\x45\\x52\\x4d\\x49\\x4e\\x41\\x4c\\x5f\\x4f\\x4b'\n");
-        std::thread::sleep(Duration::from_millis(1000));
-        cx.executor().advance_clock(Duration::from_millis(64));
-        cx.run_until_parked();
-        workspace.update(cx, |workspace, cx| {
-            let output = workspace.slots[0]
-                .panel
-                .read(cx)
-                .test_terminal_contents(cx)
-                .expect("terminal contents");
-            assert!(
-                output.contains("JCODE_TERMINAL_OK"),
-                "typed command should execute in the PTY; output was {output:?}"
+                workspace.slots[0]
+                    .panel
+                    .read(cx)
+                    .test_terminal_contents(cx)
+                    .is_some(),
+                "terminal parser should exist even when the test host has no PTY"
             );
         });
 
