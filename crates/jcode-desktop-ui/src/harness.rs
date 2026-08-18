@@ -303,10 +303,23 @@ fn refresh_sessions(updates: Sender<Update>) {
     std::thread::Builder::new()
         .name("jcode-bridge-sessions".into())
         .spawn(move || {
-            let api_sessions = connect("sessions")
-                .and_then(|client| client.list_sessions())
-                .unwrap_or_default();
+            let started = std::time::Instant::now();
+            let api_sessions = match connect("sessions").and_then(|client| client.list_sessions()) {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    eprintln!(
+                        "jcode desktop: session list failed after {:.1}ms: {error}",
+                        started.elapsed().as_secs_f64() * 1_000.0
+                    );
+                    Vec::new()
+                }
+            };
             let sessions = merge_persisted_sessions(api_sessions, jcode_home().as_deref());
+            eprintln!(
+                "jcode desktop: session list completed in {:.1}ms ({} sessions)",
+                started.elapsed().as_secs_f64() * 1_000.0,
+                sessions.len()
+            );
             let _ = updates.send(Update::Sessions { sessions });
         })
         .expect("spawn session list thread");
@@ -511,6 +524,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
     // SDK's urgent soft-interrupt queue instead. That is the same "ASAP"
     // steering path used by the TUI.
     let mut turn_active = false;
+    let mut reported_disconnected_events = false;
 
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
@@ -632,6 +646,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
 
             let event_wait_started = std::time::Instant::now();
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
+                reported_disconnected_events = false;
                 // The API bridge emits this event immediately before closing its
                 // stream when the legacy daemon connection disappears. It is a
                 // transport lifecycle notification, not a failed model turn.
@@ -663,6 +678,12 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 // and an otherwise healthy client can turn this loop into a
                 // full-core spin. Keep command latency low while placing a
                 // firm ceiling on CPU use until the transport reconnects.
+                if !reported_disconnected_events {
+                    eprintln!(
+                        "jcode desktop: event stream for {session_id} returned immediately; backing off"
+                    );
+                    reported_disconnected_events = true;
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
