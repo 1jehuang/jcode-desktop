@@ -322,6 +322,11 @@ struct PersistedSession {
     custom_title: Option<String>,
 }
 
+/// The sidebar is a recency view, not an archive browser. Session files include
+/// the complete transcript, so parsing an unbounded store can mean reading many
+/// gigabytes before the first row appears.
+const MAX_PERSISTED_SIDEBAR_SESSIONS: usize = 100;
+
 fn jcode_home() -> Option<PathBuf> {
     std::env::var_os("JCODE_HOME")
         .map(PathBuf::from)
@@ -358,7 +363,7 @@ pub(crate) fn merge_persisted_sessions(
         .map(|session| session.session_id.clone())
         .collect::<HashSet<_>>();
     let mut modified_by_id = HashMap::new();
-    let mut disk_sessions = Vec::new();
+    let mut disk_candidates = Vec::new();
     if let Ok(entries) = std::fs::read_dir(home.join("sessions")) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -376,32 +381,46 @@ pub(crate) fn merge_persisted_sessions(
                 .and_then(|metadata| metadata.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
             modified_by_id.insert(id.to_string(), modified);
-            if !known.insert(id.to_string()) {
+            if known.contains(id) {
                 continue;
             }
-            let Ok(file) = std::fs::File::open(&path) else {
-                continue;
-            };
-            let Ok(record) = serde_json::from_reader::<_, PersistedSession>(file) else {
-                continue;
-            };
-            let title = record
-                .custom_title
-                .filter(|title| !title.trim().is_empty())
-                .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
-            disk_sessions.push((
-                modified,
-                SessionInfo {
-                    session_id: id.to_string(),
-                    working_dir: record.working_dir,
-                    title,
-                    status: "idle".into(),
-                    transcript_bytes: entry.metadata().ok().map(|metadata| metadata.len()),
-                    archived: false,
-                    archived_at_ms: None,
-                },
-            ));
+            let transcript_bytes = entry.metadata().ok().map(|metadata| metadata.len());
+            disk_candidates.push((modified, id.to_string(), path, transcript_bytes));
         }
+    }
+
+    // Select by cheap filesystem metadata first. Deserializing a session also
+    // walks its `messages` array even though PersistedSession ignores that field.
+    disk_candidates.sort_by_key(|(modified, ..)| std::cmp::Reverse(*modified));
+    disk_candidates.truncate(MAX_PERSISTED_SIDEBAR_SESSIONS);
+
+    let mut disk_sessions = Vec::new();
+    for (modified, id, path, transcript_bytes) in disk_candidates {
+        if !known.insert(id.clone()) {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_reader::<_, PersistedSession>(file) else {
+            continue;
+        };
+        let title = record
+            .custom_title
+            .filter(|title| !title.trim().is_empty())
+            .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
+        disk_sessions.push((
+            modified,
+            SessionInfo {
+                session_id: id,
+                working_dir: record.working_dir,
+                title,
+                status: "idle".into(),
+                transcript_bytes,
+                archived: false,
+                archived_at_ms: None,
+            },
+        ));
     }
     sessions.extend(disk_sessions.into_iter().map(|(_, session)| session));
     sessions.sort_by_key(|session| {
@@ -762,6 +781,32 @@ mod tests {
         assert_eq!(merged[1].title.as_deref(), Some("Latest title"));
         assert_eq!(merged[1].working_dir.as_deref(), Some("/new"));
         assert!(merged[1].transcript_bytes.is_some());
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn persisted_sidebar_bounds_transcript_parsing_to_recent_sessions() {
+        let home = std::env::temp_dir().join(format!(
+            "jcode-desktop-bounded-sessions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sessions_dir = home.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        for index in 0..MAX_PERSISTED_SIDEBAR_SESSIONS + 20 {
+            std::fs::write(
+                sessions_dir.join(format!("session-{index:03}.json")),
+                format!(r#"{{"title":"Session {index}"}}"#),
+            )
+            .unwrap();
+        }
+
+        let merged = merge_persisted_sessions(Vec::new(), Some(&home));
+        assert_eq!(merged.len(), MAX_PERSISTED_SIDEBAR_SESSIONS);
 
         std::fs::remove_dir_all(home).unwrap();
     }
