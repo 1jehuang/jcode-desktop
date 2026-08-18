@@ -6,7 +6,13 @@ mod host {
     pub mod resources;
 }
 
-use std::{cell::RefCell, env, path::PathBuf, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    env,
+    path::PathBuf,
+    process::Command,
+    rc::Rc,
+};
 
 use gpui::{
     App, Bounds, KeyBinding, Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
@@ -20,7 +26,26 @@ use host::{
     resources::HostState,
 };
 
-actions!(jcode_desktop_host, [ReloadUi, RollbackUi]);
+actions!(
+    jcode_desktop_host,
+    [ReloadUi, RebuildAndReloadUi, RollbackUi]
+);
+
+fn rebuild_ui() -> anyhow::Result<()> {
+    let output = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        .args(["build", "-p", "jcode-desktop-ui"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "cargo build failed with {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
 
 struct HostFallback;
 
@@ -70,7 +95,8 @@ fn main() {
     let plugin_path = hot_reload_path();
     application().run(move |cx: &mut App| {
         cx.bind_keys([
-            KeyBinding::new("ctrl-shift-r", ReloadUi, None),
+            KeyBinding::new("ctrl-r", ReloadUi, None),
+            KeyBinding::new("ctrl-shift-r", RebuildAndReloadUi, None),
             KeyBinding::new("f6", RollbackUi, None),
         ]);
 
@@ -147,6 +173,36 @@ fn main() {
                 });
             }
         });
+        let rebuild_in_progress = Rc::new(Cell::new(false));
+        cx.on_action({
+            let manager = manager.clone();
+            let rebuild_in_progress = rebuild_in_progress.clone();
+            move |_: &RebuildAndReloadUi, cx| {
+                if rebuild_in_progress.replace(true) {
+                    eprintln!("UI rebuild already in progress");
+                    return;
+                }
+
+                let manager = manager.clone();
+                let rebuild_in_progress = rebuild_in_progress.clone();
+                cx.spawn(async move |cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async { rebuild_ui() })
+                        .await;
+                    rebuild_in_progress.set(false);
+                    match result {
+                        Ok(()) => {
+                            if let Err(error) = cx.update(|cx| manager.borrow_mut().reload(cx)) {
+                                eprintln!("UI reload failed after rebuild: {error:#}");
+                            }
+                        }
+                        Err(error) => eprintln!("UI rebuild failed: {error:#}"),
+                    }
+                })
+                .detach();
+            }
+        });
         cx.on_action({
             let manager = manager.clone();
             move |_: &RollbackUi, cx| {
@@ -165,7 +221,7 @@ fn main() {
             .expect("activate linked Jcode Desktop UI");
         if let Some(path) = plugin_path.as_ref() {
             eprintln!(
-                "Jcode Desktop hot reload enabled: build jcode-desktop-ui, then press Ctrl+Shift+R to load {}; F6 rolls back",
+                "Jcode Desktop hot reload enabled: Ctrl+R reloads {}, Ctrl+Shift+R rebuilds and reloads; F6 rolls back",
                 path.display()
             );
         }
