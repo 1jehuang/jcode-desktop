@@ -523,7 +523,19 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
         }
 
         loop {
-            while let Some(command) = pending.pop_front().or_else(|| commands.try_recv().ok()) {
+            loop {
+                let command = if let Some(command) = pending.pop_front() {
+                    command
+                } else {
+                    match commands.try_recv() {
+                        Ok(command) => command,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        // Hot reload drops the old bridge and all of its command
+                        // senders. Do not leave one busy event loop behind for
+                        // every panel from every retained UI generation.
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                    }
+                };
                 match command {
                     SessionCommand::Send { content, images } => {
                         let result = if turn_active && images.is_empty() {
@@ -583,6 +595,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 }
             }
 
+            let event_wait_started = std::time::Instant::now();
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
                 // The API bridge emits this event immediately before closing its
                 // stream when the legacy daemon connection disappears. It is a
@@ -609,6 +622,13 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             } else if client.is_closed() {
                 lost("runtime reloading; reconnecting".into());
                 break;
+            } else if event_wait_started.elapsed() < Duration::from_millis(10) {
+                // `EventStream::next_timeout` also returns `None` when its
+                // receiver disconnects. In that case it returns immediately,
+                // and an otherwise healthy client can turn this loop into a
+                // full-core spin. Keep command latency low while placing a
+                // firm ceiling on CPU use until the transport reconnects.
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }
