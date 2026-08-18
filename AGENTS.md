@@ -1,5 +1,10 @@
 # Agent Instructions
 
+## Git Workflow
+
+- Always commit and push completed changes. Do this every time unless the user explicitly asks you not to.
+- Commit only the changes you made. Do not include unrelated or pre-existing modifications.
+
 ## Testing
 
 - Do not use `niri` for testing or test verification.
