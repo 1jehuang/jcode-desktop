@@ -66,7 +66,18 @@ impl Theme {
     pub const MINIMAP_PANEL_BUSY: Rgba = rgb_c(0xaaaaaa);
     pub const MINIMAP_BG: Rgba = rgba_c(0x171717_e6);
 
+    // JetBrainsMono Nerd Font is present on the Linux development machines but
+    // is not installed on a stock Mac. GPUI does not silently substitute a
+    // missing family on macOS, which leaves glyph runs empty while the rest of
+    // the interface still paints. Menlo ships with every supported macOS
+    // version and preserves the application's monospaced visual language.
+    #[cfg(target_os = "macos")]
+    pub const FONT_UI: &'static str = "Menlo";
+    #[cfg(target_os = "macos")]
+    pub const FONT_MONO: &'static str = "Menlo";
+    #[cfg(not(target_os = "macos"))]
     pub const FONT_UI: &'static str = "JetBrainsMono Nerd Font";
+    #[cfg(not(target_os = "macos"))]
     pub const FONT_MONO: &'static str = "JetBrainsMono Nerd Font";
 }
 
