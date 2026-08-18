@@ -186,6 +186,20 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
         .collect()
 }
 
+fn accepted_command_submission(
+    content: &str,
+    suggestions: &[CommandSuggestion],
+    selection: usize,
+) -> Option<String> {
+    let suggestion = suggestions.get(selection.min(suggestions.len().saturating_sub(1)))?;
+    let trimmed = content.trim();
+    (trimmed == "/model"
+        || trimmed == "/models"
+        || trimmed.starts_with("/model ")
+        || (!trimmed.contains(' ') && suggestion.value.starts_with(trimmed)))
+    .then(|| suggestion.value.clone())
+}
+
 #[derive(Clone)]
 struct Attachment {
     media_type: String,
@@ -360,17 +374,10 @@ impl PromptInput {
         }
         if self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
-            if let Some(suggestion) = suggestions.get(
-                self.command_selection
-                    .min(suggestions.len().saturating_sub(1)),
-            ) {
-                let trimmed = content.trim();
-                if trimmed == "/model"
-                    || trimmed == "/models"
-                    || (!trimmed.contains(' ') && suggestion.value.starts_with(trimmed))
-                {
-                    content = suggestion.value.clone();
-                }
+            if let Some(accepted) =
+                accepted_command_submission(&content, &suggestions, self.command_selection)
+            {
+                content = accepted;
             }
         }
         let content = if content.is_empty() {
@@ -1372,6 +1379,18 @@ mod tests {
         assert_eq!(picker.len(), 1);
         assert_eq!(picker[0].value, "/model claude-fable-5");
         assert!(command_suggestions("hello /model", &models).is_empty());
+    }
+
+    #[test]
+    fn filtered_model_search_accepts_the_full_selected_model_id() {
+        let models = vec!["gpt-5.6-sol".into(), "gpt-5.6-luna".into()];
+        let suggestions = command_suggestions("/model luna", &models);
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(
+            accepted_command_submission("/model luna", &suggestions, 0).as_deref(),
+            Some("/model gpt-5.6-luna")
+        );
     }
 
     fn input_window(cx: &mut TestAppContext) -> gpui::WindowHandle<PromptInput> {
