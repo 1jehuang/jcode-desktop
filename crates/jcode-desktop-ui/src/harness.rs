@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInfo};
 
+const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
+
 /// Updates flowing from the harness threads into the UI.
 #[derive(Debug)]
 pub enum Update {
@@ -336,6 +338,103 @@ struct PersistedSession {
     custom_title: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct PersistedTodoTitleItem {
+    content: String,
+    status: String,
+    #[serde(default)]
+    group: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct PersistedTodoTitlePlan {
+    #[serde(default)]
+    user_intention: Option<String>,
+}
+
+/// Match the title precedence used by the TUI's `/resume` picker without
+/// loading a transcript: current todo group, plan intention, then todo text.
+fn persisted_todo_title(home: &Path, session_id: &str) -> Option<String> {
+    let todos_dir = home.join("todos");
+    let todos: Vec<PersistedTodoTitleItem> =
+        std::fs::read(todos_dir.join(format!("{session_id}.json")))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+    let plan: PersistedTodoTitlePlan =
+        std::fs::read(todos_dir.join(format!("{session_id}-plan.json")))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+    let current = todos
+        .iter()
+        .rev()
+        .find(|todo| todo.status.eq_ignore_ascii_case("in_progress"))
+        .or_else(|| {
+            todos
+                .iter()
+                .rev()
+                .find(|todo| !todo.status.eq_ignore_ascii_case("completed"))
+        })
+        .or_else(|| todos.last());
+    let non_empty = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    current
+        .and_then(|todo| non_empty(todo.group.as_deref()))
+        .or_else(|| non_empty(plan.user_intention.as_deref()))
+        .or_else(|| current.and_then(|todo| non_empty(Some(&todo.content))))
+}
+
+fn json_string_field(bytes: &[u8], field: &str, last: bool) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let mut starts = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == needle.as_bytes()).then_some(index));
+    let index = if last {
+        starts.next_back()?
+    } else {
+        starts.next()?
+    };
+    let mut value = &bytes[index + needle.len()..];
+    value = value.strip_prefix(b":")?.trim_ascii_start();
+    serde_json::Deserializer::from_slice(value)
+        .into_iter::<Option<String>>()
+        .next()?
+        .ok()
+        .flatten()
+}
+
+/// Session transcripts can be hundreds of megabytes, while the sidebar only
+/// needs fields stored before and after the messages array. Read small windows
+/// from both ends instead of asking serde to walk every message.
+fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    if bytes <= (SIDEBAR_METADATA_WINDOW * 2) as u64 {
+        return serde_json::from_reader(std::fs::File::open(path).ok()?).ok();
+    }
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = vec![0; SIDEBAR_METADATA_WINDOW];
+    file.read_exact(&mut head).ok()?;
+    file.seek(SeekFrom::End(-(SIDEBAR_METADATA_WINDOW as i64)))
+        .ok()?;
+    let mut tail = vec![0; SIDEBAR_METADATA_WINDOW];
+    file.read_exact(&mut tail).ok()?;
+
+    Some(PersistedSession {
+        working_dir: json_string_field(&tail, "working_dir", true),
+        title: json_string_field(&head, "title", false),
+        custom_title: json_string_field(&head, "custom_title", false)
+            .or_else(|| json_string_field(&tail, "custom_title", true)),
+    })
+}
+
 /// The sidebar is a recency view, not an archive browser. Session files include
 /// the complete transcript, so parsing an unbounded store can mean reading many
 /// gigabytes before the first row appears.
@@ -413,15 +512,14 @@ pub(crate) fn merge_persisted_sessions(
         if !known.insert(id.clone()) {
             continue;
         }
-        let Ok(file) = std::fs::File::open(&path) else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_reader::<_, PersistedSession>(file) else {
+        let Some(record) = read_persisted_session(&path, transcript_bytes.unwrap_or_default())
+        else {
             continue;
         };
         let title = record
             .custom_title
             .filter(|title| !title.trim().is_empty())
+            .or_else(|| persisted_todo_title(home, &id))
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
         disk_sessions.push((
             modified,
@@ -437,6 +535,15 @@ pub(crate) fn merge_persisted_sessions(
         ));
     }
     sessions.extend(disk_sessions.into_iter().map(|(_, session)| session));
+    for session in &mut sessions {
+        if session
+            .title
+            .as_ref()
+            .is_none_or(|title| title.trim().is_empty())
+        {
+            session.title = persisted_todo_title(home, &session.session_id);
+        }
+    }
     sessions.sort_by_key(|session| {
         modified_by_id
             .get(&session.session_id)
@@ -845,6 +952,54 @@ mod tests {
 
         let merged = merge_persisted_sessions(Vec::new(), Some(&home));
         assert_eq!(merged.len(), MAX_PERSISTED_SIDEBAR_SESSIONS);
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn persisted_sidebar_reads_large_transcript_metadata_from_file_edges() {
+        let path = std::env::temp_dir().join(format!(
+            "jcode-desktop-large-session-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let padding = "x".repeat(SIDEBAR_METADATA_WINDOW * 3);
+        let document = format!(
+            r#"{{"title":"Quick title","messages":[{{"text":"{padding}"}}],"working_dir":"/large/project"}}"#
+        );
+        std::fs::write(&path, &document).unwrap();
+
+        let record = read_persisted_session(&path, document.len() as u64).unwrap();
+        assert_eq!(record.title.as_deref(), Some("Quick title"));
+        assert_eq!(record.working_dir.as_deref(), Some("/large/project"));
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_sidebar_uses_tui_todo_title_for_live_sessions() {
+        let home = std::env::temp_dir().join(format!(
+            "jcode-desktop-todo-title-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(home.join("todos")).unwrap();
+        std::fs::write(
+            home.join("todos/live.json"),
+            r#"[{"content":"Fallback item","status":"in_progress","group":"Sidebar performance"}]"#,
+        )
+        .unwrap();
+        let mut live = session_info("live");
+        live.title = None;
+
+        let merged = merge_persisted_sessions(vec![live], Some(&home));
+        assert_eq!(merged[0].title.as_deref(), Some("Sidebar performance"));
 
         std::fs::remove_dir_all(home).unwrap();
     }
