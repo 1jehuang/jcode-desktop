@@ -85,14 +85,17 @@ fn main() {
             )
             .expect("failed to open native Jcode Desktop window");
 
-        window
-            .update(cx, |_, window, cx| {
-                window.on_window_should_close(cx, |window, _| {
-                    window.minimize_window();
-                    false
-                });
-            })
-            .expect("install persistent window close handler");
+        // Niri does not implement window minimization, so intercepting close and
+        // calling `minimize_window` made Alt+Q appear to do nothing. Let the
+        // compositor close the surface and terminate this host cleanly. A later
+        // shortcut starts a fresh host; while open, repeated shortcuts still use
+        // the instance socket to focus it immediately.
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
 
         let show_window = window;
         cx.spawn(async move |cx| {
