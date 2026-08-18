@@ -30,16 +30,20 @@ impl Drop for SocketGuard {
     }
 }
 
-pub fn acquire() -> io::Result<Instance> {
-    acquire_at(socket_path())
+pub fn acquire_named(name: Option<&str>) -> io::Result<Instance> {
+    acquire_at(socket_path(name))
 }
 
-fn socket_path() -> PathBuf {
+fn socket_path(name: Option<&str>) -> PathBuf {
+    let socket = match name {
+        Some(name) => format!("jcode-desktop-{name}.sock"),
+        None => "jcode-desktop.sock".to_owned(),
+    };
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(runtime).join("jcode-desktop.sock");
+        return PathBuf::from(runtime).join(socket);
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    std::env::temp_dir().join(format!("jcode-desktop-{user}.sock"))
+    std::env::temp_dir().join(format!("{user}-{socket}"))
 }
 
 fn acquire_at(path: PathBuf) -> io::Result<Instance> {

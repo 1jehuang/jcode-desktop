@@ -55,11 +55,18 @@ fn hot_reload_path() -> Option<PathBuf> {
 }
 
 fn main() {
-    let (commands, _instance_socket) =
-        match instance::acquire().expect("initialize Jcode Desktop instance socket") {
-            Instance::Primary { commands, _socket } => (commands, _socket),
-            Instance::Secondary => return,
-        };
+    // Sidebar-free windows are intentionally independent from the main window.
+    // Otherwise a shortcut for `--no-sidebar` only wakes the already-running
+    // main instance, which silently ignores the new process's launch flags.
+    let instance_name = env::args_os()
+        .any(|argument| argument == "--no-sidebar" || argument == "--workspace")
+        .then_some("no-sidebar");
+    let (commands, _instance_socket) = match instance::acquire_named(instance_name)
+        .expect("initialize Jcode Desktop instance socket")
+    {
+        Instance::Primary { commands, _socket } => (commands, _socket),
+        Instance::Secondary => return,
+    };
     let plugin_path = hot_reload_path();
     application().run(move |cx: &mut App| {
         cx.bind_keys([
