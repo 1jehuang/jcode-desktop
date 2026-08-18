@@ -452,9 +452,10 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         if !self.streaming_reasoning.trim().is_empty() {
-            self.items.push(Item::Reasoning(std::mem::take(
-                &mut self.streaming_reasoning,
-            )));
+            append_reasoning(
+                &mut self.items,
+                std::mem::take(&mut self.streaming_reasoning),
+            );
         } else {
             self.streaming_reasoning.clear();
         }
@@ -767,6 +768,25 @@ impl Panel {
     #[cfg(test)]
     pub fn test_scroll_offset_y(&self) -> gpui::Pixels {
         self.scroll.offset().y
+    }
+}
+
+/// Keep provider-level reasoning segments in one visual card. Some providers
+/// emit `ReasoningDone` between segments even though they belong to the same
+/// uninterrupted thinking phase.
+fn append_reasoning(items: &mut Vec<Item>, text: String) {
+    if let Some(Item::Reasoning(existing)) = items.last_mut() {
+        let separated = existing
+            .chars()
+            .next_back()
+            .is_some_and(char::is_whitespace)
+            || text.chars().next().is_some_and(char::is_whitespace);
+        if !separated {
+            existing.push_str("\n\n");
+        }
+        existing.push_str(&text);
+    } else {
+        items.push(Item::Reasoning(text));
     }
 }
 
@@ -1356,6 +1376,27 @@ mod tests {
         let tail = condense_tail(&"word ".repeat(100), 20);
         assert!(tail.starts_with('…'));
         assert!(tail.ends_with("word"));
+    }
+
+    #[test]
+    fn adjacent_reasoning_segments_share_one_visual_block() {
+        let mut items = vec![Item::Reasoning("first thought".into())];
+        append_reasoning(&mut items, "second thought".into());
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            &items[0],
+            Item::Reasoning(text) if text == "first thought\n\nsecond thought"
+        ));
+    }
+
+    #[test]
+    fn reasoning_after_another_item_starts_a_new_block() {
+        let mut items = vec![Item::Assistant("answer".into())];
+        append_reasoning(&mut items, "new thought".into());
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(&items[1], Item::Reasoning(text) if text == "new thought"));
     }
 
     #[test]
