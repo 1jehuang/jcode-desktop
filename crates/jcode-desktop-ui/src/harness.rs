@@ -222,19 +222,18 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
             }
         }
     }
+    // Paint the persisted metadata before announcing the connection. The
+    // runtime list request can stall behind a busy daemon (and has a 30 second
+    // timeout), while the local recency scan is bounded and immediately useful.
+    refresh_sessions(updates.clone(), true);
     let _ = updates.send(Update::Connected);
-
-    // The session list can be slow (the daemon serializes it behind live
-    // sessions), so it must not gate startup: fetch it on its own connection
-    // and deliver whenever it lands.
-    refresh_sessions(updates.clone());
 
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
 
     while let Ok(command) = commands.recv() {
         match command {
-            Command::RefreshSessions => refresh_sessions(updates.clone()),
+            Command::RefreshSessions => refresh_sessions(updates.clone(), false),
             Command::CreateSession { working_dir } => {
                 // A fresh connection per creation: an existing connection
                 // returns its already-attached session instead of a new one.
@@ -301,7 +300,19 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
     }
 }
 
-fn refresh_sessions(updates: Sender<Update>) {
+fn refresh_sessions(updates: Sender<Update>, include_disk_snapshot: bool) {
+    let home = jcode_home();
+    if include_disk_snapshot {
+        let started = std::time::Instant::now();
+        let sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
+        eprintln!(
+            "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
+            started.elapsed().as_secs_f64() * 1_000.0,
+            sessions.len()
+        );
+        let _ = updates.send(Update::Sessions { sessions });
+    }
+
     std::thread::Builder::new()
         .name("jcode-bridge-sessions".into())
         .spawn(move || {
@@ -317,7 +328,7 @@ fn refresh_sessions(updates: Sender<Update>) {
                         Vec::new()
                     }
                 };
-            let sessions = merge_persisted_sessions(api_sessions, jcode_home().as_deref());
+            let sessions = merge_persisted_sessions(api_sessions, home.as_deref());
             eprintln!(
                 "jcode desktop: session list completed in {:.1}ms ({} sessions)",
                 started.elapsed().as_secs_f64() * 1_000.0,
@@ -446,6 +457,24 @@ fn jcode_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".jcode")))
 }
 
+fn session_recency_ms(session_id: &str) -> Option<u128> {
+    session_id
+        .split('_')
+        .filter_map(|part| part.parse::<u64>().ok())
+        .find(|value| (1_000_000_000_000..10_000_000_000_000).contains(value))
+        .map(u128::from)
+}
+
+fn file_recency_ms(entry: &std::fs::DirEntry) -> u128 {
+    entry
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
 /// Merge the API's live view with records on disk. This deliberately makes the
 /// desktop resilient to an older already-running bridge that only reports
 /// sessions created during its lifetime.
@@ -507,29 +536,29 @@ pub(crate) fn merge_persisted_sessions(
             if archived.contains(id) {
                 continue;
             }
-            let modified = entry
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            modified_by_id.insert(id.to_string(), modified);
+            // Session ids contain their creation timestamp. Use that cheap key
+            // instead of issuing a metadata syscall for every transcript in a
+            // store that may contain tens of thousands of files.
+            let recency = session_recency_ms(id).unwrap_or_else(|| file_recency_ms(&entry));
+            modified_by_id.insert(id.to_string(), recency);
             if known.contains(id) {
                 continue;
             }
-            let transcript_bytes = entry.metadata().ok().map(|metadata| metadata.len());
-            disk_candidates.push((modified, id.to_string(), path, transcript_bytes));
+            disk_candidates.push((recency, id.to_string(), path));
         }
     }
 
     // Select by cheap filesystem metadata first. Deserializing a session also
     // walks its `messages` array even though PersistedSession ignores that field.
-    disk_candidates.sort_by_key(|(modified, ..)| std::cmp::Reverse(*modified));
+    disk_candidates.sort_by_key(|(recency, ..)| std::cmp::Reverse(*recency));
     disk_candidates.truncate(MAX_PERSISTED_SIDEBAR_SESSIONS);
 
     let mut disk_sessions = Vec::new();
-    for (modified, id, path, transcript_bytes) in disk_candidates {
+    for (recency, id, path) in disk_candidates {
         if !known.insert(id.clone()) {
             continue;
         }
+        let transcript_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         let Some(record) = read_persisted_session(&path, transcript_bytes.unwrap_or_default())
         else {
             continue;
@@ -540,7 +569,7 @@ pub(crate) fn merge_persisted_sessions(
             .or_else(|| persisted_todo_title(home, &id))
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
         disk_sessions.push((
-            modified,
+            recency,
             SessionInfo {
                 session_id: id,
                 working_dir: record.working_dir,
@@ -566,7 +595,7 @@ pub(crate) fn merge_persisted_sessions(
         modified_by_id
             .get(&session.session_id)
             .copied()
-            .unwrap_or(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|| session_recency_ms(&session.session_id).unwrap_or_default())
     });
     sessions
 }
@@ -902,6 +931,19 @@ mod tests {
             archived: false,
             archived_at_ms: None,
         }
+    }
+
+    #[test]
+    fn session_recency_uses_timestamp_from_modern_and_legacy_ids() {
+        assert_eq!(
+            session_recency_ms("session_wolf_1787082160300_cab86a9cb334fa3f"),
+            Some(1_787_082_160_300)
+        );
+        assert_eq!(
+            session_recency_ms("session_1768160401354_2233921634250370970"),
+            Some(1_768_160_401_354)
+        );
+        assert_eq!(session_recency_ms("legacy-name"), None);
     }
 
     #[test]
