@@ -748,7 +748,11 @@ impl Panel {
                     .px_2()
                     .py_1p5()
                     .rounded_md()
-                    .bg(Theme::REASONING_BG)
+                    .bg(if live {
+                        Theme::ACCENT_DIM
+                    } else {
+                        Theme::REASONING_BG
+                    })
                     .when(long, |el| {
                         el.cursor_pointer().on_mouse_down(
                             gpui::MouseButton::Left,
@@ -767,8 +771,16 @@ impl Panel {
                             .gap_1p5()
                             .items_center()
                             .text_size(px(10.0))
-                            .text_color(Theme::TEXT_FAINT)
-                            .child(if live { "thinking…" } else { "thinking" })
+                            .text_color(if live {
+                                Theme::TEXT_DIM
+                            } else {
+                                Theme::TEXT_FAINT
+                            })
+                            .child(if live {
+                                "● thinking…"
+                            } else {
+                                "thinking"
+                            })
                             .when(long && !live, |el| {
                                 el.child(if expanded { "collapse" } else { "expand" })
                             }),
