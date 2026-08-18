@@ -646,6 +646,62 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    fn session_info(id: &str) -> SessionInfo {
+        SessionInfo {
+            session_id: id.into(),
+            working_dir: None,
+            title: None,
+            status: "idle".into(),
+            transcript_bytes: None,
+            archived: false,
+            archived_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn persisted_sessions_fill_sidebar_in_recency_order_without_duplicates_or_archives() {
+        let home = std::env::temp_dir().join(format!(
+            "jcode-desktop-sessions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sessions_dir = home.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("older.json"),
+            r#"{"working_dir":"/old","title":"Old title"}"#,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            sessions_dir.join("newer.json"),
+            r#"{"working_dir":"/new","title":"Generated","custom_title":"Latest title"}"#,
+        )
+        .unwrap();
+        std::fs::write(sessions_dir.join("archived.json"), r#"{"title":"Hidden"}"#).unwrap();
+        std::fs::write(sessions_dir.join("malformed.json"), "not json").unwrap();
+        std::fs::write(
+            home.join("sdk-archive.json"),
+            r#"{"sessions":{"archived":123}}"#,
+        )
+        .unwrap();
+
+        let merged = merge_persisted_sessions(vec![session_info("older")], Some(&home));
+        let ids = merged
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["older", "newer"]);
+        assert_eq!(merged[1].title.as_deref(), Some("Latest title"));
+        assert_eq!(merged[1].working_dir.as_deref(), Some("/new"));
+        assert!(merged[1].transcript_bytes.is_some());
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn daemon_connection_closed_is_a_transport_event() {
         let event = ApiEvent::Error {
