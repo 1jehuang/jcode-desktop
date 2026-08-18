@@ -2007,27 +2007,44 @@ mod tests {
             .expect("panel exists");
 
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..30)
-                .map(|index| Item::Tool {
-                    call_id: format!("call-{index}"),
-                    name: "bash".into(),
-                    input: format!(r#"{{"command":"echo {index}"}}"#),
-                    output: "done".into(),
-                    done: true,
-                    error: None,
-                })
-                .collect();
+            panel.items = vec![Item::Tool {
+                call_id: "call-0".into(),
+                name: "bash".into(),
+                input: r#"{"command":"echo 0"}"#.into(),
+                output: "done".into(),
+                done: true,
+                error: None,
+            }];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let baseline_height = vcx
+            .debug_bounds("tool-header")
+            .expect("a tool header paints before the transcript overflows")
+            .size
+            .height;
+
+        panel.update(vcx, |panel, cx| {
+            panel.items.extend((1..30).map(|index| Item::Tool {
+                call_id: format!("call-{index}"),
+                name: "bash".into(),
+                input: format!(r#"{{"command":"echo {index}"}}"#),
+                output: "done".into(),
+                done: true,
+                error: None,
+            }));
             cx.notify();
         });
         vcx.run_until_parked();
 
-        let first = vcx
+        let overflowing_height = vcx
             .debug_bounds("tool-header")
-            .expect("an overflowing transcript still paints a tool header");
-        assert!(
-            first.size.height >= px(24.),
-            "tool header was flex-shrunk to {:?}",
-            first.size.height
+            .expect("an overflowing transcript still paints a tool header")
+            .size
+            .height;
+        assert_eq!(
+            overflowing_height, baseline_height,
+            "overflow changed tool-header height from {baseline_height:?} to {overflowing_height:?}"
         );
     }
 
