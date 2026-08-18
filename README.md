@@ -17,14 +17,14 @@ cargo build -p jcode-desktop-ui
 cargo run -p jcode-desktop -- --hot-reload
 ```
 
-Press **Ctrl+Shift+R** after changing UI code to rebuild `jcode-desktop-ui` and
-reload it. Press **Ctrl+R** to reload an already-built UI library. The host
-checks the ABI, API-table size, pinned GPUI revision, and state schema before
-activation. A failed load leaves the current root intact. Press **F6** to roll
-back to the previous activated generation. Workspace panels, strip layout,
-focus, drafts and attachments, transcript scroll offsets, overlays, and folder
-picker state cross the handoff. Terminal processes and PTY streams are owned by
-the host and reattached by resource ID.
+Press **Ctrl+R** after changing UI code to rebuild `jcode-desktop-ui` and reload
+the latest version from the current checkout. **Ctrl+Shift+R** performs the same
+operation. The host checks the ABI, API-table size, pinned GPUI revision, and
+state schema before activation. A failed build or load leaves the current root
+intact. Press **F6** to roll back to the previous activated generation.
+Workspace panels, strip layout, focus, drafts and attachments, transcript scroll
+offsets, overlays, and folder picker state cross the handoff. Terminal processes
+and PTY streams are owned by the host and reattached by resource ID.
 
 The same-window invariant has a headless regression test, so it does not open or
 replace a compositor window during verification:

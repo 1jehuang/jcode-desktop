@@ -104,7 +104,9 @@ fn main() {
     let plugin_path = hot_reload_path();
     application().run(move |cx: &mut App| {
         cx.bind_keys([
-            KeyBinding::new("ctrl-r", ReloadUi, None),
+            // Ctrl+R must always activate code built from the current checkout,
+            // rather than silently reloading a stale cdylib from an earlier build.
+            KeyBinding::new("ctrl-r", RebuildAndReloadUi, None),
             KeyBinding::new("ctrl-shift-r", RebuildAndReloadUi, None),
             KeyBinding::new("f6", RollbackUi, None),
         ]);
@@ -230,7 +232,7 @@ fn main() {
             .expect("activate linked Jcode Desktop UI");
         if let Some(path) = plugin_path.as_ref() {
             eprintln!(
-                "Jcode Desktop hot reload enabled: Ctrl+R reloads {}, Ctrl+Shift+R rebuilds and reloads; F6 rolls back",
+                "Jcode Desktop hot reload enabled: Ctrl+R rebuilds and reloads the latest UI from {}; Ctrl+Shift+R does the same; F6 rolls back",
                 path.display()
             );
         }
