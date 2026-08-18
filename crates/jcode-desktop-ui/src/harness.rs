@@ -304,16 +304,17 @@ fn refresh_sessions(updates: Sender<Update>) {
         .name("jcode-bridge-sessions".into())
         .spawn(move || {
             let started = std::time::Instant::now();
-            let api_sessions = match connect("sessions").and_then(|client| client.list_sessions()) {
-                Ok(sessions) => sessions,
-                Err(error) => {
-                    eprintln!(
-                        "jcode desktop: session list failed after {:.1}ms: {error}",
-                        started.elapsed().as_secs_f64() * 1_000.0
-                    );
-                    Vec::new()
-                }
-            };
+            let api_sessions =
+                match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
+                    Ok(sessions) => sessions,
+                    Err(error) => {
+                        eprintln!(
+                            "jcode desktop: session list failed after {:.1}ms: {error}",
+                            started.elapsed().as_secs_f64() * 1_000.0
+                        );
+                        Vec::new()
+                    }
+                };
             let sessions = merge_persisted_sessions(api_sessions, jcode_home().as_deref());
             eprintln!(
                 "jcode desktop: session list completed in {:.1}ms ({} sessions)",
