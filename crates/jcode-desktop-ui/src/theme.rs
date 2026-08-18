@@ -66,11 +66,15 @@ impl Theme {
     pub const MINIMAP_PANEL_BUSY: Rgba = rgb_c(0xaaaaaa);
     pub const MINIMAP_BG: Rgba = rgba_c(0x171717_e6);
 
-    // JetBrainsMono Nerd Font is present on the Linux development machines but
-    // is not installed on a stock Mac. GPUI does not silently substitute a
-    // missing family on macOS, which leaves glyph runs empty while the rest of
-    // the interface still paints. Menlo ships with every supported macOS
-    // version and preserves the application's monospaced visual language.
+    // macOS text rendering in this GPUI revision is gated behind the `font-kit`
+    // feature of `gpui_platform` (it forwards to `gpui_macos/font-kit`). The
+    // Cargo.toml files enable it for macOS, not Linux. Without it GPUI logs
+    // "gpui_macos was compiled without the `font-kit` feature, so no text will
+    // be rendered" and every glyph run stays empty while SVG icons still paint.
+    // Separately, GPUI does not silently substitute a missing family on macOS,
+    // so we also avoid JetBrainsMono Nerd Font (absent on a stock Mac) and use
+    // Menlo, which ships with every supported macOS version and preserves the
+    // application's monospaced visual language.
     #[cfg(target_os = "macos")]
     pub const FONT_UI: &'static str = "Menlo";
     #[cfg(target_os = "macos")]
