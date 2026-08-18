@@ -7,7 +7,8 @@
 //! that panel's commands. Session creation also uses a fresh connection each
 //! time, because a connection re-serves its already-attached session.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -278,18 +279,114 @@ fn refresh_sessions(updates: Sender<Update>) {
     std::thread::Builder::new()
         .name("jcode-bridge-sessions".into())
         .spawn(move || {
-            let Ok(client) = connect("sessions") else {
-                return;
-            };
-            if let Ok(sessions) = client.list_sessions() {
-                let sessions = sessions
-                    .into_iter()
-                    .filter(|s| !s.archived)
-                    .collect::<Vec<_>>();
-                let _ = updates.send(Update::Sessions { sessions });
-            }
+            let api_sessions = connect("sessions")
+                .and_then(|client| client.list_sessions())
+                .unwrap_or_default();
+            let sessions = merge_persisted_sessions(api_sessions, jcode_home().as_deref());
+            let _ = updates.send(Update::Sessions { sessions });
         })
         .expect("spawn session list thread");
+}
+
+#[derive(serde::Deserialize)]
+struct PersistedSession {
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    custom_title: Option<String>,
+}
+
+fn jcode_home() -> Option<PathBuf> {
+    std::env::var_os("JCODE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".jcode")))
+}
+
+/// Merge the API's live view with records on disk. This deliberately makes the
+/// desktop resilient to an older already-running bridge that only reports
+/// sessions created during its lifetime.
+fn merge_persisted_sessions(
+    mut sessions: Vec<SessionInfo>,
+    home: Option<&Path>,
+) -> Vec<SessionInfo> {
+    sessions.retain(|session| !session.archived);
+    let Some(home) = home else {
+        return sessions;
+    };
+
+    let archived = std::fs::read_to_string(home.join("sdk-archive.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get("sessions").and_then(|v| v.as_object()).cloned())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    sessions.retain(|session| !archived.contains(&session.session_id));
+
+    let mut known = sessions
+        .iter()
+        .map(|session| session.session_id.clone())
+        .collect::<HashSet<_>>();
+    let mut modified_by_id = HashMap::new();
+    let mut disk_sessions = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(home.join("sessions")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if archived.contains(id) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            modified_by_id.insert(id.to_string(), modified);
+            if !known.insert(id.to_string()) {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_reader::<_, PersistedSession>(file) else {
+                continue;
+            };
+            let title = record
+                .custom_title
+                .filter(|title| !title.trim().is_empty())
+                .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
+            disk_sessions.push((
+                modified,
+                SessionInfo {
+                    session_id: id.to_string(),
+                    working_dir: record.working_dir,
+                    title,
+                    status: "idle".into(),
+                    transcript_bytes: entry.metadata().ok().map(|metadata| metadata.len()),
+                    archived: false,
+                    archived_at_ms: None,
+                },
+            ));
+        }
+    }
+    sessions.extend(disk_sessions.into_iter().map(|(_, session)| session));
+    sessions.sort_by_key(|session| {
+        modified_by_id
+            .get(&session.session_id)
+            .copied()
+            .unwrap_or(std::time::UNIX_EPOCH)
+    });
+    sessions
 }
 
 fn ensure_session_worker(
