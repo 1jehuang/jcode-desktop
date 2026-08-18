@@ -1736,6 +1736,42 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn runtime_catalog_only_populates_picker_with_available_routes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+
+        workspace.update(vcx, |workspace, cx| {
+            let panel = workspace.test_panel(0).expect("panel exists");
+            panel.update(cx, |panel, cx| {
+                let mut unavailable = route("luna", "openai-api-key");
+                unavailable.available = false;
+                panel.apply(
+                    &ApiEvent::RuntimeInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: None,
+                        routes: vec![unavailable, route("gpt-5.6-sol", "openai-api-key")],
+                    },
+                    cx,
+                );
+                assert_eq!(
+                    panel.input.read(cx).command_models(),
+                    &["gpt-5.6-sol"],
+                    "an unavailable Luna route must not reach the visible picker"
+                );
+            });
+        });
+    }
+
     #[test]
     fn meta_line_shows_directory_model_auth_and_context() {
         let line = meta_line(

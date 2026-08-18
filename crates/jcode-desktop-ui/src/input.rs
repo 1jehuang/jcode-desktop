@@ -344,6 +344,11 @@ impl PromptInput {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn command_models(&self) -> &[String] {
+        &self.command_models
+    }
+
     fn command_suggestions(&self) -> Vec<CommandSuggestion> {
         command_suggestions(&self.content, &self.command_models)
     }
