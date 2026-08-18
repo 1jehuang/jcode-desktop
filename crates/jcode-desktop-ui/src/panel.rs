@@ -776,15 +776,7 @@ impl Panel {
 /// uninterrupted thinking phase.
 fn append_reasoning(items: &mut Vec<Item>, text: String) {
     if let Some(Item::Reasoning(existing)) = items.last_mut() {
-        let separated = existing
-            .chars()
-            .next_back()
-            .is_some_and(char::is_whitespace)
-            || text.chars().next().is_some_and(char::is_whitespace);
-        if !separated {
-            existing.push_str("\n\n");
-        }
-        existing.push_str(&text);
+        append_reasoning_text(existing, &text);
     } else {
         items.push(Item::Reasoning(text));
     }
@@ -862,6 +854,7 @@ impl Render for Panel {
         if !self.streaming_text.is_empty() {
             rows.push((usize::MAX, Item::Assistant(self.streaming_text.clone())));
         }
+        let rows = coalesce_reasoning_rows(rows);
 
         let mut previous: Option<&'static str> = None;
         for (index, item) in &rows {
@@ -1013,6 +1006,36 @@ impl Render for Panel {
             )
             .into_any_element()
     }
+}
+
+/// Defensive render-time grouping for transcripts assembled from more than one
+/// event source. Streaming normally merges reasoning as it arrives, but a
+/// reconnect or provider boundary can leave adjacent reasoning items behind.
+/// They are one uninterrupted visual phase and should therefore paint as one
+/// card. Keep the first index so expansion state remains stable.
+fn coalesce_reasoning_rows(rows: Vec<(usize, Item)>) -> Vec<(usize, Item)> {
+    let mut grouped: Vec<(usize, Item)> = Vec::with_capacity(rows.len());
+    for (index, item) in rows {
+        match (grouped.last_mut(), item) {
+            (Some((_, Item::Reasoning(existing))), Item::Reasoning(text)) => {
+                append_reasoning_text(existing, &text);
+            }
+            (_, item) => grouped.push((index, item)),
+        }
+    }
+    grouped
+}
+
+fn append_reasoning_text(existing: &mut String, text: &str) {
+    let separated = existing
+        .chars()
+        .next_back()
+        .is_some_and(char::is_whitespace)
+        || text.chars().next().is_some_and(char::is_whitespace);
+    if !separated {
+        existing.push_str("\n\n");
+    }
+    existing.push_str(text);
 }
 
 impl Focusable for Panel {
@@ -1389,6 +1412,23 @@ mod tests {
         assert!(matches!(
             &items[0],
             Item::Reasoning(text) if text == "first thought\n\nsecond thought"
+        ));
+    }
+
+    #[test]
+    fn adjacent_reasoning_rows_are_coalesced_before_rendering() {
+        let rows = vec![
+            (4, Item::Reasoning("first thought".into())),
+            (5, Item::Reasoning("second thought".into())),
+            (usize::MAX - 1, Item::Reasoning("live thought".into())),
+        ];
+
+        let grouped = coalesce_reasoning_rows(rows);
+        assert_eq!(grouped.len(), 1);
+        assert!(matches!(
+            &grouped[0],
+            (4, Item::Reasoning(text))
+                if text == "first thought\n\nsecond thought\n\nlive thought"
         ));
     }
 
