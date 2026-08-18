@@ -47,6 +47,12 @@ jobs:
           file "$app"/Contents/MacOS/{jcode-desktop,jcode,jcode-harness-api-bridge} | tee binaries.txt
           test "$(grep -c 'universal binary with 2 architectures' binaries.txt)" = 3
           "$app/Contents/MacOS/jcode" --version
+          # The beta.10 UI selected a development-machine-only font, so GPUI
+          # painted the interface without glyphs on a stock Mac. Assert both
+          # sides of that regression against the downloaded public artifact:
+          # the release binary selects Menlo and macOS can instantiate it.
+          strings "$app/Contents/MacOS/jcode-desktop" | grep -Fx Menlo
+          swift -e 'import AppKit; guard NSFont(name: "Menlo", size: 13) != nil else { fatalError("Menlo is unavailable") }'
           JCODE_DESKTOP_STATE="$RUNNER_TEMP/desktop-state.txt" \
             "$app/Contents/MacOS/jcode-desktop" >"$RUNNER_TEMP/desktop.log" 2>&1 &
           pid=$!
