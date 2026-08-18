@@ -62,6 +62,7 @@ VERSION="${VERSION%%-*}"
   echo "error: BUILD_NUMBER must be a positive integer" >&2
   exit 1
 }
+export JCODE_DESKTOP_VERSION="$VERSION"
 
 for command in cargo codesign ditto hdiutil iconutil lipo python3 rustup sips xcrun; do
   command -v "$command" >/dev/null || { echo "error: missing required command: $command" >&2; exit 1; }
