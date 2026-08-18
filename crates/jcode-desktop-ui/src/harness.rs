@@ -471,6 +471,24 @@ pub(crate) fn merge_persisted_sessions(
         .unwrap_or_default();
     sessions.retain(|session| !archived.contains(&session.session_id));
 
+    // A full limited API page is authoritative. Modern bridges source it from
+    // the compact metadata index, so rescanning a 100k-file transcript directory
+    // here would discard the entire latency win. Keep the disk walk only as a
+    // compatibility fallback for old bridges that return a partial/empty list.
+    if sessions.len() >= MAX_PERSISTED_SIDEBAR_SESSIONS {
+        for session in &mut sessions {
+            if session
+                .title
+                .as_ref()
+                .is_none_or(|title| title.trim().is_empty())
+            {
+                session.title = persisted_todo_title(home, &session.session_id);
+            }
+        }
+        sessions.reverse();
+        return sessions;
+    }
+
     let mut known = sessions
         .iter()
         .map(|session| session.session_id.clone())
@@ -1000,6 +1018,41 @@ mod tests {
 
         let merged = merge_persisted_sessions(vec![live], Some(&home));
         assert_eq!(merged[0].title.as_deref(), Some("Sidebar performance"));
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn full_api_page_is_ready_without_scanning_persisted_transcripts() {
+        let home = std::env::temp_dir().join(format!(
+            "jcode-desktop-api-page-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sessions_dir = home.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("disk-only.json"),
+            r#"{"title":"Must not delay the API page"}"#,
+        )
+        .unwrap();
+
+        let api_sessions = (0..MAX_PERSISTED_SIDEBAR_SESSIONS)
+            .map(|index| session_info(&format!("api-{index:03}")))
+            .collect::<Vec<_>>();
+        let merged = merge_persisted_sessions(api_sessions, Some(&home));
+
+        assert_eq!(merged.len(), MAX_PERSISTED_SIDEBAR_SESSIONS);
+        assert_eq!(merged[0].session_id, "api-099");
+        assert_eq!(merged.last().unwrap().session_id, "api-000");
+        assert!(
+            merged
+                .iter()
+                .all(|session| session.session_id != "disk-only")
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
