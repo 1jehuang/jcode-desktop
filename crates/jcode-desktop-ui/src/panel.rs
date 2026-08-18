@@ -926,7 +926,6 @@ impl Panel {
                             .px_2()
                             .py_1()
                             .text_size(px(11.5))
-                            .font_family(Theme::FONT_MONO)
                             .when(has_detail, |el| {
                                 el.cursor_pointer().on_mouse_down(
                                     gpui::MouseButton::Left,
@@ -942,8 +941,9 @@ impl Panel {
                             .child(
                                 div()
                                     .flex_none()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(Theme::TOOL_TEXT)
+                                    .font_family(Theme::FONT_MONO)
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::TEXT_FAINT)
                                     .child(name.clone()),
                             )
                             .when(!summary.is_empty(), |el| {
@@ -952,7 +952,8 @@ impl Panel {
                                         .flex_1()
                                         .min_w_0()
                                         .overflow_hidden()
-                                        .text_color(Theme::TEXT_DIM)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(Theme::TOOL_TEXT)
                                         .child(summary),
                                 )
                             })
@@ -1581,12 +1582,13 @@ fn strip_ansi(text: &str) -> String {
     output
 }
 
-/// The most useful field of a tool call, rendered as a one-line summary.
+/// The human-readable intent of a tool call, with a useful argument fallback.
 fn tool_summary(input: &str) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
         return condense(input, 90);
     };
     const PREFERRED: &[&str] = &[
+        "intent",
         "command",
         "query",
         "file_path",
@@ -1597,7 +1599,6 @@ fn tool_summary(input: &str) -> String {
         "content",
         "task",
         "action",
-        "intent",
     ];
     for key in PREFERRED {
         if let Some(found) = value.get(*key).and_then(json_scalar) {
@@ -1699,11 +1700,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_summary_prefers_the_meaningful_field() {
+    fn tool_summary_prefers_intent_over_implementation_details() {
         assert_eq!(
             tool_summary(r#"{"intent":"look","command":"cargo test"}"#),
-            "cargo test"
+            "look"
         );
+        assert_eq!(tool_summary(r#"{"command":"cargo test"}"#), "cargo test");
         assert_eq!(tool_summary(r#"{"other":1}"#), r#"{"other":1}"#);
     }
 
