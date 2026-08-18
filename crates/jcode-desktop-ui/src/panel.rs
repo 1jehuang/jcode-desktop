@@ -909,7 +909,9 @@ impl Render for Panel {
             self.auth_method.as_deref(),
             self.reasoning_effort.as_deref(),
             self.token_usage,
-        );
+        )
+        .map(|text| format!("{text}  ·  {}", crate::build_info::label()))
+        .unwrap_or_else(crate::build_info::label);
 
         let show_jump_chip = !self.stick_to_bottom;
 
@@ -979,7 +981,7 @@ impl Render for Panel {
             // Session identity: where it runs, what serves it, and how full
             // the context is. Always present, so the user never has to ask
             // "which model is this?" mid-conversation.
-            .children(meta_line.map(|text| {
+            .child({
                 div()
                     // Tagged so a render test can prove the footer painted,
                     // not just that meta_line() produced a string.
@@ -991,8 +993,8 @@ impl Render for Panel {
                     .text_size(px(10.0))
                     .font_family(Theme::FONT_MONO)
                     .text_color(Theme::TEXT_FAINT)
-                    .child(text)
-            }))
+                    .child(meta_line)
+            })
             // Input
             .child(
                 div()

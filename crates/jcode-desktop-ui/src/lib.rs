@@ -2,6 +2,7 @@
 
 mod accounts;
 mod ack;
+mod build_info;
 mod clipboard_image;
 mod harness;
 mod input;

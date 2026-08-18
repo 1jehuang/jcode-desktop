@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*,
@@ -95,8 +95,6 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
-const DESKTOP_VERSION: &str = env!("JCODE_DESKTOP_VERSION");
-const DESKTOP_BUILT_AT: &str = env!("JCODE_DESKTOP_BUILT_AT");
 
 // Minimap: a rounded square card in the top right that maps every strip to
 // scale, preserving the canvas aspect ratio so panels taller than wide on
@@ -2409,17 +2407,6 @@ impl Workspace {
                     )),
             )
             .when_some(self.render_accounts(), |el, accounts| el.child(accounts))
-            .child(
-                div()
-                    .id("desktop-build-info")
-                    .px_4()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(Theme::PANEL_BORDER)
-                    .text_size(px(10.0))
-                    .text_color(Theme::TEXT_DIM)
-                    .child(desktop_build_info(SystemTime::now())),
-            )
             .into_any_element()
     }
 
@@ -3563,33 +3550,11 @@ impl Focusable for Workspace {
     }
 }
 
-fn desktop_build_info(now: SystemTime) -> String {
-    let built_at = DESKTOP_BUILT_AT.parse::<u64>().unwrap_or_default();
-    let now = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    format!(
-        "v{DESKTOP_VERSION} · built {}",
-        format_build_age(now.saturating_sub(built_at))
-    )
-}
-
 fn sidebar_enabled(arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> bool {
     !arguments.into_iter().any(|argument| {
         let argument = argument.as_ref();
         argument == "--no-sidebar" || argument == "--workspace"
     })
-}
-
-fn format_build_age(seconds: u64) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-
-    match seconds {
-        0..60 => "just now".to_owned(),
-        60..3600 => format!("{}m ago", seconds / MINUTE),
-        3600..86400 => format!("{}h ago", seconds / HOUR),
-        _ => format!("{}d ago", seconds / DAY),
-    }
 }
 
 fn default_working_dir() -> Option<String> {
@@ -3985,17 +3950,6 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_age_is_concise_and_human_readable() {
-        assert_eq!(format_build_age(0), "just now");
-        assert_eq!(format_build_age(59), "just now");
-        assert_eq!(format_build_age(60), "1m ago");
-        assert_eq!(format_build_age(3_599), "59m ago");
-        assert_eq!(format_build_age(3_600), "1h ago");
-        assert_eq!(format_build_age(86_399), "23h ago");
-        assert_eq!(format_build_age(86_400), "1d ago");
-    }
 
     #[test]
     fn sidebar_free_launch_flags_hide_the_sidebar() {
