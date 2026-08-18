@@ -321,6 +321,7 @@ impl WorkspaceSnapshot {
 pub struct Workspace {
     bridge: Bridge,
     host: HostHandle,
+    show_sidebar: bool,
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
@@ -420,6 +421,7 @@ impl Workspace {
         let mut workspace = Self {
             bridge,
             host,
+            show_sidebar: sidebar_enabled(std::env::args_os()),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -473,6 +475,7 @@ impl Workspace {
         Self {
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
+            show_sidebar: true,
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -3413,7 +3416,12 @@ impl Render for Workspace {
             self.focus_active(window, cx);
         }
         let viewport = window.viewport_size();
-        let viewport_w = (f32::from(viewport.width) - SIDEBAR_WIDTH).max(320.0);
+        let sidebar_width = if self.show_sidebar {
+            SIDEBAR_WIDTH
+        } else {
+            0.0
+        };
+        let viewport_w = (f32::from(viewport.width) - sidebar_width).max(320.0);
         let viewport_h = f32::from(viewport.height);
 
         let now = Instant::now();
@@ -3519,7 +3527,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &WidthPreset2, _w, cx| this.set_width(0.5, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
-            .child(self.render_sidebar(cx))
+            .when(self.show_sidebar, |root| {
+                root.child(self.render_sidebar(cx))
+            })
             .child(
                 div()
                     .relative()
@@ -3560,6 +3570,13 @@ fn desktop_build_info(now: SystemTime) -> String {
         "v{DESKTOP_VERSION} · built {}",
         format_build_age(now.saturating_sub(built_at))
     )
+}
+
+fn sidebar_enabled(arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> bool {
+    !arguments.into_iter().any(|argument| {
+        let argument = argument.as_ref();
+        argument == "--no-sidebar" || argument == "--workspace"
+    })
 }
 
 fn format_build_age(seconds: u64) -> String {
@@ -3978,6 +3995,13 @@ mod tests {
         assert_eq!(format_build_age(3_600), "1h ago");
         assert_eq!(format_build_age(86_399), "23h ago");
         assert_eq!(format_build_age(86_400), "1d ago");
+    }
+
+    #[test]
+    fn sidebar_free_launch_flags_hide_the_sidebar() {
+        assert!(sidebar_enabled(["jcode-desktop"]));
+        assert!(!sidebar_enabled(["jcode-desktop", "--no-sidebar"]));
+        assert!(!sidebar_enabled(["jcode-desktop", "--workspace"]));
     }
 
     #[test]
