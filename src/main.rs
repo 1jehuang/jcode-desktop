@@ -53,7 +53,7 @@ fn main() {
     let plugin_path = hot_reload_path();
     application().run(move |cx: &mut App| {
         cx.bind_keys([
-            KeyBinding::new("f5", ReloadUi, None),
+            KeyBinding::new("ctrl-shift-r", ReloadUi, None),
             KeyBinding::new("f6", RollbackUi, None),
         ]);
 
@@ -110,7 +110,7 @@ fn main() {
             .expect("activate linked Jcode Desktop UI");
         if let Some(path) = plugin_path.as_ref() {
             eprintln!(
-                "Jcode Desktop hot reload enabled: build jcode-desktop-ui, then press F5 to load {}; F6 rolls back",
+                "Jcode Desktop hot reload enabled: build jcode-desktop-ui, then press Ctrl+Shift+R to load {}; F6 rolls back",
                 path.display()
             );
         }
