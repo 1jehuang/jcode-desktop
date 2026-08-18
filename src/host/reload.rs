@@ -291,6 +291,14 @@ mod tests {
         }
     }
 
+    struct ReloadedRoot;
+
+    impl Render for ReloadedRoot {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            div().child("reloaded")
+        }
+    }
+
     unsafe extern "C-unwind" fn stable_activate(
         window: *mut c_void,
         app: *mut c_void,
@@ -319,6 +327,20 @@ mod tests {
         ACTIVATE_FAILED
     }
 
+    unsafe extern "C-unwind" fn reload_activate(
+        window: *mut c_void,
+        app: *mut c_void,
+        _: *const HostApi,
+        _: *const u8,
+        _: usize,
+        _: u32,
+    ) -> i32 {
+        let window = unsafe { &mut *window.cast::<Window>() };
+        let app = unsafe { &mut *app.cast::<App>() };
+        window.replace_root(app, |_, _| ReloadedRoot);
+        ACTIVATE_OK
+    }
+
     unsafe extern "C-unwind" fn no_snapshot(
         _: *mut c_void,
         _: *mut c_void,
@@ -345,6 +367,44 @@ mod tests {
         assert_eq!(api.gpui_revision, GPUI_REVISION);
         assert!(api.accepts_state(STATE_SCHEMA_VERSION));
         validate_api(api).unwrap();
+    }
+
+    /// This is the headless native-window regression harness for self-development.
+    /// It exercises the same root handoff used after Ctrl+Shift+R and retains the
+    /// original window handle. Reimplementing reload by quitting or opening a new
+    /// OS window makes the original handle update or the window-count assertion fail.
+    #[gpui::test]
+    fn successful_reload_reuses_the_original_native_window(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| StableRoot))
+                .unwrap()
+        });
+        let mut manager = ReloadManager::new(
+            PluginApi::new(stable_activate, no_snapshot),
+            None,
+            window.into(),
+            Rc::new(HostState::default()),
+        )
+        .unwrap();
+        cx.update(|cx| manager.activate_initial(cx)).unwrap();
+        manager.generations.push(Generation {
+            api: PluginApi::new(reload_activate, no_snapshot),
+            _library: None,
+            _staged_path: None,
+            activated: false,
+            label: "reloaded test UI".into(),
+        });
+
+        cx.update(|cx| {
+            manager.activate_or_restore(1, &(STATE_SCHEMA_VERSION, b"workspace".to_vec()), cx)
+        })
+        .unwrap();
+
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        manager
+            .window
+            .update(cx, |_, _, _| {})
+            .expect("the reloaded root must occupy the original native window");
     }
 
     #[gpui::test]

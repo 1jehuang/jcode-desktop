@@ -26,6 +26,13 @@ focus, drafts and attachments, transcript scroll offsets, overlays, and folder
 picker state cross the handoff. Terminal processes and PTY streams are owned by
 the host and reattached by resource ID.
 
+The same-window invariant has a headless regression test, so it does not open or
+replace a compositor window during verification:
+
+```sh
+cargo test -p jcode-desktop successful_reload_reuses_the_original_native_window
+```
+
 Old dynamic libraries stay mapped until process exit because GPUI entities and
 callbacks may still contain their code pointers. Hot reload is therefore a
 development workflow. Release builds use the same UI through the linked API and
