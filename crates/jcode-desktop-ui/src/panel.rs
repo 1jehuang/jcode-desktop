@@ -1315,14 +1315,7 @@ impl Render for Panel {
                     .child(meta_line)
             })
             // Input
-            .child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(Theme::PANEL_BORDER)
-                    .child(self.input.clone()),
-            )
+            .child(div().px_2().py_2().child(self.input.clone()))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
