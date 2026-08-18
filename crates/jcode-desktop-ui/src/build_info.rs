@@ -2,6 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERSION: &str = env!("JCODE_DESKTOP_VERSION");
 const BUILT_AT: &str = env!("JCODE_DESKTOP_BUILT_AT");
+const BUILD_ID: &str = env!("JCODE_DESKTOP_BUILD_ID");
 
 pub fn label() -> String {
     let built_at = BUILT_AT.parse::<u64>().unwrap_or_default();
@@ -10,7 +11,7 @@ pub fn label() -> String {
         .unwrap_or_default()
         .as_secs();
     format!(
-        "v{VERSION} · built {}",
+        "v{VERSION}+{BUILD_ID} · built {}",
         format_age(now.saturating_sub(built_at))
     )
 }
