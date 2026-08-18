@@ -14,11 +14,23 @@ use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
 use serde::{Deserialize, Serialize};
 
-use crate::harness::{Bridge, Command};
+use crate::commands::{help_markdown, registered_command};
+use crate::harness::{Bridge, Command, SessionOperation};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::markdown;
 use crate::terminal::TerminalPanel;
 use crate::theme::Theme;
+
+fn command_unavailable_message(input: &str) -> String {
+    let name = input.split_whitespace().next().unwrap_or(input);
+    match registered_command(name) {
+        Some(command) => format!(
+            "`{name}` is a Jcode command, but its {} behavior is not available in Desktop yet.",
+            command.help.to_ascii_lowercase()
+        ),
+        None => format!("Unknown command: `{name}`. Type `/help` for available commands."),
+    }
+}
 
 /// One transcript entry, in display order.
 #[derive(Debug, Clone)]
@@ -280,6 +292,46 @@ impl Panel {
             });
             self.items
                 .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
+            const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+            if EFFORTS.contains(&effort) {
+                self.run_session_operation(
+                    SessionOperation::SetEffort(effort.to_string()),
+                    format!("Reasoning effort set to `{effort}`."),
+                );
+            } else {
+                self.items.push(Item::Error(format!(
+                    "Usage: `/effort <{}>`",
+                    EFFORTS.join("|")
+                )));
+            }
+        } else if let Some(title) = trimmed.strip_prefix("/rename ").map(str::trim) {
+            if title.is_empty() {
+                self.items.push(Item::Error(
+                    "Usage: `/rename <session name>` or `/rename --clear`.".into(),
+                ));
+            } else {
+                let title = (title != "--clear").then(|| title.to_string());
+                self.run_session_operation(SessionOperation::Rename(title), "Session renamed.");
+            }
+        } else if let Some(target) = trimmed.strip_prefix("/rewind ").map(str::trim) {
+            if target == "undo" {
+                self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");
+            } else if let Ok(index) = target.parse::<usize>() {
+                if index == 0 {
+                    self.items
+                        .push(Item::Error("Rewind numbering starts at 1.".into()));
+                } else {
+                    self.run_session_operation(
+                        SessionOperation::Rewind(index - 1),
+                        format!("Rewound to message {index}."),
+                    );
+                }
+            } else {
+                self.items.push(Item::Error(
+                    "Usage: `/rewind <message number|undo>`.".into(),
+                ));
+            }
         } else {
             match trimmed {
                 "/cancel" => {
@@ -289,19 +341,43 @@ impl Panel {
                     self.items
                         .push(Item::Assistant("Cancellation requested.".into()));
                 }
-                "/clear" => {
+                "/cls" | "/clear-view" => {
                     self.items.clear();
                     self.streaming_text.clear();
                     self.streaming_reasoning.clear();
                 }
-                "/help" | "/commands" | "/?" => self.items.push(Item::Assistant(
-                    "**Desktop commands**\n\n- `/model` or `/models` — choose a model\n- `/model <name>` — switch directly\n- `/cancel` — cancel the current turn\n- `/clear` — clear this conversation view\n- `/help` — show this list".into(),
-                )),
+                "/clear" => self.run_session_operation(
+                    SessionOperation::Clear,
+                    "Conversation history cleared.",
+                ),
+                "/compact" => self.run_session_operation(
+                    SessionOperation::Compact,
+                    "Context compacted.",
+                ),
+                "/help" | "/commands" | "/?" => {
+                    self.items.push(Item::Assistant(help_markdown()))
+                }
                 "/model" | "/models" => self.items.push(Item::Error(
                     "No models are available yet. Wait for the session to connect, then try `/model` again.".into(),
                 )),
+                "/effort" => self.items.push(Item::Assistant(
+                    "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
+                )),
+                "/rename" => self.items.push(Item::Error(
+                    "Usage: `/rename <session name>` or `/rename --clear`.".into(),
+                )),
+                "/rewind" => self.items.push(Item::Assistant(
+                    "Use `/rewind <message number>` to rewind, or `/rewind undo` to restore.".into(),
+                )),
+                "/commit" => self.submit_command_prompt(
+                    "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
+                ),
+                "/commit-push" | "/commit-and-push" => self.submit_command_prompt(
+                    "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
+                ),
                 _ if trimmed.starts_with('/') => self.items.push(Item::Error(format!(
-                    "Unknown command: `{trimmed}`. Type `/help` for available commands."
+                    "{}",
+                    command_unavailable_message(trimmed)
                 ))),
                 _ => return false,
             }
@@ -310,6 +386,25 @@ impl Panel {
         self.scroll.scroll_to_bottom();
         cx.notify();
         true
+    }
+
+    fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
+        self.bridge.send(Command::SessionOperation {
+            session_id: self.session_id.clone(),
+            operation,
+        });
+        self.items.push(Item::Assistant(message.into()));
+    }
+
+    fn submit_command_prompt(&mut self, prompt: &str) {
+        self.bridge.send(Command::Send {
+            session_id: self.session_id.clone(),
+            content: prompt.to_string(),
+            images: Vec::new(),
+        });
+        let index = self.items.len();
+        self.items.push(Item::User(prompt.to_string()));
+        self.pending_users.push_back(index);
     }
 
     pub fn load_history(
@@ -773,11 +868,7 @@ impl Panel {
                             } else {
                                 Theme::TEXT_FAINT
                             })
-                            .child(if live {
-                                "● thinking…"
-                            } else {
-                                "thinking"
-                            })
+                            .child(if live { "● thinking…" } else { "thinking" })
                             .when(long && !live, |el| {
                                 el.child(if expanded { "collapse" } else { "expand" })
                             }),
@@ -1737,9 +1828,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn runtime_catalog_only_populates_picker_with_available_routes(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn runtime_catalog_only_populates_picker_with_available_routes(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -2448,6 +2537,46 @@ mod tests {
             .debug_bounds("assistant-response")
             .expect("streamed assistant response should paint");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn slash_commands_dispatch_native_session_operations(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+        vcx.update(|window, cx| {
+            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+
+        vcx.simulate_input("/effort x");
+        vcx.simulate_keystrokes("enter");
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_millis(100)),
+            Ok(Command::SessionOperation {
+                session_id,
+                operation: SessionOperation::SetEffort(effort),
+            }) if session_id == "session-a" && effort == "xhigh"
+        ));
+
+        vcx.simulate_input("/clear");
+        vcx.simulate_keystrokes("enter");
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_millis(100)),
+            Ok(Command::SessionOperation {
+                session_id,
+                operation: SessionOperation::Clear,
+            }) if session_id == "session-a"
+        ));
     }
 }
 

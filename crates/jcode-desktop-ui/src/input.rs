@@ -17,6 +17,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
 
 actions!(
@@ -168,20 +169,38 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
             })
             .collect();
     }
-    const COMMANDS: &[(&str, &str)] = &[
-        ("/model", "List or switch models"),
-        ("/models", "Alias for /model"),
-        ("/help", "Show available desktop commands"),
-        ("/clear", "Clear the conversation view"),
-        ("/cancel", "Cancel the current turn"),
-    ];
+    if trimmed == "/effort" || trimmed.starts_with("/effort ") {
+        let query = trimmed
+            .split_once(' ')
+            .map(|(_, query)| query.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        return ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            .into_iter()
+            .filter(|effort| query.is_empty() || effort.contains(&query))
+            .map(|effort| CommandSuggestion {
+                value: format!("/effort {effort}"),
+                help: "Set reasoning effort".into(),
+            })
+            .collect();
+    }
     let query = trimmed.to_ascii_lowercase();
-    COMMANDS
-        .iter()
-        .filter(|(command, _)| command.starts_with(&query))
-        .map(|(value, help)| CommandSuggestion {
-            value: (*value).into(),
-            help: (*help).into(),
+    let mut commands = registered_command_entries()
+        .filter_map(|(command, help)| {
+            let command_lower = command.to_ascii_lowercase();
+            let help_lower = help.to_ascii_lowercase();
+            (command_lower.starts_with(&query)
+                || command_lower.contains(query.trim_start_matches('/'))
+                || help_lower.contains(query.trim_start_matches('/')))
+            .then_some((command, help, command_lower.starts_with(&query)))
+        })
+        .collect::<Vec<_>>();
+    commands.sort_by_key(|(_, _, prefix)| !prefix);
+    commands
+        .into_iter()
+        .take(12)
+        .map(|(value, help, _)| CommandSuggestion {
+            value: value.into(),
+            help: help.into(),
         })
         .collect()
 }
@@ -196,6 +215,8 @@ fn accepted_command_submission(
     (trimmed == "/model"
         || trimmed == "/models"
         || trimmed.starts_with("/model ")
+        || trimmed == "/effort"
+        || trimmed.starts_with("/effort ")
         || (!trimmed.contains(' ') && suggestion.value.starts_with(trimmed)))
     .then(|| suggestion.value.clone())
 }
@@ -1379,6 +1400,17 @@ mod tests {
         assert_eq!(picker.len(), 1);
         assert_eq!(picker[0].value, "/model claude-fable-5");
         assert!(command_suggestions("hello /model", &models).is_empty());
+
+        let effort = command_suggestions("/effort x", &models);
+        assert_eq!(effort[0].value, "/effort xhigh");
+
+        let tui_commands = command_suggestions("/session", &models);
+        assert!(tui_commands.iter().any(|entry| entry.value == "/sessions"));
+        assert!(
+            command_suggestions("/logical commits", &models)
+                .iter()
+                .any(|entry| entry.value == "/commit")
+        );
     }
 
     #[test]

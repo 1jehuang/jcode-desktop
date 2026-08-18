@@ -92,6 +92,20 @@ pub enum Command {
         session_id: String,
         model: String,
     },
+    SessionOperation {
+        session_id: String,
+        operation: SessionOperation,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum SessionOperation {
+    Clear,
+    Compact,
+    SetEffort(String),
+    Rename(Option<String>),
+    Rewind(usize),
+    RewindUndo,
 }
 
 enum SessionCommand {
@@ -101,6 +115,7 @@ enum SessionCommand {
     },
     Cancel,
     SetModel(String),
+    Operation(SessionOperation),
     Stop,
 }
 
@@ -267,6 +282,15 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
             }
             Command::SetModel { session_id, model } => {
                 let command = SessionCommand::SetModel(model);
+                send_to_session_worker(&mut workers, session_id, command, |session_id| {
+                    spawn_session_worker(session_id, &updates)
+                });
+            }
+            Command::SessionOperation {
+                session_id,
+                operation,
+            } => {
+                let command = SessionCommand::Operation(operation);
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates)
                 });
@@ -532,6 +556,26 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),
                                 reason: format!("Failed to switch model: {error}"),
+                            });
+                        }
+                    }
+                    SessionCommand::Operation(operation) => {
+                        let result = match operation {
+                            SessionOperation::Clear => client.clear(&session_id),
+                            SessionOperation::Compact => client.compact(&session_id).map(|_| ()),
+                            SessionOperation::SetEffort(effort) => {
+                                client.set_reasoning_effort(&session_id, &effort)
+                            }
+                            SessionOperation::Rename(title) => {
+                                client.rename_session(&session_id, title)
+                            }
+                            SessionOperation::Rewind(index) => client.rewind(&session_id, index),
+                            SessionOperation::RewindUndo => client.rewind_undo(&session_id),
+                        };
+                        if let Err(error) = result {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Command failed: {error}"),
                             });
                         }
                     }
