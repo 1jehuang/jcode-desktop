@@ -307,7 +307,7 @@ fn jcode_home() -> Option<PathBuf> {
 /// Merge the API's live view with records on disk. This deliberately makes the
 /// desktop resilient to an older already-running bridge that only reports
 /// sessions created during its lifetime.
-fn merge_persisted_sessions(
+pub(crate) fn merge_persisted_sessions(
     mut sessions: Vec<SessionInfo>,
     home: Option<&Path>,
 ) -> Vec<SessionInfo> {

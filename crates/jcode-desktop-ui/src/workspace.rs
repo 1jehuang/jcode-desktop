@@ -2264,6 +2264,7 @@ impl Workspace {
             list = list.child(
                 div()
                     .id(("sidebar-session", sidebar_index))
+                    .debug_selector(move || format!("sidebar-session-{sidebar_index}").into())
                     .mx_2()
                     .mb_1()
                     .px_3()
@@ -4109,6 +4110,45 @@ mod tests {
 
         session.working_dir = Some("   ".into());
         assert_eq!(sidebar_session_directory(&session), None);
+    }
+
+    #[gpui::test]
+    fn persisted_session_record_paints_as_a_sidebar_row(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let home = std::env::temp_dir().join(format!(
+            "jcode-desktop-sidebar-ui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::write(
+            home.join("sessions/session_fox_disk.json"),
+            r#"{"working_dir":"/persisted/project","custom_title":"Persisted work"}"#,
+        )
+        .unwrap();
+        let sessions = crate::harness::merge_persisted_sessions(Vec::new(), Some(&home));
+        assert_eq!(
+            sessions.len(),
+            1,
+            "the disk record must cross the harness boundary"
+        );
+
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(Update::Sessions { sessions }, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("sidebar-session-0").is_some(),
+            "an on-disk session must paint through the real sidebar renderer"
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     /// The accounts strip must actually paint both a regular provider logo and
