@@ -3,12 +3,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, FontWeight, ImageSource, ScrollHandle,
-    SharedString, StyledImage, Window, div, img, point, prelude::*, px, relative,
+    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, FontWeight, ImageSource,
+    ScrollHandle, SharedString, StyledImage, Window, div, img, point, prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
@@ -891,10 +891,38 @@ impl Panel {
                 done,
                 error,
             } => {
-                let (symbol, color) = match (done, error) {
-                    (false, _) => ("◇", Theme::WARN),
-                    (true, None) => ("◆", Theme::OK),
-                    (true, Some(_)) => ("✗", Theme::ERROR),
+                let status = match (done, error) {
+                    (false, _) => {
+                        const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        div()
+                            .w(px(12.0))
+                            .flex_none()
+                            .text_color(Theme::WARN)
+                            .with_animation(
+                                ("tool-spinner", index),
+                                Animation::new(Duration::from_millis(900)).repeat(),
+                                |el, delta| {
+                                    let frame =
+                                        (delta * FRAMES.len() as f32) as usize % FRAMES.len();
+                                    el.child(FRAMES[frame])
+                                },
+                            )
+                            .into_any_element()
+                    }
+                    (true, None) => div()
+                        .w(px(12.0))
+                        .flex_none()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(Theme::OK)
+                        .child("✓")
+                        .into_any_element(),
+                    (true, Some(_)) => div()
+                        .w(px(12.0))
+                        .flex_none()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(Theme::ERROR)
+                        .child("×")
+                        .into_any_element(),
                 };
                 let expanded = self.expanded_tools.contains(call_id);
                 let summary = tool_summary(input);
@@ -937,7 +965,7 @@ impl Panel {
                                     }),
                                 )
                             })
-                            .child(div().flex_none().text_color(color).child(symbol))
+                            .child(status)
                             .child(
                                 div()
                                     .flex_none()
