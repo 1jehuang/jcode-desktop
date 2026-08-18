@@ -1,6 +1,7 @@
 //! Stable native GPUI host for Jcode Desktop.
 
 mod host {
+    pub mod instance;
     pub mod reload;
     pub mod resources;
 }
@@ -13,7 +14,11 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use host::{reload::ReloadManager, resources::HostState};
+use host::{
+    instance::{self, Instance},
+    reload::ReloadManager,
+    resources::HostState,
+};
 
 actions!(jcode_desktop_host, [ReloadUi, RollbackUi]);
 
@@ -50,6 +55,11 @@ fn hot_reload_path() -> Option<PathBuf> {
 }
 
 fn main() {
+    let (commands, _instance_socket) =
+        match instance::acquire().expect("initialize Jcode Desktop instance socket") {
+            Instance::Primary { commands, _socket } => (commands, _socket),
+            Instance::Secondary => return,
+        };
     let plugin_path = hot_reload_path();
     application().run(move |cx: &mut App| {
         cx.bind_keys([
@@ -67,6 +77,41 @@ fn main() {
                 |_, cx| cx.new(|_| HostFallback),
             )
             .expect("failed to open native Jcode Desktop window");
+
+        window
+            .update(cx, |_, window, cx| {
+                window.on_window_should_close(cx, |window, _| {
+                    window.minimize_window();
+                    false
+                });
+            })
+            .expect("install persistent window close handler");
+
+        let show_window = window;
+        cx.spawn(async move |cx| {
+            let mut commands = commands;
+            loop {
+                let (receiver, command) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let command = commands.recv();
+                        (commands, command)
+                    })
+                    .await;
+                commands = receiver;
+                if command.is_err()
+                    || show_window
+                        .update(cx, |_, window, cx| {
+                            window.activate_window();
+                            cx.activate(true);
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
 
         let host = Rc::new(HostState::default());
         let manager = Rc::new(RefCell::new(
