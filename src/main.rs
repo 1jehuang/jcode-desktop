@@ -12,6 +12,7 @@ use std::{
     path::PathBuf,
     process::Command,
     rc::Rc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use gpui::{
@@ -32,8 +33,16 @@ actions!(
 );
 
 fn rebuild_ui() -> anyhow::Result<()> {
+    // Give every explicit rebuild a unique input. Without this, Cargo can treat
+    // the command as a no-op and preserve the timestamp from an older cdylib.
+    let requested_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| anyhow::anyhow!("system clock is before the Unix epoch: {error}"))?
+        .as_millis()
+        .to_string();
     let output = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args(["build", "-p", "jcode-desktop-ui"])
+        .env("JCODE_DESKTOP_BUILD_EPOCH", requested_at)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()?;
     if output.status.success() {
