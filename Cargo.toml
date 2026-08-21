@@ -35,15 +35,10 @@ gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 gpui = { workspace = true, features = ["test-support"] }
 
 [profile.dev]
-# The desktop binary is launched directly during day-to-day development. A
-# small amount of optimization substantially reduces its code size and loader
-# work while preserving incremental builds and line-table debugging.
-opt-level = 1
+opt-level = 0
 debug = "line-tables-only"
 incremental = true
-codegen-units = 64
+codegen-units = 256
 
 [profile.dev.package."*"]
-# Dependencies change infrequently and account for most of the executable, so
-# optimize them more aggressively. Cargo caches these artifacts between builds.
-opt-level = 2
+opt-level = 0
