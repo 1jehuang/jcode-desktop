@@ -2260,6 +2260,7 @@ impl Workspace {
             let open = open_ids.contains(&session.session_id);
             let (icon, title) = sidebar_session_title(&session);
             let directory = sidebar_session_directory(&session);
+            let meta = sidebar_session_meta(&session);
 
             list = list.child(
                 div()
@@ -2319,6 +2320,16 @@ impl Workspace {
                                 .text_size(px(10.0))
                                 .text_color(Theme::TEXT_DIM)
                                 .child(directory),
+                        )
+                    })
+                    .when_some(meta, |row, meta| {
+                        row.child(
+                            div()
+                                .pl(px(36.0))
+                                .overflow_hidden()
+                                .text_size(px(10.0))
+                                .text_color(Theme::TEXT_FAINT)
+                                .child(meta),
                         )
                     }),
             );
@@ -3755,6 +3766,79 @@ fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String>
         .map(compact_working_dir)
 }
 
+/// Creation timestamp embedded in modern session ids (`session_fox_<ms>_...`).
+fn sidebar_session_created_ms(session_id: &str) -> Option<u64> {
+    session_id
+        .split('_')
+        .filter_map(|part| part.parse::<u64>().ok())
+        .find(|value| (1_000_000_000_000..10_000_000_000_000).contains(value))
+}
+
+/// `3m ago` / `2h ago` / `5d ago`, matching the TUI picker's time labels.
+fn format_time_ago(created_ms: u64, now_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(created_ms) / 1_000;
+    if seconds < 60 {
+        return format!("{seconds}s ago");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    let days = hours / 24;
+    if days < 7 {
+        return format!("{days}d ago");
+    }
+    if days < 30 {
+        return format!("{}w ago", days / 7);
+    }
+    format!("{}mo ago", days / 30)
+}
+
+/// `~1.2k tok`, matching the TUI picker's token display. The desktop only has
+/// the stored transcript size, so estimate at ~4 bytes per token.
+fn format_estimated_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return format!("~{tokens} tok");
+    }
+    const UNITS: &[(f64, &str)] = &[(1.0, ""), (1_000.0, "k"), (1_000_000.0, "M")];
+    let value = tokens as f64;
+    let mut index = 0;
+    while index + 1 < UNITS.len() && value >= UNITS[index + 1].0 {
+        index += 1;
+    }
+    let scaled = value / UNITS[index].0;
+    if scaled >= 100.0 {
+        format!("~{:.0}{} tok", scaled, UNITS[index].1)
+    } else {
+        format!("~{:.1}{} tok", scaled, UNITS[index].1)
+    }
+}
+
+/// The TUI picker's per-session metadata line, from the fields the desktop
+/// API actually carries: `12m ago · ~4.2k tok`.
+fn sidebar_session_meta(session: &jcode_sdk::SessionInfo) -> Option<String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let created = sidebar_session_created_ms(&session.session_id)
+        .map(|created_ms| format_time_ago(created_ms, now_ms));
+    let tokens = session
+        .transcript_bytes
+        .filter(|bytes| *bytes > 0)
+        .map(|bytes| format_estimated_tokens(bytes / 4));
+    match (created, tokens) {
+        (Some(created), Some(tokens)) => Some(format!("{created} · {tokens}")),
+        (Some(created), None) => Some(created),
+        (None, Some(tokens)) => Some(tokens),
+        (None, None) => None,
+    }
+}
+
 fn compact_working_dir(path: &str) -> String {
     let home = std::env::var("HOME").ok();
     if let Some(home) = home.as_deref()
@@ -4095,6 +4179,48 @@ mod tests {
             sidebar_session_title(&session),
             ("🐅", "Release planning".into())
         );
+    }
+
+    /// The sidebar row's metadata line mirrors the TUI `/resume` picker:
+    /// relative creation time plus an estimated token count.
+    #[test]
+    fn sidebar_meta_shows_relative_age_and_estimated_tokens() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut session = session_info(
+            &format!("session_fox_{}_deadbeef", now_ms - 5 * 60 * 1_000),
+            None,
+        );
+        session.transcript_bytes = Some(48_000);
+        let meta = sidebar_session_meta(&session).expect("meta line");
+        assert_eq!(meta, "5m ago · ~12.0k tok");
+    }
+
+    #[test]
+    fn sidebar_meta_is_omitted_when_no_metadata_exists() {
+        assert_eq!(sidebar_session_meta(&session_info("legacy-id", None)), None);
+    }
+
+    #[test]
+    fn sidebar_time_ago_matches_the_tui_picker_buckets() {
+        let now = 1_800_000_000_000_u64;
+        let minute = 60 * 1_000;
+        assert_eq!(format_time_ago(now - 30 * 1_000, now), "30s ago");
+        assert_eq!(format_time_ago(now - 12 * minute, now), "12m ago");
+        assert_eq!(format_time_ago(now - 3 * 60 * minute, now), "3h ago");
+        assert_eq!(format_time_ago(now - 2 * 24 * 60 * minute, now), "2d ago");
+        assert_eq!(format_time_ago(now - 10 * 24 * 60 * minute, now), "1w ago");
+        assert_eq!(format_time_ago(now - 65 * 24 * 60 * minute, now), "2mo ago");
+    }
+
+    #[test]
+    fn sidebar_token_estimate_uses_tui_style_units() {
+        assert_eq!(format_estimated_tokens(500), "~500 tok");
+        assert_eq!(format_estimated_tokens(4_200), "~4.2k tok");
+        assert_eq!(format_estimated_tokens(250_000), "~250k tok");
+        assert_eq!(format_estimated_tokens(1_500_000), "~1.5M tok");
     }
 
     #[test]
