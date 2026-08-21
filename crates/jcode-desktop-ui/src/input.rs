@@ -1368,12 +1368,27 @@ impl Render for PromptInput {
             .child(
                 div()
                     .w_full()
-                    .overflow_hidden()
+                    .flex()
+                    .items_start()
+                    .gap_1()
                     .px_3()
                     .py_2()
                     .text_size(px(14.0))
-                    .text_color(Theme::TEXT)
-                    .child(TextElement { input: cx.entity() }),
+                    // The TUI's `›` prompt marker in user blue.
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(Theme::FONT_MONO)
+                            .text_color(Theme::USER_ACCENT)
+                            .child("›"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_color(Theme::TEXT)
+                            .child(TextElement { input: cx.entity() }),
+                    ),
             )
     }
 }

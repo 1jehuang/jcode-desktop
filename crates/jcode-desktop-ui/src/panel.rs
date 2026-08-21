@@ -786,6 +786,9 @@ impl Panel {
                     .opacity(opacity)
                     .bg(Theme::USER_BG)
                     .rounded_md()
+                    // Echo the TUI's blue `│` bar beside user messages.
+                    .border_l_2()
+                    .border_color(Theme::USER_ACCENT)
                     .px_3()
                     .py_2()
                     .text_color(Theme::TEXT_USER)
