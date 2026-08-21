@@ -29,7 +29,9 @@ pub struct ReloadManager {
     generations: Vec<Generation>,
     active: usize,
     activation_history: Vec<usize>,
-    staging: TempDir,
+    /// Hot-reload staging is development-only. Avoid creating and later
+    /// removing a temporary directory on every normal application launch.
+    staging: Option<TempDir>,
     source: Option<PathBuf>,
     window: AnyWindowHandle,
     host: Rc<HostState>,
@@ -54,10 +56,15 @@ impl ReloadManager {
             }],
             active: 0,
             activation_history: Vec::new(),
-            staging: tempfile::Builder::new()
-                .prefix("jcode-desktop-ui-")
-                .tempdir()
-                .context("create UI staging directory")?,
+            staging: source
+                .as_ref()
+                .map(|_| {
+                    tempfile::Builder::new()
+                        .prefix("jcode-desktop-ui-")
+                        .tempdir()
+                        .context("create UI staging directory")
+                })
+                .transpose()?,
             source,
             window,
             host,
@@ -228,7 +235,11 @@ impl ReloadManager {
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or(env::consts::DLL_EXTENSION);
-        let staged_path = self.staging.path().join(format!(
+        let staging = self
+            .staging
+            .as_ref()
+            .context("hot-reload staging directory is unavailable")?;
+        let staged_path = staging.path().join(format!(
             "jcode-desktop-ui-{:04}.{extension}",
             self.next_generation
         ));
