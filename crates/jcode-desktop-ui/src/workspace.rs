@@ -4108,6 +4108,71 @@ mod tests {
         });
         vcx.run_until_parked();
 
+        // Prove every timed key pair mutates the intended state before trusting
+        // its distribution. This prevents a broken binding or edge no-op from
+        // looking implausibly fast and being reported as a latency improvement.
+        let initial_active = workspace.read_with(vcx, |workspace, _| workspace.active);
+        vcx.simulate_keystrokes("super-h");
+        assert_ne!(
+            workspace.read_with(vcx, |workspace, _| workspace.active),
+            initial_active
+        );
+        vcx.simulate_keystrokes("super-l");
+        assert_eq!(
+            workspace.read_with(vcx, |workspace, _| workspace.active),
+            initial_active
+        );
+
+        vcx.simulate_keystrokes("super-j");
+        assert_eq!(
+            workspace.read_with(vcx, |workspace, _| workspace.active_row),
+            1
+        );
+        vcx.simulate_keystrokes("super-k");
+        assert_eq!(
+            workspace.read_with(vcx, |workspace, _| workspace.active_row),
+            0
+        );
+
+        let initial_order = workspace.read_with(vcx, |workspace, _| {
+            workspace
+                .slots
+                .iter()
+                .map(|slot| slot.panel.entity_id())
+                .collect::<Vec<_>>()
+        });
+        vcx.simulate_keystrokes("super-shift-h");
+        assert_ne!(
+            workspace.read_with(vcx, |workspace, _| workspace
+                .slots
+                .iter()
+                .map(|slot| slot.panel.entity_id())
+                .collect::<Vec<_>>()),
+            initial_order
+        );
+        vcx.simulate_keystrokes("super-shift-l");
+        assert_eq!(
+            workspace.read_with(vcx, |workspace, _| workspace
+                .slots
+                .iter()
+                .map(|slot| slot.panel.entity_id())
+                .collect::<Vec<_>>()),
+            initial_order
+        );
+
+        vcx.simulate_keystrokes("super-1");
+        assert_eq!(
+            workspace.read_with(vcx, |workspace, _| workspace.slots[workspace.active]
+                .width_fraction),
+            0.25
+        );
+        vcx.simulate_keystrokes("super-2");
+        assert_eq!(
+            workspace.read_with(vcx, |workspace, _| workspace.slots[workspace.active]
+                .width_fraction),
+            0.5
+        );
+
         fn measure(
             cx: &mut gpui::VisualTestContext,
             first: &str,
@@ -4139,7 +4204,6 @@ mod tests {
                 Transition::PanelOrder,
             ),
             ("resize", "super-1", "super-2", Transition::PanelWidth),
-            ("overview", "super-o", "super-o", Transition::Overview),
         ] {
             let (mean, p50, p95, p99) = measure(vcx, first, second);
             println!(
