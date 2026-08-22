@@ -95,7 +95,7 @@ fn main() {
     let instance_name = env::args_os()
         .any(|argument| argument == "--no-sidebar" || argument == "--workspace")
         .then_some("no-sidebar");
-    let (commands, instance_socket) = match instance::acquire_named(instance_name)
+    let (commands, _instance_socket) = match instance::acquire_named(instance_name)
         .expect("initialize Jcode Desktop instance socket")
     {
         Instance::Primary { commands, _socket } => (commands, _socket),
@@ -122,6 +122,44 @@ fn main() {
             )
             .expect("failed to open native Jcode Desktop window");
 
+        // Niri does not implement window minimization, so intercepting close and
+        // calling `minimize_window` made Alt+Q appear to do nothing. Let the
+        // compositor close the surface and terminate this host cleanly. A later
+        // shortcut starts a fresh host; while open, repeated shortcuts still use
+        // the instance socket to focus it immediately.
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+
+        let show_window = window;
+        cx.spawn(async move |cx| {
+            let mut commands = commands;
+            loop {
+                let (receiver, command) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let command = commands.recv();
+                        (commands, command)
+                    })
+                    .await;
+                commands = receiver;
+                if command.is_err()
+                    || show_window
+                        .update(cx, |_, window, cx| {
+                            window.activate_window();
+                            cx.activate(true);
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
+
         let host = Rc::new(HostState::default());
         let manager = Rc::new(RefCell::new(
             ReloadManager::new(
@@ -132,102 +170,6 @@ fn main() {
             )
             .expect("create UI reload manager"),
         ));
-
-        let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
-        window
-            .update(cx, {
-                let manager = manager.clone();
-                let current_window = current_window.clone();
-                move |_, window, cx| {
-                    window.on_window_should_close(cx, move |_, cx| {
-                        if let Err(error) = manager.borrow_mut().suspend(cx) {
-                            eprintln!("failed to suspend desktop workspace: {error:#}");
-                            return false;
-                        }
-                        *current_window.borrow_mut() = None;
-                        true
-                    });
-                }
-            })
-            .expect("install persistent host close handler");
-        cx.on_window_closed({
-            let current_window = current_window.clone();
-            move |_, _| {
-                *current_window.borrow_mut() = None;
-            }
-        })
-        .detach();
-
-        cx.spawn({
-            let manager = manager.clone();
-            let current_window = current_window.clone();
-            async move |cx| {
-                // The guard owns the socket pathname. It must live as long as
-                // the command loop, not merely until application setup returns.
-                let _instance_socket = instance_socket;
-                let mut commands = commands;
-                loop {
-                    let (receiver, command) = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let command = commands.recv();
-                            (commands, command)
-                        })
-                        .await;
-                    commands = receiver;
-                    if command.is_err() {
-                        return;
-                    }
-
-                    let result = cx.update(|cx| {
-                        if let Some(window) = *current_window.borrow() {
-                            if window
-                                .update(cx, |_, window, cx| {
-                                    window.activate_window();
-                                    cx.activate(true);
-                                })
-                                .is_ok()
-                            {
-                                return Ok(());
-                            }
-                        }
-
-                        let bounds = Bounds::centered(None, size(px(1500.0), px(950.0)), cx);
-                        let replacement = cx.open_window(
-                            WindowOptions {
-                                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                                ..Default::default()
-                            },
-                            |_, cx| cx.new(|_| HostFallback),
-                        )?;
-                        replacement.update(cx, {
-                            let manager = manager.clone();
-                            let current_window = current_window.clone();
-                            move |_, window, cx| {
-                                window.on_window_should_close(cx, move |_, cx| {
-                                    if let Err(error) = manager.borrow_mut().suspend(cx) {
-                                        eprintln!("failed to suspend desktop workspace: {error:#}");
-                                        return false;
-                                    }
-                                    *current_window.borrow_mut() = None;
-                                    true
-                                });
-                                window.activate_window();
-                            }
-                        })?;
-                        let replacement = gpui::AnyWindowHandle::from(replacement);
-                        manager.borrow_mut().resume(replacement, cx)?;
-                        *current_window.borrow_mut() = Some(replacement);
-                        cx.activate(true);
-                        Ok::<_, anyhow::Error>(())
-                    });
-                    if let Err(error) = result {
-                        eprintln!("failed to restore desktop window: {error:#}");
-                    }
-                }
-            }
-        })
-        .detach();
 
         cx.on_action({
             let manager = manager.clone();

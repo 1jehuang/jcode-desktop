@@ -33,8 +33,7 @@ pub struct ReloadManager {
     /// removing a temporary directory on every normal application launch.
     staging: Option<TempDir>,
     source: Option<PathBuf>,
-    window: Option<AnyWindowHandle>,
-    suspended: Option<(u32, Vec<u8>)>,
+    window: AnyWindowHandle,
     host: Rc<HostState>,
     next_generation: u64,
 }
@@ -67,8 +66,7 @@ impl ReloadManager {
                 })
                 .transpose()?,
             source,
-            window: Some(window),
-            suspended: None,
+            window,
             host,
             next_generation: 0,
         })
@@ -79,22 +77,6 @@ impl ReloadManager {
         self.generations[0].activated = true;
         self.activation_history.push(0);
         Ok(())
-    }
-
-    /// Snapshot the live workspace before its platform surface is closed.
-    /// Host-owned PTYs and streams remain alive, while the serialized UI state
-    /// is retained in memory for a fast restore into the next surface.
-    pub fn suspend(&mut self, cx: &mut App) -> Result<()> {
-        self.suspended = Some(self.snapshot_active(cx)?);
-        self.window = None;
-        Ok(())
-    }
-
-    /// Attach a replacement platform surface to the already-running host.
-    pub fn resume(&mut self, window: AnyWindowHandle, cx: &mut App) -> Result<()> {
-        self.window = Some(window);
-        let snapshot = self.suspended.take();
-        self.activate_generation(self.active, snapshot.as_ref(), cx)
     }
 
     pub fn reload(&mut self, cx: &mut App) -> Result<()> {
@@ -167,7 +149,6 @@ impl ReloadManager {
         let host_api = self.host.api();
         let result = self
             .window
-            .context("desktop window is not attached")?
             .update(cx, |_, window, cx| unsafe {
                 (api.snapshot)(
                     window as *mut Window as *mut _,
@@ -197,7 +178,6 @@ impl ReloadManager {
             .unwrap_or((0, &[]));
         let result = self
             .window
-            .context("desktop window is not attached")?
             .update(cx, |_, window, cx| unsafe {
                 (api.activate)(
                     window as *mut Window as *mut _,
@@ -434,7 +414,6 @@ mod tests {
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
         manager
             .window
-            .expect("the reloaded root must remain attached")
             .update(cx, |_, _, _| {})
             .expect("the reloaded root must occupy the original native window");
     }
