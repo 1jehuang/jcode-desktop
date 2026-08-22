@@ -4075,6 +4075,84 @@ fn panel_at_viewport_center(
 mod tests {
     use super::*;
 
+    /// Opt-in micro-profiler for the complete keymap -> workspace state path.
+    ///
+    /// Run with:
+    /// `cargo test --release -p jcode-desktop-ui interaction_latency_profile -- --ignored --nocapture`
+    ///
+    /// This deliberately does not call `run_until_parked` inside the measured
+    /// section. The resulting number is input-to-state latency, while visual
+    /// settling time is the transition policy duration reported alongside it.
+    #[gpui::test]
+    #[ignore = "manual latency profiler"]
+    fn interaction_latency_profile(cx: &mut gpui::TestAppContext) {
+        const WARMUP: usize = 50;
+        const SAMPLES: usize = 500;
+
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for row in 0..STRIP_COUNT {
+                workspace.active_row = row;
+                for column in 0..8 {
+                    workspace.push_test_panel(&format!("{row}-{column}"), cx);
+                }
+            }
+            workspace.active_row = 0;
+            workspace.active = 3;
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.run_until_parked();
+
+        fn measure(
+            cx: &mut gpui::VisualTestContext,
+            first: &str,
+            second: &str,
+        ) -> (u128, u128, u128, u128) {
+            let mut samples = Vec::with_capacity(SAMPLES);
+            for iteration in 0..WARMUP + SAMPLES {
+                let key = if iteration % 2 == 0 { first } else { second };
+                let started = Instant::now();
+                cx.simulate_keystrokes(key);
+                let elapsed = started.elapsed().as_nanos();
+                if iteration >= WARMUP {
+                    samples.push(elapsed);
+                }
+            }
+            samples.sort_unstable();
+            let percentile = |numerator: usize| samples[(samples.len() - 1) * numerator / 100];
+            let mean = samples.iter().sum::<u128>() / samples.len() as u128;
+            (mean, percentile(50), percentile(95), percentile(99))
+        }
+
+        for (name, first, second, transition) in [
+            ("focus_horizontal", "super-h", "super-l", Transition::Focus),
+            ("focus_vertical", "super-j", "super-k", Transition::Row),
+            (
+                "move_horizontal",
+                "super-shift-h",
+                "super-shift-l",
+                Transition::PanelOrder,
+            ),
+            ("resize", "super-1", "super-2", Transition::PanelWidth),
+            ("overview", "super-o", "super-o", Transition::Overview),
+        ] {
+            let (mean, p50, p95, p99) = measure(vcx, first, second);
+            println!(
+                "LATENCY {name:>16} mean={:.1}us p50={:.1}us p95={:.1}us p99={:.1}us settle={}ms",
+                mean as f64 / 1_000.0,
+                p50 as f64 / 1_000.0,
+                p95 as f64 / 1_000.0,
+                p99 as f64 / 1_000.0,
+                transition::policy(transition).duration.as_millis(),
+            );
+        }
+    }
+
     #[test]
     fn sidebar_free_launch_flags_hide_the_sidebar() {
         assert!(sidebar_enabled(["jcode-desktop"]));
