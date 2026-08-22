@@ -35,3 +35,9 @@ These measurements include key parsing, action dispatch, workspace mutation, foc
 ## Next measurement layer
 
 A physical input-to-photon profile should use compositor presentation timestamps or a high-speed camera. It should record key event arrival, first changed frame, frame pacing throughout the 150 ms animation, and final presentation. The headless profiler intentionally remains deterministic and does not disturb the active desktop session.
+
+## Acceptance coverage
+
+The release binary was also launched through its public CLI (`jcode-desktop --no-sidebar`) on an isolated Xvfb display, with real X11 key injection and the public `JCODE_DESKTOP_STATE` diagnostic planned as the observation boundary. This end-to-end attempt was blocked before a window could present because GPUI's Vulkan presenter requires DRI3, which Xvfb does not provide. The failure was explicit (`No DRI3 support detected - required for presentation`), rather than a silent synthetic substitute.
+
+Using the active Wayland compositor would provide the missing GPU presentation path, but would open and focus windows in the user's live desktop. It was deliberately not used for unattended profiling. Therefore the measurements above are representative of the real keymap and application state path, but are not claimed as physical input-to-photon acceptance results.
