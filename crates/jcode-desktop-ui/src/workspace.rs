@@ -427,13 +427,19 @@ impl Workspace {
                     continue;
                 }
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
+                    let mut changed = false;
                     for update in updates {
-                        workspace.apply(update, cx);
+                        changed |= workspace.apply(update, cx);
                     }
                     if let Some(accounts) = accounts {
-                        workspace.accounts = accounts;
+                        if workspace.accounts != accounts {
+                            workspace.accounts = accounts;
+                            changed = true;
+                        }
                     }
-                    cx.notify();
+                    if changed {
+                        cx.notify();
+                    }
                 });
                 if outcome.is_err() {
                     break;
@@ -776,7 +782,18 @@ impl Workspace {
             .position(|index| index == self.active)
     }
 
-    fn apply(&mut self, update: Update, cx: &mut Context<Self>) {
+    /// Apply a bridge update and report whether it changed visible workspace state.
+    ///
+    /// Session refreshes arrive every two seconds. Most contain the exact same
+    /// SDK snapshot, so treating them as changes would rebuild the complete
+    /// sidebar and every open panel for no user-visible result.
+    fn apply(&mut self, update: Update, cx: &mut Context<Self>) -> bool {
+        if let Update::Sessions { sessions } = &update
+            && sessions == &self.sessions
+        {
+            return false;
+        }
+
         match update {
             Update::Status(status) => self.status = status,
             Update::Connected => {
@@ -796,7 +813,17 @@ impl Workspace {
                         continue;
                     };
                     for slot in &self.slots {
-                        if slot.panel.read(cx).session_id == session.session_id {
+                        let (same_session, same_title) = {
+                            let panel = slot.panel.read(cx);
+                            (
+                                panel.session_id == session.session_id,
+                                panel.title.as_ref() == title,
+                            )
+                        };
+                        if same_session {
+                            if same_title {
+                                break;
+                            }
                             slot.panel.update(cx, |panel, cx| {
                                 panel.title = title.clone().into();
                                 cx.notify();
@@ -925,6 +952,7 @@ impl Workspace {
                 }
             }
         }
+        true
     }
 
     /// Open `session` as a panel immediately to the right of the focused panel,
@@ -4598,6 +4626,29 @@ mod tests {
             sidebar_session_title(&session),
             ("🐅", "Release planning".into())
         );
+    }
+
+    #[gpui::test]
+    fn identical_sdk_session_snapshots_do_not_invalidate_the_sidebar(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) = cx.add_window_view(|_window, cx| {
+            Workspace::for_test(learning::Coach::new(), cx)
+        });
+        let sessions = vec![session_info(
+            "session_fox_1234567890_deadbeef",
+            Some("Release planning"),
+        )];
+
+        workspace.update(cx, |workspace, cx| {
+            assert!(workspace.apply(
+                Update::Sessions {
+                    sessions: sessions.clone(),
+                },
+                cx,
+            ));
+            assert!(!workspace.apply(Update::Sessions { sessions }, cx));
+        });
     }
 
     #[test]
