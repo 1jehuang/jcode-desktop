@@ -932,6 +932,17 @@ impl Panel {
     }
 
     fn find_tool(&mut self, call_id: &str) -> Option<&mut Item> {
+        // The legacy harness protocol streams `tool_input` without an id. The
+        // bridge preserves that fact as an empty call_id, so associate those
+        // deltas with the most recent active call. Exact ids still win for
+        // modern providers and for overlapping completed calls.
+        if call_id.is_empty() {
+            return self
+                .items
+                .iter_mut()
+                .rev()
+                .find(|item| matches!(item, Item::Tool { done: false, .. }));
+        }
         self.items.iter_mut().rev().find(
             |item| matches!(item, Item::Tool { call_id: existing, .. } if existing == call_id),
         )
@@ -1267,6 +1278,7 @@ impl Panel {
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()
+                                        .debug_selector(|| "tool-summary".into())
                                         .flex_1()
                                         .min_w_0()
                                         .overflow_hidden()
@@ -2915,6 +2927,53 @@ mod tests {
             vcx.debug_bounds("tool-detail").is_none(),
             "a second click collapses the detail"
         );
+    }
+
+    /// Legacy harness input deltas have no call id. Exercise the real event and
+    /// paint path so an intent cannot silently disappear between transport and
+    /// the visible tool header again.
+    #[gpui::test]
+    fn legacy_tool_input_renders_its_intent_in_the_tool_header(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::ToolStart {
+                    session_id: "session-a".into(),
+                    call_id: "call-1".into(),
+                    name: "bash".into(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::ToolInputDelta {
+                    session_id: "session-a".into(),
+                    call_id: String::new(),
+                    delta: r#"{"intent":"check the build","command":"cargo test"}"#.into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+
+        let summary = panel.read_with(vcx, |panel, _| match &panel.items[0] {
+            Item::Tool { input, .. } => tool_summary(input),
+            other => panic!("expected the tool row, got {other:?}"),
+        });
+        assert_eq!(summary, "intent: check the build");
+        let rendered = vcx
+            .debug_bounds("tool-summary")
+            .expect("the intent summary paints in the tool header");
+        assert!(rendered.size.width > px(0.) && rendered.size.height > px(0.));
     }
 
     /// Tool cards must retain their intrinsic row height when enough of them
