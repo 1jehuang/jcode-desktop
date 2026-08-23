@@ -225,7 +225,8 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
     // Paint the persisted metadata before announcing the connection. The
     // runtime list request can stall behind a busy daemon (and has a 30 second
     // timeout), while the local recency scan is bounded and immediately useful.
-    refresh_sessions(updates.clone(), true);
+    let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    refresh_sessions(updates.clone(), true, session_refresh_in_flight.clone());
     let _ = updates.send(Update::Connected);
 
     // Per-session workers, keyed by session id.
@@ -233,7 +234,9 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
 
     while let Ok(command) = commands.recv() {
         match command {
-            Command::RefreshSessions => refresh_sessions(updates.clone(), false),
+            Command::RefreshSessions => {
+                refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
+            }
             Command::CreateSession { working_dir } => {
                 // A fresh connection per creation: an existing connection
                 // returns its already-attached session instead of a new one.
@@ -313,6 +316,13 @@ fn refresh_sessions(updates: Sender<Update>, include_disk_snapshot: bool) {
         let _ = updates.send(Update::Sessions { sessions });
     }
 
+    // The workspace asks for this periodically so the sidebar follows sessions
+    // created or changed by other Jcode processes. Coalesce requests while the
+    // daemon is slow instead of accumulating 30-second list calls.
+    if in_flight.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+
     std::thread::Builder::new()
         .name("jcode-bridge-sessions".into())
         .spawn(move || {
@@ -335,6 +345,7 @@ fn refresh_sessions(updates: Sender<Update>, include_disk_snapshot: bool) {
                 sessions.len()
             );
             let _ = updates.send(Update::Sessions { sessions });
+            in_flight.store(false, std::sync::atomic::Ordering::Release);
         })
         .expect("spawn session list thread");
 }

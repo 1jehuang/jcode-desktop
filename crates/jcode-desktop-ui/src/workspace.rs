@@ -402,15 +402,22 @@ impl Workspace {
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
 
-        // Poll bridge updates ~60 times per second while anything is pending.
+        // Poll bridge updates ~60 times per second while anything is pending,
+        // and refresh the global session list periodically so the sidebar also
+        // follows work started or renamed in other Jcode processes.
         let poll_bridge = bridge.clone();
         let poll_task = cx.spawn(async move |this, cx| {
+            let mut last_session_refresh = Instant::now();
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
                 let updates = poll_bridge.drain();
                 let accounts = accounts_feed.latest();
+                if last_session_refresh.elapsed() >= Duration::from_secs(2) {
+                    poll_bridge.send(Command::RefreshSessions);
+                    last_session_refresh = Instant::now();
+                }
                 if updates.is_empty() && accounts.is_none() {
                     continue;
                 }
