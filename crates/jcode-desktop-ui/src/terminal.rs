@@ -43,6 +43,9 @@ pub struct TerminalPanel {
     host: HostHandle,
     resource_id: Option<u64>,
     status: String,
+    exited: bool,
+    rows: u16,
+    cols: u16,
     _poll: gpui::Task<()>,
 }
 
@@ -70,10 +73,14 @@ impl TerminalPanel {
                     .timer(Duration::from_millis(16))
                     .await;
                 let mut chunks = Vec::new();
+                let mut closed = false;
+                let mut replay_gap = false;
                 loop {
                     let mut buffer = vec![0; 32 * 1024];
                     let read = host.terminal_read(resource_id, cursor, &mut buffer);
+                    replay_gap |= cursor < read.available_from;
                     cursor = read.next_cursor;
+                    closed |= read.closed != 0;
                     buffer.truncate(read.copied);
                     if !buffer.is_empty() {
                         chunks.push(buffer);
@@ -82,18 +89,25 @@ impl TerminalPanel {
                         break;
                     }
                 }
-                if chunks.is_empty() {
+                if chunks.is_empty() && !closed {
                     continue;
                 }
                 if this
                     .update(cx, |this, cx| {
+                        if replay_gap {
+                            this.parser = vt100::Parser::new(this.rows, this.cols, 10_000);
+                        }
                         for chunk in chunks {
                             this.parser.process(&chunk);
                         }
+                        this.exited |= closed;
                         cx.notify();
                     })
                     .is_err()
                 {
+                    break;
+                }
+                if closed {
                     break;
                 }
             }
@@ -105,6 +119,9 @@ impl TerminalPanel {
             host,
             resource_id,
             status,
+            exited: false,
+            rows: ROWS,
+            cols: COLS,
             _poll: poll,
         }
     }
@@ -126,6 +143,21 @@ impl TerminalPanel {
         } else {
             self.send(text.as_bytes());
         }
+    }
+
+    fn resize(&mut self, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
+        let rows = ((bounds.size.height / px(18.0)).floor() as u16).max(1);
+        let cols = ((bounds.size.width / px(8.0)).floor() as u16).max(1);
+        if (rows, cols) == (self.rows, self.cols) {
+            return;
+        }
+        self.rows = rows;
+        self.cols = cols;
+        self.parser.screen_mut().set_size(rows, cols);
+        if let Some(id) = self.resource_id {
+            let _ = self.host.terminal_resize(id, rows, cols);
+        }
+        cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
@@ -243,12 +275,13 @@ impl EntityInputHandler for TerminalPanel {
     fn replace_and_mark_text_in_range(
         &mut self,
         _range: Option<Range<usize>>,
-        new_text: &str,
+        _new_text: &str,
         _new_selected_range: Option<Range<usize>>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        self.send_text(new_text);
+        // Preedit text is mutable IME composition. It must not reach the PTY
+        // until GPUI commits it through `replace_text_in_range`.
     }
 
     fn bounds_for_range(
@@ -282,7 +315,11 @@ impl Drop for TerminalPanel {
 impl Render for TerminalPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = if self.status.is_empty() {
-            self.parser.screen().contents()
+            let mut content = self.parser.screen().contents();
+            if self.exited {
+                content.push_str("\n[process exited]");
+            }
+            content
         } else {
             self.status.clone()
         };
@@ -318,6 +355,7 @@ impl Render for TerminalPanel {
                             ElementInputHandler::new(bounds, input.clone()),
                             cx,
                         );
+                        input.update(cx, |terminal, cx| terminal.resize(bounds, cx));
                     },
                 )
                 .absolute()

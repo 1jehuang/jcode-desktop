@@ -20,8 +20,9 @@ struct Output {
 }
 
 struct TerminalResource {
+    master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     output: Arc<Mutex<Output>>,
     attachments: usize,
 }
@@ -48,6 +49,7 @@ impl HostState {
             terminal_create,
             terminal_write,
             terminal_read,
+            terminal_resize,
             terminal_release,
         }
     }
@@ -105,8 +107,8 @@ unsafe extern "C-unwind" fn terminal_create(
             .map(str::to_owned)
     };
 
-    let mut terminals = state.terminals.lock().expect("terminal lock poisoned");
     if requested_id != 0 {
+        let mut terminals = state.terminals.lock().expect("terminal lock poisoned");
         if let Some(resource) = terminals.resources.get_mut(&requested_id) {
             resource.attachments += 1;
             return requested_id;
@@ -117,6 +119,7 @@ unsafe extern "C-unwind" fn terminal_create(
     let Ok(resource) = spawn_terminal(cwd.as_deref()) else {
         return 0;
     };
+    let mut terminals = state.terminals.lock().expect("terminal lock poisoned");
     terminals.next_id = terminals.next_id.saturating_add(1).max(1);
     let id = terminals.next_id;
     terminals.resources.insert(id, resource);
@@ -136,12 +139,13 @@ fn spawn_terminal(working_dir: Option<&str>) -> anyhow::Result<TerminalResource>
     if is_fish {
         command.arg("--interactive");
     }
-    command.env("TERM", "dumb");
+    command.env("TERM", "xterm-256color");
     if let Some(dir) = working_dir {
         command.cwd(dir);
     }
 
-    let child = pair.slave.spawn_command(command)?;
+    let mut child = pair.slave.spawn_command(command)?;
+    let killer = child.clone_killer();
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader()?;
     let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
@@ -164,11 +168,8 @@ fn spawn_terminal(working_dir: Option<&str>) -> anyhow::Result<TerminalResource>
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    // Linux PTY masters can briefly return EIO between spawn
-                    // and the child opening the slave side.
-                    Err(error) if error.raw_os_error() == Some(5) => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
+                    // Linux reports EIO when the final slave closes.
+                    Err(error) if error.raw_os_error() == Some(5) => break,
                     Err(_) => break,
                 }
             }
@@ -177,10 +178,21 @@ fn spawn_terminal(working_dir: Option<&str>) -> anyhow::Result<TerminalResource>
                 .expect("terminal output poisoned")
                 .closed = true;
         })?;
+    let waiter_output = output.clone();
+    std::thread::Builder::new()
+        .name("jcode-terminal-host-waiter".into())
+        .spawn(move || {
+            let _ = child.wait();
+            waiter_output
+                .lock()
+                .expect("terminal output poisoned")
+                .closed = true;
+        })?;
 
     Ok(TerminalResource {
+        master: pair.master,
         writer,
-        _child: child,
+        killer,
         output,
         attachments: 1,
     })
@@ -198,17 +210,50 @@ unsafe extern "C-unwind" fn terminal_write(
     if len != 0 && data.is_null() {
         return HOST_FAILED;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
-    let terminals = state.terminals.lock().expect("terminal lock poisoned");
-    let Some(resource) = terminals.resources.get(&id) else {
-        return HOST_FAILED;
+    let bytes = if len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }
     };
-    let result = resource
-        .writer
+    let writer = {
+        let terminals = state.terminals.lock().expect("terminal lock poisoned");
+        let Some(resource) = terminals.resources.get(&id) else {
+            return HOST_FAILED;
+        };
+        resource.writer.clone()
+    };
+    let result = writer
         .lock()
         .expect("terminal writer poisoned")
         .write_all(bytes);
     if result.is_ok() { HOST_OK } else { HOST_FAILED }
+}
+
+unsafe extern "C-unwind" fn terminal_resize(
+    context: *mut c_void,
+    id: u64,
+    rows: u16,
+    cols: u16,
+) -> i32 {
+    let Some(state) = state(context) else {
+        return HOST_FAILED;
+    };
+    if rows == 0 || cols == 0 {
+        return HOST_FAILED;
+    }
+    let terminals = state.terminals.lock().expect("terminal lock poisoned");
+    let Some(resource) = terminals.resources.get(&id) else {
+        return HOST_FAILED;
+    };
+    match resource.master.resize(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(()) => HOST_OK,
+        Err(_) => HOST_FAILED,
+    }
 }
 
 unsafe extern "C-unwind" fn terminal_read(
@@ -260,7 +305,9 @@ unsafe extern "C-unwind" fn terminal_release(context: *mut c_void, id: u64) {
         resource.attachments == 0
     });
     if remove {
-        terminals.resources.remove(&id);
+        if let Some(mut resource) = terminals.resources.remove(&id) {
+            let _ = resource.killer.kill();
+        }
     }
 }
 
@@ -316,5 +363,55 @@ mod tests {
         }
         assert!(String::from_utf8_lossy(&collected).contains("jcode-pty-preserved"));
         host.terminal_release(same);
+    }
+
+    #[test]
+    fn terminal_resizes_and_reports_shell_exit() {
+        let state = HostState::default();
+        let api = state.api();
+        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        let id = host.terminal_create(None, None).expect("create PTY");
+
+        assert!(host.terminal_resize(id, 24, 80));
+        state
+            .terminals
+            .lock()
+            .unwrap()
+            .resources
+            .get_mut(&id)
+            .unwrap()
+            .killer
+            .kill()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut cursor = 0;
+        let closed = loop {
+            let mut buffer = [0; 4096];
+            let read = host.terminal_read(id, cursor, &mut buffer);
+            cursor = read.next_cursor;
+            if read.closed != 0 {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(closed, "PTY did not report the exited shell as closed");
+        host.terminal_release(id);
+    }
+
+    #[test]
+    fn zero_length_null_write_is_safe() {
+        let state = HostState::default();
+        let api = state.api();
+        let id = unsafe { (api.terminal_create)(api.context, 0, std::ptr::null(), 0) };
+        assert_ne!(id, 0);
+        assert_eq!(
+            unsafe { (api.terminal_write)(api.context, id, std::ptr::null(), 0) },
+            HOST_OK
+        );
+        unsafe { (api.terminal_release)(api.context, id) };
     }
 }

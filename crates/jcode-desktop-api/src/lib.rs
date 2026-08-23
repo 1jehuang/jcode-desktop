@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const ENTRY_POINT: &[u8] = b"jcode_desktop_ui_plugin\0";
 pub const GPUI_REVISION: [u8; 40] = *b"bc538def4545534201bbfcac4e95ac34ea6501b6";
@@ -30,6 +30,7 @@ pub type TerminalCreateFn = unsafe extern "C-unwind" fn(*mut c_void, u64, *const
 pub type TerminalWriteFn = unsafe extern "C-unwind" fn(*mut c_void, u64, *const u8, usize) -> i32;
 pub type TerminalReadFn =
     unsafe extern "C-unwind" fn(*mut c_void, u64, u64, *mut u8, usize) -> TerminalRead;
+pub type TerminalResizeFn = unsafe extern "C-unwind" fn(*mut c_void, u64, u16, u16) -> i32;
 pub type TerminalReleaseFn = unsafe extern "C-unwind" fn(*mut c_void, u64);
 
 /// Host services whose storage and native resources survive UI generations.
@@ -43,6 +44,7 @@ pub struct HostApi {
     pub terminal_create: TerminalCreateFn,
     pub terminal_write: TerminalWriteFn,
     pub terminal_read: TerminalReadFn,
+    pub terminal_resize: TerminalResizeFn,
     pub terminal_release: TerminalReleaseFn,
 }
 
@@ -74,6 +76,7 @@ impl HostHandle {
             terminal_create: inert_terminal_create,
             terminal_write: inert_terminal_write,
             terminal_read: inert_terminal_read,
+            terminal_resize: inert_terminal_resize,
             terminal_release: inert_terminal_release,
         })
     }
@@ -117,6 +120,10 @@ impl HostHandle {
                 output.len(),
             )
         }
+    }
+
+    pub fn terminal_resize(self, id: u64, rows: u16, cols: u16) -> bool {
+        unsafe { (self.0.terminal_resize)(self.0.context, id, rows, cols) == HOST_OK }
     }
 
     pub fn terminal_release(self, id: u64) {
@@ -163,6 +170,10 @@ unsafe extern "C-unwind" fn inert_terminal_read(
         closed: 1,
         ..Default::default()
     }
+}
+
+unsafe extern "C-unwind" fn inert_terminal_resize(_: *mut c_void, _: u64, _: u16, _: u16) -> i32 {
+    HOST_FAILED
 }
 
 unsafe extern "C-unwind" fn inert_terminal_release(_: *mut c_void, _: u64) {}
