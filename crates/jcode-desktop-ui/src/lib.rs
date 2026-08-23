@@ -64,7 +64,13 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-shift-end", MovePanelToLast, None),
         KeyBinding::new("super-n", NewPanel, None),
         KeyBinding::new("super-t", NewTerminal, None),
-        KeyBinding::new("super-enter", NewPanel, None),
+        // Cmd+Enter opens a terminal and Cmd+; opens a session, both landing
+        // directly right of the focused panel. On macOS the `cmd-*` block below
+        // states them explicitly; elsewhere these Super aliases carry them.
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("super-enter", NewTerminal, None),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("super-;", NewPanel, None),
         // macOS keeps Cmd+Q for quitting (bound below), so closing a panel
         // lives on Cmd+W there and this binding would be dead weight.
         #[cfg(not(target_os = "macos"))]
@@ -117,6 +123,8 @@ pub fn bind_workspace_keys(cx: &mut App) {
         // `super-t` binding above. Binding it to NewPanel here shadowed that
         // binding, so macOS opened a session panel instead of a terminal.
         KeyBinding::new("cmd-t", NewTerminal, None),
+        KeyBinding::new("cmd-enter", NewTerminal, None),
+        KeyBinding::new("cmd-;", NewPanel, None),
         KeyBinding::new("cmd-w", ClosePanel, None),
         KeyBinding::new("cmd-o", ToggleOverview, None),
         KeyBinding::new("cmd-shift-o", OpenFolder, None),

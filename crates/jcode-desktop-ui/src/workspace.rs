@@ -6431,6 +6431,95 @@ mod tests {
         });
     }
 
+    /// The platform spelling of the workspace modifier. macOS binds `cmd`
+    /// explicitly because ScrollWM owns the Option-key motions there.
+    #[cfg(target_os = "macos")]
+    const MOD: &str = "cmd";
+    #[cfg(not(target_os = "macos"))]
+    const MOD: &str = "super";
+
+    fn focused_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|_window, cx| {
+            Workspace::for_test(learning::Coach::new(), cx)
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        (workspace, cx)
+    }
+
+    #[gpui::test]
+    fn enter_opens_a_terminal_directly_right_of_the_focused_panel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) = focused_workspace(cx);
+
+        cx.simulate_keystrokes(&format!("{MOD}-t"));
+        cx.run_until_parked();
+        cx.simulate_keystrokes(&format!("{MOD}-enter"));
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 2, "Enter should open a second panel");
+            assert!(
+                workspace
+                    .slots
+                    .iter()
+                    .all(|slot| slot.panel.read(cx).session_id == "terminal"),
+                "both panels should be terminals"
+            );
+            assert_eq!(
+                workspace.active, 1,
+                "the new terminal lands right of the focused panel and takes focus"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn semicolon_requests_a_session_panel(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = focused_workspace(cx);
+
+        cx.simulate_keystrokes(&format!("{MOD}-;"));
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _cx| {
+            assert!(
+                workspace.test_coach().trace("new_panel").recalled > 0,
+                "the session shortcut should register as the new_panel action"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn the_sidebar_toggles_and_gives_its_width_back_to_the_panels(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) = focused_workspace(cx);
+        let visible_first = workspace.update(cx, |workspace, _| workspace.show_sidebar);
+
+        cx.simulate_keystrokes(&format!("{MOD}-b"));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.show_sidebar, !visible_first,
+                "the shortcut should flip sidebar visibility"
+            );
+        });
+
+        cx.simulate_keystrokes(&format!("{MOD}-b"));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.show_sidebar, visible_first,
+                "toggling twice should restore the original state"
+            );
+        });
+    }
+
     #[gpui::test]
     fn super_t_opens_and_paints_a_plain_terminal_panel(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
