@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, actions, div,
-    prelude::*, px, relative,
+    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*,
+    px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,7 @@ The jcode-desktop shortcuts are:
 - Super+F: maximize or restore panel width
 - Super+O: open the overview
 - Super+/ or F1: toggle the hints overlay
-- Super+Shift+S: toggle showcase mode for on-screen shortcut chords
+- Super+Shift+S: toggle showcase mode for on-screen workspace motions
 - Super+Shift+/: open this documentation-aware help session
 
 Composer shortcuts ported from the TUI:
@@ -1206,6 +1206,7 @@ impl Workspace {
     }
 
     fn focus_left(&mut self, _: &FocusLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("H", false, cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position > 0
@@ -1220,6 +1221,7 @@ impl Workspace {
     }
 
     fn focus_right(&mut self, _: &FocusRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("L", false, cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position + 1 < indices.len()
@@ -1233,6 +1235,7 @@ impl Workspace {
 
     /// niri `focus-column-first`.
     fn focus_first(&mut self, _: &FocusFirst, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("Home", false, cx);
         let first = self.row_indices(self.active_row).next();
         if let Some(index) = first.filter(|index| *index != self.active) {
             self.set_active(index, cx);
@@ -1244,6 +1247,7 @@ impl Workspace {
 
     /// niri `focus-column-last`.
     fn focus_last(&mut self, _: &FocusLast, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("End", false, cx);
         let last = self.row_indices(self.active_row).last();
         if let Some(index) = last.filter(|index| *index != self.active) {
             self.set_active(index, cx);
@@ -1256,6 +1260,7 @@ impl Workspace {
     /// niri `focus-window-previous` (the user's Alt+Tab). Returns to the last
     /// focused panel wherever it now lives, including on another strip.
     fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("Tab", false, cx);
         let Some(previous) = self.previous else {
             return;
         };
@@ -1274,12 +1279,14 @@ impl Workspace {
     }
 
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("K", false, cx);
         if self.active_row > 0 {
             self.change_row(self.active_row - 1, window, cx);
         }
     }
 
     fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("J", false, cx);
         if self.active_row + 1 < STRIP_COUNT {
             self.change_row(self.active_row + 1, window, cx);
         }
@@ -1327,6 +1334,7 @@ impl Workspace {
     }
 
     fn move_panel_left(&mut self, _: &MovePanelLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("H", true, cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position > 0
@@ -1345,6 +1353,7 @@ impl Workspace {
     }
 
     fn move_panel_right(&mut self, _: &MovePanelRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("L", true, cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position + 1 < indices.len()
@@ -1370,6 +1379,7 @@ impl Workspace {
     }
 
     fn move_panel_up(&mut self, _: &MovePanelUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("K", true, cx);
         self.move_panel_to_row(-1, window, cx);
     }
 
@@ -1380,6 +1390,7 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.showcase_motion("Home", true, cx);
         let first = self.row_indices(self.active_row).next();
         let on_strip = self
             .slots
@@ -1398,6 +1409,7 @@ impl Workspace {
 
     /// niri `move-column-to-last`.
     fn move_panel_to_last(&mut self, _: &MovePanelToLast, _: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("End", true, cx);
         let last = self.row_indices(self.active_row).last();
         let on_strip = self
             .slots
@@ -1415,6 +1427,7 @@ impl Workspace {
     }
 
     fn move_panel_down(&mut self, _: &MovePanelDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_motion("J", true, cx);
         self.move_panel_to_row(1, window, cx);
     }
 
@@ -1646,15 +1659,20 @@ impl Workspace {
         cx.notify();
     }
 
-    fn showcase_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn showcase_motion(&mut self, key: &str, shifted: bool, cx: &mut Context<Self>) {
         if !self.showcase_mode {
             return;
         }
-        let chord = showcase_chord(event);
-        if chord.is_empty() {
-            return;
-        }
-        self.showcase_key = Some(chord);
+        let modifier = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Super"
+        };
+        self.showcase_key = Some(if shifted {
+            format!("{modifier} + Shift + {key}")
+        } else {
+            format!("{modifier} + {key}")
+        });
         self.schedule_showcase_expiry(cx);
         cx.notify();
     }
@@ -3740,7 +3758,6 @@ impl Render for Workspace {
             .text_size(px(14.0))
             .text_color(Theme::TEXT)
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::showcase_key_down))
             .on_action(cx.listener(Self::focus_left))
             .on_action(cx.listener(Self::focus_right))
             .on_action(cx.listener(Self::focus_up))
@@ -3818,72 +3835,6 @@ fn sidebar_enabled(arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsSt
         let argument = argument.as_ref();
         argument == "--no-sidebar" || argument == "--workspace"
     })
-}
-
-fn showcase_chord(event: &KeyDownEvent) -> String {
-    let modifiers = event.keystroke.modifiers;
-    let key = event.keystroke.key.as_str();
-    let is_function_key = key
-        .strip_prefix('f')
-        .is_some_and(|number| number.parse::<u8>().is_ok());
-    let has_modifier = modifiers.platform
-        || modifiers.control
-        || modifiers.alt
-        || modifiers.shift
-        || modifiers.function;
-    // Do not turn normal prose into a distracting key logger. Named keys and
-    // modified chords are shortcuts and are useful during a presentation.
-    if !has_modifier && !is_function_key && key.chars().count() == 1 {
-        return String::new();
-    }
-
-    let mut parts = Vec::new();
-    if modifiers.control {
-        parts.push("Ctrl".to_owned());
-    }
-    if modifiers.alt {
-        parts.push(
-            if cfg!(target_os = "macos") {
-                "Option"
-            } else {
-                "Alt"
-            }
-            .to_owned(),
-        );
-    }
-    if modifiers.shift {
-        parts.push("Shift".to_owned());
-    }
-    if modifiers.platform {
-        parts.push(
-            if cfg!(target_os = "macos") {
-                "Cmd"
-            } else {
-                "Super"
-            }
-            .to_owned(),
-        );
-    }
-    if modifiers.function {
-        parts.push("Fn".to_owned());
-    }
-    let label = match key {
-        "left" => "Left",
-        "right" => "Right",
-        "up" => "Up",
-        "down" => "Down",
-        "escape" => "Esc",
-        "backspace" => "Backspace",
-        "enter" => "Enter",
-        "space" => "Space",
-        "tab" => "Tab",
-        other => {
-            parts.push(other.to_uppercase());
-            return parts.join(" + ");
-        }
-    };
-    parts.push(label.to_owned());
-    parts.join(" + ")
 }
 
 fn default_working_dir() -> Option<String> {
@@ -6910,6 +6861,49 @@ mod tests {
                 workspace.show_sidebar, !visible_first,
                 "the ctrl-shift-e alias should toggle the sidebar too"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn showcase_is_on_by_default_and_only_paints_workspace_motions(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = focused_workspace(cx);
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| assert!(workspace.showcase_mode));
+
+        cx.simulate_keystrokes(&format!("{MOD}-h"));
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.showcase_key.as_deref(),
+                Some(if cfg!(target_os = "macos") {
+                    "Cmd + H"
+                } else {
+                    "Super + H"
+                })
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("showcase-shortcut").is_some(),
+            "a real workspace motion should paint the bottom-center overlay"
+        );
+
+        cx.simulate_keystrokes(&format!("{MOD}-b"));
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.showcase_key.as_deref(),
+                Some(if cfg!(target_os = "macos") {
+                    "Cmd + H"
+                } else {
+                    "Super + H"
+                }),
+                "an unrelated shortcut must not replace the displayed motion"
+            );
+        });
+
+        cx.simulate_keystrokes(&format!("{MOD}-shift-s"));
+        workspace.update(cx, |workspace, _| {
+            assert!(!workspace.showcase_mode);
+            assert!(workspace.showcase_key.is_none());
         });
     }
 
