@@ -123,6 +123,9 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     scroll: ScrollHandle,
     stick_to_bottom: bool,
+    /// A detached reload offset cannot be applied until asynchronous history
+    /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
+    pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
     history_loaded: bool,
     /// Tool rows the user expanded, keyed by call id.
@@ -183,6 +186,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             stick_to_bottom: true,
+            pending_history_scroll: None,
             bridge,
             history_loaded: false,
             expanded_tools: HashSet::new(),
@@ -235,6 +239,8 @@ impl Panel {
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
         self.stick_to_bottom = snapshot.stick_to_bottom;
+        self.pending_history_scroll =
+            (!snapshot.stick_to_bottom).then_some((snapshot.scroll_x, snapshot.scroll_y));
         self.scroll
             .set_offset(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
         self.input
@@ -671,7 +677,9 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.items = items;
-        if self.stick_to_bottom {
+        if let Some((x, y)) = self.pending_history_scroll.take() {
+            self.scroll.set_offset(point(px(x), px(y)));
+        } else if self.stick_to_bottom {
             self.scroll.scroll_to_bottom();
         }
         cx.notify();
@@ -1958,6 +1966,18 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .expect("panel exists");
 
+        // Reload restores the scroll handle before Watch returns history. Paint
+        // that empty intermediate state, matching the real asynchronous handoff.
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            let mut snapshot = panel.snapshot(cx);
+            snapshot.scroll_y = -137.0;
+            snapshot.stick_to_bottom = false;
+            panel.restore_snapshot(snapshot, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
         panel.update(vcx, |panel, cx| {
             let history = (0..80)
                 .map(|index| jcode_sdk::HistoryMessage {
@@ -1979,7 +1999,9 @@ mod tests {
         let transcript = vcx.debug_bounds("transcript").expect("transcript painted");
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position: transcript.center(),
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(60.))),
+            // Physical mouse wheels arrive as non-precise line deltas, unlike
+            // the precise pixel delta used by a touchpad.
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 3.0)),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });
