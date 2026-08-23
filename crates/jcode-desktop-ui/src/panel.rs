@@ -1459,8 +1459,22 @@ impl Render for Panel {
 
         // Live rows are appended after the settled ones and share the same
         // renderer, so a streaming turn looks identical to a finished one.
-        let mut rows: Vec<(usize, Item)> =
-            self.items.iter().cloned().enumerate().collect::<Vec<_>>();
+        // Todo state is persistent session chrome rather than transcript history.
+        // Keep only the latest snapshot pinned above the scroller instead of
+        // leaving stale cards interspersed through the conversation.
+        let pinned_todo = self
+            .latest_todo_payload()
+            .filter(|payload| !payload.todos.is_empty());
+        let mut rows: Vec<(usize, Item)> = self
+            .items
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, item)| {
+                !matches!(item, Item::Todos(_))
+                    && !matches!(item, Item::Tool { name, .. } if name == "todo")
+            })
+            .collect();
         if !self.streaming_reasoning.is_empty() {
             rows.push((
                 usize::MAX - 1,
@@ -1546,6 +1560,14 @@ impl Render for Panel {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(Theme::TEXT_DIM)
                     .child(title)
+            }))
+            .children(pinned_todo.map(|payload| {
+                div()
+                    .debug_selector(|| "pinned-todo-card".into())
+                    .flex_none()
+                    .px_3()
+                    .pt_2()
+                    .child(render_todo_card(&payload))
             }))
             .child(
                 div()
@@ -2024,11 +2046,11 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
     }
     groups.sort_by_key(|(group, _)| group.is_none());
 
-    let mut body = div().flex().flex_col().gap_3();
+    let mut body = div().flex().flex_col().gap_2();
     if payload.todos.is_empty() {
         body = body.child(
             div()
-                .py_2()
+                .py_1()
                 .text_size(px(12.0))
                 .text_color(Theme::TEXT_DIM)
                 .child("No tasks yet. Jcode will populate them as work is planned."),
@@ -2039,7 +2061,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .iter()
                 .filter(|todo| todo.status == "completed")
                 .count();
-            let mut section = div().flex().flex_col().gap_1p5();
+            let mut section = div().flex().flex_col().gap_1();
             if group.is_some() || payload.todos.iter().any(|todo| todo.group.is_some()) {
                 section = section.child(
                     div()
@@ -2074,62 +2096,60 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         .debug_selector(|| "todo-row".into())
                         .flex()
                         .items_start()
-                        .gap_2()
-                        .py_1()
+                        .gap_1p5()
+                        .py_0p5()
                         .child(render_todo_marker(todo))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap_0p5()
-                                .child(
-                                    div()
-                                        .text_size(px(12.5))
-                                        .line_height(relative(1.35))
-                                        .text_color(if todo.status == "completed" {
-                                            Theme::TEXT_DIM
-                                        } else {
-                                            Theme::TEXT
-                                        })
-                                        .child(todo.content.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_wrap()
-                                        .gap_1()
-                                        .text_size(px(9.5))
-                                        .when(todo.priority == "high", |meta| {
-                                            meta.child(
-                                                div()
-                                                    .rounded_sm()
-                                                    .px_1()
-                                                    .bg(Theme::ERROR_BG)
-                                                    .text_color(Theme::WARN)
-                                                    .child("high priority"),
-                                            )
-                                        })
-                                        .when(blocked, |meta| {
-                                            meta.child(
-                                                div()
-                                                    .rounded_sm()
-                                                    .px_1()
-                                                    .bg(Theme::ERROR_BG)
-                                                    .text_color(Theme::WARN)
-                                                    .child("blocked"),
-                                            )
-                                        })
-                                        .when_some(confidence, |meta, confidence| {
-                                            meta.child(
-                                                div()
-                                                    .text_color(Theme::TEXT_FAINT)
-                                                    .child(semantic_value(confidence)),
-                                            )
-                                        }),
-                                ),
-                        ),
+                        .child(div().flex_1().min_w_0().flex().flex_col().gap_0p5().when(
+                            todo.priority == "high" || blocked || confidence.is_some(),
+                            |content| {
+                                content
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .line_height(relative(1.35))
+                                            .text_color(if todo.status == "completed" {
+                                                Theme::TEXT_DIM
+                                            } else {
+                                                Theme::TEXT
+                                            })
+                                            .child(todo.content.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .gap_1()
+                                            .text_size(px(9.5))
+                                            .when(todo.priority == "high", |meta| {
+                                                meta.child(
+                                                    div()
+                                                        .rounded_sm()
+                                                        .px_1()
+                                                        .bg(Theme::ERROR_BG)
+                                                        .text_color(Theme::WARN)
+                                                        .child("high priority"),
+                                                )
+                                            })
+                                            .when(blocked, |meta| {
+                                                meta.child(
+                                                    div()
+                                                        .rounded_sm()
+                                                        .px_1()
+                                                        .bg(Theme::ERROR_BG)
+                                                        .text_color(Theme::WARN)
+                                                        .child("blocked"),
+                                                )
+                                            })
+                                            .when_some(confidence, |meta, confidence| {
+                                                meta.child(
+                                                    div()
+                                                        .text_color(Theme::TEXT_FAINT)
+                                                        .child(semantic_value(confidence)),
+                                                )
+                                            }),
+                                    )
+                            },
+                        )),
                 );
             }
             body = body.child(section);
@@ -2141,12 +2161,13 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .flex()
         .flex_none()
         .flex_col()
-        .gap_3()
-        .rounded_lg()
+        .gap_2()
+        .rounded_md()
         .border_1()
         .border_color(Theme::TOOL_BORDER)
         .bg(Theme::TOOL_BG)
-        .p_3()
+        .px_2p5()
+        .py_2()
         .child(
             div()
                 .flex()
@@ -2167,7 +2188,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         )
         .child(
             div()
-                .h(px(4.0))
+                .h(px(3.0))
                 .w_full()
                 .rounded_full()
                 .bg(Theme::CODE_BORDER)
@@ -3523,7 +3544,12 @@ Goals: []"#,
         let bounds = vcx
             .debug_bounds("todo-card")
             .expect("todo tool output should paint as a native card");
+        let pinned = vcx
+            .debug_bounds("pinned-todo-card")
+            .expect("todo card should be pinned outside the transcript");
+        let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        assert!(pinned.bottom() <= transcript.top());
         assert!(vcx.debug_bounds("tool-card").is_none());
     }
 }
