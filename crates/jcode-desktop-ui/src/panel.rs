@@ -164,6 +164,8 @@ pub struct Panel {
     expanded_reasoning: HashSet<usize>,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
+    /// Newly received tool calls, keyed by call id, while their entrance runs.
+    arriving_tools: HashMap<String, Instant>,
     terminal: Option<Entity<TerminalPanel>>,
     model_picker_open: bool,
     available_models: Vec<String>,
@@ -227,6 +229,7 @@ impl Panel {
             expanded_reasoning: HashSet::new(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
+            arriving_tools: HashMap::new(),
             terminal: None,
             model_picker_open: false,
             available_models: Vec::new(),
@@ -804,6 +807,7 @@ impl Panel {
             }
             ApiEvent::ToolStart { call_id, name, .. } => {
                 self.flush_streaming();
+                self.arriving_tools.insert(call_id.clone(), Instant::now());
                 self.items.push(Item::Tool {
                     call_id: call_id.clone(),
                     name: name.clone(),
@@ -836,6 +840,7 @@ impl Panel {
                     *slot = error.clone();
                     *output_slot = output.clone();
                 } else {
+                    self.arriving_tools.insert(call_id.clone(), Instant::now());
                     self.items.push(Item::Tool {
                         call_id: call_id.clone(),
                         name: name.clone(),
@@ -1193,12 +1198,31 @@ impl Panel {
                 done,
                 error,
             } => {
+                let (offset, opacity, animating) = self
+                    .arriving_tools
+                    .get(call_id)
+                    .map(|started_at| {
+                        crate::transition::arrival_motion(
+                            *started_at,
+                            Instant::now(),
+                            crate::transition::policy(crate::transition::Transition::ToolArrival)
+                                .duration,
+                        )
+                    })
+                    .unwrap_or((0.0, 1.0, false));
+                if animating {
+                    window.request_animation_frame();
+                }
                 if name == "todo"
                     && *done
                     && error.is_none()
                     && let Some(payload) = parse_todo_tool_output(output)
                 {
-                    return render_todo_card(&payload).into_any_element();
+                    return div()
+                        .ml(px(offset))
+                        .opacity(opacity)
+                        .child(render_todo_card(&payload))
+                        .into_any_element();
                 }
                 let status = match (done, error) {
                     (false, _) => div()
@@ -1235,6 +1259,8 @@ impl Panel {
                     .id(("tool", index))
                     .debug_selector(|| "tool-card".into())
                     .flex()
+                    .ml(px(offset))
+                    .opacity(opacity)
                     // Transcript rows live in a fixed-height flex column. Once
                     // it overflows, flex items shrink by default, which can
                     // squash tool cards instead of letting the column scroll.

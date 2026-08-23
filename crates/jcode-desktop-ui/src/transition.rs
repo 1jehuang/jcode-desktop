@@ -28,6 +28,7 @@ pub enum Transition {
     Connection,
     Transcript,
     PromptDelivery,
+    ToolArrival,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,7 +44,7 @@ pub struct Policy {
     pub duration: Duration,
 }
 
-pub const POLICIES: [Policy; 14] = [
+pub const POLICIES: [Policy; 15] = [
     Policy {
         transition: Transition::Focus,
         motion: Motion::Animate,
@@ -118,6 +119,11 @@ pub const POLICIES: [Policy; 14] = [
         motion: Motion::Animate,
         duration: Duration::from_millis(420),
     },
+    Policy {
+        transition: Transition::ToolArrival,
+        motion: Motion::Animate,
+        duration: MODAL_DURATION,
+    },
 ];
 
 pub fn policy(transition: Transition) -> &'static Policy {
@@ -191,6 +197,19 @@ pub fn ease_out_expo(t: f32) -> f32 {
     }
 }
 
+/// A restrained entrance for transcript cards that arrive from the runtime.
+/// The row participates in layout immediately, then settles horizontally so
+/// the transcript never changes height merely to produce motion.
+pub fn arrival_motion(started_at: Instant, now: Instant, duration: Duration) -> (f32, f32, bool) {
+    let elapsed = now.saturating_duration_since(started_at);
+    if elapsed >= duration || duration.is_zero() {
+        return (0.0, 1.0, false);
+    }
+    let progress = elapsed.as_secs_f32() / duration.as_secs_f32();
+    let eased = ease_out_expo(progress);
+    (6.0 * (1.0 - eased), 0.55 + 0.45 * eased, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +231,7 @@ mod tests {
             Transition::Connection,
             Transition::Transcript,
             Transition::PromptDelivery,
+            Transition::ToolArrival,
         ];
         for transition in all {
             assert_eq!(
@@ -234,5 +254,16 @@ mod tests {
         value.set(0.0, start + Duration::from_millis(50));
         assert!((value.sample(start + Duration::from_millis(50)) - midway).abs() < 0.001);
         assert_eq!(value.sample(start + Duration::from_millis(150)), 0.0);
+    }
+
+    #[test]
+    fn arrival_motion_settles_at_full_opacity() {
+        let start = Instant::now();
+        let duration = policy(Transition::ToolArrival).duration;
+        assert_eq!(arrival_motion(start, start, duration), (6.0, 0.55, true));
+        assert_eq!(
+            arrival_motion(start, start + duration, duration),
+            (0.0, 1.0, false)
+        );
     }
 }
