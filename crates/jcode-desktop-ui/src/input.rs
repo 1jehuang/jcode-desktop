@@ -156,7 +156,10 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
     if !trimmed.starts_with('/') || trimmed.contains('\n') {
         return Vec::new();
     }
-    if trimmed == "/model" || trimmed == "/models" || trimmed.starts_with("/model ") {
+    // The bare `/model` command belongs to the slash-command palette. Its
+    // dedicated picker is activated by the panel as soon as the command is
+    // fully typed. Only text after the inserted space filters model rows.
+    if trimmed.starts_with("/model ") {
         let query = trimmed
             .split_once(' ')
             .map(|(_, query)| query.trim().to_ascii_lowercase())

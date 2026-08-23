@@ -301,6 +301,7 @@ impl Panel {
             let bridge = this.bridge.clone();
             let session_id = this.session_id.clone();
             let cancel_weak = weak.clone();
+            let change_weak = weak.clone();
             this.input = cx.new(|cx| {
                 PromptInput::new(
                     cx,
@@ -332,6 +333,17 @@ impl Panel {
                         }
                     },
                 )
+                .with_on_change(move |content, app| {
+                    if let Some(panel) = change_weak.upgrade() {
+                        panel.update(app, |this, cx| {
+                            if content == "/model" {
+                                this.open_model_picker(cx);
+                            } else if this.model_picker_open && !content.starts_with("/model ") {
+                                this.close_model_picker(cx);
+                            }
+                        });
+                    }
+                })
                 .with_on_overlay_cancel(move |app| {
                     let mut handled = false;
                     if let Some(panel) = cancel_weak.upgrade() {
@@ -581,22 +593,24 @@ impl Panel {
             .absolute()
             .inset_0()
             .flex()
-            .flex_col()
+            .items_center()
+            .justify_center()
+            .bg(gpui::rgba(0x080b10d9))
             .occlude()
-            .child(div().flex_1().bg(gpui::rgba(0x080b10d9)))
             .child(
                 div()
-                    .w_full()
                     .flex()
+                    .items_center()
                     .justify_center()
                     .overflow_hidden()
                     .with_animation(
-                        "model-picker-part-transcript",
+                        "model-picker-dialog",
                         Animation::new(crate::transition::MODAL_DURATION),
-                        |el, delta| el.h(px(430.0 * delta)).opacity(delta),
+                        |el, delta| el.opacity(delta),
                     )
                     .child(
                         div()
+                            .debug_selector(|| "model-picker-dialog".into())
                             .w(px(620.0))
                             .max_w(relative(0.88))
                             .h(px(410.0))
@@ -650,7 +664,6 @@ impl Panel {
                             .child(list),
                     ),
             )
-            .child(div().flex_1().bg(gpui::rgba(0x080b10d9)))
             .into_any_element()
     }
 
@@ -3725,9 +3738,16 @@ mod tests {
         });
 
         vcx.simulate_input("/model");
-        vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_some());
+        let overlay = vcx
+            .debug_bounds("model-picker-overlay")
+            .expect("picker overlay is rendered in the active panel");
+        let dialog = vcx
+            .debug_bounds("model-picker-dialog")
+            .expect("picker dialog is rendered");
+        assert!((dialog.center().x - overlay.center().x).abs() < px(1.0));
+        assert!((dialog.center().y - overlay.center().y).abs() < px(1.0));
         vcx.update(|_, cx| {
             assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model ");
             assert_eq!(panel.read(cx).input.read(cx).model_picker_rows().len(), 2);
