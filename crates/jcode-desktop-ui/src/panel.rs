@@ -1529,6 +1529,8 @@ impl Render for Panel {
 
         let show_jump_chip = !self.stick_to_bottom;
         let model_picker = self.model_picker_open.then(|| self.render_model_picker(cx));
+        let session_title = custom_session_title(&self.session_id, self.title.as_ref())
+            .map(|title| SharedString::from(title.to_owned()));
 
         div()
             .flex()
@@ -1537,6 +1539,19 @@ impl Render for Panel {
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
+            .children(session_title.map(|title| {
+                div()
+                    .debug_selector(|| "panel-session-title".into())
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(Theme::TEXT_DIM)
+                    .child(title)
+            }))
             .child(
                 div()
                     .flex_1()
@@ -1623,6 +1638,13 @@ impl Render for Panel {
             .children(model_picker)
             .into_any_element()
     }
+}
+
+/// The generated short id is useful as a fallback elsewhere, but it is not a
+/// meaningful title to repeat above the conversation.
+fn custom_session_title<'a>(session_id: &str, title: &'a str) -> Option<&'a str> {
+    let title = title.trim();
+    (!title.is_empty() && title != short_id(session_id)).then_some(title)
 }
 
 /// Defensive render-time grouping for transcripts assembled from more than one
@@ -2378,6 +2400,19 @@ mod tests {
     fn condense_flattens_and_clips() {
         assert_eq!(condense("a\n  b\tc", 90), "a b c");
         assert_eq!(condense("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn panel_header_only_shows_a_meaningful_session_title() {
+        let session_id = "01JABCDEF0123456789";
+        let fallback = short_id(session_id);
+
+        assert_eq!(
+            custom_session_title(session_id, "Plan the release"),
+            Some("Plan the release")
+        );
+        assert_eq!(custom_session_title(session_id, &fallback), None);
+        assert_eq!(custom_session_title(session_id, "  "), None);
     }
 
     #[test]
