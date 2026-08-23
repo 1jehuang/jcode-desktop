@@ -2965,6 +2965,7 @@ dependencies = [
  "gpui_platform",
  "jcode-desktop-api",
  "jcode-desktop-ui",
+ "libc",
  "libloading",
  "portable-pty",
  "tempfile",

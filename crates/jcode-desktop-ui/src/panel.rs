@@ -1511,8 +1511,6 @@ impl Render for Panel {
         }
 
         let status_line = self.status_line();
-        let status_pulse =
-            crate::transition::policy(crate::transition::Transition::SessionStatus).duration;
         let meta_line = meta_line(
             self.working_dir.as_deref(),
             self.model.as_deref(),
@@ -1593,20 +1591,15 @@ impl Render for Panel {
                     }),
             )
             .children(status_line.map(|text| {
+                // Session events repaint this footer when its state changes. A
+                // repeating GPUI animation here forces the complete transcript
+                // to lay out and paint at display rate for the entire request.
                 let dot = div()
                     .debug_selector(|| "panel-status-pulse".into())
                     .size(px(5.0))
                     .flex_none()
                     .rounded_full()
-                    .bg(Theme::ACCENT)
-                    .with_animation(
-                        "panel-status-pulse",
-                        Animation::new(status_pulse).repeat(),
-                        |el, delta| {
-                            let wave = (delta * std::f32::consts::TAU).sin();
-                            el.opacity(0.3 + 0.7 * wave.abs())
-                        },
-                    );
+                    .bg(Theme::ACCENT);
                 div()
                     .flex()
                     .flex_row()

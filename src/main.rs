@@ -5,6 +5,7 @@ mod host {
     pub mod reload;
     pub mod resources;
 }
+mod diagnostics;
 
 use std::{
     cell::{Cell, RefCell},
@@ -107,6 +108,13 @@ fn titlebar_options() -> TitlebarOptions {
 }
 
 fn main() {
+    let diagnostics_path = diagnostics::install().unwrap_or_else(|error| {
+        eprintln!("failed to initialize desktop diagnostics: {error}");
+        PathBuf::new()
+    });
+    if !diagnostics_path.as_os_str().is_empty() {
+        eprintln!("desktop diagnostics: {}", diagnostics_path.display());
+    }
     // Sidebar-free windows are intentionally independent from the main window.
     // Otherwise a shortcut for `--no-sidebar` only wakes the already-running
     // main instance, which silently ignores the new process's launch flags.
