@@ -3941,14 +3941,10 @@ fn ease_out_expo(t: f32) -> f32 {
 /// left/right navigation.
 const LONG_HOP: usize = 3;
 
-/// The chord that closes the focused panel on this platform. macOS keeps
-/// Cmd+Q for quitting, so it binds Cmd+W instead.
+/// The chord that closes the focused panel. Cmd/Super+Q everywhere; macOS also
+/// accepts Cmd+W, and quitting the app moved to Cmd+Shift+Q.
 #[cfg(test)]
-const CLOSE_PANEL_CHORD: &str = if cfg!(target_os = "macos") {
-    "super-w"
-} else {
-    "super-q"
-};
+const CLOSE_PANEL_CHORD: &str = "super-q";
 
 /// Normalizes a chord's platform modifier so advertised catalog chords compare
 /// equal to what GPUI reports on the running platform. GPUI prints the platform

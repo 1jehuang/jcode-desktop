@@ -71,9 +71,8 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-enter", NewTerminal, None),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("super-;", NewPanel, None),
-        // macOS keeps Cmd+Q for quitting (bound below), so closing a panel
-        // lives on Cmd+W there and this binding would be dead weight.
-        #[cfg(not(target_os = "macos"))]
+        // Cmd/Super+Q closes the focused panel on every platform. Quitting the
+        // app lives on Cmd+Shift+Q so the common chord does the common thing.
         KeyBinding::new("super-q", ClosePanel, None),
         // niri: Alt+Tab is focus-window-previous, Mod+Tab is the overview.
         KeyBinding::new("super-tab", FocusPrevious, None),
@@ -131,11 +130,12 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-enter", NewTerminal, None),
         KeyBinding::new("cmd-;", NewPanel, None),
         KeyBinding::new("cmd-w", ClosePanel, None),
+        KeyBinding::new("cmd-q", ClosePanel, None),
         KeyBinding::new("cmd-o", ToggleOverview, None),
         KeyBinding::new("cmd-shift-o", OpenFolder, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("cmd-/", ToggleHints, None),
-        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-shift-q", Quit, None),
     ]);
 }
 
