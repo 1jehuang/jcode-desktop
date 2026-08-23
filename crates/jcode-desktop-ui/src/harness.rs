@@ -804,7 +804,8 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 };
                 match command {
                     SessionCommand::Send { content, images } => {
-                        let result = if turn_active && images.is_empty() {
+                        let text_only = images.is_empty();
+                        let mut result = if turn_active && text_only {
                             client.soft_interrupt(&session_id, &content, true)
                         } else {
                             client.send_message(
@@ -814,6 +815,21 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                                 Some(Duration::from_secs(5)),
                             )
                         };
+                        // A queued steering message can start its next turn
+                        // immediately after TurnDone and before its new status
+                        // event reaches this worker. If the composer submits in
+                        // that narrow window, our activity bit is stale and the
+                        // normal SendMessage call loses the race. Recover text
+                        // submissions through the same urgent queue rather than
+                        // rendering the harness's transient busy error.
+                        if !turn_active
+                            && text_only
+                            && result
+                                .as_ref()
+                                .is_err_and(|error| is_already_processing_error(&error.to_string()))
+                        {
+                            result = client.soft_interrupt(&session_id, &content, true);
+                        }
                         if let Err(error) = result {
                             let _ = updates.send(Update::SendFailed {
                                 session_id: session_id.clone(),
@@ -943,6 +959,12 @@ fn is_daemon_connection_closed(event: &ApiEvent) -> bool {
         ApiEvent::Error { message, .. }
             if message.eq_ignore_ascii_case("daemon connection closed")
     )
+}
+
+fn is_already_processing_error(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("already processing a message")
 }
 
 fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
@@ -1399,5 +1421,14 @@ mod tests {
             &mut active,
         );
         assert!(!active);
+    }
+
+    #[test]
+    fn active_turn_race_error_is_recognized_for_interrupt_retry() {
+        assert!(is_already_processing_error("Already processing a message"));
+        assert!(is_already_processing_error(
+            "request failed: ALREADY PROCESSING A MESSAGE"
+        ));
+        assert!(!is_already_processing_error("daemon connection closed"));
     }
 }
