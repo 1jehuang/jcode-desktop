@@ -2968,6 +2968,7 @@ dependencies = [
  "libloading",
  "portable-pty",
  "tempfile",
+ "vt100",
 ]
 
 [[package]]

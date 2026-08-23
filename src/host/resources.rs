@@ -151,14 +151,27 @@ fn spawn_terminal(working_dir: Option<&str>) -> anyhow::Result<TerminalResource>
     let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
     let output = Arc::new(Mutex::new(Output::default()));
     let reader_output = output.clone();
+    let query_writer = writer.clone();
     std::thread::Builder::new()
         .name("jcode-terminal-host-reader".into())
         .spawn(move || {
             let mut buffer = [0u8; 8192];
+            let mut query_window = Vec::new();
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(count) => {
+                        query_window.extend_from_slice(&buffer[..count]);
+                        if query_window.len() > 512 {
+                            query_window.drain(..query_window.len() - 512);
+                        }
+                        let responses = terminal_query_responses(&query_window);
+                        if !responses.is_empty() {
+                            if let Ok(mut writer) = query_writer.lock() {
+                                let _ = writer.write_all(&responses);
+                            }
+                            query_window.clear();
+                        }
                         let mut output = reader_output.lock().expect("terminal output poisoned");
                         output.bytes.extend_from_slice(&buffer[..count]);
                         if output.bytes.len() > MAX_REPLAY_BYTES {
@@ -196,6 +209,35 @@ fn spawn_terminal(working_dir: Option<&str>) -> anyhow::Result<TerminalResource>
         output,
         attachments: 1,
     })
+}
+
+/// Fish probes terminal capabilities before drawing the prompt. A real
+/// emulator answers these queries; without replies it waits indefinitely and
+/// Starship never reaches a usable prompt.
+fn terminal_query_responses(bytes: &[u8]) -> Vec<u8> {
+    let mut responses = Vec::new();
+    if bytes.windows(4).any(|window| window == b"\x1b[?u") {
+        responses.extend_from_slice(b"\x1b[?0u");
+    }
+    if bytes.windows(5).any(|window| window == b"\x1b[>0q") {
+        responses.extend_from_slice(b"\x1bP>|Jcode Desktop\x1b\\");
+    }
+    if bytes.windows(8).any(|window| window == b"\x1b]11;?\x1b\\") {
+        responses.extend_from_slice(b"\x1b]11;rgb:1111/1111/1b1b\x1b\\");
+    }
+    if bytes.windows(3).any(|window| window == b"\x1b[c")
+        || bytes.windows(4).any(|window| window == b"\x1b[0c")
+    {
+        responses.extend_from_slice(b"\x1b[?1;2c");
+    }
+    for capability in [b"696e646e".as_slice(), b"71756572792d6f732d6e616d65"] {
+        if bytes.windows(capability.len()).any(|window| window == capability) {
+            responses.extend_from_slice(b"\x1bP0+r");
+            responses.extend_from_slice(capability);
+            responses.extend_from_slice(b"\x1b\\");
+        }
+    }
+    responses
 }
 
 unsafe extern "C-unwind" fn terminal_write(
@@ -413,5 +455,55 @@ mod tests {
             HOST_OK
         );
         unsafe { (api.terminal_release)(api.context, id) };
+    }
+
+    #[test]
+    fn terminal_startup_has_no_visible_error() {
+        let state = HostState::default();
+        let api = state.api();
+        let host = unsafe { HostHandle::new(&api) }.unwrap();
+        let id = host.terminal_create(None, None).expect("create PTY");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut cursor = 0;
+        let mut parser = vt100::Parser::new(40, 120, 0);
+        while Instant::now() < deadline {
+            let mut buffer = [0; 4096];
+            let read = host.terminal_read(id, cursor, &mut buffer);
+            cursor = read.next_cursor;
+            parser.process(&buffer[..read.copied]);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let contents = parser.screen().contents();
+        eprintln!("headless terminal startup:\n{contents}");
+        assert!(
+            !contents.trim().is_empty(),
+            "shell startup never reached a visible prompt"
+        );
+        assert!(
+            !contents.to_ascii_lowercase().contains("error"),
+            "shell startup rendered an error: {contents}"
+        );
+        assert!(host.terminal_write(id, b"printf jcode-terminal-ready\\n\r"));
+        let command_deadline = Instant::now() + Duration::from_secs(2);
+        let mut command_ran = false;
+        while Instant::now() < command_deadline {
+            let mut buffer = [0; 4096];
+            let read = host.terminal_read(id, cursor, &mut buffer);
+            cursor = read.next_cursor;
+            parser.process(&buffer[..read.copied]);
+            if parser
+                .screen()
+                .contents()
+                .matches("jcode-terminal-ready")
+                .count()
+                >= 2
+            {
+                command_ran = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(command_ran, "shell did not execute terminal input");
+        host.terminal_release(id);
     }
 }
