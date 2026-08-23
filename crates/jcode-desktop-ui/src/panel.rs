@@ -2224,6 +2224,8 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
 }
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
+/// Keep the parameter name visible so the summary is not mistaken for an
+/// implementation detail such as the command or path.
 fn tool_summary(input: &str) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
         return condense(input, 90);
@@ -2244,7 +2246,12 @@ fn tool_summary(input: &str) -> String {
     for key in PREFERRED {
         if let Some(found) = value.get(*key).and_then(json_scalar) {
             if !found.trim().is_empty() {
-                return condense(&found, 90);
+                let found = condense(&found, 90);
+                return if *key == "intent" {
+                    format!("intent: {found}")
+                } else {
+                    found
+                };
             }
         }
     }
@@ -2401,7 +2408,7 @@ mod tests {
     fn tool_summary_prefers_intent_over_implementation_details() {
         assert_eq!(
             tool_summary(r#"{"intent":"look","command":"cargo test"}"#),
-            "look"
+            "intent: look"
         );
         assert_eq!(tool_summary(r#"{"command":"cargo test"}"#), "cargo test");
         assert_eq!(tool_summary(r#"{"other":1}"#), r#"{"other":1}"#);
