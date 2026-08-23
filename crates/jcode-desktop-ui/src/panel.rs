@@ -710,9 +710,12 @@ impl Panel {
                 .filter(|item| matches!(item, Item::Reasoning(_)))
                 .map(|_| self.items.len() - 1)
                 .unwrap_or(self.items.len());
-            // The live row uses a sentinel index. Preserve the user's disclosure
-            // choice when that row becomes a settled transcript item.
-            if self.expanded_reasoning.remove(&(usize::MAX - 1)) {
+            // Live reasoning is shown in full as it arrives. Keep that disclosure
+            // state when the sentinel row becomes a settled transcript item so
+            // the card does not suddenly collapse at the end of the turn.
+            let was_expanded = self.expanded_reasoning.remove(&(usize::MAX - 1))
+                || self.streaming_reasoning.chars().count() > 200;
+            if was_expanded {
                 self.expanded_reasoning.insert(target_index);
             }
             append_reasoning(
@@ -850,13 +853,11 @@ impl Panel {
                 .into_any_element(),
             Item::Reasoning(text) => {
                 let expanded = self.expanded_reasoning.contains(&index);
-                // The live row shows its tail so the newest thought is always
-                // visible; settled rows show their head as a stable summary.
+                // Let the live card grow with the complete thought. Once settled,
+                // older compact cards can still be expanded on demand.
                 let live = index == usize::MAX - 1;
-                let body: String = if expanded {
+                let body: String = if expanded || live {
                     text.clone()
-                } else if live {
-                    condense_tail(text, 200)
                 } else {
                     condense(text, 200)
                 };
@@ -864,6 +865,10 @@ impl Panel {
                 div()
                     .id(("reasoning", index))
                     .flex()
+                    // Reasoning belongs to the scrolling transcript. It should
+                    // retain its content height rather than being flex-squashed
+                    // into a fixed-looking card when the transcript overflows.
+                    .flex_none()
                     .flex_col()
                     .gap_0p5()
                     .px_2()
@@ -874,7 +879,7 @@ impl Panel {
                     } else {
                         Theme::REASONING_BG
                     })
-                    .when(long, |el| {
+                    .when(long && !live, |el| {
                         el.cursor_pointer().on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, _window, cx| {
@@ -913,7 +918,7 @@ impl Panel {
                             } else {
                                 div().child("thinking").into_any_element()
                             })
-                            .when(long, |el| {
+                            .when(long && !live, |el| {
                                 el.child(if expanded { "show less" } else { "show all" })
                             }),
                     )
@@ -1802,7 +1807,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn expanded_live_reasoning_stays_expanded_after_it_settles(cx: &mut gpui::TestAppContext) {
+    fn full_live_reasoning_stays_expanded_after_it_settles(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -1815,13 +1820,13 @@ mod tests {
 
         panel.update(vcx, |panel, _| {
             panel.items.clear();
-            panel.streaming_reasoning = "a complete train of thought".into();
-            panel.expanded_reasoning.insert(usize::MAX - 1);
+            let complete_thought = "a complete train of thought ".repeat(12);
+            panel.streaming_reasoning = complete_thought.clone();
             panel.flush_reasoning();
 
             assert!(panel.expanded_reasoning.contains(&0));
             assert!(!panel.expanded_reasoning.contains(&(usize::MAX - 1)));
-            assert!(matches!(panel.items.as_slice(), [Item::Reasoning(text)] if text == "a complete train of thought"));
+            assert!(matches!(panel.items.as_slice(), [Item::Reasoning(text)] if text == &complete_thought));
         });
     }
 
