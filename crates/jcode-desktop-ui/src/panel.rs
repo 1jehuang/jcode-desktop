@@ -132,6 +132,8 @@ pub struct Panel {
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
     terminal: Option<Entity<TerminalPanel>>,
+    model_picker_open: bool,
+    available_models: Vec<String>,
 }
 
 impl Panel {
@@ -188,6 +190,8 @@ impl Panel {
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             terminal: None,
+            model_picker_open: false,
+            available_models: Vec::new(),
         }
     }
 
@@ -244,6 +248,7 @@ impl Panel {
         panel.update(cx, |this, cx| {
             let bridge = this.bridge.clone();
             let session_id = this.session_id.clone();
+            let cancel_weak = weak.clone();
             this.input = cx.new(|cx| {
                 PromptInput::new(
                     cx,
@@ -275,6 +280,14 @@ impl Panel {
                         }
                     },
                 )
+                .with_on_overlay_cancel(move |app| {
+                    if let Some(panel) = cancel_weak.upgrade() {
+                        panel.update(app, |this, cx| {
+                            this.close_model_picker(cx);
+                            cx.notify();
+                        });
+                    }
+                })
             });
         });
     }
@@ -286,6 +299,7 @@ impl Panel {
             .map(str::trim)
             .filter(|model| !model.is_empty())
         {
+            self.close_model_picker(cx);
             self.bridge.send(Command::SetModel {
                 session_id: self.session_id.clone(),
                 model: model.to_string(),
@@ -357,9 +371,7 @@ impl Panel {
                 "/help" | "/commands" | "/?" => {
                     self.items.push(Item::Assistant(help_markdown()))
                 }
-                "/model" | "/models" => self.items.push(Item::Error(
-                    "No models are available yet. Wait for the session to connect, then try `/model` again.".into(),
-                )),
+                "/model" | "/models" => self.open_model_picker(cx),
                 "/effort" => self.items.push(Item::Assistant(
                     "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
                 )),
@@ -386,6 +398,172 @@ impl Panel {
         self.scroll.scroll_to_bottom();
         cx.notify();
         true
+    }
+
+    fn open_model_picker(&mut self, cx: &mut Context<Self>) {
+        if self.available_models.is_empty() {
+            self.items.push(Item::Error(
+                "No models are available yet. Wait for the session to connect, then try `/model` again.".into(),
+            ));
+            return;
+        }
+        self.model_picker_open = true;
+        let input = self.input.clone();
+        cx.defer(move |cx| {
+            input.update(cx, |input, cx| {
+                input.set_content("/model ".to_string(), cx);
+                input.set_command_palette_visible(false, cx);
+            });
+        });
+    }
+
+    fn close_model_picker(&mut self, cx: &mut Context<Self>) {
+        self.model_picker_open = false;
+        let input = self.input.clone();
+        cx.defer(move |cx| {
+            input.update(cx, |input, cx| input.set_command_palette_visible(true, cx));
+        });
+    }
+
+    fn select_model(&mut self, model: String, cx: &mut Context<Self>) {
+        self.close_model_picker(cx);
+        let input = self.input.clone();
+        cx.defer(move |cx| {
+            input.update(cx, |input, cx| input.set_content(String::new(), cx));
+        });
+        self.bridge.send(Command::SetModel {
+            session_id: self.session_id.clone(),
+            model: model.clone(),
+        });
+        self.items
+            .push(Item::Assistant(format!("Switching model to `{model}`…")));
+        self.stick_to_bottom = true;
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    fn render_model_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let rows = self.input.read(cx).model_picker_rows();
+        let list = div()
+            .id("model-picker-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(index, (model, selected))| {
+                        let chosen = model.clone();
+                        div()
+                            .id(("model-picker-row", index))
+                            .debug_selector(move || format!("model-picker-row-{index}").into())
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px_4()
+                            .py_2()
+                            .cursor_pointer()
+                            .bg(if selected {
+                                Theme::USER_BG
+                            } else {
+                                Theme::PANEL_BG
+                            })
+                            .text_color(if selected {
+                                Theme::TEXT
+                            } else {
+                                Theme::TEXT_DIM
+                            })
+                            .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    this.select_model(chosen.clone(), cx);
+                                }),
+                            )
+                            .child(div().font_family(Theme::FONT_MONO).child(model))
+                            .when(selected, |el| {
+                                el.child(div().text_color(Theme::ACCENT).child("●"))
+                            })
+                    }),
+            );
+
+        div()
+            .id("model-picker-overlay")
+            .debug_selector(|| "model-picker-overlay".into())
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .occlude()
+            .child(div().flex_1().bg(gpui::rgba(0x080b10d9)))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .overflow_hidden()
+                    .with_animation(
+                        "model-picker-part-transcript",
+                        Animation::new(crate::transition::MODAL_DURATION),
+                        |el, delta| el.h(px(430.0 * delta)).opacity(delta),
+                    )
+                    .child(
+                        div()
+                            .w(px(620.0))
+                            .max_w(relative(0.88))
+                            .h(px(410.0))
+                            .flex()
+                            .flex_col()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(Theme::PANEL_BORDER_FOCUS)
+                            .bg(Theme::PANEL_BG)
+                            .shadow_lg()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .px_4()
+                                    .py_3()
+                                    .border_b_1()
+                                    .border_color(Theme::PANEL_BORDER)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(div().text_size(px(15.0)).child("Choose a model"))
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.5))
+                                                    .text_color(Theme::TEXT_FAINT)
+                                                    .child("type to filter  ·  ↑↓ move  ·  enter select"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .text_color(Theme::TEXT_DIM)
+                                            .hover(|el| el.text_color(Theme::TEXT))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _event, _window, cx| {
+                                                    this.close_model_picker(cx);
+                                                    this.input.update(cx, |input, cx| {
+                                                        input.set_content(String::new(), cx)
+                                                    });
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child("esc"),
+                                    ),
+                            )
+                            .child(list),
+                    ),
+            )
+            .child(div().flex_1().bg(gpui::rgba(0x080b10d9)))
+            .into_any_element()
     }
 
     fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
@@ -639,6 +817,7 @@ impl Panel {
                 }
                 self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
                 let models = available_model_names(routes);
+                self.available_models = models.clone();
                 self.input
                     .update(cx, |input, cx| input.set_command_models(models, cx));
             }
@@ -1282,11 +1461,13 @@ impl Render for Panel {
         .unwrap_or_else(crate::build_info::label);
 
         let show_jump_chip = !self.stick_to_bottom;
+        let model_picker = self.model_picker_open.then(|| self.render_model_picker(cx));
 
         div()
             .flex()
             .flex_col()
             .size_full()
+            .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .child(
@@ -1372,6 +1553,7 @@ impl Render for Panel {
                     cx.notify();
                 }),
             )
+            .children(model_picker)
             .into_any_element()
     }
 }
@@ -2674,6 +2856,77 @@ mod tests {
                 operation: SessionOperation::Clear,
             }) if session_id == "session-a"
         ));
+    }
+
+    #[gpui::test]
+    fn model_command_opens_center_picker_and_enter_switches_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, cx| {
+            panel = workspace.test_panel(0);
+            panel.as_ref().unwrap().update(cx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::RuntimeInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("openai".into()),
+                        model: Some("gpt-5.6-sol".into()),
+                        reasoning_effort: None,
+                        routes: vec![
+                            route("claude-fable-5", "anthropic-api-key"),
+                            route("gpt-5.6-sol", "openai-oauth"),
+                        ],
+                    },
+                    cx,
+                );
+            });
+        });
+        let panel = panel.expect("test panel exists");
+        vcx.update(|window, cx| {
+            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+
+        vcx.simulate_input("/model");
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("model-picker-overlay").is_some());
+        vcx.update(|_, cx| {
+            assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model ");
+            assert_eq!(panel.read(cx).input.read(cx).model_picker_rows().len(), 2);
+        });
+
+        vcx.simulate_keystrokes("down");
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                panel.read(cx).input.read(cx).model_picker_rows(),
+                vec![
+                    ("claude-fable-5".into(), false),
+                    ("gpt-5.6-sol".into(), true)
+                ]
+            );
+        });
+        vcx.simulate_keystrokes("enter");
+        let received = commands.recv_timeout(std::time::Duration::from_millis(100));
+        match received {
+            Ok(Command::SetModel { session_id, model }) => {
+                assert_eq!(session_id, "session-a");
+                assert_eq!(model, "gpt-5.6-sol");
+            }
+            _ => panic!("picker did not emit SetModel"),
+        }
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("model-picker-overlay").is_none());
     }
 }
 

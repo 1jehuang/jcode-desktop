@@ -139,8 +139,10 @@ pub struct PromptInput {
     attachment_preview: Option<(usize, Instant)>,
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
+    on_overlay_cancel: Option<Box<dyn Fn(&mut App)>>,
     command_models: Vec<String>,
     command_selection: usize,
+    show_command_palette: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,12 +214,12 @@ fn accepted_command_submission(
 ) -> Option<String> {
     let suggestion = suggestions.get(selection.min(suggestions.len().saturating_sub(1)))?;
     let trimmed = content.trim();
-    (trimmed == "/model"
-        || trimmed == "/models"
-        || trimmed.starts_with("/model ")
+    (content.trim_start().starts_with("/model ")
         || trimmed == "/effort"
         || trimmed.starts_with("/effort ")
-        || (!trimmed.contains(' ') && suggestion.value.starts_with(trimmed)))
+        || (!matches!(trimmed, "/model" | "/models")
+            && !trimmed.contains(' ')
+            && suggestion.value.starts_with(trimmed)))
     .then(|| suggestion.value.clone())
 }
 
@@ -361,13 +363,20 @@ impl PromptInput {
             attachment_preview: None,
             on_submit: Box::new(on_submit),
             on_change: None,
+            on_overlay_cancel: None,
             command_models: Vec::new(),
             command_selection: 0,
+            show_command_palette: true,
         }
     }
 
     pub fn with_on_change(mut self, on_change: impl Fn(&str, &mut App) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
+        self
+    }
+
+    pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) + 'static) -> Self {
+        self.on_overlay_cancel = Some(Box::new(cancel));
         self
     }
 
@@ -377,6 +386,26 @@ impl PromptInput {
             self.command_selection = 0;
             cx.notify();
         }
+    }
+
+    pub fn set_command_palette_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.show_command_palette != visible {
+            self.show_command_palette = visible;
+            cx.notify();
+        }
+    }
+
+    pub fn model_picker_rows(&self) -> Vec<(String, bool)> {
+        self.command_suggestions()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, suggestion)| {
+                suggestion
+                    .value
+                    .strip_prefix("/model ")
+                    .map(|model| (model.to_string(), index == self.command_selection))
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -389,14 +418,15 @@ impl PromptInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        let mut content = self.content.trim().to_string();
+        let raw_content = self.content.to_string();
+        let mut content = raw_content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {
             return;
         }
         if self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
             if let Some(accepted) =
-                accepted_command_submission(&content, &suggestions, self.command_selection)
+                accepted_command_submission(&raw_content, &suggestions, self.command_selection)
             {
                 content = accepted;
             }
@@ -637,12 +667,20 @@ impl PromptInput {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.show_command_palette {
+            self.content = "".into();
+            self.selected_range = 0..0;
+            if let Some(cancel) = &self.on_overlay_cancel {
+                cancel(cx);
+                return;
+            }
+        }
         if !self.content.is_empty() {
             self.set_content(String::new(), cx);
         }
     }
 
-    fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
+    pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content.into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
@@ -1245,7 +1283,7 @@ impl Render for PromptInput {
             .key_context("PromptInput")
             .track_focus(&self.focus_handle(cx))
             .relative()
-            .when(!suggestions.is_empty(), |el| {
+            .when(self.show_command_palette && !suggestions.is_empty(), |el| {
                 el.child(
                     div()
                         .debug_selector(|| "slash-command-overlay".into())
