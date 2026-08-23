@@ -303,7 +303,11 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
     }
 }
 
-fn refresh_sessions(updates: Sender<Update>, include_disk_snapshot: bool) {
+fn refresh_sessions(
+    updates: Sender<Update>,
+    include_disk_snapshot: bool,
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let home = jcode_home();
     if include_disk_snapshot {
         let started = std::time::Instant::now();
