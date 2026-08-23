@@ -6518,6 +6518,17 @@ mod tests {
                 "toggling twice should restore the original state"
             );
         });
+
+        // Ctrl+Shift+E is the explorer-style alias and must drive the same
+        // action, not merely exist in the keymap.
+        cx.simulate_keystrokes("ctrl-shift-e");
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.show_sidebar, !visible_first,
+                "the ctrl-shift-e alias should toggle the sidebar too"
+            );
+        });
     }
 
     #[gpui::test]

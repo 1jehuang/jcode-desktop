@@ -1510,6 +1510,33 @@ mod tests {
             .unwrap();
     }
 
+    /// The workspace binds Ctrl+B to ToggleSidebar while the prompt binds it to
+    /// MoveWordLeft. The prompt's context-scoped binding must win while the
+    /// prompt has focus, otherwise typing would silently move window chrome.
+    #[gpui::test]
+    fn ctrl_b_moves_by_word_in_the_prompt_despite_the_sidebar_shortcut(
+        cx: &mut TestAppContext,
+    ) {
+        let window = input_window(cx);
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.simulate_input(*window, "one two three");
+        cx.run_until_parked();
+
+        let mut cx = gpui::VisualTestContext::from_window(*window, cx);
+        cx.simulate_keystrokes("ctrl-b");
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |input, _, _| {
+                assert_eq!(
+                    &input.content[input.selected_range.start..],
+                    "three",
+                    "Ctrl+B should move the caret one word left inside the prompt"
+                );
+            })
+            .unwrap();
+    }
+
     #[test]
     fn word_motion_crosses_words_and_whitespace() {
         let text = "one   two three";

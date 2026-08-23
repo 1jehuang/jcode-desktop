@@ -89,6 +89,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-o", ToggleOverview, None),
         KeyBinding::new("super-/", ToggleHints, None),
         KeyBinding::new("f1", ToggleHints, None),
+        KeyBinding::new("ctrl-shift-e", ToggleSidebar, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("super-b", ToggleSidebar, None),
         KeyBinding::new("super-shift-/", NewHelpSession, None),
