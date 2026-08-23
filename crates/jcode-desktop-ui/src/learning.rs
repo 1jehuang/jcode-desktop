@@ -205,6 +205,12 @@ pub const SKILLS: &[Skill] = &[
     },
     Skill {
         id: "close_panel",
+        // macOS reserves Cmd+Q for quitting the application, so the desktop
+        // binds Cmd+W to close a panel there and the catalog must advertise the
+        // chord that actually works on the running platform.
+        #[cfg(target_os = "macos")]
+        keys: "super-w",
+        #[cfg(not(target_os = "macos"))]
         keys: "super-q",
         label: "close the focused panel",
         instead_of: "leaving finished sessions open",
