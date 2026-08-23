@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*, px,
-    relative,
+    App, Context, Entity, FocusHandle, Focusable, KeyDownEvent, ScrollHandle, Window, actions, div,
+    prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,7 @@ actions!(
         ClosePanel,
         ToggleOverview,
         ToggleHints,
+        ToggleShowcase,
         ToggleSidebar,
         NewHelpSession,
         CycleWidth,
@@ -85,6 +86,7 @@ The jcode-desktop shortcuts are:
 - Super+F: maximize or restore panel width
 - Super+O: open the overview
 - Super+/ or F1: toggle the hints overlay
+- Super+Shift+S: toggle showcase mode for on-screen shortcut chords
 - Super+Shift+/: open this documentation-aware help session
 
 Composer shortcuts ported from the TUI:
@@ -121,6 +123,7 @@ const COACH_TOAST_WIDTH: f32 = 288.0;
 /// The coach keeps hints for nine seconds. Wake once after that deadline instead
 /// of rebuilding every transcript at display refresh rate for the full lifetime.
 const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(10);
+const SHOWCASE_DURATION: Duration = Duration::from_millis(1800);
 /// Rows split the square's inner height evenly, one per strip.
 const MINIMAP_ROW_HEIGHT: f32 =
     (MINIMAP_SIZE - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
@@ -356,6 +359,10 @@ pub struct Workspace {
     overview_progress: AnimatedValue,
     hints_overlay: bool,
     hints_progress: AnimatedValue,
+    /// Presenter-friendly mode that briefly paints keyboard chords on screen.
+    showcase_mode: bool,
+    showcase_key: Option<String>,
+    showcase_task: Option<gpui::Task<()>>,
     /// Models which shortcuts the user knows, and teaches the ones they don't.
     coach: learning::Coach,
     /// Fade for the coach's hint toast.
@@ -458,6 +465,9 @@ impl Workspace {
             ),
             hints_overlay: false,
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
+            showcase_mode: false,
+            showcase_key: None,
+            showcase_task: None,
             coach: learning::load(),
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
@@ -512,6 +522,9 @@ impl Workspace {
             ),
             hints_overlay: false,
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
+            showcase_mode: false,
+            showcase_key: None,
+            showcase_task: None,
             coach,
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
@@ -1624,6 +1637,41 @@ impl Workspace {
         self.hints_progress
             .set(if self.hints_overlay { 1.0 } else { 0.0 }, Instant::now());
         cx.notify();
+    }
+
+    fn toggle_showcase(&mut self, _: &ToggleShowcase, _: &mut Window, cx: &mut Context<Self>) {
+        self.showcase_mode = !self.showcase_mode;
+        self.showcase_key = self.showcase_mode.then(|| "Showcase mode on".to_owned());
+        self.schedule_showcase_expiry(cx);
+        cx.notify();
+    }
+
+    fn showcase_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.showcase_mode {
+            return;
+        }
+        let chord = showcase_chord(event);
+        if chord.is_empty() {
+            return;
+        }
+        self.showcase_key = Some(chord);
+        self.schedule_showcase_expiry(cx);
+        cx.notify();
+    }
+
+    fn schedule_showcase_expiry(&mut self, cx: &mut Context<Self>) {
+        if self.showcase_key.is_none() {
+            self.showcase_task = None;
+            return;
+        }
+        self.showcase_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SHOWCASE_DURATION).await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.showcase_key = None;
+                workspace.showcase_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     /// The sidebar is a persistent chrome column, so hiding it is a view
@@ -3339,6 +3387,32 @@ impl Workspace {
             .child(card)
             .into_any_element()
     }
+
+    fn render_showcase_key(&self, key: &str) -> gpui::AnyElement {
+        div()
+            .id("showcase-shortcut")
+            .debug_selector(|| "showcase-shortcut".into())
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(56.0))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .px_5()
+                    .py_3()
+                    .rounded_xl()
+                    .bg(Theme::PANEL_BG)
+                    .border_1()
+                    .border_color(Theme::PANEL_BORDER_FOCUS)
+                    .font_family(Theme::FONT_MONO)
+                    .text_size(px(22.0))
+                    .text_color(Theme::TEXT)
+                    .child(key.to_owned()),
+            )
+            .into_any_element()
+    }
 }
 
 impl Workspace {
@@ -3666,6 +3740,7 @@ impl Render for Workspace {
             .text_size(px(14.0))
             .text_color(Theme::TEXT)
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::showcase_key_down))
             .on_action(cx.listener(Self::focus_left))
             .on_action(cx.listener(Self::focus_right))
             .on_action(cx.listener(Self::focus_up))
@@ -3685,6 +3760,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
             .on_action(cx.listener(Self::toggle_hints))
+            .on_action(cx.listener(Self::toggle_showcase))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::cycle_width))
@@ -3719,6 +3795,9 @@ impl Render for Workspace {
                     // needs to see that a fix is on its way.
                     .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
             )
+            .when_some(self.showcase_key.as_deref(), |root, key| {
+                root.child(self.render_showcase_key(key))
+            })
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
@@ -3739,6 +3818,72 @@ fn sidebar_enabled(arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsSt
         let argument = argument.as_ref();
         argument == "--no-sidebar" || argument == "--workspace"
     })
+}
+
+fn showcase_chord(event: &KeyDownEvent) -> String {
+    let modifiers = event.keystroke.modifiers;
+    let key = event.keystroke.key.as_str();
+    let is_function_key = key
+        .strip_prefix('f')
+        .is_some_and(|number| number.parse::<u8>().is_ok());
+    let has_modifier = modifiers.platform
+        || modifiers.control
+        || modifiers.alt
+        || modifiers.shift
+        || modifiers.function;
+    // Do not turn normal prose into a distracting key logger. Named keys and
+    // modified chords are shortcuts and are useful during a presentation.
+    if !has_modifier && !is_function_key && key.chars().count() == 1 {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+    if modifiers.control {
+        parts.push("Ctrl".to_owned());
+    }
+    if modifiers.alt {
+        parts.push(
+            if cfg!(target_os = "macos") {
+                "Option"
+            } else {
+                "Alt"
+            }
+            .to_owned(),
+        );
+    }
+    if modifiers.shift {
+        parts.push("Shift".to_owned());
+    }
+    if modifiers.platform {
+        parts.push(
+            if cfg!(target_os = "macos") {
+                "Cmd"
+            } else {
+                "Super"
+            }
+            .to_owned(),
+        );
+    }
+    if modifiers.function {
+        parts.push("Fn".to_owned());
+    }
+    let label = match key {
+        "left" => "Left",
+        "right" => "Right",
+        "up" => "Up",
+        "down" => "Down",
+        "escape" => "Esc",
+        "backspace" => "Backspace",
+        "enter" => "Enter",
+        "space" => "Space",
+        "tab" => "Tab",
+        other => {
+            parts.push(other.to_uppercase());
+            return parts.join(" + ");
+        }
+    };
+    parts.push(label.to_owned());
+    parts.join(" + ")
 }
 
 fn default_working_dir() -> Option<String> {

@@ -24,7 +24,8 @@ use workspace::{
     ClosePanel, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious, FocusRight,
     FocusUp, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight, MovePanelToFirst,
     MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel, NewTerminal, OpenFolder, Quit,
-    ToggleHints, ToggleOverview, ToggleSidebar, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
+    ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1, WidthPreset2,
+    WidthPreset3, WidthPreset4, Workspace,
 };
 
 /// The workspace keymap. Extracted so tests can dispatch through exactly the
@@ -93,6 +94,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-o", ToggleOverview, None),
         KeyBinding::new("super-/", ToggleHints, None),
         KeyBinding::new("f1", ToggleHints, None),
+        KeyBinding::new("super-shift-s", ToggleShowcase, None),
         KeyBinding::new("ctrl-shift-e", ToggleSidebar, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("super-b", ToggleSidebar, None),
