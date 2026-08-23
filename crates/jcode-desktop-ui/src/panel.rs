@@ -170,6 +170,10 @@ pub struct Panel {
 }
 
 impl Panel {
+    pub(crate) fn sidebar_runtime_status(&self) -> &str {
+        &self.status
+    }
+
     pub fn new(
         session_id: String,
         title: Option<String>,

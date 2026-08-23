@@ -2263,11 +2263,17 @@ impl Workspace {
             .slots
             .get(self.active)
             .map(|slot| slot.panel.read(cx).session_id.clone());
-        let open_ids = self
+        let open_statuses = self
             .slots
             .iter()
-            .map(|slot| slot.panel.read(cx).session_id.clone())
-            .collect::<Vec<_>>();
+            .map(|slot| {
+                let panel = slot.panel.read(cx);
+                (
+                    panel.session_id.clone(),
+                    panel.sidebar_runtime_status().to_string(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let mut list = div()
             .id("sidebar-session-list")
             .flex_1()
@@ -2279,10 +2285,19 @@ impl Workspace {
 
         for (sidebar_index, session) in self.sessions.iter().rev().cloned().enumerate() {
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
-            let open = open_ids.contains(&session.session_id);
             let (icon, title) = sidebar_session_title(&session);
             let directory = sidebar_session_directory(&session);
             let meta = sidebar_session_meta(&session);
+            let (status_icon, status_label, status_kind) = sidebar_session_status(
+                &session.status,
+                open_statuses.get(&session.session_id).map(String::as_str),
+            );
+            let status_color = match status_kind {
+                SidebarStatusKind::Good => Theme::AI_ACCENT,
+                SidebarStatusKind::Busy => Theme::WARN,
+                SidebarStatusKind::Bad => Theme::ERROR,
+                SidebarStatusKind::Dim => Theme::TEXT_DIM,
+            };
 
             list = list.child(
                 div()
@@ -2321,17 +2336,19 @@ impl Workspace {
                             .items_center()
                             .gap_2()
                             .child(div().text_size(px(14.0)).child(icon))
-                            .child(div().size(px(6.0)).rounded_full().bg(if open {
-                                Theme::TEXT
-                            } else {
-                                Theme::TEXT_DIM
-                            }))
                             .child(
                                 div()
                                     .flex_1()
                                     .overflow_hidden()
                                     .text_size(px(12.0))
                                     .child(title),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.0))
+                                    .text_color(status_color)
+                                    .child(format!("{status_icon} {status_label}")),
                             ),
                     )
                     .when_some(directory, |row, directory| {
@@ -3875,6 +3892,41 @@ fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, Str
     (icon, title)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarStatusKind {
+    Good,
+    Busy,
+    Bad,
+    Dim,
+}
+
+fn sidebar_session_status(
+    persisted: &str,
+    runtime: Option<&str>,
+) -> (&'static str, &'static str, SidebarStatusKind) {
+    if let Some(runtime) = runtime {
+        return match runtime.to_ascii_lowercase().as_str() {
+            "generating" | "running" | "busy" | "thinking" | "streaming" => {
+                ("●", "working", SidebarStatusKind::Busy)
+            }
+            status if status.starts_with("lost:") => ("!", "lost", SidebarStatusKind::Bad),
+            _ => ("●", "ready", SidebarStatusKind::Good),
+        };
+    }
+
+    match persisted.to_ascii_lowercase().as_str() {
+        "active" | "attached" => ("▶", "active", SidebarStatusKind::Good),
+        "crashed" => ("💥", "crashed", SidebarStatusKind::Bad),
+        "error" | "errored" => ("✕", "errored", SidebarStatusKind::Bad),
+        "reloaded" => ("↻", "reloaded", SidebarStatusKind::Good),
+        "compacted" => ("▣", "compacted", SidebarStatusKind::Busy),
+        "ratelimited" | "rate_limited" | "rate limited" => {
+            ("⌛", "rate limited", SidebarStatusKind::Busy)
+        }
+        _ => ("✓", "closed", SidebarStatusKind::Dim),
+    }
+}
+
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
     session
         .working_dir
@@ -4451,6 +4503,22 @@ mod tests {
         assert_eq!(
             sidebar_session_title(&session),
             ("🐅", "Release planning".into())
+        );
+    }
+
+    #[test]
+    fn sidebar_status_distinguishes_crashes_and_live_work() {
+        assert_eq!(
+            sidebar_session_status("crashed", None),
+            ("💥", "crashed", SidebarStatusKind::Bad)
+        );
+        assert_eq!(
+            sidebar_session_status("closed", Some("generating")),
+            ("●", "working", SidebarStatusKind::Busy)
+        );
+        assert_eq!(
+            sidebar_session_status("closed", Some("idle")),
+            ("●", "ready", SidebarStatusKind::Good)
         );
     }
 

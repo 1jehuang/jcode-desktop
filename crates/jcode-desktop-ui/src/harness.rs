@@ -347,6 +347,24 @@ struct PersistedSession {
     title: Option<String>,
     #[serde(default)]
     custom_title: Option<String>,
+    #[serde(default)]
+    status: serde_json::Value,
+}
+
+fn persisted_session_status(status: &serde_json::Value) -> String {
+    let name = status
+        .as_str()
+        .or_else(|| {
+            status
+                .as_object()
+                .and_then(|status| status.keys().next().map(String::as_str))
+        })
+        .unwrap_or("idle");
+    match name.to_ascii_lowercase().as_str() {
+        "active" | "closed" | "crashed" | "reloaded" | "compacted" | "ratelimited"
+        | "rate_limited" | "error" => name.to_ascii_lowercase(),
+        _ => "idle".into(),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -443,7 +461,23 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         title: json_string_field(&head, "title", false),
         custom_title: json_string_field(&head, "custom_title", false)
             .or_else(|| json_string_field(&tail, "custom_title", true)),
+        status: json_value_field(&tail, "status", true).unwrap_or_default(),
     })
+}
+
+fn json_value_field(bytes: &[u8], field: &str, last: bool) -> Option<serde_json::Value> {
+    let needle = format!("\"{field}\"");
+    let mut starts = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == needle.as_bytes()).then_some(index));
+    let index = if last { starts.next_back()? } else { starts.next()? };
+    let mut value = &bytes[index + needle.len()..];
+    value = value.strip_prefix(b":")?.trim_ascii_start();
+    serde_json::Deserializer::from_slice(value)
+        .into_iter::<serde_json::Value>()
+        .next()?
+        .ok()
 }
 
 /// The sidebar is a recency view, not an archive browser. Session files include
@@ -499,6 +533,18 @@ pub(crate) fn merge_persisted_sessions(
         })
         .unwrap_or_default();
     sessions.retain(|session| !archived.contains(&session.session_id));
+    // The harness list API reports attachment state, not the durable lifecycle
+    // state used by the TUI picker. Read the same bounded session records so a
+    // crashed or errored session does not get flattened to a generic idle row.
+    for session in &mut sessions {
+        let path = home
+            .join("sessions")
+            .join(format!("{}.json", session.session_id));
+        let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+        if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
+            session.status = persisted_session_status(&record.status);
+        }
+    }
 
     // A full limited API page is authoritative. Modern bridges source it from
     // the compact metadata index, so rescanning a 100k-file transcript directory
@@ -559,7 +605,7 @@ pub(crate) fn merge_persisted_sessions(
             continue;
         }
         let transcript_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
-        let Some(record) = read_persisted_session(&path, transcript_bytes.unwrap_or_default())
+            let Some(record) = read_persisted_session(&path, transcript_bytes.unwrap_or_default())
         else {
             continue;
         };
@@ -568,13 +614,14 @@ pub(crate) fn merge_persisted_sessions(
             .filter(|title| !title.trim().is_empty())
             .or_else(|| persisted_todo_title(home, &id))
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
+        let status = persisted_session_status(&record.status);
         disk_sessions.push((
             recency,
             SessionInfo {
                 session_id: id,
                 working_dir: record.working_dir,
                 title,
-                status: "idle".into(),
+                status,
                 transcript_bytes,
                 archived: false,
                 archived_at_ms: None,
@@ -931,6 +978,18 @@ mod tests {
             archived: false,
             archived_at_ms: None,
         }
+    }
+
+    #[test]
+    fn persisted_status_handles_unit_and_detail_variants() {
+        assert_eq!(persisted_session_status(&serde_json::json!("Closed")), "closed");
+        assert_eq!(
+            persisted_session_status(&serde_json::json!({
+                "Crashed": { "message": "process exited" }
+            })),
+            "crashed"
+        );
+        assert_eq!(persisted_session_status(&serde_json::json!(null)), "idle");
     }
 
     #[test]
