@@ -16,8 +16,8 @@ use std::{
 };
 
 use gpui::{
-    App, Bounds, KeyBinding, Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    App, Bounds, KeyBinding, Point, Render, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, size,
 };
 use gpui_platform::application;
 
@@ -88,6 +88,24 @@ fn hot_reload_path() -> Option<PathBuf> {
     None
 }
 
+/// A macOS-native titlebar for a window whose content runs edge to edge.
+///
+/// The system titlebar stays in place, so the window keeps native traffic
+/// lights, native dragging, double-click zoom, and Window-menu tiling. Making
+/// it transparent lets the workspace background continue behind it, which is
+/// the unified look Finder, Safari, and Xcode use. The traffic lights are
+/// nudged down so they sit centered against the app's own header row.
+fn titlebar_options() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("Jcode".into()),
+        appears_transparent: true,
+        traffic_light_position: Some(Point {
+            x: px(16.0),
+            y: px(16.0),
+        }),
+    }
+}
+
 fn main() {
     // Sidebar-free windows are intentionally independent from the main window.
     // Otherwise a shortcut for `--no-sidebar` only wakes the already-running
@@ -116,6 +134,7 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(titlebar_options()),
                     ..Default::default()
                 },
                 |_, cx| cx.new(|_| HostFallback),
@@ -196,6 +215,7 @@ fn main() {
                         let replacement = cx.open_window(
                             WindowOptions {
                                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                                titlebar: Some(titlebar_options()),
                                 ..Default::default()
                             },
                             |_, cx| cx.new(|_| HostFallback),

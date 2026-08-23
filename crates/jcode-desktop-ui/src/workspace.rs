@@ -95,6 +95,13 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
+/// Height of the macOS titlebar the window draws through. The window uses a
+/// transparent system titlebar, so the app's own chrome has to leave this much
+/// room at the top or it renders underneath the traffic lights.
+const TITLEBAR_HEIGHT: f32 = 52.0;
+/// Horizontal room the macOS traffic lights occupy, measured from the window's
+/// left edge, including the gap the system leaves after the zoom button.
+const TRAFFIC_LIGHT_INSET: f32 = 92.0;
 
 // Minimap: a rounded square card in the top right that maps every strip to
 // scale, preserving the canvas aspect ratio so panels taller than wide on
@@ -2360,8 +2367,12 @@ impl Workspace {
             .border_color(Theme::PANEL_BORDER)
             .child(
                 div()
-                    .h(px(54.0))
-                    .px_4()
+                    // The sidebar header doubles as the window's titlebar strip:
+                    // it matches the system titlebar height and starts after the
+                    // traffic lights, so the two read as one native bar.
+                    .h(px(TITLEBAR_HEIGHT))
+                    .pl(px(TRAFFIC_LIGHT_INSET))
+                    .pr_4()
                     .flex()
                     .items_center()
                     .justify_between()
@@ -3460,7 +3471,15 @@ impl Render for Workspace {
             0.0
         };
         let viewport_w = (f32::from(viewport.width) - sidebar_width).max(320.0);
-        let viewport_h = f32::from(viewport.height);
+        // With the sidebar visible, its header covers the titlebar strip. Without
+        // it, the workspace itself must leave room so panels never paint beneath
+        // the traffic lights.
+        let content_top_inset = if self.show_sidebar {
+            0.0
+        } else {
+            TITLEBAR_HEIGHT
+        };
+        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(240.0);
 
         let now = Instant::now();
         let overview_progress = self.overview_progress.sample(now);
@@ -3574,6 +3593,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
+                    .pt(px(content_top_inset))
                     .child(content)
                     .child(self.render_workspace_bar(cx))
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
@@ -3910,6 +3930,23 @@ fn ease_out_expo(t: f32) -> f32 {
 /// is the work `super-home`/`super-end` exists for. Shorter hops are ordinary
 /// left/right navigation.
 const LONG_HOP: usize = 3;
+
+/// The chord that closes the focused panel on this platform. macOS keeps
+/// Cmd+Q for quitting, so it binds Cmd+W instead.
+#[cfg(test)]
+const CLOSE_PANEL_CHORD: &str = if cfg!(target_os = "macos") {
+    "super-w"
+} else {
+    "super-q"
+};
+
+/// Normalizes a chord's platform modifier so advertised catalog chords compare
+/// equal to what GPUI reports on the running platform. GPUI prints the platform
+/// modifier as "cmd-" on macOS and "super-" on Linux for the same binding.
+#[cfg(test)]
+fn platform_chord(chord: &str) -> String {
+    chord.replace("cmd-", "super-").replace("win-", "super-")
+}
 
 /// Whether a catalog `keys` string shows the given chord to the user. The
 /// catalog writes chords for humans ("super-h / super-l", "super-1 .. super-4"),
@@ -5390,7 +5427,7 @@ mod tests {
             ("width_presets", "super-2"),
             ("move_panel_strip", "super-shift-j"),
             ("focus_up_down", "super-j"),
-            ("close_panel", "super-q"),
+            ("close_panel", CLOSE_PANEL_CHORD),
         ];
 
         for (skill_id, keys) in cases {
@@ -5490,7 +5527,7 @@ mod tests {
             ("width_presets", "super-3", Box::new(WidthPreset3)),
             ("width_presets", "super-4", Box::new(WidthPreset4)),
             ("new_panel", "super-n", Box::new(NewPanel)),
-            ("close_panel", "super-q", Box::new(ClosePanel)),
+            ("close_panel", CLOSE_PANEL_CHORD, Box::new(ClosePanel)),
         ];
 
         // Every catalog skill must appear, so a new skill cannot skip this check.
@@ -5524,8 +5561,14 @@ mod tests {
                     })
                     .collect()
             });
+            // GPUI unparses the platform modifier per platform: "super-" on
+            // Linux, "cmd-" on macOS. The catalog writes one chord for humans,
+            // so compare on a normalized form rather than the literal string.
+            let expected_chord = platform_chord(chord);
             assert!(
-                bound.iter().any(|actual| actual == chord),
+                bound
+                    .iter()
+                    .any(|actual| platform_chord(actual) == expected_chord),
                 "{skill_id} advertises {chord:?} but that action binds {bound:?}"
             );
         }
@@ -6236,7 +6279,7 @@ mod tests {
             "super-f",
             "super-1 .. super-4",
             "super-n",
-            "super-q",
+            CLOSE_PANEL_CHORD,
         ] {
             assert!(taught.contains(&keys), "{keys} is bound but never taught");
         }
