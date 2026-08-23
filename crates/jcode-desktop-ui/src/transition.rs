@@ -23,6 +23,8 @@ pub enum Transition {
     Coach,
     /// The automatic-update chip's activity pulse.
     Update,
+    /// The panel footer's live session-status pulse.
+    SessionStatus,
     Connection,
     Transcript,
     PromptDelivery,
@@ -41,7 +43,7 @@ pub struct Policy {
     pub duration: Duration,
 }
 
-pub const POLICIES: [Policy; 13] = [
+pub const POLICIES: [Policy; 14] = [
     Policy {
         transition: Transition::Focus,
         motion: Motion::Animate,
@@ -93,6 +95,11 @@ pub const POLICIES: [Policy; 13] = [
         transition: Transition::Update,
         motion: Motion::Animate,
         duration: Duration::from_millis(1400),
+    },
+    Policy {
+        transition: Transition::SessionStatus,
+        motion: Motion::Animate,
+        duration: Duration::from_millis(1200),
     },
     // These states update incrementally from the runtime. Interpolating them
     // would add latency, so their deliberate policy is continuous rendering.
@@ -201,6 +208,7 @@ mod tests {
             Transition::Hints,
             Transition::Coach,
             Transition::Update,
+            Transition::SessionStatus,
             Transition::Connection,
             Transition::Transcript,
             Transition::PromptDelivery,
