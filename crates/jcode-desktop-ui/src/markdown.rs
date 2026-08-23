@@ -498,6 +498,47 @@ fn link_style() -> HighlightStyle {
     }
 }
 
+/// GPUI's `StyledText::with_default_highlights` requires highlight ranges to
+/// be sorted and non-overlapping; nested spans (code inside bold, a link
+/// inside italics) naturally produce overlapping ranges, and feeding those in
+/// directly makes GPUI compute text runs that overrun the string and abort
+/// the process. Flatten overlaps into disjoint, sorted segments, merging the
+/// styles of every range covering each segment (inner spans first, so an
+/// outer wrapper refines rather than replaces them).
+fn flatten_highlights(
+    highlights: &[(std::ops::Range<usize>, HighlightStyle)],
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    let mut bounds: Vec<usize> = highlights
+        .iter()
+        .flat_map(|(range, _)| [range.start, range.end])
+        .collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let mut flattened: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+    for pair in bounds.windows(2) {
+        let (segment_start, segment_end) = (pair[0], pair[1]);
+        let mut merged: Option<HighlightStyle> = None;
+        for (range, style) in highlights {
+            if range.start <= segment_start && segment_end <= range.end {
+                merged = Some(match merged {
+                    Some(base) => base.highlight(*style),
+                    None => *style,
+                });
+            }
+        }
+        let Some(style) = merged else { continue };
+        if let Some((last_range, last_style)) = flattened.last_mut()
+            && last_range.end == segment_start
+            && *last_style == style
+        {
+            last_range.end = segment_end;
+            continue;
+        }
+        flattened.push((segment_start..segment_end, style));
+    }
+    flattened
+}
+
 /// Turn common LaTeX notation into readable Unicode. GPUI does not currently
 /// provide a TeX layout engine, so this keeps formulas clean instead of
 /// exposing commands and delimiters. Unknown commands remain visible.
@@ -704,7 +745,7 @@ fn styled_line(source: &str, window: &gpui::Window) -> gpui::AnyElement {
     let inline = inline_spans(source);
     let style = window.text_style();
     let text = StyledText::new(inline.plain.clone())
-        .with_default_highlights(&style, inline.highlights.clone());
+        .with_default_highlights(&style, flatten_highlights(&inline.highlights));
     if inline.links.is_empty() {
         return text.into_any_element();
     }
@@ -1275,6 +1316,53 @@ fn table(header: Vec<String>, rows: Vec<Vec<String>>, window: &gpui::Window) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nested inline spans produce overlapping highlight ranges. GPUI aborts
+    /// the whole process in debug builds when highlight ranges overlap or run
+    /// past the text, so the exact invariant `compute_runs` needs is checked
+    /// here: sorted, disjoint, in-bounds segments that cover every styled
+    /// byte on char boundaries.
+    #[test]
+    fn flattened_highlights_are_sorted_disjoint_and_in_bounds() {
+        let sources = [
+            "**bold with `code` inside**",
+            "*italic [link](https://example.com) and `code`*",
+            "~~strike **bold `code`** tail~~ plus **more *nesting* here**",
+            "prefix **`n the`** suffix",
+            "a **b *c `d` e* f** g [h **i**](https://example.com/x) j",
+        ];
+        for source in sources {
+            let inline = inline_spans(source);
+            let flattened = flatten_highlights(&inline.highlights);
+            let mut previous_end = 0;
+            for (range, _) in &flattened {
+                assert!(range.start < range.end, "empty segment in {source:?}");
+                assert!(
+                    range.start >= previous_end,
+                    "overlapping segments in {source:?}"
+                );
+                assert!(
+                    range.end <= inline.plain.len(),
+                    "segment out of bounds in {source:?}"
+                );
+                assert!(
+                    inline.plain.is_char_boundary(range.start)
+                        && inline.plain.is_char_boundary(range.end),
+                    "segment splits a character in {source:?}"
+                );
+                previous_end = range.end;
+            }
+            // Every originally styled byte stays styled after flattening.
+            for (range, _) in &inline.highlights {
+                for offset in range.clone() {
+                    assert!(
+                        flattened.iter().any(|(r, _)| r.contains(&offset)),
+                        "byte {offset} lost its style in {source:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn parses_blocks() {
