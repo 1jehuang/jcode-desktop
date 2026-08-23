@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use base64::Engine as _;
 use gpui::{
@@ -321,10 +321,12 @@ impl Panel {
                     },
                 )
                 .with_on_overlay_cancel(move |app| {
+                    let mut handled = false;
                     if let Some(panel) = cancel_weak.upgrade() {
-                        return panel.update(app, |this, cx| {
+                        panel.update(app, |this, cx| {
                             if this.model_picker_open {
                                 this.close_model_picker(cx);
+                                handled = true;
                             } else if this.status != "idle"
                                 || !this.connection_phase.is_empty()
                                 || !this.streaming_text.is_empty()
@@ -334,14 +336,12 @@ impl Panel {
                                 this.bridge.send(Command::Cancel {
                                     session_id: this.session_id.clone(),
                                 });
-                            } else {
-                                return false;
+                                handled = true;
                             }
                             cx.notify();
-                            true
                         });
                     }
-                    false
+                    handled
                 })
             });
         });
@@ -1089,22 +1089,15 @@ impl Panel {
                 .px_1()
                 .text_color(Theme::TEXT)
                 .child(markdown::render(text, window))
+                // Streaming updates already repaint this row as text arrives. A
+                // repeating GPUI animation here would repaint every settled
+                // markdown row at display rate between chunks.
                 .when(index == usize::MAX, |el| {
                     el.child(
                         div()
                             .text_size(px(12.0))
                             .text_color(Theme::ACCENT)
-                            .with_animation(
-                                "assistant-stream-caret",
-                                Animation::new(Duration::from_millis(900)).repeat(),
-                                |caret, delta| {
-                                    // A soft pulse communicates that text is still
-                                    // arriving without moving the surrounding copy.
-                                    let opacity =
-                                        0.28 + 0.72 * (delta * std::f32::consts::TAU).sin().abs();
-                                    caret.opacity(opacity).child("▍")
-                                },
-                            ),
+                            .child("▍"),
                     )
                 })
                 .into_any_element(),
@@ -1160,18 +1153,9 @@ impl Panel {
                                 Theme::TEXT_FAINT
                             })
                             .child(if live {
-                                div()
-                                    .with_animation(
-                                        "reasoning-stream-pulse",
-                                        Animation::new(Duration::from_millis(1200)).repeat(),
-                                        |dot, delta| {
-                                            let opacity = 0.35
-                                                + 0.65
-                                                    * (delta * std::f32::consts::TAU).sin().abs();
-                                            dot.opacity(opacity).child("● thinking…")
-                                        },
-                                    )
-                                    .into_any_element()
+                                // Incoming reasoning events provide the repaint clock;
+                                // avoid a second, unbounded full-panel animation.
+                                div().child("● thinking…").into_any_element()
                             } else {
                                 div().child("thinking").into_any_element()
                             })
@@ -1206,23 +1190,15 @@ impl Panel {
                     return render_todo_card(&payload).into_any_element();
                 }
                 let status = match (done, error) {
-                    (false, _) => {
-                        const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                        div()
-                            .w(px(12.0))
-                            .flex_none()
-                            .text_color(Theme::WARN)
-                            .with_animation(
-                                ("tool-spinner", index),
-                                Animation::new(Duration::from_millis(900)).repeat(),
-                                |el, delta| {
-                                    let frame =
-                                        (delta * FRAMES.len() as f32) as usize % FRAMES.len();
-                                    el.child(FRAMES[frame])
-                                },
-                            )
-                            .into_any_element()
-                    }
+                    (false, _) => div()
+                        .w(px(12.0))
+                        .flex_none()
+                        .text_color(Theme::WARN)
+                        // Tool events notify the panel on meaningful progress. A
+                        // perpetual spinner otherwise reparses and repaints the
+                        // complete transcript while a long-running tool is quiet.
+                        .child("●")
+                        .into_any_element(),
                     (true, None) => div()
                         .w(px(12.0))
                         .flex_none()
@@ -1535,6 +1511,8 @@ impl Render for Panel {
         }
 
         let status_line = self.status_line();
+        let status_pulse =
+            crate::transition::policy(crate::transition::Transition::SessionStatus).duration;
         let meta_line = meta_line(
             self.working_dir.as_deref(),
             self.model.as_deref(),
@@ -1615,6 +1593,20 @@ impl Render for Panel {
                     }),
             )
             .children(status_line.map(|text| {
+                let dot = div()
+                    .debug_selector(|| "panel-status-pulse".into())
+                    .size(px(5.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(Theme::ACCENT)
+                    .with_animation(
+                        "panel-status-pulse",
+                        Animation::new(status_pulse).repeat(),
+                        |el, delta| {
+                            let wave = (delta * std::f32::consts::TAU).sin();
+                            el.opacity(0.3 + 0.7 * wave.abs())
+                        },
+                    );
                 div()
                     .flex()
                     .flex_row()
@@ -1625,7 +1617,7 @@ impl Render for Panel {
                     .text_size(px(10.5))
                     .font_family(Theme::FONT_MONO)
                     .text_color(Theme::TEXT_FAINT)
-                    .child("·")
+                    .child(dot)
                     .child(text)
             }))
             // Session identity: where it runs, what serves it, and how full

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window,
-    actions, div, prelude::*, px, relative,
+    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*, px,
+    relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -116,8 +116,6 @@ const MINIMAP_RIGHT: f32 = 12.0;
 /// The update chip sits above the workspace bar in the bottom-right corner,
 /// out of the reading path but always in view.
 const UPDATE_CHIP_BOTTOM: f32 = 44.0;
-/// One breath of the update chip's activity dot.
-const UPDATE_PULSE: Duration = Duration::from_millis(1400);
 const COACH_TOAST_GAP: f32 = 8.0;
 const COACH_TOAST_WIDTH: f32 = 288.0;
 /// The coach keeps hints for nine seconds. Wake once after that deadline instead
@@ -2502,19 +2500,12 @@ impl Workspace {
             Theme::TEXT_DIM
         };
 
-        // A working chip breathes; a finished one holds still so a permanent
-        // "restart" prompt never turns into background noise.
+        // Keep this indicator still. Repeating element animations schedule a
+        // repaint of the complete workspace, which is especially expensive in a
+        // source/debug build and while several markdown transcripts are visible.
+        // State transitions still notify the workspace and update the label.
         let dot = div().size(px(6.0)).flex_none().rounded_full().bg(ink);
-        let dot: gpui::AnyElement = if busy {
-            dot.with_animation(
-                "update-chip-pulse",
-                Animation::new(UPDATE_PULSE).repeat(),
-                |el, delta| el.opacity(0.35 + 0.65 * (delta * std::f32::consts::TAU).sin().abs()),
-            )
-            .into_any_element()
-        } else {
-            dot.into_any_element()
-        };
+        let dot: gpui::AnyElement = dot.opacity(if busy { 0.65 } else { 1.0 }).into_any_element();
 
         let mut chip = div()
             .id("update-chip")
