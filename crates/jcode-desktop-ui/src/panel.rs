@@ -1620,6 +1620,10 @@ fn role_of(item: &Item) -> Option<&'static str> {
 fn role_caption(label: &'static str, body: gpui::AnyElement) -> gpui::AnyElement {
     div()
         .flex()
+        // Restored history alternates labelled user and assistant rows. If
+        // these wrappers may shrink, flex layout compresses the whole history
+        // into the viewport and leaves the transcript with nothing to scroll.
+        .flex_none()
         .flex_col()
         .gap_1()
         .child(
@@ -1939,6 +1943,49 @@ mod tests {
             assert_eq!(f32::from(panel.scroll.offset().y), -137.0);
             assert!(!panel.stick_to_bottom);
         });
+    }
+
+    #[gpui::test]
+    fn restored_alternating_history_still_overflows_and_scrolls(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            let history = (0..80)
+                .map(|index| jcode_sdk::HistoryMessage {
+                    role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                    content: format!("restored message {index}"),
+                })
+                .collect();
+            panel.load_history(history, Vec::new(), cx);
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |_panel, cx| cx.notify());
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("transcript-scrollbar").is_some(),
+            "restored alternating history must produce scrollable overflow"
+        );
+        let before = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        let transcript = vcx.debug_bounds("transcript").expect("transcript painted");
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: transcript.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(60.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        let after = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        assert_ne!(after, before, "wheel input must move restored history");
     }
 
     #[test]
