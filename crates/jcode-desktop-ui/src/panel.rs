@@ -49,7 +49,37 @@ pub enum Item {
         done: bool,
         error: Option<String>,
     },
+    Todos(TodoCardPayload),
     Error(String),
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TodoCardPayload {
+    #[serde(default)]
+    todos: Vec<TodoCardItem>,
+    #[serde(default)]
+    plan: TodoCardPlan,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TodoCardPlan {
+    user_intention: Option<String>,
+    understands_user_intent: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TodoCardItem {
+    content: String,
+    status: String,
+    priority: String,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    confidence: Option<serde_json::Value>,
+    #[serde(default)]
+    completion_confidence: Option<serde_json::Value>,
+    #[serde(default)]
+    blocked_by: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -377,6 +407,13 @@ impl Panel {
                 "/help" | "/commands" | "/?" => {
                     self.items.push(Item::Assistant(help_markdown()))
                 }
+                "/todos" | "/todo" => {
+                    if let Some(payload) = self.latest_todo_payload() {
+                        self.items.push(Item::Todos(payload));
+                    } else {
+                        self.items.push(Item::Todos(TodoCardPayload::default()));
+                    }
+                }
                 "/model" | "/models" => self.open_model_picker(cx),
                 "/effort" => self.items.push(Item::Assistant(
                     "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
@@ -404,6 +441,20 @@ impl Panel {
         self.scroll.scroll_to_bottom();
         cx.notify();
         true
+    }
+
+    fn latest_todo_payload(&self) -> Option<TodoCardPayload> {
+        self.items.iter().rev().find_map(|item| match item {
+            Item::Todos(payload) => Some(payload.clone()),
+            Item::Tool {
+                name,
+                output,
+                done: true,
+                error: None,
+                ..
+            } if name == "todo" => parse_todo_tool_output(output),
+            _ => None,
+        })
     }
 
     fn open_model_picker(&mut self, cx: &mut Context<Self>) {
@@ -1119,6 +1170,7 @@ impl Panel {
                     )
                     .into_any_element()
             }
+            Item::Todos(payload) => render_todo_card(payload).into_any_element(),
             Item::Tool {
                 call_id,
                 name,
@@ -1127,6 +1179,13 @@ impl Panel {
                 done,
                 error,
             } => {
+                if name == "todo"
+                    && *done
+                    && error.is_none()
+                    && let Some(payload) = parse_todo_tool_output(output)
+                {
+                    return render_todo_card(&payload).into_any_element();
+                }
                 let status = match (done, error) {
                     (false, _) => {
                         const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1619,7 +1678,11 @@ fn role_of(item: &Item) -> Option<&'static str> {
     match item {
         Item::User(_) => Some("you"),
         Item::Assistant(_) => Some("jcode"),
-        Item::Image(_) | Item::Reasoning(_) | Item::Tool { .. } | Item::Error(_) => None,
+        Item::Image(_)
+        | Item::Reasoning(_)
+        | Item::Tool { .. }
+        | Item::Todos(_)
+        | Item::Error(_) => None,
     }
 }
 
@@ -1844,6 +1907,287 @@ fn strip_ansi(text: &str) -> String {
         }
     }
     output
+}
+
+/// Parse the todo tool's concatenated output format. The tool emits the item
+/// array first, followed by optional `Plan:` and `Goals:` JSON sections.
+fn parse_todo_tool_output(output: &str) -> Option<TodoCardPayload> {
+    let mut stream =
+        serde_json::Deserializer::from_str(output.trim_start()).into_iter::<Vec<TodoCardItem>>();
+    let todos = stream.next()?.ok()?;
+    let remainder = output
+        .trim_start()
+        .get(stream.byte_offset()..)?
+        .trim_start();
+    let plan = remainder
+        .strip_prefix("Plan:")
+        .and_then(|json| {
+            serde_json::Deserializer::from_str(json.trim_start())
+                .into_iter::<TodoCardPlan>()
+                .next()
+                .and_then(Result::ok)
+        })
+        .unwrap_or_default();
+    Some(TodoCardPayload { todos, plan })
+}
+
+fn semantic_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.replace('_', " "),
+        serde_json::Value::Number(value) => format!("{value}%"),
+        _ => String::new(),
+    }
+}
+
+fn todo_status_color(todo: &TodoCardItem) -> gpui::Rgba {
+    if !todo.blocked_by.is_empty() && todo.status != "completed" {
+        Theme::WARN
+    } else {
+        match todo.status.as_str() {
+            "completed" => Theme::OK,
+            "in_progress" => Theme::ACCENT,
+            "cancelled" => Theme::ERROR,
+            _ => Theme::TEXT_FAINT,
+        }
+    }
+}
+
+fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
+    let color = todo_status_color(todo);
+    div()
+        .flex_none()
+        .w(px(13.0))
+        .h(px(13.0))
+        .rounded_full()
+        .border_1()
+        .border_color(color)
+        .p(px(2.0))
+        .when(todo.status == "completed", |marker| {
+            marker.child(div().size_full().rounded_full().bg(color))
+        })
+        .when(todo.status == "in_progress", |marker| {
+            marker.child(div().size_full().rounded_full().bg(Theme::ACCENT))
+        })
+}
+
+fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
+    let total = payload.todos.len();
+    let completed = payload
+        .todos
+        .iter()
+        .filter(|todo| todo.status == "completed")
+        .count();
+    let progress = if total == 0 {
+        0.0
+    } else {
+        completed as f32 / total as f32
+    };
+
+    let mut groups: Vec<(Option<&str>, Vec<&TodoCardItem>)> = Vec::new();
+    for todo in &payload.todos {
+        let group = todo
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty());
+        if let Some((_, items)) = groups.iter_mut().find(|(known, _)| *known == group) {
+            items.push(todo);
+        } else {
+            groups.push((group, vec![todo]));
+        }
+    }
+    groups.sort_by_key(|(group, _)| group.is_none());
+
+    let mut body = div().flex().flex_col().gap_3();
+    if payload.todos.is_empty() {
+        body = body.child(
+            div()
+                .py_2()
+                .text_size(px(12.0))
+                .text_color(Theme::TEXT_DIM)
+                .child("No tasks yet. Jcode will populate them as work is planned."),
+        );
+    } else {
+        for (group, todos) in groups {
+            let done = todos
+                .iter()
+                .filter(|todo| todo.status == "completed")
+                .count();
+            let mut section = div().flex().flex_col().gap_1p5();
+            if group.is_some() || payload.todos.iter().any(|todo| todo.group.is_some()) {
+                section = section.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .text_size(px(11.0))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(Theme::ACCENT_MUTED)
+                                .child(group.unwrap_or("Other").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_color(Theme::TEXT_FAINT)
+                                .child(format!("{done}/{}", todos.len())),
+                        ),
+                );
+            }
+            for todo in todos {
+                let confidence = if todo.status == "completed" {
+                    todo.completion_confidence
+                        .as_ref()
+                        .or(todo.confidence.as_ref())
+                } else {
+                    todo.confidence.as_ref()
+                };
+                let blocked = !todo.blocked_by.is_empty() && todo.status != "completed";
+                section = section.child(
+                    div()
+                        .debug_selector(|| "todo-row".into())
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .py_1()
+                        .child(render_todo_marker(todo))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_size(px(12.5))
+                                        .line_height(relative(1.35))
+                                        .text_color(if todo.status == "completed" {
+                                            Theme::TEXT_DIM
+                                        } else {
+                                            Theme::TEXT
+                                        })
+                                        .child(todo.content.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap_1()
+                                        .text_size(px(9.5))
+                                        .when(todo.priority == "high", |meta| {
+                                            meta.child(
+                                                div()
+                                                    .rounded_sm()
+                                                    .px_1()
+                                                    .bg(Theme::ERROR_BG)
+                                                    .text_color(Theme::WARN)
+                                                    .child("high priority"),
+                                            )
+                                        })
+                                        .when(blocked, |meta| {
+                                            meta.child(
+                                                div()
+                                                    .rounded_sm()
+                                                    .px_1()
+                                                    .bg(Theme::ERROR_BG)
+                                                    .text_color(Theme::WARN)
+                                                    .child("blocked"),
+                                            )
+                                        })
+                                        .when_some(confidence, |meta, confidence| {
+                                            meta.child(
+                                                div()
+                                                    .text_color(Theme::TEXT_FAINT)
+                                                    .child(semantic_value(confidence)),
+                                            )
+                                        }),
+                                ),
+                        ),
+                );
+            }
+            body = body.child(section);
+        }
+    }
+
+    div()
+        .debug_selector(|| "todo-card".into())
+        .flex()
+        .flex_none()
+        .flex_col()
+        .gap_3()
+        .rounded_lg()
+        .border_1()
+        .border_color(Theme::TOOL_BORDER)
+        .bg(Theme::TOOL_BG)
+        .p_3()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(Theme::HEADING)
+                        .child("Tasks"),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(Theme::TEXT_DIM)
+                        .child(format!("{completed} of {total} complete")),
+                ),
+        )
+        .child(
+            div()
+                .h(px(4.0))
+                .w_full()
+                .rounded_full()
+                .bg(Theme::CODE_BORDER)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(progress))
+                        .rounded_full()
+                        .bg(Theme::OK),
+                ),
+        )
+        .when_some(payload.plan.user_intention.clone(), |card, intention| {
+            card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_size(px(9.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(Theme::TEXT_FAINT)
+                            .child("OUTCOME"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .line_height(relative(1.4))
+                            .text_color(Theme::TEXT_DIM)
+                            .child(intention),
+                    )
+                    .when_some(
+                        payload.plan.understands_user_intent.as_ref(),
+                        |plan, value| {
+                            plan.child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .text_color(Theme::TEXT_FAINT)
+                                    .child(format!("Understanding: {}", semantic_value(value))),
+                            )
+                        },
+                    ),
+            )
+        })
+        .child(body)
 }
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
@@ -3038,6 +3382,55 @@ mod tests {
         }
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_none());
+    }
+
+    #[test]
+    fn todo_tool_output_parses_items_and_plan() {
+        let payload = parse_todo_tool_output(
+            r#"[{"id":"build","content":"Build the card","status":"in_progress","priority":"high","group":"Desktop","confidence":"validated"}]
+Plan: {"user_intention":"See progress at a glance","understands_user_intent":"clear"}
+Goals: []"#,
+        )
+        .expect("todo payload parses");
+
+        assert_eq!(payload.todos.len(), 1);
+        assert_eq!(payload.todos[0].content, "Build the card");
+        assert_eq!(payload.todos[0].group.as_deref(), Some("Desktop"));
+        assert_eq!(
+            payload.plan.user_intention.as_deref(),
+            Some("See progress at a glance")
+        );
+    }
+
+    #[gpui::test]
+    fn completed_todo_tool_paints_as_a_native_card(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(vcx, |panel, cx| {
+            panel.items = vec![Item::Tool {
+                call_id: "todo-1".into(),
+                name: "todo".into(),
+                input: r#"{"intent":"Track implementation"}"#.into(),
+                output: r#"[{"id":"one","content":"Render rich rows","status":"completed","priority":"high","completion_confidence":"verified","blocked_by":[]},{"id":"two","content":"Test the card","status":"in_progress","priority":"medium","group":"Validation","confidence":"validated","blocked_by":[]}] Plan: {"user_intention":"See progress visually","understands_user_intent":"clear"} Goals: []"#.into(),
+                done: true,
+                error: None,
+            }];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let bounds = vcx
+            .debug_bounds("todo-card")
+            .expect("todo tool output should paint as a native card");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        assert!(vcx.debug_bounds("tool-card").is_none());
     }
 }
 
