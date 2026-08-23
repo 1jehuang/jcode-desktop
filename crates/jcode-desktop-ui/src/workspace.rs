@@ -45,6 +45,7 @@ actions!(
         ClosePanel,
         ToggleOverview,
         ToggleHints,
+        ToggleSidebar,
         NewHelpSession,
         CycleWidth,
         MaximizeWidth,
@@ -1611,6 +1612,14 @@ impl Workspace {
         self.hints_overlay = !self.hints_overlay;
         self.hints_progress
             .set(if self.hints_overlay { 1.0 } else { 0.0 }, Instant::now());
+        cx.notify();
+    }
+
+    /// The sidebar is a persistent chrome column, so hiding it is a view
+    /// preference rather than a workspace mutation: panels keep their slots and
+    /// only the horizontal budget in `render` changes.
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_sidebar = !self.show_sidebar;
         cx.notify();
     }
 
@@ -3577,6 +3586,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
             .on_action(cx.listener(Self::toggle_hints))
+            .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
