@@ -15,6 +15,7 @@ mod scrollbar;
 mod terminal;
 mod theme;
 mod transition;
+mod updates;
 mod workspace;
 
 use gpui::{App, KeyBinding, Window};

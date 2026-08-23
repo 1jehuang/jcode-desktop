@@ -21,6 +21,8 @@ pub enum Transition {
     Hints,
     /// The learning coach's just-in-time hint toast.
     Coach,
+    /// The automatic-update chip's activity pulse.
+    Update,
     Connection,
     Transcript,
     PromptDelivery,
@@ -39,7 +41,7 @@ pub struct Policy {
     pub duration: Duration,
 }
 
-pub const POLICIES: [Policy; 12] = [
+pub const POLICIES: [Policy; 13] = [
     Policy {
         transition: Transition::Focus,
         motion: Motion::Animate,
@@ -84,6 +86,13 @@ pub const POLICIES: [Policy; 12] = [
         transition: Transition::Coach,
         motion: Motion::Animate,
         duration: MODAL_DURATION,
+    },
+    // The update chip pulses for as long as the updater is working, so its
+    // policy is a repeating breath rather than a one-shot transition.
+    Policy {
+        transition: Transition::Update,
+        motion: Motion::Animate,
+        duration: Duration::from_millis(1400),
     },
     // These states update incrementally from the runtime. Interpolating them
     // would add latency, so their deliberate policy is continuous rendering.
@@ -191,6 +200,7 @@ mod tests {
             Transition::Overview,
             Transition::Hints,
             Transition::Coach,
+            Transition::Update,
             Transition::Connection,
             Transition::Transcript,
             Transition::PromptDelivery,

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*,
-    px, relative,
+    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window,
+    actions, div, prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,7 @@ use crate::learning;
 use crate::panel::{Panel, PanelSnapshot};
 use crate::theme::Theme;
 use crate::transition::{self, AnimatedValue, Transition};
+use crate::updates;
 
 actions!(
     workspace,
@@ -112,6 +113,11 @@ const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
 const MINIMAP_TOP: f32 = 8.0;
 const MINIMAP_RIGHT: f32 = 12.0;
+/// The update chip sits above the workspace bar in the bottom-right corner,
+/// out of the reading path but always in view.
+const UPDATE_CHIP_BOTTOM: f32 = 44.0;
+/// One breath of the update chip's activity dot.
+const UPDATE_PULSE: Duration = Duration::from_millis(1400);
 const COACH_TOAST_GAP: f32 = 8.0;
 const COACH_TOAST_WIDTH: f32 = 288.0;
 /// The coach keeps hints for nine seconds. Wake once after that deadline instead
@@ -2454,6 +2460,84 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The automatic-update chip.
+    ///
+    /// Sparkle used to update entirely in the background, so a user running a
+    /// broken build had no way to learn that a fix already existed. The chip
+    /// makes each phase visible: a pulse while a check or download is in
+    /// flight, and a solid, clickable prompt once a build is staged and one
+    /// restart away.
+    fn render_update_chip(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let state = updates::current();
+        let label = state.label()?;
+        let busy = state.is_busy();
+        let actionable = state.is_actionable();
+        let ink = if actionable {
+            Theme::ACCENT
+        } else {
+            Theme::TEXT_DIM
+        };
+
+        // A working chip breathes; a finished one holds still so a permanent
+        // "restart" prompt never turns into background noise.
+        let dot = div().size(px(6.0)).flex_none().rounded_full().bg(ink);
+        let dot: gpui::AnyElement = if busy {
+            dot.with_animation(
+                "update-chip-pulse",
+                Animation::new(UPDATE_PULSE).repeat(),
+                |el, delta| el.opacity(0.35 + 0.65 * (delta * std::f32::consts::TAU).sin().abs()),
+            )
+            .into_any_element()
+        } else {
+            dot.into_any_element()
+        };
+
+        let mut chip = div()
+            .id("update-chip")
+            // Tagged so a render test can prove the chip painted and can click
+            // the real element, rather than only asserting on updater state.
+            .debug_selector(|| "update-chip".into())
+            .absolute()
+            .bottom(px(UPDATE_CHIP_BOTTOM))
+            .right(px(MINIMAP_RIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2p5()
+            .py_1()
+            .rounded_md()
+            .bg(Theme::MINIMAP_BG)
+            .border_1()
+            .border_color(if actionable {
+                Theme::PANEL_BORDER_FOCUS
+            } else {
+                Theme::PANEL_BORDER
+            })
+            .text_size(px(10.5))
+            .font_family(Theme::FONT_MONO)
+            .text_color(ink)
+            .occlude()
+            .child(dot)
+            .child(label);
+
+        if actionable {
+            chip = chip
+                .cursor_pointer()
+                .hover(|el| el.text_color(Theme::TEXT))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|_this, _event, _window, _cx| {
+                        // Source builds have no Sparkle framework, so this is a
+                        // no-op there rather than a crash.
+                        updates::install_now();
+                    }),
+                );
+        }
+
+        Some(chip.into_any_element())
+    }
+
     /// A mouse-friendly spawn target at the canvas edge. It stays invisible
     /// until the pointer reaches the far right, then reveals the same `+`
     /// affordance as the session sidebar.
@@ -3614,7 +3698,11 @@ impl Render for Workspace {
                     })
                     .when(overview_progress <= 0.0, |el| {
                         el.child(self.render_edge_new_session(cx))
-                    }),
+                    })
+                    // Update status stays visible in every mode, including
+                    // overview: a user whose build cannot render text still
+                    // needs to see that a fix is on its way.
+                    .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
             )
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
@@ -5806,6 +5894,93 @@ mod tests {
         assert!(
             bounds.origin.x >= px(SIDEBAR_WIDTH),
             "the toast should remain inside the workspace instead of spilling into the sidebar"
+        );
+    }
+
+    /// The update chip must actually paint, and only while the updater has
+    /// something to say. This is the surface that would have told Bruno a fix
+    /// for the blank-text build was already downloading, so it is asserted
+    /// through the real render path rather than on state alone.
+    #[gpui::test]
+    fn the_update_chip_paints_only_while_the_updater_has_something_to_say(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                gpui::point(px(0.), px(0.)),
+                gpui::size(px(1200.), px(800.)),
+                |_, _| gpui::div(),
+            );
+            cx.run_until_parked();
+        };
+
+        // A current app says nothing at all.
+        updates::set(updates::UpdateState::Idle);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("update-chip").is_none(),
+            "a current app should not paint an update chip"
+        );
+
+        // A download in flight is visible while it happens.
+        updates::set(updates::UpdateState::Available {
+            version: "0.1.0-beta.15".to_owned(),
+        });
+        draw(cx);
+        let downloading = cx
+            .debug_bounds("update-chip")
+            .expect("a download in flight should paint the chip");
+        assert!(
+            downloading.size.width > px(0.) && downloading.size.height > px(0.),
+            "the chip must occupy real space, got {downloading:?}"
+        );
+        assert!(
+            downloading.origin.x >= px(SIDEBAR_WIDTH),
+            "the chip should stay inside the workspace instead of spilling into the sidebar"
+        );
+
+        // And the staged build keeps offering the restart that applies it.
+        updates::set(updates::UpdateState::ReadyToRestart {
+            version: "0.1.0-beta.15".to_owned(),
+        });
+        draw(cx);
+        let ready = cx
+            .debug_bounds("update-chip")
+            .expect("a staged update should keep the chip on screen");
+        assert_eq!(
+            ready.origin.x + ready.size.width,
+            downloading.origin.x + downloading.size.width,
+            "the chip should hold its right edge as its label changes"
+        );
+
+        // Clicking it must reach the installer. No Sparkle framework is loaded
+        // in a test, so the click is a no-op rather than a relaunch, and the
+        // chip must survive it.
+        cx.simulate_click(ready.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            cx.debug_bounds("update-chip").is_some(),
+            "clicking the chip must not tear it down"
+        );
+
+        updates::set(updates::UpdateState::Idle);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("update-chip").is_none(),
+            "the chip should disappear once the updater goes quiet again"
         );
     }
 
