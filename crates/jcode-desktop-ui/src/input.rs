@@ -139,7 +139,7 @@ pub struct PromptInput {
     attachment_preview: Option<(usize, Instant)>,
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
-    on_overlay_cancel: Option<Box<dyn Fn(&mut App)>>,
+    on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
     command_selection: usize,
     show_command_palette: bool,
@@ -375,7 +375,7 @@ impl PromptInput {
         self
     }
 
-    pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) + 'static) -> Self {
+    pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) -> bool + 'static) -> Self {
         self.on_overlay_cancel = Some(Box::new(cancel));
         self
     }
@@ -667,11 +667,8 @@ impl PromptInput {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.show_command_palette {
-            self.content = "".into();
-            self.selected_range = 0..0;
-            if let Some(cancel) = &self.on_overlay_cancel {
-                cancel(cx);
+        if let Some(cancel) = &self.on_overlay_cancel {
+            if cancel(cx) {
                 return;
             }
         }

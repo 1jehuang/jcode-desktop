@@ -318,11 +318,26 @@ impl Panel {
                 )
                 .with_on_overlay_cancel(move |app| {
                     if let Some(panel) = cancel_weak.upgrade() {
-                        panel.update(app, |this, cx| {
-                            this.close_model_picker(cx);
+                        return panel.update(app, |this, cx| {
+                            if this.model_picker_open {
+                                this.close_model_picker(cx);
+                            } else if this.status != "idle"
+                                || !this.connection_phase.is_empty()
+                                || !this.streaming_text.is_empty()
+                                || !this.streaming_reasoning.is_empty()
+                                || !this.pending_users.is_empty()
+                            {
+                                this.bridge.send(Command::Cancel {
+                                    session_id: this.session_id.clone(),
+                                });
+                            } else {
+                                return false;
+                            }
                             cx.notify();
+                            true
                         });
                     }
+                    false
                 })
             });
         });
@@ -3264,6 +3279,34 @@ mod tests {
             .debug_bounds("assistant-response")
             .expect("streamed assistant response should paint");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn escape_cancels_an_active_transcript_from_the_focused_prompt(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+        vcx.update(|window, cx| {
+            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        panel.update(vcx, |panel, _| panel.status = "busy".into());
+
+        vcx.simulate_keystrokes("escape");
+
+        assert!(matches!(
+            commands.recv_timeout(std::time::Duration::from_millis(100)),
+            Ok(Command::Cancel { session_id }) if session_id == "session-a"
+        ));
     }
 
     /// Nested inline markdown used to produce overlapping highlight ranges,
