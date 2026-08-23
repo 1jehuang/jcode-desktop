@@ -2887,6 +2887,48 @@ mod tests {
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
     }
 
+    /// Nested inline markdown used to produce overlapping highlight ranges,
+    /// and GPUI aborts the whole process (`invalid text run`) when those reach
+    /// `StyledText`. Streaming crash-shaped text through the public event path
+    /// and painting it through the real window is the acceptance check that a
+    /// live session can no longer take the desktop down.
+    #[gpui::test]
+    fn streamed_nested_markdown_paints_without_aborting(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (bridge, _commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+
+        // Every shape that nests one inline span in another, including the
+        // exact input from the recorded crash ("n the" inside a 12-byte run).
+        let crash_shaped = "prefix **`n the`** suffix, *italic with [a link](https://example.com) \
+                            and `code`*, ~~strike **bold `code`** tail~~, and \
+                            [**bold link**](https://example.com/x).";
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    session_id: "session-a".into(),
+                    text: crash_shaped.into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+
+        let bounds = vcx
+            .debug_bounds("assistant-response")
+            .expect("nested markdown response should paint");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
     #[gpui::test]
     fn slash_commands_dispatch_native_session_operations(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::input::bind_keys(cx));
