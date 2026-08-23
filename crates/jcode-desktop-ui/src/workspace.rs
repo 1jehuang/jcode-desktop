@@ -4419,6 +4419,49 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    /// Clicking a sidebar row must open and activate that session through the
+    /// real painted element, not merely paint a row that looks clickable.
+    #[gpui::test]
+    fn clicking_a_sidebar_row_activates_that_session(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![
+                        session_info("session_fox_1234567890_deadbeef", Some("fox work")),
+                        session_info("session_owl_1234567890_deadbeef", Some("owl work")),
+                    ],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let bounds = vcx
+            .debug_bounds("sidebar-session-1")
+            .expect("the sidebar must paint a second session row");
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        workspace.update(vcx, |workspace, cx| {
+            let active = workspace
+                .slots
+                .get(workspace.active)
+                .expect("clicking a row must open a panel")
+                .panel
+                .read(cx)
+                .session_id
+                .clone();
+            assert_eq!(
+                active, "session_fox_1234567890_deadbeef",
+                "clicking the row must activate the session it displays"
+            );
+        });
+    }
+
     /// The accounts strip must actually paint both a regular provider logo and
     /// Jcode's donut. Seeding bypasses the CLI so the test needs no runtime or
     /// credentials.
