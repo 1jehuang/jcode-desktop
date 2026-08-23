@@ -81,7 +81,11 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-tab", FocusLeft, None),
         KeyBinding::new("ctrl-pageup", FocusLeft, None),
         KeyBinding::new("ctrl-pagedown", FocusRight, None),
+        // ScrollWM owns Ctrl+Opt+Left/Right for its own window focus on macOS,
+        // so binding them here would advertise a shortcut that never arrives.
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-alt-left", FocusLeft, None),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-alt-right", FocusRight, None),
         KeyBinding::new("ctrl-alt-up", FocusUp, None),
         KeyBinding::new("ctrl-alt-down", FocusDown, None),
