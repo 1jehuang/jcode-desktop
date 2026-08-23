@@ -1,5 +1,33 @@
 # Interaction latency profile
 
+## Development-build runtime
+
+The hot-reload workflow intentionally keeps Jcode Desktop's own crates at
+`opt-level = 0`, but builds third-party dependencies at `opt-level = 2`.
+GPUI, Calloop, Wayland dispatch, text shaping, and rendering dominate idle and
+paint-time CPU. Leaving those dependencies unoptimized caused the development
+host to consume 16–40% of one CPU core while idle on the test machine. A
+sampled live profile attributed the work to the GPUI timer scheduler,
+Calloop/Wayland dispatch, and atomic/task bookkeeping rather than application
+state handlers. After optimizing dependencies, the rebuilt debug executable
+used 3.0% CPU over a 10-second steady-state sample in an isolated headless Sway
+compositor. This is development-only overhead: the release interaction profile
+below was already fast.
+
+Two 16 ms polling boundaries remain intentional. The workspace bridge drains
+streaming session updates at up to 60 Hz, and each embedded terminal drains PTY
+output at up to 60 Hz. Empty polls do not notify or repaint, but they do wake the
+executor. If idle power becomes a release concern, replace these polls with
+event-driven wakeups rather than increasing their interval and adding visible
+streaming or terminal latency.
+
+The Jcode runtime log is separate from the desktop renderer. `TUI_SLOW_FRAME`
+records found during this investigation described terminal Jcode sessions
+rebuilding multi-megabyte, roughly 2,050-line transcripts in 70–82 ms. Those
+warnings explain lag inside a TUI session, but are not desktop window frames.
+Repeated skill-frontmatter and stale Claude OAuth warnings likewise add log
+noise but are not on the desktop render path.
+
 Measured on 2026-08-22 on a Dell XPS 13 9350 (Intel Core Ultra 7 256V), Linux x86_64, using an optimized build and GPUI's headless interaction harness.
 
 ## Method

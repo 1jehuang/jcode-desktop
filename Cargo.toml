@@ -41,4 +41,10 @@ incremental = true
 codegen-units = 256
 
 [profile.dev.package."*"]
-opt-level = 0
+# GPUI, the Wayland event loop, text shaping, and the renderer account for most
+# of the work in a running development build. Keeping dependencies completely
+# unoptimized made an idle hot-reload host consume a large fraction of one CPU
+# core. Dependencies change infrequently, so optimize them while leaving our
+# own crates at opt-level 0 for fast edit/rebuild cycles and straightforward
+# debugging.
+opt-level = 2
