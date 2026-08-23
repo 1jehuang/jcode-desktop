@@ -33,9 +33,15 @@ pub fn bind_workspace_keys(cx: &mut App) {
     cx.bind_keys([
         // Canonical Jcode TUI workspace bindings. On niri these are normally
         // intercepted by the compositor, so Super aliases remain below.
+        // On macOS ScrollWM owns Opt+H/J/K/L for its own column and workspace
+        // motions, so these would never reach us; Cmd+H/J/K/L covers us there.
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-h", FocusLeft, None),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-l", FocusRight, None),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-j", FocusDown, None),
+        #[cfg(not(target_os = "macos"))]
         KeyBinding::new("alt-k", FocusUp, None),
         KeyBinding::new("super-h", FocusLeft, None),
         KeyBinding::new("super-l", FocusRight, None),
