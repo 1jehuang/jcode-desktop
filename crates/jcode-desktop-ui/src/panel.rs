@@ -49,6 +49,15 @@ pub enum Item {
         done: bool,
         error: Option<String>,
     },
+    /// Live state for work detached by a tool call. Unlike the originating
+    /// `bg`/`bash` row, this continues to change while the agent waits.
+    BackgroundTask {
+        task_id: String,
+        label: String,
+        summary: String,
+        percent: Option<f32>,
+        done: bool,
+    },
     Todos(TodoCardPayload),
     Error(String),
 }
@@ -851,6 +860,37 @@ impl Panel {
                     });
                 }
             }
+            ApiEvent::BackgroundProgress {
+                task_id,
+                label,
+                summary,
+                percent,
+                done,
+                ..
+            } => {
+                if let Some(Item::BackgroundTask {
+                    label: current_label,
+                    summary: current_summary,
+                    percent: current_percent,
+                    done: current_done,
+                    ..
+                }) = self.items.iter_mut().rev().find(|item| {
+                    matches!(item, Item::BackgroundTask { task_id: id, .. } if id == task_id)
+                }) {
+                    *current_label = label.clone();
+                    *current_summary = summary.clone();
+                    *current_percent = *percent;
+                    *current_done = *done;
+                } else {
+                    self.items.push(Item::BackgroundTask {
+                        task_id: task_id.clone(),
+                        label: label.clone(),
+                        summary: summary.clone(),
+                        percent: *percent,
+                        done: *done,
+                    });
+                }
+            }
             ApiEvent::SidePaneImages { images, .. } => {
                 for image in images.iter().cloned() {
                     self.insert_rendered_image(image);
@@ -1190,6 +1230,80 @@ impl Panel {
                     .into_any_element()
             }
             Item::Todos(payload) => render_todo_card(payload).into_any_element(),
+            Item::BackgroundTask {
+                task_id: _,
+                label,
+                summary,
+                percent,
+                done,
+            } => {
+                let progress = percent.map(|value| (value / 100.0).clamp(0.0, 1.0));
+                div()
+                    .id(("background-task", index))
+                    .debug_selector(|| "background-task-card".into())
+                    .flex()
+                    .flex_none()
+                    .flex_col()
+                    .gap_1p5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(Theme::TOOL_BORDER)
+                    .bg(Theme::TOOL_BG)
+                    .px_2p5()
+                    .py_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if *done { Theme::OK } else { Theme::WARN })
+                                    .child(if *done { "✓" } else { "●" }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(Theme::TOOL_TEXT)
+                                    .child(label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_family(Theme::FONT_MONO)
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::TEXT_FAINT)
+                                    .child(if *done { "finished" } else { "background" }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(Theme::TEXT_DIM)
+                            .child(summary.clone()),
+                    )
+                    .when_some(progress, |el, progress| {
+                        el.child(
+                            div()
+                                .w_full()
+                                .h(px(4.0))
+                                .rounded_full()
+                                .bg(Theme::TOOL_BORDER)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(progress))
+                                        .rounded_full()
+                                        .bg(if *done { Theme::OK } else { Theme::ACCENT }),
+                                ),
+                        )
+                    })
+                    .into_any_element()
+            }
             Item::Tool {
                 call_id,
                 name,
@@ -1767,6 +1881,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         Item::Image(_)
         | Item::Reasoning(_)
         | Item::Tool { .. }
+        | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Error(_) => None,
     }
@@ -2872,6 +2987,64 @@ mod tests {
     /// The acceptance path for tool rows: the size hint paints on a collapsed
     /// finished call, a real click expands the detail (ANSI-clean, head and
     /// tail both present), and a second click collapses it again.
+    #[gpui::test]
+    fn background_progress_updates_one_native_card(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        for (percent, summary, done) in [
+            (Some(35.0), "35% · Running tests", false),
+            (None, "✓ completed · 8.2s · exit 0", true),
+        ] {
+            panel.update(vcx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::BackgroundProgress {
+                        session_id: "session-a".into(),
+                        task_id: "task-42".into(),
+                        label: "Workspace tests".into(),
+                        percent,
+                        summary: summary.into(),
+                        done,
+                    },
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+        }
+
+        assert!(vcx.debug_bounds("background-task-card").is_some());
+        panel.read_with(vcx, |panel, _| {
+            let tasks: Vec<_> = panel
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::BackgroundTask {
+                        task_id,
+                        summary,
+                        percent,
+                        done,
+                        ..
+                    } => Some((task_id, summary, percent, done)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(tasks.len(), 1, "progress ticks update rather than append");
+            assert_eq!(tasks[0].0, "task-42");
+            assert_eq!(tasks[0].1, "✓ completed · 8.2s · exit 0");
+            assert_eq!(*tasks[0].2, None);
+            assert!(*tasks[0].3);
+        });
+    }
+
     #[gpui::test]
     fn clicking_a_tool_row_expands_clean_detail_and_collapses_again(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
