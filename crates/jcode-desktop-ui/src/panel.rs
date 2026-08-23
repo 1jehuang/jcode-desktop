@@ -1216,7 +1216,7 @@ impl Panel {
                 };
                 let expanded = self.expanded_tools.contains(call_id);
                 let summary = tool_summary(input);
-                let detail = tool_detail(input, output);
+                let detail = tool_detail(name, input, output);
                 let has_detail = !detail.is_empty();
                 let output_lines = output.lines().filter(|l| !l.trim().is_empty()).count();
                 let call_id = call_id.clone();
@@ -2260,18 +2260,27 @@ fn json_scalar(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Expanded tool detail: pretty arguments plus a clipped output tail.
-fn tool_detail(input: &str, output: &str) -> String {
-    let mut parts = Vec::new();
-    if !input.trim().is_empty() && input.trim() != "{}" {
-        let pretty = serde_json::from_str::<serde_json::Value>(input)
-            .ok()
-            .and_then(|value| serde_json::to_string_pretty(&value).ok())
-            .unwrap_or_else(|| input.trim().to_string());
-        parts.push(clip_lines(&pretty, 40));
-    }
+/// Expanded tool detail: the exact invocation plus a clipped output tail.
+fn tool_detail(name: &str, input: &str, output: &str) -> String {
+    let arguments = if input.trim().is_empty() {
+        "{}"
+    } else {
+        input.trim()
+    };
+    let pretty = serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| arguments.to_string());
+    let mut parts = vec![format!(
+        "Tool call\n{}\n{}",
+        name.trim(),
+        clip_lines(&pretty, 40)
+    )];
     if !output.trim().is_empty() {
-        parts.push(clip_lines(strip_ansi(output).trim(), 40));
+        parts.push(format!(
+            "Output\n{}",
+            clip_lines(strip_ansi(output).trim(), 40)
+        ));
     }
     parts.join("\n\n")
 }
@@ -2428,11 +2437,14 @@ mod tests {
 
     #[test]
     fn tool_detail_pretty_prints_and_clips() {
-        let detail = tool_detail(r#"{"a":1}"#, "line1\nline2");
+        let detail = tool_detail("bash", r#"{"a":1}"#, "line1\nline2");
+        assert!(detail.starts_with("Tool call\nbash\n"));
         assert!(detail.contains("\"a\": 1"));
+        assert!(detail.contains("\n\nOutput\nline1\nline2"));
         assert!(detail.contains("line2"));
         let long: String = (0..50).map(|n| format!("l{n}\n")).collect();
-        let clipped = tool_detail("{}", &long);
+        let clipped = tool_detail("bash", "{}", &long);
+        assert!(clipped.contains("Tool call\nbash\n{}"));
         assert!(clipped.contains("lines hidden"));
         // The tail survives: results and errors live at the end of output.
         assert!(clipped.contains("l49"));
@@ -2514,8 +2526,8 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}[1;32mok\u{1b}[0m done"), "ok done");
         assert_eq!(strip_ansi("\u{1b}]0;title\u{7}text"), "text");
         assert_eq!(strip_ansi("plain"), "plain");
-        assert!(tool_detail("{}", "\u{1b}[31mred\u{1b}[0m").contains("red"));
-        assert!(!tool_detail("{}", "\u{1b}[31mred\u{1b}[0m").contains('\u{1b}'));
+        assert!(tool_detail("bash", "{}", "\u{1b}[31mred\u{1b}[0m").contains("red"));
+        assert!(!tool_detail("bash", "{}", "\u{1b}[31mred\u{1b}[0m").contains('\u{1b}'));
     }
 
     fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
@@ -2860,10 +2872,18 @@ mod tests {
         // The rendered detail is the formatted string: ANSI-free, head and
         // tail kept around the fold marker.
         let rendered = panel.read_with(vcx, |panel, _| match &panel.items[0] {
-            Item::Tool { input, output, .. } => tool_detail(input, output),
+            Item::Tool {
+                name,
+                input,
+                output,
+                ..
+            } => tool_detail(name, input, output),
             other => panic!("expected the tool row, got {other:?}"),
         });
         assert!(!rendered.contains('\u{1b}'), "detail must be ANSI-free");
+        assert!(rendered.contains("Tool call\nbash\n"));
+        assert!(rendered.contains("\"command\": \"make build\""));
+        assert!(rendered.contains("\n\nOutput\n"));
         assert!(rendered.contains("line 0") && rendered.contains("line 59"));
         assert!(rendered.contains("lines hidden"));
 
