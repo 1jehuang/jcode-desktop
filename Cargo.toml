@@ -40,11 +40,80 @@ debug = "line-tables-only"
 incremental = true
 codegen-units = 256
 
-[profile.dev.package."*"]
-# GPUI, the Wayland event loop, text shaping, and the renderer account for most
-# of the work in a running development build. Keeping dependencies completely
-# unoptimized made an idle hot-reload host consume a large fraction of one CPU
-# core. Dependencies change infrequently, so optimize them while leaving our
-# own crates at opt-level 0 for fast edit/rebuild cycles and straightforward
-# debugging.
+# Runtime-hot dependencies, selected from live `perf` profiles of the running
+# development app. Layout (taffy), GPUI itself, text shaping (cosmic-text,
+# swash, harfrust, zeno), the Wayland/Calloop event loop, and the renderer
+# dominate steady-state CPU. Optimizing only these keeps the rest of the
+# dependency graph and all workspace crates at opt-level 0, so full and
+# incremental debug builds stay fast while the running app keeps release-like
+# frame costs. These crates are pinned by Cargo.lock and rarely rebuild.
+[profile.dev.package.taffy]
+opt-level = 2
+[profile.dev.package.gpui]
+opt-level = 2
+[profile.dev.package.gpui_linux]
+opt-level = 2
+[profile.dev.package.gpui_macos]
+opt-level = 2
+[profile.dev.package.gpui_apple]
+opt-level = 2
+[profile.dev.package.gpui_wgpu]
+opt-level = 2
+[profile.dev.package.gpui_platform]
+opt-level = 2
+[profile.dev.package.gpui_util]
+opt-level = 2
+[profile.dev.package.gpui_shared_string]
+opt-level = 2
+[profile.dev.package.sum_tree]
+opt-level = 2
+[profile.dev.package.refineable]
+opt-level = 2
+[profile.dev.package.slotmap]
+opt-level = 2
+[profile.dev.package.smallvec]
+opt-level = 2
+[profile.dev.package.cosmic-text]
+opt-level = 2
+[profile.dev.package.swash]
+opt-level = 2
+[profile.dev.package.harfrust]
+opt-level = 2
+[profile.dev.package.zeno]
+opt-level = 2
+[profile.dev.package.read-fonts]
+opt-level = 2
+[profile.dev.package.font-types]
+opt-level = 2
+[profile.dev.package.fontdb]
+opt-level = 2
+[profile.dev.package.zed-font-kit]
+opt-level = 2
+[profile.dev.package.calloop]
+opt-level = 2
+[profile.dev.package.calloop-wayland-source]
+opt-level = 2
+[profile.dev.package.wayland-client]
+opt-level = 2
+[profile.dev.package.wayland-backend]
+opt-level = 2
+[profile.dev.package.polling]
+opt-level = 2
+[profile.dev.package.async-task]
+opt-level = 2
+[profile.dev.package.parking]
+opt-level = 2
+[profile.dev.package.parking_lot]
+opt-level = 2
+[profile.dev.package.parking_lot_core]
+opt-level = 2
+[profile.dev.package.vt100]
+opt-level = 2
+[profile.dev.package.unicode-segmentation]
+opt-level = 2
+[profile.dev.package.unicode-linebreak]
+opt-level = 2
+[profile.dev.package.unicode-bidi]
+opt-level = 2
+[profile.dev.package.unicode-width]
 opt-level = 2

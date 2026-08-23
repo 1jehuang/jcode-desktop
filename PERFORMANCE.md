@@ -2,17 +2,21 @@
 
 ## Development-build runtime
 
-The hot-reload workflow intentionally keeps Jcode Desktop's own crates at
-`opt-level = 0`, but builds third-party dependencies at `opt-level = 2`.
+The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies
+at `opt-level = 0`, but builds a profile-selected list of runtime-hot
+dependencies (taffy layout, GPUI, text shaping, the Wayland/Calloop event loop,
+and the renderer) at `opt-level = 2`.
 GPUI, Calloop, Wayland dispatch, text shaping, and rendering dominate idle and
 paint-time CPU. Leaving those dependencies unoptimized caused the development
 host to consume 16–40% of one CPU core while idle on the test machine. A
 sampled live profile attributed the work to the GPUI timer scheduler,
 Calloop/Wayland dispatch, and atomic/task bookkeeping rather than application
-state handlers. After optimizing dependencies, the rebuilt debug executable
-used 3.0% CPU over a 10-second steady-state sample in an isolated headless Sway
-compositor. This is development-only overhead: the release interaction profile
-below was already fast.
+state handlers. With only the profile-selected crates optimized, the rebuilt
+debug executable used 3.7% CPU over a 10-second steady-state sample in an
+isolated headless Sway compositor (a full `opt-level = 2` dependency build
+measured 3.0%, so the selective list captures the win while leaving most of the
+graph fast to compile). This is development-only overhead: the release
+interaction profile below was already fast.
 
 Two 16 ms polling boundaries remain intentional. The workspace bridge drains
 streaming session updates at up to 60 Hz, and each embedded terminal drains PTY
