@@ -21,7 +21,10 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 gpui.workspace = true
-gpui_platform.workspace = true
+# `font-kit` selects the real platform text system. Without it, gpui_macos
+# builds `NoopTextSystem`, so the window paints every shape but no glyphs.
+# Linux enabled the feature already, which is why only macOS lost its text.
+gpui_platform = { workspace = true, features = ["font-kit"] }
 jcode-desktop-api.workspace = true
 jcode-desktop-ui = { path = "crates/jcode-desktop-ui" }
 libloading = "0.8"
