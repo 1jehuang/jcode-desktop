@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*,
-    px, relative,
+    Animation, App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div,
+    prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,13 @@ const GAP: f32 = 0.0;
 const STRUT: f32 = 0.58;
 const STRIP_PADDING_Y: f32 = STRUT;
 const STRIP_COUNT: usize = 4;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ShowcaseCue {
+    shortcut: String,
+    action: &'static str,
+    symbol: &'static str,
+}
 /// niri `window-rule { geometry-corner-radius 6 }`.
 const CORNER_RADIUS: f32 = 6.0;
 /// niri `preset-column-widths`: Alt+R cycles through these in order.
@@ -359,9 +366,9 @@ pub struct Workspace {
     overview_progress: AnimatedValue,
     hints_overlay: bool,
     hints_progress: AnimatedValue,
-    /// Presenter-friendly mode that briefly paints keyboard chords on screen.
+    /// Presenter-friendly mode that briefly explains workspace actions on screen.
     showcase_mode: bool,
-    showcase_key: Option<String>,
+    showcase_cue: Option<ShowcaseCue>,
     showcase_task: Option<gpui::Task<()>>,
     /// Models which shortcuts the user knows, and teaches the ones they don't.
     coach: learning::Coach,
@@ -472,7 +479,7 @@ impl Workspace {
             hints_overlay: false,
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
             showcase_mode: true,
-            showcase_key: None,
+            showcase_cue: None,
             showcase_task: None,
             coach: learning::load(),
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
@@ -529,7 +536,7 @@ impl Workspace {
             hints_overlay: false,
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
             showcase_mode: true,
-            showcase_key: None,
+            showcase_cue: None,
             showcase_task: None,
             coach,
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
@@ -1234,7 +1241,7 @@ impl Workspace {
     }
 
     fn focus_left(&mut self, _: &FocusLeft, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("H", false, cx);
+        self.showcase_motion("H", false, "Focus left", "←", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position > 0
@@ -1249,7 +1256,7 @@ impl Workspace {
     }
 
     fn focus_right(&mut self, _: &FocusRight, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("L", false, cx);
+        self.showcase_motion("L", false, "Focus right", "→", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position + 1 < indices.len()
@@ -1263,7 +1270,7 @@ impl Workspace {
 
     /// niri `focus-column-first`.
     fn focus_first(&mut self, _: &FocusFirst, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("Home", false, cx);
+        self.showcase_motion("Home", false, "Focus first panel", "⇤", cx);
         let first = self.row_indices(self.active_row).next();
         if let Some(index) = first.filter(|index| *index != self.active) {
             self.set_active(index, cx);
@@ -1275,7 +1282,7 @@ impl Workspace {
 
     /// niri `focus-column-last`.
     fn focus_last(&mut self, _: &FocusLast, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("End", false, cx);
+        self.showcase_motion("End", false, "Focus last panel", "⇥", cx);
         let last = self.row_indices(self.active_row).last();
         if let Some(index) = last.filter(|index| *index != self.active) {
             self.set_active(index, cx);
@@ -1288,7 +1295,7 @@ impl Workspace {
     /// niri `focus-window-previous` (the user's Alt+Tab). Returns to the last
     /// focused panel wherever it now lives, including on another strip.
     fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("Tab", false, cx);
+        self.showcase_motion("Tab", false, "Return to previous panel", "↩", cx);
         let Some(previous) = self.previous else {
             return;
         };
@@ -1307,14 +1314,14 @@ impl Workspace {
     }
 
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("K", false, cx);
+        self.showcase_motion("K", false, "Focus strip above", "↑", cx);
         if self.active_row > 0 {
             self.change_row(self.active_row - 1, window, cx);
         }
     }
 
     fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("J", false, cx);
+        self.showcase_motion("J", false, "Focus strip below", "↓", cx);
         if self.active_row + 1 < STRIP_COUNT {
             self.change_row(self.active_row + 1, window, cx);
         }
@@ -1362,7 +1369,7 @@ impl Workspace {
     }
 
     fn move_panel_left(&mut self, _: &MovePanelLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("H", true, cx);
+        self.showcase_motion("H", true, "Move panel left", "⇠", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position > 0
@@ -1381,7 +1388,7 @@ impl Workspace {
     }
 
     fn move_panel_right(&mut self, _: &MovePanelRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("L", true, cx);
+        self.showcase_motion("L", true, "Move panel right", "⇢", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
             && position + 1 < indices.len()
@@ -1407,7 +1414,7 @@ impl Workspace {
     }
 
     fn move_panel_up(&mut self, _: &MovePanelUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("K", true, cx);
+        self.showcase_motion("K", true, "Move panel up", "⇡", cx);
         self.move_panel_to_row(-1, window, cx);
     }
 
@@ -1418,7 +1425,7 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.showcase_motion("Home", true, cx);
+        self.showcase_motion("Home", true, "Move panel to start", "⇤", cx);
         let first = self.row_indices(self.active_row).next();
         let on_strip = self
             .slots
@@ -1437,7 +1444,7 @@ impl Workspace {
 
     /// niri `move-column-to-last`.
     fn move_panel_to_last(&mut self, _: &MovePanelToLast, _: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("End", true, cx);
+        self.showcase_motion("End", true, "Move panel to end", "⇥", cx);
         let last = self.row_indices(self.active_row).last();
         let on_strip = self
             .slots
@@ -1455,7 +1462,7 @@ impl Workspace {
     }
 
     fn move_panel_down(&mut self, _: &MovePanelDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.showcase_motion("J", true, cx);
+        self.showcase_motion("J", true, "Move panel down", "⇣", cx);
         self.move_panel_to_row(1, window, cx);
     }
 
@@ -1682,12 +1689,23 @@ impl Workspace {
 
     fn toggle_showcase(&mut self, _: &ToggleShowcase, _: &mut Window, cx: &mut Context<Self>) {
         self.showcase_mode = !self.showcase_mode;
-        self.showcase_key = self.showcase_mode.then(|| "Showcase mode on".to_owned());
+        self.showcase_cue = self.showcase_mode.then(|| ShowcaseCue {
+            shortcut: "On".to_owned(),
+            action: "Showcase mode",
+            symbol: "●",
+        });
         self.schedule_showcase_expiry(cx);
         cx.notify();
     }
 
-    fn showcase_motion(&mut self, key: &str, shifted: bool, cx: &mut Context<Self>) {
+    fn showcase_motion(
+        &mut self,
+        key: &str,
+        shifted: bool,
+        action: &'static str,
+        symbol: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         if !self.showcase_mode {
             return;
         }
@@ -1696,24 +1714,28 @@ impl Workspace {
         } else {
             "Super"
         };
-        self.showcase_key = Some(if shifted {
-            format!("{modifier} + Shift + {key}")
-        } else {
-            format!("{modifier} + {key}")
+        self.showcase_cue = Some(ShowcaseCue {
+            shortcut: if shifted {
+                format!("{modifier} + Shift + {key}")
+            } else {
+                format!("{modifier} + {key}")
+            },
+            action,
+            symbol,
         });
         self.schedule_showcase_expiry(cx);
         cx.notify();
     }
 
     fn schedule_showcase_expiry(&mut self, cx: &mut Context<Self>) {
-        if self.showcase_key.is_none() {
+        if self.showcase_cue.is_none() {
             self.showcase_task = None;
             return;
         }
         self.showcase_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SHOWCASE_DURATION).await;
             let _ = this.update(cx, |workspace, cx| {
-                workspace.showcase_key = None;
+                workspace.showcase_cue = None;
                 workspace.showcase_task = None;
                 cx.notify();
             });
@@ -3434,7 +3456,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_showcase_key(&self, key: &str) -> gpui::AnyElement {
+    fn render_showcase_cue(&self, cue: &ShowcaseCue) -> gpui::AnyElement {
         div()
             .id("showcase-shortcut")
             .debug_selector(|| "showcase-shortcut".into())
@@ -3446,16 +3468,58 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
-                    .px_5()
+                    .min_w(px(260.0))
+                    .px_4()
                     .py_3()
+                    .flex()
+                    .items_center()
+                    .gap_3()
                     .rounded_xl()
-                    .bg(Theme::PANEL_BG)
+                    .bg(Theme::global().PANEL_BG)
                     .border_1()
-                    .border_color(Theme::PANEL_BORDER_FOCUS)
-                    .font_family(Theme::FONT_MONO)
-                    .text_size(px(22.0))
-                    .text_color(Theme::TEXT)
-                    .child(key.to_owned()),
+                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                    .shadow_lg()
+                    .text_color(Theme::global().TEXT)
+                    .with_animation(
+                        "showcase-cue-in",
+                        Animation::new(Duration::from_millis(180)),
+                        |el, delta| el.opacity(delta),
+                    )
+                    .child(
+                        div()
+                            .id("showcase-symbol")
+                            .debug_selector(|| "showcase-symbol".into())
+                            .w(px(52.0))
+                            .h(px(52.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_lg()
+                            .bg(Theme::global().HEADER_BG)
+                            .text_color(Theme::global().ACCENT)
+                            .text_size(px(34.0))
+                            .child(cue.symbol),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .id("showcase-action")
+                                    .debug_selector(|| "showcase-action".into())
+                                    .text_size(px(17.0))
+                                    .child(cue.action),
+                            )
+                            .child(
+                                div()
+                                    .font_family(Theme::global().FONT_MONO)
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child(cue.shortcut.clone()),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -3840,8 +3904,8 @@ impl Render for Workspace {
                     // needs to see that a fix is on its way.
                     .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
             )
-            .when_some(self.showcase_key.as_deref(), |root, key| {
-                root.child(self.render_showcase_key(key))
+            .when_some(self.showcase_cue.as_ref(), |root, cue| {
+                root.child(self.render_showcase_cue(cue))
             })
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
@@ -6921,15 +6985,18 @@ mod tests {
         cx.run_until_parked();
         workspace.update(cx, |workspace, _| assert!(workspace.showcase_mode));
 
-        cx.simulate_keystrokes(&format!("{MOD}-h"));
-        workspace.update(cx, |workspace, _| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.showcase_motion("L", false, "Focus right", "→", cx);
+            let cue = workspace.showcase_cue.as_ref().expect("showcase cue");
+            assert_eq!(cue.action, "Focus right");
+            assert_eq!(cue.symbol, "→");
             assert_eq!(
-                workspace.showcase_key.as_deref(),
-                Some(if cfg!(target_os = "macos") {
-                    "Cmd + H"
+                cue.shortcut,
+                if cfg!(target_os = "macos") {
+                    "Cmd + L"
                 } else {
-                    "Super + H"
-                })
+                    "Super + L"
+                }
             );
         });
         cx.run_until_parked();
@@ -6937,16 +7004,20 @@ mod tests {
             cx.debug_bounds("showcase-shortcut").is_some(),
             "a real workspace motion should paint the bottom-center overlay"
         );
+        assert!(
+            cx.debug_bounds("showcase-symbol").is_some(),
+            "the overlay should visualize the direction"
+        );
+        assert!(
+            cx.debug_bounds("showcase-action").is_some(),
+            "the overlay should explain what the shortcut did"
+        );
 
         cx.simulate_keystrokes(&format!("{MOD}-b"));
         workspace.update(cx, |workspace, _| {
             assert_eq!(
-                workspace.showcase_key.as_deref(),
-                Some(if cfg!(target_os = "macos") {
-                    "Cmd + H"
-                } else {
-                    "Super + H"
-                }),
+                workspace.showcase_cue.as_ref().map(|cue| cue.action),
+                Some("Focus right"),
                 "an unrelated shortcut must not replace the displayed motion"
             );
         });
@@ -6954,7 +7025,7 @@ mod tests {
         cx.simulate_keystrokes(&format!("{MOD}-shift-s"));
         workspace.update(cx, |workspace, _| {
             assert!(!workspace.showcase_mode);
-            assert!(workspace.showcase_key.is_none());
+            assert!(workspace.showcase_cue.is_none());
         });
     }
 
