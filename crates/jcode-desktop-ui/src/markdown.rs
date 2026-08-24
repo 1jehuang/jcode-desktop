@@ -31,6 +31,7 @@ enum Block {
         lang: String,
         body: String,
     },
+    Mermaid(String),
     Table {
         header: Vec<String>,
         rows: Vec<Vec<String>>,
@@ -109,7 +110,22 @@ fn parse(source: &str) -> Vec<Block> {
             while body.ends_with('\n') {
                 body.pop();
             }
-            blocks.push(Block::Code { lang, body });
+            if lang.eq_ignore_ascii_case("mermaid") || lang.eq_ignore_ascii_case("mmd") {
+                blocks.push(Block::Mermaid(body));
+            } else {
+                blocks.push(Block::Code { lang, body });
+            }
+        } else if lines.peek().is_some_and(|next| is_setext_rule(next.trim())) {
+            flush(&mut paragraph, &mut blocks);
+            let level = if lines
+                .next()
+                .is_some_and(|rule| rule.trim().starts_with('='))
+            {
+                1
+            } else {
+                2
+            };
+            blocks.push(Block::Heading(level, trimmed.trim().to_string()));
         } else if is_heading(trimmed) {
             flush(&mut paragraph, &mut blocks);
             let level = trimmed.chars().take_while(|c| *c == '#').count().min(6) as u8;
@@ -192,6 +208,11 @@ fn is_rule(line: &str) -> bool {
         && (line.chars().all(|c| c == '-')
             || line.chars().all(|c| c == '*')
             || line.chars().all(|c| c == '_'))
+}
+
+fn is_setext_rule(line: &str) -> bool {
+    let line = line.trim();
+    line.len() >= 3 && (line.chars().all(|c| c == '=') || line.chars().all(|c| c == '-'))
 }
 
 fn is_table_row(line: &str) -> bool {
@@ -1096,6 +1117,114 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
         .into_any_element()
 }
 
+/// Render Mermaid source as a native, theme-aware diagram. This intentionally
+/// keeps the source parser permissive so incomplete streamed diagrams and new
+/// Mermaid directives still have a useful visual fallback.
+fn mermaid_diagram(body: &str) -> gpui::AnyElement {
+    let mut lines = body.lines().filter_map(mermaid_display_line).peekable();
+    let rows: Vec<String> = lines.by_ref().collect();
+    div()
+        .debug_selector(|| "md-mermaid".into())
+        .flex()
+        .flex_col()
+        .my_1()
+        .w_full()
+        .overflow_hidden()
+        .rounded_md()
+        .border_1()
+        .border_color(Theme::global().PANEL_BORDER)
+        .bg(Theme::global().QUOTE_BG)
+        .child(
+            div()
+                .px_2p5()
+                .py_1()
+                .border_b_1()
+                .border_color(Theme::global().PANEL_BORDER)
+                .text_size(px(10.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(Theme::global().TEXT_DIM)
+                .child("DIAGRAM"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_1p5()
+                .px_3()
+                .py_2p5()
+                .children(rows.into_iter().map(|line| {
+                    let connector = line.trim_start().starts_with(['→', '←', '↔']);
+                    div()
+                        .max_w_full()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .when(!connector, |el| {
+                            el.border_1()
+                                .border_color(Theme::global().CODE_BORDER)
+                                .bg(Theme::global().CODE_BG)
+                        })
+                        .font_family(Theme::global().FONT_MONO)
+                        .text_size(px(12.0))
+                        .text_color(if connector {
+                            Theme::global().ACCENT_MUTED
+                        } else {
+                            Theme::global().TEXT
+                        })
+                        .child(line)
+                })),
+        )
+        .into_any_element()
+}
+
+fn mermaid_display_line(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("%%") || line.starts_with("%%{") {
+        return None;
+    }
+    let lower = line.to_ascii_lowercase();
+    if [
+        "graph ",
+        "flowchart ",
+        "sequencediagram",
+        "classdiagram",
+        "statediagram",
+        "erdiagram",
+        "gantt",
+        "pie",
+        "journey",
+        "mindmap",
+        "timeline",
+    ]
+    .iter()
+    .any(|kind| lower.starts_with(kind))
+    {
+        return None;
+    }
+    let mut text = line
+        .replace("<-->", " ↔ ")
+        .replace("-->", " → ")
+        .replace("==>", " ⇒ ")
+        .replace("-.->", " ⇢ ")
+        .replace("<--", " ← ")
+        .replace("->>", " → ")
+        .replace("-->>", " → ")
+        .replace(":::", "  ");
+    for (from, to) in [
+        ("[", ""),
+        ("]", ""),
+        ("(", ""),
+        (")", ""),
+        ("{", ""),
+        ("}", ""),
+        ("\"", ""),
+    ] {
+        text = text.replace(from, to);
+    }
+    Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 // --- Rendering -------------------------------------------------------------
 
 /// Render markdown into a column of GPUI elements.
@@ -1199,6 +1328,7 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 )
                 .into_any_element(),
             Block::Code { lang, body } => code_block(&lang, &body, window),
+            Block::Mermaid(body) => mermaid_diagram(&body),
             Block::Table { header, rows } => table(header, rows, window),
             Block::Math(text) => div()
                 .w_full()
@@ -1385,6 +1515,30 @@ mod tests {
                 lang: "rust".into(),
                 body: "fn main() {}".into()
             }
+        );
+    }
+
+    #[test]
+    fn parses_mermaid_fences_as_diagrams() {
+        let blocks = parse("```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```");
+        assert_eq!(
+            blocks,
+            vec![Block::Mermaid("flowchart LR\nA[Start] --> B[Done]".into())]
+        );
+        assert_eq!(
+            mermaid_display_line("A[Start] --> B[Done]").as_deref(),
+            Some("AStart → BDone")
+        );
+    }
+
+    #[test]
+    fn parses_setext_headings() {
+        assert_eq!(
+            parse("Primary\n=======\n\nSecondary\n---"),
+            vec![
+                Block::Heading(1, "Primary".into()),
+                Block::Heading(2, "Secondary".into())
+            ]
         );
     }
 
