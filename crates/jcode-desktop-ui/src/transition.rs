@@ -126,11 +126,15 @@ pub const POLICIES: [Policy; 15] = [
     },
 ];
 
-pub fn policy(transition: Transition) -> &'static Policy {
-    POLICIES
+pub fn policy(transition: Transition) -> Policy {
+    let mut policy = *POLICIES
         .iter()
         .find(|policy| policy.transition == transition)
-        .expect("transition missing from animation registry")
+        .expect("transition missing from animation registry");
+    if crate::config::get().appearance.reduce_motion && policy.motion == Motion::Animate {
+        policy.duration = Duration::ZERO;
+    }
+    policy
 }
 
 /// A retargetable scalar. Retargeting samples the in-flight value first, so

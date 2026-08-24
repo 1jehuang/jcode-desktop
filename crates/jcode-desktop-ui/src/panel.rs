@@ -567,9 +567,9 @@ impl Panel {
                                 .size(px(18.0))
                                 .flex_none()
                                 .text_color(if selected {
-                                    Theme::TEXT
+                                    Theme::global().TEXT
                                 } else {
-                                    Theme::TEXT_DIM
+                                    Theme::global().TEXT_DIM
                                 })
                                 .into_any_element(),
                             None => div()
@@ -579,12 +579,12 @@ impl Panel {
                                 .items_center()
                                 .justify_center()
                                 .rounded_sm()
-                                .bg(Theme::INLINE_CODE_BG)
+                                .bg(Theme::global().INLINE_CODE_BG)
                                 .text_size(px(10.0))
                                 .text_color(if selected {
-                                    Theme::TEXT
+                                    Theme::global().TEXT
                                 } else {
-                                    Theme::TEXT_DIM
+                                    Theme::global().TEXT_DIM
                                 })
                                 .child(crate::accounts::lettermark(&model))
                                 .into_any_element(),
@@ -599,16 +599,19 @@ impl Panel {
                             .py_2()
                             .cursor_pointer()
                             .bg(if selected {
-                                Theme::USER_BG
+                                Theme::global().USER_BG
                             } else {
-                                Theme::PANEL_BG
+                                Theme::global().PANEL_BG
                             })
                             .text_color(if selected {
-                                Theme::TEXT
+                                Theme::global().TEXT
                             } else {
-                                Theme::TEXT_DIM
+                                Theme::global().TEXT_DIM
                             })
-                            .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                            .hover(|el| {
+                                el.bg(Theme::global().HEADER_BG)
+                                    .text_color(Theme::global().TEXT)
+                            })
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, _event, _window, cx| {
@@ -627,10 +630,12 @@ impl Panel {
                                             })
                                             .child(logo),
                                     )
-                                    .child(div().font_family(Theme::FONT_MONO).child(model)),
+                                    .child(
+                                        div().font_family(Theme::global().FONT_MONO).child(model),
+                                    ),
                             )
                             .when(selected, |el| {
-                                el.child(div().text_color(Theme::ACCENT).child("●"))
+                                el.child(div().text_color(Theme::global().ACCENT).child("●"))
                             })
                     }),
             );
@@ -666,8 +671,8 @@ impl Panel {
                             .flex_col()
                             .rounded_lg()
                             .border_1()
-                            .border_color(Theme::PANEL_BORDER_FOCUS)
-                            .bg(Theme::PANEL_BG)
+                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                            .bg(Theme::global().PANEL_BG)
                             .shadow_lg()
                             .child(
                                 div()
@@ -677,7 +682,7 @@ impl Panel {
                                     .px_4()
                                     .py_3()
                                     .border_b_1()
-                                    .border_color(Theme::PANEL_BORDER)
+                                    .border_color(Theme::global().PANEL_BORDER)
                                     .child(
                                         div()
                                             .flex()
@@ -687,15 +692,15 @@ impl Panel {
                                             .child(
                                                 div()
                                                     .text_size(px(10.5))
-                                                    .text_color(Theme::TEXT_FAINT)
+                                                    .text_color(Theme::global().TEXT_FAINT)
                                                     .child("type to filter  ·  ↑↓ move  ·  enter select"),
                                             ),
                                     )
                                     .child(
                                         div()
                                             .cursor_pointer()
-                                            .text_color(Theme::TEXT_DIM)
-                                            .hover(|el| el.text_color(Theme::TEXT))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| el.text_color(Theme::global().TEXT))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
                                                 cx.listener(|this, _event, _window, cx| {
@@ -1162,11 +1167,11 @@ impl Panel {
                     .flex_col()
                     .ml(px(offset))
                     .opacity(opacity)
-                    .bg(Theme::USER_BG)
+                    .bg(Theme::global().USER_BG)
                     .rounded_md()
                     .px_3()
                     .py_2()
-                    .text_color(Theme::TEXT_USER)
+                    .text_color(Theme::global().TEXT_USER)
                     .child(markdown::render(text, window))
                     .into_any_element()
             }
@@ -1183,7 +1188,7 @@ impl Panel {
                     .gap_1()
                     .rounded_md()
                     .p_2()
-                    .bg(Theme::USER_BG)
+                    .bg(Theme::global().USER_BG)
                     .when_some(image.preview.clone(), |el, preview| {
                         el.child(
                             img(ImageSource::Image(preview))
@@ -1193,19 +1198,22 @@ impl Panel {
                                 .rounded_md(),
                         )
                     })
-                    .child(div().text_size(px(11.0)).text_color(Theme::TEXT_DIM).child(
-                        if image.preview.is_some() {
-                            label
-                        } else {
-                            format!("{label} (could not display {})", image.media_type)
-                        },
-                    ))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(if image.preview.is_some() {
+                                label
+                            } else {
+                                format!("{label} (could not display {})", image.media_type)
+                            }),
+                    )
                     .into_any_element()
             }
             Item::Assistant(text) => div()
                 .debug_selector(|| "assistant-response".into())
                 .px_1()
-                .text_color(Theme::TEXT)
+                .text_color(Theme::global().TEXT)
                 .child(markdown::render(text, window))
                 // Streaming updates already repaint this row as text arrives. A
                 // repeating GPUI animation here would repaint every settled
@@ -1214,7 +1222,7 @@ impl Panel {
                     el.child(
                         div()
                             .text_size(px(12.0))
-                            .text_color(Theme::ACCENT)
+                            .text_color(Theme::global().ACCENT)
                             .child("▍"),
                     )
                 })
@@ -1243,9 +1251,9 @@ impl Panel {
                     .py_1p5()
                     .rounded_md()
                     .bg(if live {
-                        Theme::ACCENT_DIM
+                        Theme::global().ACCENT_DIM
                     } else {
-                        Theme::REASONING_BG
+                        Theme::global().REASONING_BG
                     })
                     .when(long && !live, |el| {
                         el.cursor_pointer().on_mouse_down(
@@ -1266,9 +1274,9 @@ impl Panel {
                             .items_center()
                             .text_size(px(10.0))
                             .text_color(if live {
-                                Theme::TEXT_DIM
+                                Theme::global().TEXT_DIM
                             } else {
-                                Theme::TEXT_FAINT
+                                Theme::global().TEXT_FAINT
                             })
                             .child(if live {
                                 // Incoming reasoning events provide the repaint clock;
@@ -1284,7 +1292,7 @@ impl Panel {
                     .child(
                         div()
                             .text_size(px(12.0))
-                            .text_color(Theme::REASONING)
+                            .text_color(Theme::global().REASONING)
                             .italic()
                             .line_height(relative(1.45))
                             .child(body),
@@ -1309,8 +1317,8 @@ impl Panel {
                     .gap_1p5()
                     .rounded_md()
                     .border_1()
-                    .border_color(Theme::TOOL_BORDER)
-                    .bg(Theme::TOOL_BG)
+                    .border_color(Theme::global().TOOL_BORDER)
+                    .bg(Theme::global().TOOL_BG)
                     .px_2p5()
                     .py_2()
                     .child(
@@ -1322,7 +1330,11 @@ impl Panel {
                                 div()
                                     .flex_none()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if *done { Theme::OK } else { Theme::WARN })
+                                    .text_color(if *done {
+                                        Theme::global().OK
+                                    } else {
+                                        Theme::global().WARN
+                                    })
                                     .child(if *done { "✓" } else { "●" }),
                             )
                             .child(
@@ -1330,22 +1342,22 @@ impl Panel {
                                     .flex_1()
                                     .min_w_0()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(Theme::TOOL_TEXT)
+                                    .text_color(Theme::global().TOOL_TEXT)
                                     .child(label.clone()),
                             )
                             .child(
                                 div()
                                     .flex_none()
-                                    .font_family(Theme::FONT_MONO)
+                                    .font_family(Theme::global().FONT_MONO)
                                     .text_size(px(10.0))
-                                    .text_color(Theme::TEXT_FAINT)
+                                    .text_color(Theme::global().TEXT_FAINT)
                                     .child(if *done { "finished" } else { "background" }),
                             ),
                     )
                     .child(
                         div()
                             .text_size(px(11.5))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .child(summary.clone()),
                     )
                     .when_some(progress, |el, progress| {
@@ -1354,14 +1366,14 @@ impl Panel {
                                 .w_full()
                                 .h(px(4.0))
                                 .rounded_full()
-                                .bg(Theme::TOOL_BORDER)
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(progress))
-                                        .rounded_full()
-                                        .bg(if *done { Theme::OK } else { Theme::ACCENT }),
-                                ),
+                                .bg(Theme::global().TOOL_BORDER)
+                                .child(div().h_full().w(relative(progress)).rounded_full().bg(
+                                    if *done {
+                                        Theme::global().OK
+                                    } else {
+                                        Theme::global().ACCENT
+                                    },
+                                )),
                         )
                     })
                     .into_any_element()
@@ -1404,7 +1416,7 @@ impl Panel {
                     (false, _) => div()
                         .w(px(12.0))
                         .flex_none()
-                        .text_color(Theme::WARN)
+                        .text_color(Theme::global().WARN)
                         // Tool events notify the panel on meaningful progress. A
                         // perpetual spinner otherwise reparses and repaints the
                         // complete transcript while a long-running tool is quiet.
@@ -1414,14 +1426,14 @@ impl Panel {
                         .w(px(12.0))
                         .flex_none()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::OK)
+                        .text_color(Theme::global().OK)
                         .child("✓")
                         .into_any_element(),
                     (true, Some(_)) => div()
                         .w(px(12.0))
                         .flex_none()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::ERROR)
+                        .text_color(Theme::global().ERROR)
                         .child("×")
                         .into_any_element(),
                 };
@@ -1443,9 +1455,9 @@ impl Panel {
                     .flex_none()
                     .flex_col()
                     .rounded_md()
-                    .bg(Theme::TOOL_BG)
+                    .bg(Theme::global().TOOL_BG)
                     .border_1()
-                    .border_color(Theme::TOOL_BORDER)
+                    .border_color(Theme::global().TOOL_BORDER)
                     .overflow_hidden()
                     .child(
                         div()
@@ -1472,9 +1484,9 @@ impl Panel {
                             .child(
                                 div()
                                     .flex_none()
-                                    .font_family(Theme::FONT_MONO)
+                                    .font_family(Theme::global().FONT_MONO)
                                     .text_size(px(10.0))
-                                    .text_color(Theme::TEXT_FAINT)
+                                    .text_color(Theme::global().TEXT_FAINT)
                                     .child(name.clone()),
                             )
                             .when(!summary.is_empty(), |el| {
@@ -1485,7 +1497,7 @@ impl Panel {
                                         .min_w_0()
                                         .overflow_hidden()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(Theme::TOOL_TEXT)
+                                        .text_color(Theme::global().TOOL_TEXT)
                                         .child(summary),
                                 )
                             })
@@ -1494,7 +1506,7 @@ impl Panel {
                                     div()
                                         .flex_none()
                                         .text_size(px(10.0))
-                                        .text_color(Theme::TEXT_FAINT)
+                                        .text_color(Theme::global().TEXT_FAINT)
                                         .child("running"),
                                 )
                             })
@@ -1506,7 +1518,7 @@ impl Panel {
                                         .debug_selector(|| "tool-output-size".into())
                                         .flex_none()
                                         .text_size(px(10.0))
-                                        .text_color(Theme::TEXT_FAINT)
+                                        .text_color(Theme::global().TEXT_FAINT)
                                         .child(format!("{output_lines} lines")),
                                 )
                             })
@@ -1515,7 +1527,7 @@ impl Panel {
                                     div()
                                         .flex_none()
                                         .text_size(px(10.0))
-                                        .text_color(Theme::TEXT_FAINT)
+                                        .text_color(Theme::global().TEXT_FAINT)
                                         .child(if expanded { "▾" } else { "▸" }),
                                 )
                             }),
@@ -1525,14 +1537,14 @@ impl Panel {
                             div()
                                 .debug_selector(|| "tool-detail".into())
                                 .border_t_1()
-                                .border_color(Theme::TOOL_BORDER)
-                                .bg(Theme::CODE_BG)
+                                .border_color(Theme::global().TOOL_BORDER)
+                                .bg(Theme::global().CODE_BG)
                                 .px_2p5()
                                 .py_1p5()
-                                .font_family(Theme::FONT_MONO)
+                                .font_family(Theme::global().FONT_MONO)
                                 .text_size(px(11.5))
                                 .line_height(relative(1.45))
-                                .text_color(Theme::CODE_TEXT)
+                                .text_color(Theme::global().CODE_TEXT)
                                 .child(detail),
                         )
                     })
@@ -1541,10 +1553,10 @@ impl Panel {
                             .px_2()
                             .py_1()
                             .border_t_1()
-                            .border_color(Theme::TOOL_BORDER)
+                            .border_color(Theme::global().TOOL_BORDER)
                             .text_size(px(11.5))
-                            .font_family(Theme::FONT_MONO)
-                            .text_color(Theme::ERROR)
+                            .font_family(Theme::global().FONT_MONO)
+                            .text_color(Theme::global().ERROR)
                             .child(condense(&strip_ansi(&message), 300))
                     }))
                     .into_any_element()
@@ -1557,11 +1569,11 @@ impl Panel {
                 .px_2p5()
                 .py_1p5()
                 .rounded_md()
-                .bg(Theme::ERROR_BG)
+                .bg(Theme::global().ERROR_BG)
                 .border_1()
-                .border_color(Theme::TOOL_BORDER)
+                .border_color(Theme::global().TOOL_BORDER)
                 .text_size(px(12.0))
-                .text_color(Theme::ERROR)
+                .text_color(Theme::global().ERROR)
                 .child(div().flex_none().child("!"))
                 .child(
                     div()
@@ -1725,13 +1737,13 @@ impl Render for Panel {
                     .justify_center()
                     .child(
                         div()
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .text_size(px(13.0))
                             .child("no messages yet"),
                     )
                     .child(
                         div()
-                            .text_color(Theme::TEXT_FAINT)
+                            .text_color(Theme::global().TEXT_FAINT)
                             .text_size(px(11.0))
                             .child("type below to start this session"),
                     ),
@@ -1772,7 +1784,7 @@ impl Render for Panel {
                     .whitespace_nowrap()
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(Theme::TEXT_DIM)
+                    .text_color(Theme::global().TEXT_DIM)
                     .child(title)
             }))
             .children(pinned_todo.map(|payload| {
@@ -1805,14 +1817,14 @@ impl Render for Panel {
                                 .px_2p5()
                                 .py_1()
                                 .rounded_md()
-                                .bg(Theme::HEADER_BG)
+                                .bg(Theme::global().HEADER_BG)
                                 .border_1()
-                                .border_color(Theme::PANEL_BORDER)
+                                .border_color(Theme::global().PANEL_BORDER)
                                 .text_size(px(10.5))
-                                .font_family(Theme::FONT_MONO)
-                                .text_color(Theme::TEXT_DIM)
+                                .font_family(Theme::global().FONT_MONO)
+                                .text_color(Theme::global().TEXT_DIM)
                                 .cursor_pointer()
-                                .hover(|el| el.text_color(Theme::TEXT))
+                                .hover(|el| el.text_color(Theme::global().TEXT))
                                 .occlude()
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
@@ -1835,7 +1847,7 @@ impl Render for Panel {
                     .size(px(5.0))
                     .flex_none()
                     .rounded_full()
-                    .bg(Theme::ACCENT);
+                    .bg(Theme::global().ACCENT);
                 div()
                     .flex()
                     .flex_row()
@@ -1844,8 +1856,8 @@ impl Render for Panel {
                     .px_3()
                     .py_1()
                     .text_size(px(10.5))
-                    .font_family(Theme::FONT_MONO)
-                    .text_color(Theme::TEXT_FAINT)
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_color(Theme::global().TEXT_FAINT)
                     .child(dot)
                     .child(text)
             }))
@@ -1862,8 +1874,8 @@ impl Render for Panel {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(10.0))
-                    .font_family(Theme::FONT_MONO)
-                    .text_color(Theme::TEXT_FAINT)
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_color(Theme::global().TEXT_FAINT)
                     .child(meta_line)
             })
             // Input
@@ -1963,8 +1975,8 @@ fn role_caption(label: &'static str, body: gpui::AnyElement) -> gpui::AnyElement
         .child(
             div()
                 .text_size(px(10.0))
-                .text_color(Theme::TEXT_FAINT)
-                .font_family(Theme::FONT_MONO)
+                .text_color(Theme::global().TEXT_FAINT)
+                .font_family(Theme::global().FONT_MONO)
                 .child(label),
         )
         .child(body)
@@ -2268,13 +2280,13 @@ fn semantic_value(value: &serde_json::Value) -> String {
 
 fn todo_status_color(todo: &TodoCardItem) -> gpui::Rgba {
     if !todo.blocked_by.is_empty() && todo.status != "completed" {
-        Theme::WARN
+        Theme::global().WARN
     } else {
         match todo.status.as_str() {
-            "completed" => Theme::OK,
-            "in_progress" => Theme::ACCENT,
-            "cancelled" => Theme::ERROR,
-            _ => Theme::TEXT_FAINT,
+            "completed" => Theme::global().OK,
+            "in_progress" => Theme::global().ACCENT,
+            "cancelled" => Theme::global().ERROR,
+            _ => Theme::global().TEXT_FAINT,
         }
     }
 }
@@ -2293,7 +2305,7 @@ fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
             marker.child(div().size_full().rounded_full().bg(color))
         })
         .when(todo.status == "in_progress", |marker| {
-            marker.child(div().size_full().rounded_full().bg(Theme::ACCENT))
+            marker.child(div().size_full().rounded_full().bg(Theme::global().ACCENT))
         })
 }
 
@@ -2331,7 +2343,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
             div()
                 .py_1()
                 .text_size(px(12.0))
-                .text_color(Theme::TEXT_DIM)
+                .text_color(Theme::global().TEXT_DIM)
                 .child("No tasks yet. Jcode will populate them as work is planned."),
         );
     } else {
@@ -2351,12 +2363,12 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         .child(
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(Theme::ACCENT_MUTED)
+                                .text_color(Theme::global().ACCENT_MUTED)
                                 .child(group.unwrap_or("Other").to_string()),
                         )
                         .child(
                             div()
-                                .text_color(Theme::TEXT_FAINT)
+                                .text_color(Theme::global().TEXT_FAINT)
                                 .child(format!("{done}/{}", todos.len())),
                         ),
                 );
@@ -2387,9 +2399,9 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                                             .text_size(px(12.5))
                                             .line_height(relative(1.35))
                                             .text_color(if todo.status == "completed" {
-                                                Theme::TEXT_DIM
+                                                Theme::global().TEXT_DIM
                                             } else {
-                                                Theme::TEXT
+                                                Theme::global().TEXT
                                             })
                                             .child(todo.content.clone()),
                                     )
@@ -2404,8 +2416,8 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                                                     div()
                                                         .rounded_sm()
                                                         .px_1()
-                                                        .bg(Theme::ERROR_BG)
-                                                        .text_color(Theme::WARN)
+                                                        .bg(Theme::global().ERROR_BG)
+                                                        .text_color(Theme::global().WARN)
                                                         .child("high priority"),
                                                 )
                                             })
@@ -2414,15 +2426,15 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                                                     div()
                                                         .rounded_sm()
                                                         .px_1()
-                                                        .bg(Theme::ERROR_BG)
-                                                        .text_color(Theme::WARN)
+                                                        .bg(Theme::global().ERROR_BG)
+                                                        .text_color(Theme::global().WARN)
                                                         .child("blocked"),
                                                 )
                                             })
                                             .when_some(confidence, |meta, confidence| {
                                                 meta.child(
                                                     div()
-                                                        .text_color(Theme::TEXT_FAINT)
+                                                        .text_color(Theme::global().TEXT_FAINT)
                                                         .child(semantic_value(confidence)),
                                                 )
                                             }),
@@ -2443,8 +2455,8 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .gap_2()
         .rounded_md()
         .border_1()
-        .border_color(Theme::TOOL_BORDER)
-        .bg(Theme::TOOL_BG)
+        .border_color(Theme::global().TOOL_BORDER)
+        .bg(Theme::global().TOOL_BG)
         .px_2p5()
         .py_2()
         .child(
@@ -2455,13 +2467,13 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::HEADING)
+                        .text_color(Theme::global().HEADING)
                         .child("Tasks"),
                 )
                 .child(
                     div()
                         .text_size(px(10.5))
-                        .text_color(Theme::TEXT_DIM)
+                        .text_color(Theme::global().TEXT_DIM)
                         .child(format!("{completed} of {total} complete")),
                 ),
         )
@@ -2470,14 +2482,14 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .h(px(3.0))
                 .w_full()
                 .rounded_full()
-                .bg(Theme::CODE_BORDER)
+                .bg(Theme::global().CODE_BORDER)
                 .overflow_hidden()
                 .child(
                     div()
                         .h_full()
                         .w(relative(progress))
                         .rounded_full()
-                        .bg(Theme::OK),
+                        .bg(Theme::global().OK),
                 ),
         )
         .when_some(payload.plan.user_intention.clone(), |card, intention| {
@@ -2490,14 +2502,14 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         div()
                             .text_size(px(9.5))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(Theme::TEXT_FAINT)
+                            .text_color(Theme::global().TEXT_FAINT)
                             .child("OUTCOME"),
                     )
                     .child(
                         div()
                             .text_size(px(12.0))
                             .line_height(relative(1.4))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .child(intention),
                     )
                     .when_some(
@@ -2506,7 +2518,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                             plan.child(
                                 div()
                                     .text_size(px(9.5))
-                                    .text_color(Theme::TEXT_FAINT)
+                                    .text_color(Theme::global().TEXT_FAINT)
                                     .child(format!("Understanding: {}", semantic_value(value))),
                             )
                         },

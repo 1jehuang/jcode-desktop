@@ -34,7 +34,7 @@ pub fn vertical(handle: &ScrollHandle, selector: &'static str) -> AnyElement {
         .w(px(WIDTH))
         .h(px(thumb_height))
         .rounded_full()
-        .bg(Theme::TEXT_FAINT)
+        .bg(Theme::global().TEXT_FAINT)
         .into_any_element()
 }
 

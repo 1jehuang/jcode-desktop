@@ -255,8 +255,8 @@ fn inline_spans(source: &str) -> Inline {
     let mut i = 0;
 
     let code_style = HighlightStyle {
-        color: Some(to_hsla(Theme::CODE_TEXT)),
-        background_color: Some(to_hsla(Theme::INLINE_CODE_BG)),
+        color: Some(to_hsla(Theme::global().CODE_TEXT)),
+        background_color: Some(to_hsla(Theme::global().INLINE_CODE_BG)),
         ..Default::default()
     };
 
@@ -271,7 +271,7 @@ fn inline_spans(source: &str) -> Inline {
                 highlights.push((
                     start..plain.len(),
                     HighlightStyle {
-                        color: Some(to_hsla(Theme::CODE_TEXT)),
+                        color: Some(to_hsla(Theme::global().CODE_TEXT)),
                         ..Default::default()
                     },
                 ));
@@ -305,7 +305,7 @@ fn inline_spans(source: &str) -> Inline {
                 highlights.push((
                     start..plain.len(),
                     HighlightStyle {
-                        color: Some(to_hsla(Theme::CODE_TEXT)),
+                        color: Some(to_hsla(Theme::global().CODE_TEXT)),
                         ..Default::default()
                     },
                 ));
@@ -377,9 +377,9 @@ fn inline_spans(source: &str) -> Inline {
                     HighlightStyle {
                         strikethrough: Some(StrikethroughStyle {
                             thickness: px(1.0),
-                            color: Some(to_hsla(Theme::TEXT_DIM)),
+                            color: Some(to_hsla(Theme::global().TEXT_DIM)),
                         }),
-                        color: Some(to_hsla(Theme::TEXT_DIM)),
+                        color: Some(to_hsla(Theme::global().TEXT_DIM)),
                         ..Default::default()
                     },
                 ));
@@ -488,10 +488,10 @@ fn inline_spans(source: &str) -> Inline {
 
 fn link_style() -> HighlightStyle {
     HighlightStyle {
-        color: Some(to_hsla(Theme::LINK)),
+        color: Some(to_hsla(Theme::global().LINK)),
         underline: Some(UnderlineStyle {
             thickness: px(1.0),
-            color: Some(to_hsla(Theme::LINK)),
+            color: Some(to_hsla(Theme::global().LINK)),
             wavy: false,
         }),
         ..Default::default()
@@ -787,13 +787,13 @@ enum Token {
 
 fn token_color(token: Token) -> gpui::Rgba {
     match token {
-        Token::Plain => Theme::CODE_TEXT,
-        Token::Keyword => Theme::CODE_KEYWORD,
-        Token::Str => Theme::CODE_STRING,
-        Token::Comment => Theme::CODE_COMMENT,
-        Token::Number => Theme::CODE_NUMBER,
-        Token::Type => Theme::CODE_TYPE,
-        Token::Punct => Theme::CODE_PUNCT,
+        Token::Plain => Theme::global().CODE_TEXT,
+        Token::Keyword => Theme::global().CODE_KEYWORD,
+        Token::Str => Theme::global().CODE_STRING,
+        Token::Comment => Theme::global().CODE_COMMENT,
+        Token::Number => Theme::global().CODE_NUMBER,
+        Token::Type => Theme::global().CODE_TYPE,
+        Token::Punct => Theme::global().CODE_PUNCT,
     }
 }
 
@@ -997,9 +997,9 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
         .collect::<Vec<_>>()
         .join("\n");
     let mut style = window.text_style();
-    style.font_family = Theme::FONT_MONO.into();
+    style.font_family = Theme::global().FONT_MONO.into();
     style.font_size = px(12.5).into();
-    style.color = to_hsla(Theme::CODE_TEXT);
+    style.color = to_hsla(Theme::global().CODE_TEXT);
     // Multi-line blocks always get the header so copy is reachable even when
     // the fence carried no language.
     let show_header = !lang.is_empty() || line_count > 1;
@@ -1014,8 +1014,8 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
         .overflow_hidden()
         .rounded_md()
         .border_1()
-        .border_color(Theme::CODE_BORDER)
-        .bg(Theme::CODE_BG)
+        .border_color(Theme::global().CODE_BORDER)
+        .bg(Theme::global().CODE_BG)
         .when(show_header, |el| {
             el.child(
                 div()
@@ -1025,12 +1025,12 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
                     .justify_between()
                     .px_2p5()
                     .py_1()
-                    .bg(Theme::CODE_HEADER_BG)
+                    .bg(Theme::global().CODE_HEADER_BG)
                     .border_b_1()
-                    .border_color(Theme::CODE_BORDER)
+                    .border_color(Theme::global().CODE_BORDER)
                     .text_size(px(10.5))
-                    .text_color(Theme::TEXT_DIM)
-                    .font_family(Theme::FONT_MONO)
+                    .text_color(Theme::global().TEXT_DIM)
+                    .font_family(Theme::global().FONT_MONO)
                     .child(if lang.is_empty() {
                         "code".to_string()
                     } else {
@@ -1051,8 +1051,8 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
                                     .id(copy_id)
                                     .debug_selector(|| "code-copy".into())
                                     .cursor_pointer()
-                                    .text_color(Theme::TEXT_FAINT)
-                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .hover(|el| el.text_color(Theme::global().TEXT))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         move |_event, _window, cx| {
@@ -1077,10 +1077,10 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
                     el.child(
                         div()
                             .flex_none()
-                            .font_family(Theme::FONT_MONO)
+                            .font_family(Theme::global().FONT_MONO)
                             .text_size(px(12.5))
                             .line_height(relative(1.5))
-                            .text_color(Theme::CODE_GUTTER)
+                            .text_color(Theme::global().CODE_GUTTER)
                             .text_right()
                             .child(gutter),
                     )
@@ -1126,12 +1126,12 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                         div()
                             .text_size(size)
                             .font_weight(weight)
-                            .text_color(Theme::HEADING)
+                            .text_color(Theme::global().HEADING)
                             .line_height(relative(1.35))
                             .child(styled_line(&text, window)),
                     )
                     .when(level <= 2, |el| {
-                        el.child(div().h(px(1.0)).w_full().bg(Theme::PANEL_BORDER))
+                        el.child(div().h(px(1.0)).w_full().bg(Theme::global().PANEL_BORDER))
                     })
                     .into_any_element()
             }
@@ -1150,9 +1150,9 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                     },
                 };
                 let marker_color = match task {
-                    Some(true) => Theme::OK,
-                    Some(false) => Theme::TEXT_DIM,
-                    None => Theme::ACCENT_MUTED,
+                    Some(true) => Theme::global().OK,
+                    Some(false) => Theme::global().TEXT_DIM,
+                    None => Theme::global().ACCENT_MUTED,
                 };
                 list_row(depth, marker, marker_color, &text, window, tight, task)
             }
@@ -1163,7 +1163,7 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
             } => list_row(
                 depth,
                 format!("{number}."),
-                Theme::ACCENT_MUTED,
+                Theme::global().ACCENT_MUTED,
                 &text,
                 window,
                 tight,
@@ -1175,8 +1175,8 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 .flex_col()
                 .my_1()
                 .border_l_2()
-                .border_color(Theme::PANEL_BORDER)
-                .bg(Theme::QUOTE_BG)
+                .border_color(Theme::global().PANEL_BORDER)
+                .bg(Theme::global().QUOTE_BG)
                 .rounded_r_md()
                 .child(
                     div()
@@ -1187,7 +1187,7 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                         .py_1()
                         .flex_1()
                         .min_w_0()
-                        .text_color(Theme::TEXT_DIM)
+                        .text_color(Theme::global().TEXT_DIM)
                         .italic()
                         .line_height(relative(1.5))
                         .children(
@@ -1207,18 +1207,18 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 .py_1p5()
                 .rounded_md()
                 .border_1()
-                .border_color(Theme::CODE_BORDER)
-                .bg(Theme::CODE_BG)
+                .border_color(Theme::global().CODE_BORDER)
+                .bg(Theme::global().CODE_BG)
                 .text_center()
                 .text_size(px(16.0))
-                .text_color(Theme::TEXT)
+                .text_color(Theme::global().TEXT)
                 .child(text)
                 .into_any_element(),
             Block::Rule => div()
                 .h(px(1.0))
                 .my_2()
                 .w_full()
-                .bg(Theme::PANEL_BORDER)
+                .bg(Theme::global().PANEL_BORDER)
                 .into_any_element(),
         };
         children.push(element);
@@ -1256,7 +1256,9 @@ fn list_row(
                 .flex_1()
                 .min_w_0()
                 .line_height(relative(1.55))
-                .when(task == Some(true), |el| el.text_color(Theme::TEXT_DIM))
+                .when(task == Some(true), |el| {
+                    el.text_color(Theme::global().TEXT_DIM)
+                })
                 .child(styled_line(text, window)),
         )
         .into_any_element()
@@ -1283,17 +1285,17 @@ fn table(header: Vec<String>, rows: Vec<Vec<String>>, window: &gpui::Window) -> 
         .overflow_hidden()
         .rounded_md()
         .border_1()
-        .border_color(Theme::PANEL_BORDER)
+        .border_color(Theme::global().PANEL_BORDER)
         .text_size(px(12.5))
         .child(
             div()
                 .flex()
                 .flex_row()
-                .bg(Theme::CODE_HEADER_BG)
+                .bg(Theme::global().CODE_HEADER_BG)
                 .border_b_1()
-                .border_color(Theme::PANEL_BORDER)
+                .border_color(Theme::global().PANEL_BORDER)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(Theme::HEADING)
+                .text_color(Theme::global().HEADING)
                 .children((0..columns).map(|index| {
                     cell(header.get(index).map(String::as_str).unwrap_or(""), window)
                 })),
@@ -1302,8 +1304,8 @@ fn table(header: Vec<String>, rows: Vec<Vec<String>>, window: &gpui::Window) -> 
             div()
                 .flex()
                 .flex_row()
-                .when(row_index % 2 == 1, |el| el.bg(Theme::TABLE_STRIPE))
-                .text_color(Theme::TEXT)
+                .when(row_index % 2 == 1, |el| el.bg(Theme::global().TABLE_STRIPE))
+                .text_color(Theme::global().TEXT)
                 .children(
                     (0..columns).map(|index| {
                         cell(row.get(index).map(String::as_str).unwrap_or(""), window)

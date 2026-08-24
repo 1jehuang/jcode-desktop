@@ -5,6 +5,7 @@ mod ack;
 mod build_info;
 mod clipboard_image;
 mod commands;
+mod config;
 mod harness;
 mod input;
 mod learning;

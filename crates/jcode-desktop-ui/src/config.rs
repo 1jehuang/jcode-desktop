@@ -1,0 +1,196 @@
+//! Persisted user configuration for Jcode Desktop.
+
+use serde::Deserialize;
+use std::{collections::BTreeMap, fs, path::PathBuf, sync::OnceLock, time::Duration};
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct DesktopConfig {
+    pub appearance: AppearanceConfig,
+    pub workspace: WorkspaceConfig,
+    pub terminal: TerminalConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    /// UI font family. The platform-specific built-in remains the default.
+    pub ui_font: Option<String>,
+    /// Monospace font used by code and terminal panels.
+    pub mono_font: Option<String>,
+    /// Global text scale. Values outside 0.75..=2.0 fall back to 1.0.
+    pub text_scale: f32,
+    /// Disable non-essential workspace motion.
+    pub reduce_motion: bool,
+    /// Semantic color overrides. Keys are documented in README.md.
+    pub colors: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+    pub sidebar: bool,
+    pub showcase_keys: bool,
+    pub coaching_hints: bool,
+    pub session_refresh_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct TerminalConfig {
+    pub scrollback_lines: usize,
+}
+
+impl Default for DesktopConfig {
+    fn default() -> Self {
+        Self {
+            appearance: AppearanceConfig::default(),
+            workspace: WorkspaceConfig::default(),
+            terminal: TerminalConfig::default(),
+        }
+    }
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            ui_font: None,
+            mono_font: None,
+            text_scale: 1.0,
+            reduce_motion: false,
+            colors: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            sidebar: true,
+            showcase_keys: true,
+            coaching_hints: true,
+            session_refresh_seconds: 2,
+        }
+    }
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            scrollback_lines: 10_000,
+        }
+    }
+}
+
+impl DesktopConfig {
+    fn normalize(mut self) -> Self {
+        if !self.appearance.text_scale.is_finite()
+            || !(0.75..=2.0).contains(&self.appearance.text_scale)
+        {
+            self.appearance.text_scale = 1.0;
+        }
+        self.workspace.session_refresh_seconds =
+            self.workspace.session_refresh_seconds.clamp(1, 300);
+        self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
+        self
+    }
+
+    pub fn session_refresh_interval(&self) -> Duration {
+        Duration::from_secs(self.workspace.session_refresh_seconds)
+    }
+}
+
+static CONFIG: OnceLock<DesktopConfig> = OnceLock::new();
+
+pub fn get() -> &'static DesktopConfig {
+    CONFIG.get_or_init(load)
+}
+
+pub fn path() -> PathBuf {
+    if let Some(path) = std::env::var_os("JCODE_DESKTOP_CONFIG") {
+        return PathBuf::from(path);
+    }
+    if let Some(home) = std::env::var_os("JCODE_HOME") {
+        return PathBuf::from(home).join("config.toml");
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".jcode/config.toml")
+}
+
+fn load() -> DesktopConfig {
+    let path = path();
+    match fs::read_to_string(&path) {
+        Ok(text) => match parse(&text, std::env::var_os("JCODE_DESKTOP_CONFIG").is_some()) {
+            Ok(config) => config.normalize(),
+            Err(error) => {
+                eprintln!(
+                    "ignoring invalid desktop config {}: {error}",
+                    path.display()
+                );
+                DesktopConfig::default()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DesktopConfig::default(),
+        Err(error) => {
+            eprintln!("failed to read desktop config {}: {error}", path.display());
+            DesktopConfig::default()
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct JcodeConfig {
+    desktop: DesktopConfig,
+}
+
+fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error> {
+    if standalone {
+        toml::from_str(text)
+    } else {
+        toml::from_str::<JcodeConfig>(text).map(|config| config.desktop)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_config_keeps_safe_defaults_and_normalizes_ranges() {
+        let config: DesktopConfig = toml::from_str(
+            r##"
+            [appearance]
+            text_scale = 9.0
+            [appearance.colors]
+            accent = "#ff00aa"
+            [workspace]
+            sidebar = false
+            session_refresh_seconds = 0
+            [terminal]
+            scrollback_lines = 12
+        "##,
+        )
+        .unwrap();
+        let config = config.normalize();
+        assert_eq!(config.appearance.text_scale, 1.0);
+        assert_eq!(config.appearance.colors["accent"], "#ff00aa");
+        assert!(!config.workspace.sidebar);
+        assert_eq!(config.workspace.session_refresh_seconds, 1);
+        assert_eq!(config.terminal.scrollback_lines, 100);
+    }
+
+    #[test]
+    fn desktop_section_coexists_with_shared_jcode_settings() {
+        let config = parse(
+            r#"
+                model = "openai:gpt-5"
+                [desktop.workspace]
+                sidebar = false
+            "#,
+            false,
+        )
+        .unwrap();
+        assert!(!config.workspace.sidebar);
+        assert_eq!(config.appearance.text_scale, 1.0);
+    }
+}

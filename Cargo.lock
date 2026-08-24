@@ -2991,6 +2991,7 @@ dependencies = [
  "jcode-sdk",
  "serde",
  "serde_json",
+ "toml 0.8.23",
  "unicode-segmentation",
  "vt100",
 ]

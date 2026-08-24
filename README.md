@@ -4,6 +4,58 @@ A native, high-performance spatial desktop client built on the Jcode SDK.
 
 See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
+## Configuration
+
+Jcode Desktop reads the `[desktop]` section of Jcode's shared
+`~/.jcode/config.toml` at startup (`$JCODE_HOME/config.toml` when `JCODE_HOME`
+is set). `JCODE_DESKTOP_CONFIG` can point to a standalone file containing the
+same settings without the outer `[desktop]` prefix. Restart Desktop after
+editing it.
+
+All settings are optional and retain the current UI defaults when omitted:
+
+```toml
+[desktop.appearance]
+ui_font = "Inter"
+mono_font = "JetBrainsMono Nerd Font"
+text_scale = 1.0                 # 0.75 through 2.0
+reduce_motion = false
+
+[desktop.appearance.colors]
+bg = "#090909"                  # #RRGGBB or #RRGGBBAA
+panel_bg = "#111111"
+text = "#dcdcd7"
+text_dim = "#8c8c8c"
+accent = "#ba8bff"
+user_accent = "#8ab4f8"
+ai_accent = "#81c784"
+error = "#ff6464"
+warn = "#ffc864"
+ok = "#64c864"
+
+[desktop.workspace]
+sidebar = true
+showcase_keys = true
+coaching_hints = true
+session_refresh_seconds = 2      # 1 through 300
+
+[desktop.terminal]
+scrollback_lines = 10000         # 100 through 1,000,000
+```
+
+Every semantic color can be overridden. In addition to the example above,
+the supported keys are `canvas_dot`, `panel_border`, `panel_border_focus`,
+`panel_border_idle`, `header_bg`, `text_user`, `accent_dim`, `user_bg`,
+`tool_bg`, `tool_text`, `reasoning`, `reasoning_bg`, `text_faint`,
+`tool_border`, `error_bg`, `code_bg`, `code_text`, `inline_code_bg`,
+`code_border`, `code_header_bg`, `code_gutter`, `code_keyword`, `code_string`,
+`code_comment`, `code_number`, `code_type`, `code_punct`, `accent_muted`,
+`quote_bg`, `table_stripe`, `input_bg`, `input_border`, `cursor`, `selection`,
+`heading`, `link`, `minimap_track`, `minimap_track_active`,
+`minimap_viewport`, `minimap_panel`, `minimap_panel_busy`, and `minimap_bg`.
+Unknown or malformed color values are ignored with a diagnostic rather than
+preventing the app from starting.
+
 ## Native UI hot reload
 
 The executable is a small, stable GPUI host. The application UI lives in the

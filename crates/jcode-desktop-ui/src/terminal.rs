@@ -95,7 +95,11 @@ impl TerminalPanel {
                 if this
                     .update(cx, |this, cx| {
                         if replay_gap {
-                            this.parser = vt100::Parser::new(this.rows, this.cols, 10_000);
+                            this.parser = vt100::Parser::new(
+                                this.rows,
+                                this.cols,
+                                crate::config::get().terminal.scrollback_lines,
+                            );
                         }
                         for chunk in chunks {
                             this.parser.process(&chunk);
@@ -115,7 +119,7 @@ impl TerminalPanel {
 
         Self {
             focus: cx.focus_handle(),
-            parser: vt100::Parser::new(ROWS, COLS, 10_000),
+            parser: vt100::Parser::new(ROWS, COLS, crate::config::get().terminal.scrollback_lines),
             host,
             resource_id,
             status,
@@ -333,10 +337,10 @@ impl Render for TerminalPanel {
             .size_full()
             .overflow_hidden()
             .p_3()
-            .bg(Theme::BG)
-            .font_family(Theme::FONT_MONO)
+            .bg(Theme::global().BG)
+            .font_family(Theme::global().FONT_MONO)
             .text_size(px(13.0))
-            .text_color(Theme::TEXT)
+            .text_color(Theme::global().TEXT)
             .whitespace_nowrap()
             // One element per terminal row preserves line boundaries. A single
             // text child is laid out like prose and can collapse terminal output.

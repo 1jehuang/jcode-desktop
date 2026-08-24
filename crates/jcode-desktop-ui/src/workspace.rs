@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div,
-    prelude::*, px, relative,
+    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window,
+    actions, div, prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -418,6 +418,7 @@ impl Workspace {
         // and refresh the global session list periodically so the sidebar also
         // follows work started or renamed in other Jcode processes.
         let poll_bridge = bridge.clone();
+        let session_refresh_interval = crate::config::get().session_refresh_interval();
         let poll_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
             loop {
@@ -426,7 +427,7 @@ impl Workspace {
                     .await;
                 let updates = poll_bridge.drain();
                 let accounts = accounts_feed.latest();
-                if last_session_refresh.elapsed() >= Duration::from_secs(2) {
+                if last_session_refresh.elapsed() >= session_refresh_interval {
                     poll_bridge.send(Command::RefreshSessions);
                     last_session_refresh = Instant::now();
                 }
@@ -458,7 +459,10 @@ impl Workspace {
         let mut workspace = Self {
             bridge,
             host,
-            show_sidebar: sidebar_enabled(std::env::args_os()),
+            show_sidebar: sidebar_enabled(
+                std::env::args_os(),
+                crate::config::get().workspace.sidebar,
+            ),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -478,7 +482,7 @@ impl Workspace {
             ),
             hints_overlay: false,
             hints_progress: AnimatedValue::new(0.0, transition::policy(Transition::Hints).duration),
-            showcase_mode: true,
+            showcase_mode: crate::config::get().workspace.showcase_keys,
             showcase_cue: None,
             showcase_task: None,
             coach: learning::load(),
@@ -1192,7 +1196,8 @@ impl Workspace {
     /// Reveal or retire the hint toast and persist the model when it changed.
     fn after_coach_update(&mut self, cx: &mut Context<Self>) {
         let now = learning::now();
-        let visible = self.coach.active_hint(now).is_some();
+        let visible =
+            crate::config::get().workspace.coaching_hints && self.coach.active_hint(now).is_some();
         self.coach_progress
             .set(if visible { 1.0 } else { 0.0 }, Instant::now());
         if visible {
@@ -1843,7 +1848,7 @@ impl Workspace {
                 .gap_2()
                 .items_center()
                 .justify_center()
-                .text_color(Theme::TEXT_DIM)
+                .text_color(Theme::global().TEXT_DIM)
                 // An empty strip has no transcripts to protect, so any
                 // vertical touchpad travel past the break threshold hops
                 // strips directly. Without this, a gesture that lands on an
@@ -1992,12 +1997,12 @@ impl Workspace {
                     .w(px(width))
                     .h(px(panel_h))
                     .flex_none()
-                    .bg(Theme::PANEL_BG)
+                    .bg(Theme::global().PANEL_BG)
                     .border_1()
                     .border_color(if focused {
-                        Theme::PANEL_BORDER_FOCUS
+                        Theme::global().PANEL_BORDER_FOCUS
                     } else {
-                        Theme::PANEL_BORDER_IDLE
+                        Theme::global().PANEL_BORDER_IDLE
                     })
                     .rounded(px(CORNER_RADIUS))
                     .overflow_hidden()
@@ -2105,13 +2110,19 @@ impl Workspace {
                         .h(px(GESTURE_RETICLE_SIZE))
                         .rounded_full()
                         .border_2()
-                        .border_color(Theme::ACCENT)
+                        .border_color(Theme::global().ACCENT)
                         .bg(gpui::rgba(0xffffff14))
                         .opacity(alpha)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(div().w(px(5.0)).h(px(5.0)).rounded_full().bg(Theme::ACCENT)),
+                        .child(
+                            div()
+                                .w(px(5.0))
+                                .h(px(5.0))
+                                .rounded_full()
+                                .bg(Theme::global().ACCENT),
+                        ),
                 )
             })
             .into_any_element()
@@ -2278,17 +2289,17 @@ impl Workspace {
                     .h(px(190.0))
                     .flex()
                     .flex_col()
-                    .bg(Theme::PANEL_BG)
+                    .bg(Theme::global().PANEL_BG)
                     .border_2()
                     .border_color(if focused {
-                        Theme::PANEL_BORDER_FOCUS
+                        Theme::global().PANEL_BORDER_FOCUS
                     } else {
-                        Theme::PANEL_BORDER
+                        Theme::global().PANEL_BORDER
                     })
                     .rounded_xl()
                     .overflow_hidden()
                     .cursor_pointer()
-                    .hover(|el| el.border_color(Theme::ACCENT))
+                    .hover(|el| el.border_color(Theme::global().ACCENT))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
@@ -2307,24 +2318,24 @@ impl Workspace {
                             .gap_2()
                             .px_3()
                             .py_2()
-                            .bg(Theme::HEADER_BG)
+                            .bg(Theme::global().HEADER_BG)
                             .child(div().size(px(7.0)).rounded_full().bg(if busy {
-                                Theme::WARN
+                                Theme::global().WARN
                             } else {
-                                Theme::OK
+                                Theme::global().OK
                             }))
                             .child(
                                 div()
                                     .flex_1()
                                     .text_size(px(12.0))
-                                    .text_color(Theme::TEXT)
+                                    .text_color(Theme::global().TEXT)
                                     .overflow_hidden()
                                     .child(title),
                             )
                             .child(
                                 div()
                                     .text_size(px(10.0))
-                                    .text_color(Theme::TEXT_DIM)
+                                    .text_color(Theme::global().TEXT_DIM)
                                     .child(status),
                             ),
                     )
@@ -2333,7 +2344,7 @@ impl Workspace {
                             .flex_1()
                             .p_3()
                             .text_size(px(11.0))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .overflow_hidden()
                             .line_height(relative(1.4))
                             .child(preview),
@@ -2352,11 +2363,14 @@ impl Workspace {
                 .justify_center()
                 .border_2()
                 .border_dashed()
-                .border_color(Theme::PANEL_BORDER)
+                .border_color(Theme::global().PANEL_BORDER)
                 .rounded_xl()
                 .cursor_pointer()
-                .text_color(Theme::TEXT_DIM)
-                .hover(|el| el.border_color(Theme::ACCENT).text_color(Theme::ACCENT))
+                .text_color(Theme::global().TEXT_DIM)
+                .hover(|el| {
+                    el.border_color(Theme::global().ACCENT)
+                        .text_color(Theme::global().ACCENT)
+                })
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _event, _window, cx| {
@@ -2414,10 +2428,10 @@ impl Workspace {
                 open_statuses.get(&session.session_id).map(String::as_str),
             );
             let status_color = match status_kind {
-                SidebarStatusKind::Good => Theme::AI_ACCENT,
-                SidebarStatusKind::Busy => Theme::WARN,
-                SidebarStatusKind::Bad => Theme::ERROR,
-                SidebarStatusKind::Dim => Theme::TEXT_DIM,
+                SidebarStatusKind::Good => Theme::global().AI_ACCENT,
+                SidebarStatusKind::Busy => Theme::global().WARN,
+                SidebarStatusKind::Bad => Theme::global().ERROR,
+                SidebarStatusKind::Dim => Theme::global().TEXT_DIM,
             };
 
             list = list.child(
@@ -2434,17 +2448,20 @@ impl Workspace {
                     .rounded_lg()
                     .cursor_pointer()
                     .bg(if selected {
-                        Theme::ACCENT_DIM
+                        Theme::global().ACCENT_DIM
                     } else {
-                        Theme::BG
+                        Theme::global().BG
                     })
                     .border_1()
                     .border_color(if selected {
-                        Theme::PANEL_BORDER_FOCUS
+                        Theme::global().PANEL_BORDER_FOCUS
                     } else {
-                        Theme::PANEL_BORDER_IDLE
+                        Theme::global().PANEL_BORDER_IDLE
                     })
-                    .hover(|el| el.bg(Theme::HEADER_BG).border_color(Theme::PANEL_BORDER))
+                    .hover(|el| {
+                        el.bg(Theme::global().HEADER_BG)
+                            .border_color(Theme::global().PANEL_BORDER)
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
@@ -2478,7 +2495,7 @@ impl Workspace {
                                 .pl(px(36.0))
                                 .overflow_hidden()
                                 .text_size(px(10.0))
-                                .text_color(Theme::TEXT_DIM)
+                                .text_color(Theme::global().TEXT_DIM)
                                 .child(directory),
                         )
                     })
@@ -2488,7 +2505,7 @@ impl Workspace {
                                 .pl(px(36.0))
                                 .overflow_hidden()
                                 .text_size(px(10.0))
-                                .text_color(Theme::TEXT_FAINT)
+                                .text_color(Theme::global().TEXT_FAINT)
                                 .child(meta),
                         )
                     }),
@@ -2500,7 +2517,7 @@ impl Workspace {
                 div()
                     .p_4()
                     .text_size(px(11.0))
-                    .text_color(Theme::TEXT_DIM)
+                    .text_color(Theme::global().TEXT_DIM)
                     .child(if self.connected {
                         "no previous sessions"
                     } else {
@@ -2515,9 +2532,9 @@ impl Workspace {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(Theme::BG)
+            .bg(Theme::global().BG)
             .border_r_1()
-            .border_color(Theme::PANEL_BORDER)
+            .border_color(Theme::global().PANEL_BORDER)
             .child(
                 div()
                     // The sidebar header doubles as the window's titlebar strip:
@@ -2530,7 +2547,7 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(Theme::PANEL_BORDER)
+                    .border_color(Theme::global().PANEL_BORDER)
                     .child(div().text_size(px(13.0)).child("sessions"))
                     .child(
                         div()
@@ -2546,8 +2563,11 @@ impl Workspace {
                                     .rounded_md()
                                     .cursor_pointer()
                                     .text_size(px(11.0))
-                                    .text_color(Theme::TEXT_DIM)
-                                    .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .hover(|el| {
+                                        el.bg(Theme::global().HEADER_BG)
+                                            .text_color(Theme::global().TEXT)
+                                    })
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(|this, _event, window, cx| {
@@ -2568,8 +2588,11 @@ impl Workspace {
                                     .rounded_md()
                                     .cursor_pointer()
                                     .text_size(px(16.0))
-                                    .text_color(Theme::TEXT_DIM)
-                                    .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .hover(|el| {
+                                        el.bg(Theme::global().HEADER_BG)
+                                            .text_color(Theme::global().TEXT)
+                                    })
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
@@ -2611,9 +2634,9 @@ impl Workspace {
         let busy = state.is_busy();
         let actionable = state.is_actionable();
         let ink = if actionable {
-            Theme::ACCENT
+            Theme::global().ACCENT
         } else {
-            Theme::TEXT_DIM
+            Theme::global().TEXT_DIM
         };
 
         // Keep this indicator still. Repeating element animations schedule a
@@ -2621,7 +2644,9 @@ impl Workspace {
         // source/debug build and while several markdown transcripts are visible.
         // State transitions still notify the workspace and update the label.
         let dot = div().size(px(6.0)).flex_none().rounded_full().bg(ink);
-        let dot: gpui::AnyElement = dot.opacity(if busy { 0.65 } else { 1.0 }).into_any_element();
+        let dot: gpui::AnyElement = dot
+            .opacity(if busy { 0.65 } else { 1.0 })
+            .into_any_element();
 
         let mut chip = div()
             .id("update-chip")
@@ -2638,15 +2663,15 @@ impl Workspace {
             .px_2p5()
             .py_1()
             .rounded_md()
-            .bg(Theme::MINIMAP_BG)
+            .bg(Theme::global().MINIMAP_BG)
             .border_1()
             .border_color(if actionable {
-                Theme::PANEL_BORDER_FOCUS
+                Theme::global().PANEL_BORDER_FOCUS
             } else {
-                Theme::PANEL_BORDER
+                Theme::global().PANEL_BORDER
             })
             .text_size(px(10.5))
-            .font_family(Theme::FONT_MONO)
+            .font_family(Theme::global().FONT_MONO)
             .text_color(ink)
             .occlude()
             .child(dot)
@@ -2655,7 +2680,7 @@ impl Workspace {
         if actionable {
             chip = chip
                 .cursor_pointer()
-                .hover(|el| el.text_color(Theme::TEXT))
+                .hover(|el| el.text_color(Theme::global().TEXT))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|_this, _event, _window, _cx| {
@@ -2702,10 +2727,10 @@ impl Workspace {
                     .justify_center()
                     .rounded_full()
                     .border_1()
-                    .border_color(Theme::PANEL_BORDER)
-                    .bg(Theme::HEADER_BG)
+                    .border_color(Theme::global().PANEL_BORDER)
+                    .bg(Theme::global().HEADER_BG)
                     .text_size(px(20.0))
-                    .text_color(Theme::TEXT)
+                    .text_color(Theme::global().TEXT)
                     .child("+"),
             )
             .into_any_element()
@@ -2725,23 +2750,23 @@ impl Workspace {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(Theme::PANEL_BORDER)
+            .border_color(Theme::global().PANEL_BORDER)
             .py_2()
             .child(
                 div()
                     .px_4()
                     .pb_1()
                     .text_size(px(10.0))
-                    .text_color(Theme::TEXT_DIM)
+                    .text_color(Theme::global().TEXT_DIM)
                     .child("accounts"),
             );
 
         for (index, account) in self.accounts.iter().enumerate() {
             let available = account.available();
             let ink = if available {
-                Theme::TEXT
+                Theme::global().TEXT
             } else {
-                Theme::TEXT_FAINT
+                Theme::global().TEXT_FAINT
             };
 
             let logo: gpui::AnyElement = match accounts::logo(&account.id) {
@@ -2758,7 +2783,7 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
-                    .bg(Theme::INLINE_CODE_BG)
+                    .bg(Theme::global().INLINE_CODE_BG)
                     .text_size(px(10.0))
                     .text_color(ink)
                     .child(accounts::lettermark(&account.display_name))
@@ -2783,7 +2808,7 @@ impl Workspace {
                         div()
                             .flex_none()
                             .text_size(px(9.0))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .child(if available {
                                 account.auth_kind.clone()
                             } else {
@@ -2801,7 +2826,7 @@ impl Workspace {
                         })
                         .mt(px(3.0))
                         .text_size(px(8.0))
-                        .text_color(Theme::TEXT_FAINT)
+                        .text_color(Theme::global().TEXT_FAINT)
                         .child("Usage limit unavailable"),
                 );
             } else {
@@ -2839,7 +2864,7 @@ impl Workspace {
                                     div()
                                         .overflow_hidden()
                                         .text_size(px(8.0))
-                                        .text_color(Theme::TEXT_DIM)
+                                        .text_color(Theme::global().TEXT_DIM)
                                         .child(label),
                                 )
                                 .child(
@@ -2848,18 +2873,18 @@ impl Workspace {
                                         .h(px(3.0))
                                         .rounded_full()
                                         .overflow_hidden()
-                                        .bg(Theme::INLINE_CODE_BG)
+                                        .bg(Theme::global().INLINE_CODE_BG)
                                         .child(
                                             div()
                                                 .h_full()
                                                 .w(relative(used / 100.0))
                                                 .rounded_full()
                                                 .bg(if used >= 90.0 {
-                                                    Theme::ERROR
+                                                    Theme::global().ERROR
                                                 } else if used >= 70.0 {
-                                                    Theme::WARN
+                                                    Theme::global().WARN
                                                 } else {
-                                                    Theme::ACCENT
+                                                    Theme::global().ACCENT
                                                 }),
                                         ),
                                 ),
@@ -2881,7 +2906,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .hover(|el| el.bg(Theme::HEADER_BG))
+                    .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .child(logo)
                     .child(details)
                     .child(
@@ -2890,9 +2915,9 @@ impl Workspace {
                             .size(px(5.0))
                             .rounded_full()
                             .bg(if available {
-                                Theme::OK
+                                Theme::global().OK
                             } else {
-                                Theme::TEXT_FAINT
+                                Theme::global().TEXT_FAINT
                             }),
                     ),
             );
@@ -2925,8 +2950,8 @@ impl Workspace {
                 .gap(px(2.0))
                 .rounded_full()
                 .cursor_pointer()
-                .when(active_row, |el| el.bg(Theme::ACCENT_DIM))
-                .hover(|el| el.bg(Theme::MINIMAP_TRACK_ACTIVE))
+                .when(active_row, |el| el.bg(Theme::global().ACCENT_DIM))
+                .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {
@@ -2945,7 +2970,7 @@ impl Workspace {
                         .w(px(4.0))
                         .h(px(4.0))
                         .rounded_full()
-                        .bg(Theme::TEXT_DIM),
+                        .bg(Theme::global().TEXT_DIM),
                 );
             }
 
@@ -2960,13 +2985,13 @@ impl Workspace {
                         .rounded_full()
                         .cursor_pointer()
                         .bg(if focused {
-                            Theme::ACCENT
+                            Theme::global().ACCENT
                         } else if active_row || busy {
-                            Theme::MINIMAP_PANEL_BUSY
+                            Theme::global().MINIMAP_PANEL_BUSY
                         } else {
-                            Theme::MINIMAP_PANEL
+                            Theme::global().MINIMAP_PANEL
                         })
-                        .hover(|el| el.w(px(6.0)).bg(Theme::ACCENT))
+                        .hover(|el| el.w(px(6.0)).bg(Theme::global().ACCENT))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
@@ -2998,7 +3023,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .rounded_full()
-                    .bg(Theme::HEADER_BG)
+                    .bg(Theme::global().HEADER_BG)
                     .child(workspaces),
             )
             .into_any_element()
@@ -3040,9 +3065,9 @@ impl Workspace {
             .flex_col()
             .gap(px(MINIMAP_ROW_GAP))
             .rounded_lg()
-            .bg(Theme::MINIMAP_BG)
+            .bg(Theme::global().MINIMAP_BG)
             .border_1()
-            .border_color(Theme::PANEL_BORDER)
+            .border_color(Theme::global().PANEL_BORDER)
             .occlude()
             // Scrolling over the map pans the active strip's camera, scaled
             // back up to canvas distance so the map and canvas move 1:1.
@@ -3084,11 +3109,11 @@ impl Workspace {
                 .rounded(px(3.0))
                 .cursor_pointer()
                 .bg(if active_row {
-                    Theme::MINIMAP_TRACK_ACTIVE
+                    Theme::global().MINIMAP_TRACK_ACTIVE
                 } else {
-                    Theme::MINIMAP_TRACK
+                    Theme::global().MINIMAP_TRACK
                 })
-                .hover(|el| el.bg(Theme::MINIMAP_TRACK_ACTIVE))
+                .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {
@@ -3121,13 +3146,13 @@ impl Workspace {
                         .rounded(px(2.0))
                         .cursor_pointer()
                         .bg(if focused {
-                            Theme::ACCENT
+                            Theme::global().ACCENT
                         } else if busy {
-                            Theme::MINIMAP_PANEL_BUSY
+                            Theme::global().MINIMAP_PANEL_BUSY
                         } else {
-                            Theme::MINIMAP_PANEL
+                            Theme::global().MINIMAP_PANEL
                         })
-                        .hover(|el| el.bg(Theme::ACCENT))
+                        .hover(|el| el.bg(Theme::global().ACCENT))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
@@ -3155,7 +3180,7 @@ impl Workspace {
                         .h(px(MINIMAP_ROW_HEIGHT))
                         .rounded(px(3.0))
                         .border_1()
-                        .border_color(Theme::MINIMAP_VIEWPORT)
+                        .border_color(Theme::global().MINIMAP_VIEWPORT)
                         .bg(gpui::rgba(0xffffff08)),
                 );
 
@@ -3176,7 +3201,7 @@ impl Workspace {
                             .rounded_full()
                             .border_2()
                             .border_color(gpui::rgba(0x000000cc))
-                            .bg(Theme::ACCENT)
+                            .bg(Theme::global().ACCENT)
                             .opacity(alpha),
                     );
                 }
@@ -3218,9 +3243,9 @@ impl Workspace {
                     .flex_col()
                     .gap_1()
                     .p_3()
-                    .bg(Theme::PANEL_BG)
+                    .bg(Theme::global().PANEL_BG)
                     .border_1()
-                    .border_color(Theme::PANEL_BORDER_FOCUS)
+                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
                     .rounded_lg()
                     .shadow_lg()
                     .cursor_pointer()
@@ -3239,10 +3264,10 @@ impl Workspace {
                                     .px_1p5()
                                     .py_0p5()
                                     .rounded_md()
-                                    .bg(Theme::HEADER_BG)
+                                    .bg(Theme::global().HEADER_BG)
                                     .text_size(px(12.0))
-                                    .font_family(Theme::FONT_MONO)
-                                    .text_color(Theme::TEXT)
+                                    .font_family(Theme::global().FONT_MONO)
+                                    .text_color(Theme::global().TEXT)
                                     .child(hint.keys),
                             )
                             .child(
@@ -3251,7 +3276,7 @@ impl Workspace {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_size(px(12.0))
-                                    .text_color(Theme::TEXT)
+                                    .text_color(Theme::global().TEXT)
                                     .child(hint.label),
                             ),
                     )
@@ -3260,7 +3285,7 @@ impl Workspace {
                             .min_w_0()
                             .overflow_hidden()
                             .text_size(px(11.0))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .child(hint.because.clone()),
                     ),
             )
@@ -3281,8 +3306,12 @@ impl Workspace {
                     .w(px(150.0))
                     .flex_none()
                     .text_size(px(12.0))
-                    .font_family(Theme::FONT_MONO)
-                    .text_color(if known { Theme::TEXT_DIM } else { Theme::TEXT })
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_color(if known {
+                        Theme::global().TEXT_DIM
+                    } else {
+                        Theme::global().TEXT
+                    })
                     .child(skill.keys),
             )
             .child(
@@ -3290,7 +3319,11 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .text_size(px(12.0))
-                    .text_color(if known { Theme::TEXT_DIM } else { Theme::TEXT })
+                    .text_color(if known {
+                        Theme::global().TEXT_DIM
+                    } else {
+                        Theme::global().TEXT
+                    })
                     .child(skill.label),
             )
             // The bar is the model's belief, not a usage count: it decays when
@@ -3301,13 +3334,17 @@ impl Workspace {
                     .h(px(4.0))
                     .flex_none()
                     .rounded_full()
-                    .bg(Theme::PANEL_BORDER)
+                    .bg(Theme::global().PANEL_BORDER)
                     .child(
                         div()
                             .w(relative(mastery.clamp(0.02, 1.0)))
                             .h_full()
                             .rounded_full()
-                            .bg(if known { Theme::OK } else { Theme::ACCENT }),
+                            .bg(if known {
+                                Theme::global().OK
+                            } else {
+                                Theme::global().ACCENT
+                            }),
                     ),
             )
             .into_any_element()
@@ -3331,9 +3368,9 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(Theme::PANEL_BG)
+            .bg(Theme::global().PANEL_BG)
             .border_1()
-            .border_color(Theme::PANEL_BORDER_FOCUS)
+            .border_color(Theme::global().PANEL_BORDER_FOCUS)
             .rounded_xl()
             .child(
                 div()
@@ -3343,7 +3380,7 @@ impl Workspace {
                     .child(div().text_size(px(18.0)).child("Your workspace fluency"))
                     .child(
                         div()
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .text_size(px(11.0))
                             .child("Super+/ or F1 to close"),
                     ),
@@ -3354,7 +3391,7 @@ impl Workspace {
                     .flex_row()
                     .gap_4()
                     .text_size(px(11.0))
-                    .text_color(Theme::TEXT_DIM)
+                    .text_color(Theme::global().TEXT_DIM)
                     .child(format!("{}% learned", (overall * 100.0).round() as u32))
                     .child(format!("{} keystrokes saved", self.coach.effort_saved))
                     .child(format!("{} spent the long way", self.coach.effort_wasted)),
@@ -3365,16 +3402,16 @@ impl Workspace {
                 div()
                     .p_2p5()
                     .rounded_lg()
-                    .bg(Theme::HEADER_BG)
+                    .bg(Theme::global().HEADER_BG)
                     .border_1()
-                    .border_color(Theme::PANEL_BORDER)
+                    .border_color(Theme::global().PANEL_BORDER)
                     .flex()
                     .flex_col()
                     .gap_1()
                     .child(
                         div()
                             .text_size(px(11.0))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .child("learn next"),
                     )
                     .child(
@@ -3385,7 +3422,7 @@ impl Workspace {
                             .items_center()
                             .child(
                                 div()
-                                    .font_family(Theme::FONT_MONO)
+                                    .font_family(Theme::global().FONT_MONO)
                                     .text_size(px(12.0))
                                     .child(next.keys),
                             )
@@ -3398,9 +3435,9 @@ impl Workspace {
             div()
                 .p_2p5()
                 .rounded_lg()
-                .bg(Theme::HEADER_BG)
+                .bg(Theme::global().HEADER_BG)
                 .text_size(px(11.0))
-                .text_color(Theme::TEXT_DIM)
+                .text_color(Theme::global().TEXT_DIM)
                 .child("Composer: ↑/↓ history · Ctrl+K/J prompts · Ctrl+W word delete · Alt+B/F word move · Ctrl+U delete to start · Ctrl/Cmd+Z undo · Esc clear"),
         );
 
@@ -3409,7 +3446,7 @@ impl Workspace {
                 div()
                     .mt_1()
                     .text_size(px(10.0))
-                    .text_color(Theme::TEXT_DIM)
+                    .text_color(Theme::global().TEXT_DIM)
                     .child(area.label()),
             );
             for (skill, mastery) in rows {
@@ -3423,11 +3460,11 @@ impl Workspace {
                 .mt_3()
                 .p_3()
                 .rounded_lg()
-                .bg(Theme::HEADER_BG)
+                .bg(Theme::global().HEADER_BG)
                 .border_1()
-                .border_color(Theme::PANEL_BORDER)
+                .border_color(Theme::global().PANEL_BORDER)
                 .cursor_pointer()
-                .hover(|el| el.border_color(Theme::ACCENT))
+                .hover(|el| el.border_color(Theme::global().ACCENT))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _event, window, cx| {
@@ -3439,7 +3476,7 @@ impl Workspace {
                     div()
                         .mt_1()
                         .text_size(px(11.0))
-                        .text_color(Theme::TEXT_DIM)
+                        .text_color(Theme::global().TEXT_DIM)
                         .child("Opens a new session with the hints and bundled docs loaded into context."),
                 ),
         );
@@ -3548,7 +3585,7 @@ impl Workspace {
             .overflow_y_scroll()
             .border_t_1()
             .border_b_1()
-            .border_color(Theme::PANEL_BORDER);
+            .border_color(Theme::global().PANEL_BORDER);
 
         if let Some(parent) = directory.parent().map(Path::to_path_buf) {
             list = list.child(
@@ -3558,8 +3595,11 @@ impl Workspace {
                     .px_4()
                     .py_2()
                     .cursor_pointer()
-                    .text_color(Theme::TEXT_DIM)
-                    .hover(|el| el.bg(Theme::HEADER_BG).text_color(Theme::TEXT))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .hover(|el| {
+                        el.bg(Theme::global().HEADER_BG)
+                            .text_color(Theme::global().TEXT)
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -3581,7 +3621,7 @@ impl Workspace {
                     .px_4()
                     .py_2()
                     .cursor_pointer()
-                    .hover(|el| el.bg(Theme::HEADER_BG))
+                    .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -3598,7 +3638,7 @@ impl Workspace {
                                 el.child(
                                     div()
                                         .text_size(px(10.0))
-                                        .text_color(Theme::TEXT_DIM)
+                                        .text_color(Theme::global().TEXT_DIM)
                                         .child(reason),
                                 )
                             }),
@@ -3625,8 +3665,8 @@ impl Workspace {
                     .flex_col()
                     .rounded_lg()
                     .border_1()
-                    .border_color(Theme::PANEL_BORDER_FOCUS)
-                    .bg(Theme::PANEL_BG)
+                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                    .bg(Theme::global().PANEL_BG)
                     .child(
                         div()
                             .px_4()
@@ -3640,8 +3680,8 @@ impl Workspace {
                                     .id("folder-picker-cancel")
                                     .debug_selector(|| "folder-picker-cancel".into())
                                     .cursor_pointer()
-                                    .text_color(Theme::TEXT_DIM)
-                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .hover(|el| el.text_color(Theme::global().TEXT))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
@@ -3656,7 +3696,7 @@ impl Workspace {
                             .px_4()
                             .pb_3()
                             .text_size(px(11.0))
-                            .text_color(Theme::TEXT_DIM)
+                            .text_color(Theme::global().TEXT_DIM)
                             .child(directory.display().to_string()),
                     )
                     .child(
@@ -3673,8 +3713,8 @@ impl Workspace {
                                     .py_1()
                                     .rounded_md()
                                     .cursor_pointer()
-                                    .bg(Theme::HEADER_BG)
-                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .bg(Theme::global().HEADER_BG)
+                                    .hover(|el| el.text_color(Theme::global().TEXT))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
@@ -3693,8 +3733,8 @@ impl Workspace {
                                     .py_1()
                                     .rounded_md()
                                     .cursor_pointer()
-                                    .bg(Theme::HEADER_BG)
-                                    .hover(|el| el.text_color(Theme::TEXT))
+                                    .bg(Theme::global().HEADER_BG)
+                                    .hover(|el| el.text_color(Theme::global().TEXT))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
@@ -3715,14 +3755,20 @@ impl Workspace {
                                 .py_2()
                                 .rounded_md()
                                 .border_1()
-                                .border_color(Theme::INPUT_BORDER)
-                                .bg(Theme::INPUT_BG)
+                                .border_color(Theme::global().INPUT_BORDER)
+                                .bg(Theme::global().INPUT_BG)
                                 .child(search),
                         )
                     })
                     .child(list)
                     .when_some(self.folder_picker_error.clone(), |el, error| {
-                        el.child(div().px_4().py_2().text_color(Theme::ERROR).child(error))
+                        el.child(
+                            div()
+                                .px_4()
+                                .py_2()
+                                .text_color(Theme::global().ERROR)
+                                .child(error),
+                        )
                     })
                     .child(
                         div().p_3().flex().justify_end().child(
@@ -3733,8 +3779,8 @@ impl Workspace {
                                 .py_2()
                                 .rounded_md()
                                 .cursor_pointer()
-                                .bg(Theme::ACCENT)
-                                .text_color(Theme::BG)
+                                .bg(Theme::global().ACCENT)
+                                .text_color(Theme::global().BG)
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
@@ -3778,7 +3824,11 @@ impl Render for Workspace {
         let hints_progress = self.hints_progress.sample(now);
         // Expire the hint on a schedule of its own, so a suggestion the user
         // ignores fades without needing another input to clear it.
-        let coach_hint = self.coach.active_hint(learning::now());
+        let coach_hint = crate::config::get()
+            .workspace
+            .coaching_hints
+            .then(|| self.coach.active_hint(learning::now()))
+            .flatten();
         if coach_hint.is_none() {
             self.coach_progress.set(0.0, now);
         }
@@ -3845,10 +3895,10 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_row()
-            .bg(Theme::BG)
-            .font_family(Theme::FONT_UI)
-            .text_size(px(14.0))
-            .text_color(Theme::TEXT)
+            .bg(Theme::global().BG)
+            .font_family(Theme::global().FONT_UI)
+            .text_size(px(14.0 * crate::config::get().appearance.text_scale))
+            .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::focus_left))
             .on_action(cx.listener(Self::focus_right))
@@ -3922,11 +3972,15 @@ impl Focusable for Workspace {
     }
 }
 
-fn sidebar_enabled(arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> bool {
-    !arguments.into_iter().any(|argument| {
-        let argument = argument.as_ref();
-        argument == "--no-sidebar" || argument == "--workspace"
-    })
+fn sidebar_enabled(
+    arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
+    configured_default: bool,
+) -> bool {
+    configured_default
+        && !arguments.into_iter().any(|argument| {
+            let argument = argument.as_ref();
+            argument == "--no-sidebar" || argument == "--workspace"
+        })
 }
 
 fn default_working_dir() -> Option<String> {
@@ -4588,9 +4642,10 @@ mod tests {
 
     #[test]
     fn sidebar_free_launch_flags_hide_the_sidebar() {
-        assert!(sidebar_enabled(["jcode-desktop"]));
-        assert!(!sidebar_enabled(["jcode-desktop", "--no-sidebar"]));
-        assert!(!sidebar_enabled(["jcode-desktop", "--workspace"]));
+        assert!(sidebar_enabled(["jcode-desktop"], true));
+        assert!(!sidebar_enabled(["jcode-desktop"], false));
+        assert!(!sidebar_enabled(["jcode-desktop", "--no-sidebar"], true));
+        assert!(!sidebar_enabled(["jcode-desktop", "--workspace"], true));
     }
 
     #[test]
@@ -4696,9 +4751,8 @@ mod tests {
     fn identical_sdk_session_snapshots_do_not_invalidate_the_sidebar(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, cx) = cx.add_window_view(|_window, cx| {
-            Workspace::for_test(learning::Coach::new(), cx)
-        });
+        let (workspace, cx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         let sessions = vec![session_info(
             "session_fox_1234567890_deadbeef",
             Some("Release planning"),
@@ -6890,9 +6944,8 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) -> (gpui::Entity<Workspace>, &mut gpui::VisualTestContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
-        let (workspace, cx) = cx.add_window_view(|_window, cx| {
-            Workspace::for_test(learning::Coach::new(), cx)
-        });
+        let (workspace, cx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         cx.update(|window, cx| {
             let handle = workspace.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
@@ -6901,9 +6954,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn enter_opens_a_terminal_directly_right_of_the_focused_panel(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn enter_opens_a_terminal_directly_right_of_the_focused_panel(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
 
         cx.simulate_keystrokes(&format!("{MOD}-t"));
@@ -6943,9 +6994,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_sidebar_toggles_and_gives_its_width_back_to_the_panels(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn the_sidebar_toggles_and_gives_its_width_back_to_the_panels(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
         let visible_first = workspace.update(cx, |workspace, _| workspace.show_sidebar);
 

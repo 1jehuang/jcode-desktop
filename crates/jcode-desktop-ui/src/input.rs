@@ -1026,7 +1026,7 @@ fn selection_quads(
                     point(bounds.left() + left, bounds.top() + line_height * row),
                     size((right - left).max(px(0.)), line_height),
                 ),
-                to_hsla(Theme::SELECTION),
+                to_hsla(Theme::global().SELECTION),
             )
         })
         .collect()
@@ -1081,7 +1081,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), to_hsla(Theme::TEXT_DIM))
+            (input.placeholder.clone(), to_hsla(Theme::global().TEXT_DIM))
         } else {
             (content, style.color)
         };
@@ -1149,7 +1149,7 @@ impl Element for TextElement {
                 Vec::new(),
                 Some(fill(
                     Bounds::new(text_bounds.origin + cursor_pos, size(px(2.), line_height)),
-                    to_hsla(Theme::CURSOR),
+                    to_hsla(Theme::global().CURSOR),
                 )),
             )
         } else {
@@ -1251,9 +1251,9 @@ impl Render for PromptInput {
                 .gap_1()
                 .rounded_md()
                 .p_1()
-                .bg(Theme::USER_BG)
+                .bg(Theme::global().USER_BG)
                 .text_size(px(11.0))
-                .text_color(Theme::TEXT_DIM)
+                .text_color(Theme::global().TEXT_DIM)
                 .child(
                     img(ImageSource::Image(image.preview.clone()))
                         .w(px(preview_width))
@@ -1267,7 +1267,11 @@ impl Render for PromptInput {
                         .flex_col()
                         .gap_1()
                         .child(image.label.clone())
-                        .child(div().text_color(Theme::TEXT_FAINT).child("remove ×")),
+                        .child(
+                            div()
+                                .text_color(Theme::global().TEXT_FAINT)
+                                .child("remove ×"),
+                        ),
                 )
                 .cursor_pointer()
                 .on_mouse_down(
@@ -1297,8 +1301,8 @@ impl Render for PromptInput {
                         .overflow_hidden()
                         .rounded_lg()
                         .border_1()
-                        .border_color(Theme::PANEL_BORDER_FOCUS)
-                        .bg(Theme::HEADER_BG)
+                        .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                        .bg(Theme::global().HEADER_BG)
                         .shadow_lg()
                         .occlude()
                         .children(suggestions.into_iter().enumerate().map(
@@ -1313,24 +1317,26 @@ impl Render for PromptInput {
                                     .px_3()
                                     .py_1p5()
                                     .bg(if selected {
-                                        Theme::USER_BG
+                                        Theme::global().USER_BG
                                     } else {
-                                        Theme::HEADER_BG
+                                        Theme::global().HEADER_BG
                                     })
                                     .text_size(px(12.0))
                                     .cursor_pointer()
                                     .child(
                                         div()
-                                            .font_family(Theme::FONT_MONO)
+                                            .font_family(Theme::global().FONT_MONO)
                                             .text_color(if selected {
-                                                Theme::TEXT
+                                                Theme::global().TEXT
                                             } else {
-                                                Theme::TEXT_DIM
+                                                Theme::global().TEXT_DIM
                                             })
                                             .child(suggestion.value.clone()),
                                     )
                                     .child(
-                                        div().text_color(Theme::TEXT_FAINT).child(suggestion.help),
+                                        div()
+                                            .text_color(Theme::global().TEXT_FAINT)
+                                            .child(suggestion.help),
                                     )
                                     .on_mouse_down(
                                         MouseButton::Left,
@@ -1376,12 +1382,12 @@ impl Render for PromptInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .bg(Theme::INPUT_BG)
+            .bg(Theme::global().INPUT_BG)
             .border_1()
             .border_color(if focused {
-                Theme::PANEL_BORDER_FOCUS
+                Theme::global().PANEL_BORDER_FOCUS
             } else {
-                Theme::INPUT_BORDER
+                Theme::global().INPUT_BORDER
             })
             .rounded_lg()
             .when(!self.attachments.is_empty(), |el| {
@@ -1400,7 +1406,7 @@ impl Render for PromptInput {
                     .px_3()
                     .pt_1()
                     .text_size(px(10.0))
-                    .text_color(Theme::TEXT_FAINT)
+                    .text_color(Theme::global().TEXT_FAINT)
                     .child(notice)
             }))
             .child(
@@ -1416,15 +1422,15 @@ impl Render for PromptInput {
                     .child(
                         div()
                             .flex_none()
-                            .font_family(Theme::FONT_MONO)
-                            .text_color(Theme::USER_ACCENT)
+                            .font_family(Theme::global().FONT_MONO)
+                            .text_color(Theme::global().USER_ACCENT)
                             .child("›"),
                     )
                     .child(
                         div()
                             .flex_1()
                             .overflow_hidden()
-                            .text_color(Theme::TEXT)
+                            .text_color(Theme::global().TEXT)
                             .child(TextElement { input: cx.entity() }),
                     ),
             )
