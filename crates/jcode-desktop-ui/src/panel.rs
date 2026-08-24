@@ -1496,6 +1496,7 @@ impl Panel {
                                         .flex_1()
                                         .min_w_0()
                                         .overflow_hidden()
+                                        .whitespace_nowrap()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(Theme::global().TOOL_TEXT)
                                         .child(summary),
@@ -2529,8 +2530,6 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
 }
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
-/// Keep the parameter name visible so the summary is not mistaken for an
-/// implementation detail such as the command or path.
 fn tool_summary(input: &str) -> String {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
         return condense(input, 90);
@@ -2552,11 +2551,7 @@ fn tool_summary(input: &str) -> String {
         if let Some(found) = value.get(*key).and_then(json_scalar) {
             if !found.trim().is_empty() {
                 let found = condense(&found, 90);
-                return if *key == "intent" {
-                    format!("intent: {found}")
-                } else {
-                    found
-                };
+                return found;
             }
         }
     }
@@ -2722,7 +2717,7 @@ mod tests {
     fn tool_summary_prefers_intent_over_implementation_details() {
         assert_eq!(
             tool_summary(r#"{"intent":"look","command":"cargo test"}"#),
-            "intent: look"
+            "look"
         );
         assert_eq!(tool_summary(r#"{"command":"cargo test"}"#), "cargo test");
         assert_eq!(tool_summary(r#"{"other":1}"#), r#"{"other":1}"#);
@@ -3306,7 +3301,7 @@ mod tests {
             Item::Tool { input, .. } => tool_summary(input),
             other => panic!("expected the tool row, got {other:?}"),
         });
-        assert_eq!(summary, "intent: check the build");
+        assert_eq!(summary, "check the build");
         let rendered = vcx
             .debug_bounds("tool-summary")
             .expect("the intent summary paints in the tool header");
