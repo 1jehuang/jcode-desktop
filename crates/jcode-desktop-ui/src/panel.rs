@@ -1691,6 +1691,10 @@ impl Render for Panel {
         let pinned_todo = self
             .latest_todo_payload()
             .filter(|payload| !payload.todos.is_empty());
+        let latest_prompt = self.items.iter().rev().find_map(|item| match item {
+            Item::User(prompt) if !prompt.trim().is_empty() => Some(prompt.clone()),
+            _ => None,
+        });
         let mut rows: Vec<(usize, Item)> = self
             .items
             .iter()
@@ -1793,6 +1797,18 @@ impl Render for Panel {
                     .flex_none()
                     .px_3()
                     .pt_1()
+                    .children(latest_prompt.map(|prompt| {
+                        div()
+                            .debug_selector(|| "pinned-latest-prompt".into())
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .pb_1()
+                            .text_size(px(11.5))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(prompt)
+                    }))
                     .child(render_todo_card(&payload))
             }))
             .child(
@@ -2337,7 +2353,14 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
     }
     groups.sort_by_key(|(group, _)| group.is_none());
 
-    let mut body = div().flex().flex_col().gap_1();
+    let mut body = div()
+        .id("todo-card-body-scroll")
+        .debug_selector(|| "todo-card-body".into())
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_h(px(132.0))
+        .overflow_y_scroll();
     if payload.todos.is_empty() {
         body = body.child(
             div()
@@ -3924,14 +3947,17 @@ Goals: []"#,
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .expect("panel exists");
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Tool {
-                call_id: "todo-1".into(),
-                name: "todo".into(),
-                input: r#"{"intent":"Track implementation"}"#.into(),
-                output: r#"[{"id":"one","content":"Render rich rows","status":"completed","priority":"high","completion_confidence":"verified","blocked_by":[]},{"id":"two","content":"Test the card","status":"in_progress","priority":"medium","group":"Validation","confidence":"validated","blocked_by":[]}] Plan: {"user_intention":"See progress visually","understands_user_intent":"clear"} Goals: []"#.into(),
-                done: true,
-                error: None,
-            }];
+            panel.items = vec![
+                Item::User("Keep the task list compact".into()),
+                Item::Tool {
+                    call_id: "todo-1".into(),
+                    name: "todo".into(),
+                    input: r#"{"intent":"Track implementation"}"#.into(),
+                    output: r#"[{"id":"one","content":"Render rich rows","status":"completed","priority":"high","completion_confidence":"verified","blocked_by":[]},{"id":"two","content":"Test the card","status":"in_progress","priority":"medium","group":"Validation","confidence":"validated","blocked_by":[]}] Plan: {"user_intention":"See progress visually","understands_user_intent":"clear"} Goals: []"#.into(),
+                    done: true,
+                    error: None,
+                },
+            ];
             cx.notify();
         });
         vcx.run_until_parked();
@@ -3942,8 +3968,12 @@ Goals: []"#,
         let pinned = vcx
             .debug_bounds("pinned-todo-card")
             .expect("todo card should be pinned outside the transcript");
+        let prompt = vcx
+            .debug_bounds("pinned-latest-prompt")
+            .expect("latest prompt should stay visible above the todo card");
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        assert!(prompt.bottom() <= bounds.top());
         assert!(pinned.bottom() <= transcript.top());
         assert!(vcx.debug_bounds("tool-card").is_none());
     }
