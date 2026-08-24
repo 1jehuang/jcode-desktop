@@ -175,6 +175,7 @@ pub struct Panel {
     /// Newly received tool calls, keyed by call id, while their entrance runs.
     arriving_tools: HashMap<String, Instant>,
     terminal: Option<Entity<TerminalPanel>>,
+    unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
     model_picker_open: bool,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -240,6 +241,7 @@ impl Panel {
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
             terminal: None,
+            unfinished_work: None,
             model_picker_open: false,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -263,6 +265,33 @@ impl Panel {
         );
         panel.terminal = Some(terminal);
         panel
+    }
+
+    pub fn new_unfinished_work(
+        sessions: Vec<crate::harness::UnfinishedSession>,
+        bridge: Bridge,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut panel = Self::new(
+            "unfinished-work".into(),
+            Some("unfinished work".into()),
+            None,
+            bridge,
+            cx,
+        );
+        panel.unfinished_work = Some(sessions);
+        panel
+    }
+
+    pub fn set_unfinished_work(
+        &mut self,
+        sessions: Vec<crate::harness::UnfinishedSession>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.unfinished_work.as_ref() != Some(&sessions) {
+            self.unfinished_work = Some(sessions);
+            cx.notify();
+        }
     }
 
     pub fn snapshot(&self, cx: &App) -> PanelSnapshot {
@@ -1631,6 +1660,74 @@ impl Render for Panel {
                 .size_full()
                 .track_focus(&self.focus_handle)
                 .child(terminal.clone())
+                .into_any_element();
+        }
+        if let Some(sessions) = &self.unfinished_work {
+            let mut list = div()
+                .id("unfinished-work-list")
+                .debug_selector(|| "unfinished-work-list".into())
+                .size_full()
+                .overflow_y_scroll()
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(div().text_size(px(18.)).font_weight(gpui::FontWeight::SEMIBOLD).child("Unfinished work"))
+                .child(div().text_size(px(11.)).text_color(Theme::global().TEXT_DIM).child("Todos left in closed sessions. Open the session from the sidebar to continue."));
+            if sessions.is_empty() {
+                list = list.child(
+                    div()
+                        .mt_4()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("You are all caught up."),
+                );
+            }
+            for (index, session) in sessions.iter().enumerate() {
+                let mut card = div()
+                    .id(("unfinished-session", index))
+                    .debug_selector(move || format!("unfinished-session-{index}").into())
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(Theme::global().PANEL_BORDER)
+                    .bg(Theme::global().HEADER_BG)
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(session.title.clone()),
+                    );
+                if let Some(dir) = &session.working_dir {
+                    card = card.child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(dir.clone()),
+                    );
+                }
+                for todo in &session.todos {
+                    let marker = if todo.status.eq_ignore_ascii_case("in_progress") {
+                        "◐"
+                    } else {
+                        "○"
+                    };
+                    card = card.child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .text_size(px(12.))
+                            .child(marker)
+                            .child(todo.content.clone()),
+                    );
+                }
+                list = list.child(card);
+            }
+            return div()
+                .size_full()
+                .track_focus(&self.focus_handle)
+                .child(list)
                 .into_any_element();
         }
         let scroll_handle = self.scroll.clone();

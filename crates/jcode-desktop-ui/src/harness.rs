@@ -390,6 +390,60 @@ struct PersistedTodoTitleItem {
     group: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnfinishedTodo {
+    pub content: String,
+    pub status: String,
+    pub group: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnfinishedSession {
+    pub session_id: String,
+    pub title: String,
+    pub working_dir: Option<String>,
+    pub todos: Vec<UnfinishedTodo>,
+}
+
+/// Read the durable todo snapshots for sessions which are no longer open.
+/// This intentionally avoids transcripts, so opening the dashboard remains cheap.
+pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
+    let Some(home) = jcode_home() else {
+        return Vec::new();
+    };
+    let todos_dir = home.join("todos");
+    sessions
+        .iter()
+        .filter(|session| !matches!(session.status.as_str(), "active" | "running" | "working"))
+        .filter_map(|session| {
+            let todos: Vec<PersistedTodoTitleItem> =
+                std::fs::read(todos_dir.join(format!("{}.json", session.session_id)))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+            let todos = todos
+                .into_iter()
+                .filter(|todo| !todo.status.eq_ignore_ascii_case("completed"))
+                .map(|todo| UnfinishedTodo {
+                    content: todo.content,
+                    status: todo.status,
+                    group: todo.group,
+                })
+                .collect::<Vec<_>>();
+            (!todos.is_empty()).then(|| UnfinishedSession {
+                session_id: session.session_id.clone(),
+                title: session
+                    .title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .or_else(|| persisted_todo_title(&home, &session.session_id))
+                    .unwrap_or_else(|| session.session_id.clone()),
+                working_dir: session.working_dir.clone(),
+                todos,
+            })
+        })
+        .collect()
+}
+
 #[derive(serde::Deserialize, Default)]
 struct PersistedTodoTitlePlan {
     #[serde(default)]

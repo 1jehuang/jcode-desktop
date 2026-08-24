@@ -42,6 +42,7 @@ actions!(
         MovePanelToLast,
         NewPanel,
         NewTerminal,
+        NewUnfinishedWork,
         OpenFolder,
         ClosePanel,
         ToggleOverview,
@@ -623,7 +624,15 @@ impl Workspace {
             let panel_state = saved.panel;
             let terminal =
                 panel_state.terminal_resource_id.is_some() || panel_state.session_id == "terminal";
-            let panel = if terminal {
+            let panel = if panel_state.session_id == "unfinished-work" {
+                cx.new(|cx| {
+                    Panel::new_unfinished_work(
+                        harness::unfinished_sessions(&self.sessions),
+                        self.bridge.clone(),
+                        cx,
+                    )
+                })
+            } else if terminal {
                 let working_dir = panel_state.working_dir.clone();
                 let resource_id = panel_state.terminal_resource_id;
                 cx.new(|cx| {
@@ -844,6 +853,14 @@ impl Workspace {
                     }
                 }
                 self.sessions = sessions;
+                let unfinished = harness::unfinished_sessions(&self.sessions);
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == "unfinished-work" {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.set_unfinished_work(unfinished.clone(), cx)
+                        });
+                    }
+                }
             }
             Update::SessionCreated { session } => {
                 let session_id = session.session_id.clone();
@@ -1509,6 +1526,58 @@ impl Workspace {
                 self.bridge.clone(),
                 self.host,
                 None,
+                cx,
+            )
+        });
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                restore_fraction: None,
+            },
+        );
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn new_unfinished_work(
+        &mut self,
+        _: &NewUnfinishedWork,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == "unfinished-work")
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let panel = cx.new(|cx| {
+            Panel::new_unfinished_work(
+                harness::unfinished_sessions(&self.sessions),
+                self.bridge.clone(),
                 cx,
             )
         });
@@ -2565,6 +2634,32 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .child(
+                                div()
+                                    .id("sidebar-unfinished-work")
+                                    .debug_selector(|| "sidebar-unfinished-work".into())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .hover(|el| {
+                                        el.bg(Theme::global().HEADER_BG)
+                                            .text_color(Theme::global().TEXT)
+                                    })
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _event, window, cx| {
+                                            this.new_unfinished_work(
+                                                &NewUnfinishedWork,
+                                                window,
+                                                cx,
+                                            );
+                                        }),
+                                    )
+                                    .child("todos"),
+                            )
                             .child(
                                 div()
                                     .id("sidebar-open-folder")
@@ -3926,6 +4021,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_panel_to_last))
             .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::new_terminal))
+            .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
@@ -4933,6 +5029,25 @@ mod tests {
             "an on-disk session must paint through the real sidebar renderer"
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[gpui::test]
+    fn sidebar_todos_button_spawns_an_unfinished_work_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (_workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
+        vcx.run_until_parked();
+
+        let button = vcx
+            .debug_bounds("sidebar-unfinished-work")
+            .expect("todos launcher paints in the sidebar");
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("unfinished-work-list").is_some(),
+            "clicking todos should spawn the dedicated panel"
+        );
     }
 
     /// Clicking a sidebar row must open and activate that session through the
