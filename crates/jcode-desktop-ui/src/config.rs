@@ -33,6 +33,9 @@ pub struct WorkspaceConfig {
     pub showcase_keys: bool,
     pub coaching_hints: bool,
     pub session_refresh_seconds: u64,
+    /// Working directory used for the startup session and ordinary new-session
+    /// panels. An explicitly chosen folder still takes precedence.
+    pub default_working_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -70,6 +73,7 @@ impl Default for WorkspaceConfig {
             showcase_keys: true,
             coaching_hints: true,
             session_refresh_seconds: 2,
+            default_working_dir: None,
         }
     }
 }
@@ -166,6 +170,7 @@ mod tests {
             [workspace]
             sidebar = false
             session_refresh_seconds = 0
+            default_working_dir = "/workspace/inference"
             [terminal]
             scrollback_lines = 12
         "##,
@@ -176,6 +181,10 @@ mod tests {
         assert_eq!(config.appearance.colors["accent"], "#ff00aa");
         assert!(!config.workspace.sidebar);
         assert_eq!(config.workspace.session_refresh_seconds, 1);
+        assert_eq!(
+            config.workspace.default_working_dir.as_deref(),
+            Some(std::path::Path::new("/workspace/inference"))
+        );
         assert_eq!(config.terminal.scrollback_lines, 100);
     }
 

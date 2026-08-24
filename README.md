@@ -38,6 +38,7 @@ sidebar = true
 showcase_keys = true
 coaching_hints = true
 session_refresh_seconds = 2      # 1 through 300
+default_working_dir = "/path/to/project" # startup and new-session panels
 
 [desktop.terminal]
 scrollback_lines = 10000         # 100 through 1,000,000

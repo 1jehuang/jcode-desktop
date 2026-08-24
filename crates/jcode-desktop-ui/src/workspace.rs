@@ -4091,6 +4091,14 @@ fn sidebar_enabled(
 }
 
 fn default_working_dir() -> Option<String> {
+    if let Some(path) = crate::config::get()
+        .workspace
+        .default_working_dir
+        .as_deref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        return Some(path.to_string_lossy().into_owned());
+    }
     std::env::var("HOME").ok()
 }
 
