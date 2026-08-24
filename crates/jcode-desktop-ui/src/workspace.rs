@@ -4,7 +4,7 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -2418,7 +2418,18 @@ impl Workspace {
             .track_scroll(&self.sidebar_scroll)
             .py_2();
 
-        for (sidebar_index, session) in self.sessions.iter().rev().cloned().enumerate() {
+        // Open sessions stay in the same order as their workspace panels, so
+        // streaming activity does not make rows jump around. Closed sessions
+        // follow them in transcript-recency order (newest first).
+        let open_session_ids = self
+            .slots
+            .iter()
+            .map(|slot| slot.panel.read(cx).session_id.clone())
+            .collect::<Vec<_>>();
+        for (sidebar_index, session) in sidebar_session_order(&self.sessions, &open_session_ids)
+            .into_iter()
+            .enumerate()
+        {
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
             let (icon, title) = sidebar_session_title(&session);
             let directory = sidebar_session_directory(&session);
@@ -4167,6 +4178,29 @@ fn sidebar_session_status(
     }
 }
 
+fn sidebar_session_order(
+    sessions: &[jcode_sdk::SessionInfo],
+    open_session_ids: &[String],
+) -> Vec<jcode_sdk::SessionInfo> {
+    let open = open_session_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut ordered = open_session_ids
+        .iter()
+        .filter_map(|id| sessions.iter().find(|session| &session.session_id == id))
+        .cloned()
+        .collect::<Vec<_>>();
+    ordered.extend(
+        sessions
+            .iter()
+            .rev()
+            .filter(|session| !open.contains(session.session_id.as_str()))
+            .cloned(),
+    );
+    ordered
+}
+
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
     session
         .working_dir
@@ -4733,6 +4767,26 @@ mod tests {
             archived: false,
             archived_at_ms: None,
         }
+    }
+
+    #[test]
+    fn sidebar_keeps_open_panels_stable_above_recently_closed_sessions() {
+        // Stored sessions are oldest to newest. Open panel order is deliberately
+        // different and must win without changing the closed-session recency.
+        let sessions = vec![
+            session_info("closed-old", None),
+            session_info("open-a", None),
+            session_info("closed-new", None),
+            session_info("open-b", None),
+        ];
+        let open = vec!["open-b".to_string(), "open-a".to_string()];
+
+        let ids = sidebar_session_order(&sessions, &open)
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["open-b", "open-a", "closed-new", "closed-old"]);
     }
 
     #[test]

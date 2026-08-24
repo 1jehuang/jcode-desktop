@@ -597,10 +597,16 @@ pub(crate) fn merge_persisted_sessions(
             if archived.contains(id) {
                 continue;
             }
-            // Session ids contain their creation timestamp. Use that cheap key
-            // instead of issuing a metadata syscall for every transcript in a
-            // store that may contain tens of thousands of files.
-            let recency = session_recency_ms(id).unwrap_or_else(|| file_recency_ms(&entry));
+            // A transcript is rewritten whenever the session receives new
+            // activity, so its modification time represents the user's latest
+            // interaction. The timestamp embedded in the id is only a fallback
+            // for stores where file metadata is unavailable.
+            let modified = file_recency_ms(&entry);
+            let recency = if modified == 0 {
+                session_recency_ms(id).unwrap_or_default()
+            } else {
+                modified
+            };
             modified_by_id.insert(id.to_string(), recency);
             if known.contains(id) {
                 continue;
@@ -1043,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_sessions_fill_sidebar_in_recency_order_without_duplicates_or_archives() {
+    fn persisted_sessions_fill_sidebar_in_last_interaction_order_without_duplicates_or_archives() {
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-sessions-{}-{}",
             std::process::id(),
@@ -1082,6 +1088,21 @@ mod tests {
         assert_eq!(merged[1].title.as_deref(), Some("Latest title"));
         assert_eq!(merged[1].working_dir.as_deref(), Some("/new"));
         assert!(merged[1].transcript_bytes.is_some());
+
+        // Interacting with an older-created session rewrites its transcript and
+        // should move it ahead of sessions created later.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            sessions_dir.join("older.json"),
+            r#"{"working_dir":"/old","title":"Old title","messages":[]}"#,
+        )
+        .unwrap();
+        let merged = merge_persisted_sessions(Vec::new(), Some(&home));
+        let ids = merged
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["newer", "older"]);
 
         std::fs::remove_dir_all(home).unwrap();
     }
