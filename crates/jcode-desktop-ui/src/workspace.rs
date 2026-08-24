@@ -3960,14 +3960,14 @@ impl Render for Workspace {
                     .when(overview_progress <= 0.0, |el| {
                         el.child(self.render_edge_new_session(cx))
                     })
+                    .when_some(self.showcase_cue.as_ref(), |el, cue| {
+                        el.child(self.render_showcase_cue(cue))
+                    })
                     // Update status stays visible in every mode, including
                     // overview: a user whose build cannot render text still
                     // needs to see that a fix is on its way.
                     .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
             )
-            .when_some(self.showcase_cue.as_ref(), |root, cue| {
-                root.child(self.render_showcase_cue(cue))
-            })
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
