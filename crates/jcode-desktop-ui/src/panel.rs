@@ -73,7 +73,6 @@ pub struct TodoCardPayload {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct TodoCardPlan {
     user_intention: Option<String>,
-    understands_user_intent: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1793,7 +1792,7 @@ impl Render for Panel {
                     .debug_selector(|| "pinned-todo-card".into())
                     .flex_none()
                     .px_3()
-                    .pt_2()
+                    .pt_1()
                     .child(render_todo_card(&payload))
             }))
             .child(
@@ -2338,7 +2337,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
     }
     groups.sort_by_key(|(group, _)| group.is_none());
 
-    let mut body = div().flex().flex_col().gap_2();
+    let mut body = div().flex().flex_col().gap_1();
     if payload.todos.is_empty() {
         body = body.child(
             div()
@@ -2353,7 +2352,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .iter()
                 .filter(|todo| todo.status == "completed")
                 .count();
-            let mut section = div().flex().flex_col().gap_1();
+            let mut section = div().flex().flex_col().gap_0p5();
             if group.is_some() || payload.todos.iter().any(|todo| todo.group.is_some()) {
                 section = section.child(
                     div()
@@ -2363,6 +2362,10 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         .text_size(px(11.0))
                         .child(
                             div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(Theme::global().ACCENT_MUTED)
                                 .child(group.unwrap_or("Other").to_string()),
@@ -2389,7 +2392,6 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         .flex()
                         .items_start()
                         .gap_1p5()
-                        .py_0p5()
                         .child(render_todo_marker(todo))
                         .child(div().flex_1().min_w_0().flex().flex_col().gap_0p5().when(
                             todo.priority == "high" || blocked || confidence.is_some(),
@@ -2397,8 +2399,11 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                                 content
                                     .child(
                                         div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
                                             .text_size(px(12.5))
-                                            .line_height(relative(1.35))
                                             .text_color(if todo.status == "completed" {
                                                 Theme::global().TEXT_DIM
                                             } else {
@@ -2453,13 +2458,13 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .flex()
         .flex_none()
         .flex_col()
-        .gap_2()
+        .gap_1()
         .rounded_md()
         .border_1()
         .border_color(Theme::global().TOOL_BORDER)
         .bg(Theme::global().TOOL_BG)
-        .px_2p5()
-        .py_2()
+        .px_2()
+        .py_1p5()
         .child(
             div()
                 .flex()
@@ -2496,34 +2501,13 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .when_some(payload.plan.user_intention.clone(), |card, intention| {
             card.child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(
-                        div()
-                            .text_size(px(9.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(Theme::global().TEXT_FAINT)
-                            .child("OUTCOME"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .line_height(relative(1.4))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(intention),
-                    )
-                    .when_some(
-                        payload.plan.understands_user_intent.as_ref(),
-                        |plan, value| {
-                            plan.child(
-                                div()
-                                    .text_size(px(9.5))
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .child(format!("Understanding: {}", semantic_value(value))),
-                            )
-                        },
-                    ),
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(11.5))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(intention),
             )
         })
         .child(body)
