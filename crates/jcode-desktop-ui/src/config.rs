@@ -69,7 +69,11 @@ impl Default for WorkspaceConfig {
             sidebar: true,
             showcase_keys: true,
             coaching_hints: true,
-            session_refresh_seconds: 2,
+            // Listing sessions can touch a very large on-disk index. Live
+            // events already update the current workspace immediately, so a
+            // slower reconciliation cadence keeps external sessions fresh
+            // without continuously competing with UI work.
+            session_refresh_seconds: 30,
         }
     }
 }
@@ -90,7 +94,7 @@ impl DesktopConfig {
             self.appearance.text_scale = 1.0;
         }
         self.workspace.session_refresh_seconds =
-            self.workspace.session_refresh_seconds.clamp(1, 300);
+            self.workspace.session_refresh_seconds.clamp(5, 300);
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
         self
     }
@@ -175,7 +179,7 @@ mod tests {
         assert_eq!(config.appearance.text_scale, 1.0);
         assert_eq!(config.appearance.colors["accent"], "#ff00aa");
         assert!(!config.workspace.sidebar);
-        assert_eq!(config.workspace.session_refresh_seconds, 1);
+        assert_eq!(config.workspace.session_refresh_seconds, 5);
         assert_eq!(config.terminal.scrollback_lines, 100);
     }
 
