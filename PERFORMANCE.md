@@ -86,3 +86,33 @@ The release binary was launched through its public CLI (`jcode-desktop --no-side
 The observed end-to-end state-change times were 15.8 ms for focus-left, 8.3 ms for focus-right, and 14.9 ms for moving a panel left. Each operation produced the expected externally visible focus position in the running release binary. These are conservative single-sample bounds because they include launching `wtype` and shell polling at roughly 1 ms intervals. They corroborate the micro-profile's conclusion that the state change arrives within one 60 Hz frame, while the deliberate 150 ms animation controls final settling.
 
 An earlier Xvfb attempt failed because GPUI's Vulkan presenter requires DRI3, which Xvfb does not provide. The headless Wayland run closes that presentation gap. This still does not measure a physical keyboard or monitor scanout, so it is presentation-path acceptance rather than a physical input-to-photon claim.
+
+## 2026-08-24 reprofile
+
+The optimized headless interaction profile was repeated after the session-ordering
+and reconciliation changes. All p99 state transitions remained below 3.5 ms:
+
+| Interaction | mean | p95 | p99 |
+|---|---:|---:|---:|
+| Horizontal focus | 1.62 ms | 1.90 ms | 2.82 ms |
+| Vertical focus / strip transition | 2.70 ms | 3.17 ms | 3.48 ms |
+| Horizontal panel move | 1.83 ms | 2.51 ms | 3.33 ms |
+| Panel resize preset | 1.64 ms | 2.03 ms | 2.25 ms |
+
+A direct 10-second `/proc` sample of the running hot-reload desktop measured
+0.10% process CPU after startup. The persistent diagnostics log also showed that
+session reconciliation is the dominant recurring background operation. Its
+historical samples include 100-session refreshes ranging from roughly 0.2 to
+0.65 seconds in recent runs. This work is performed off the UI thread and is
+coalesced, so it does not impose that duration on interaction handling.
+
+The same log contains CPU warnings from older, long-running debug generations.
+Those warnings measure whole-process utilization in five-second windows, not UI
+event latency, and should not be interpreted as slow frames. The old
+`~/.cache/jcode/desktop/performance.log` predates the current desktop telemetry
+and is retained only as historical evidence.
+
+The terminal output poll remains at 16 ms to preserve one-frame output latency.
+Its 32 KiB read slab is now retained for the terminal lifetime instead of being
+allocated on every idle poll, removing approximately 62 allocations per second
+per open terminal without increasing latency.

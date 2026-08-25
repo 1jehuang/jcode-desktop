@@ -68,28 +68,31 @@ impl TerminalPanel {
         let poll = cx.spawn(async move |this, cx| {
             let Some(resource_id) = poll_id else { return };
             let mut cursor = 0;
+            // Keep the read slab for the lifetime of the terminal. The poll runs
+            // at display cadence, including while the PTY is idle, so allocating
+            // 32 KiB on every empty poll creates avoidable allocator traffic for
+            // every open terminal.
+            let mut buffer = vec![0; 32 * 1024];
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
-                let mut chunks = Vec::new();
+                let mut output = Vec::new();
                 let mut closed = false;
                 let mut replay_gap = false;
                 loop {
-                    let mut buffer = vec![0; 32 * 1024];
                     let read = host.terminal_read(resource_id, cursor, &mut buffer);
                     replay_gap |= cursor < read.available_from;
                     cursor = read.next_cursor;
                     closed |= read.closed != 0;
-                    buffer.truncate(read.copied);
-                    if !buffer.is_empty() {
-                        chunks.push(buffer);
+                    if read.copied > 0 {
+                        output.extend_from_slice(&buffer[..read.copied]);
                     }
                     if read.copied < 32 * 1024 {
                         break;
                     }
                 }
-                if chunks.is_empty() && !closed {
+                if output.is_empty() && !closed {
                     continue;
                 }
                 if this
@@ -101,8 +104,8 @@ impl TerminalPanel {
                                 crate::config::get().terminal.scrollback_lines,
                             );
                         }
-                        for chunk in chunks {
-                            this.parser.process(&chunk);
+                        if !output.is_empty() {
+                            this.parser.process(&output);
                         }
                         this.exited |= closed;
                         cx.notify();
