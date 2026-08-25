@@ -12,6 +12,14 @@ source of continuous repaint overhead.
 The badge is intentionally absent from normal launches. To diagnose a packaged
 or non-hot-reload build, opt in with `JCODE_DESKTOP_PERF=1`.
 
+The badge also reports animation construction cadence: effective FPS from the
+rolling p95 interval, that interval in milliseconds, and the number of samples
+that exceeded a 17.5 ms 60 Hz budget. When `JCODE_DESKTOP_STATE` is set, the
+same values are appended to the public diagnostic state so compositor-driven
+acceptance runs can inspect them without screen scraping. These are UI frame
+construction timestamps; compositor presentation remains a separate boundary
+and is measured from recorded presentation packets.
+
 ## Development-build runtime
 
 The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies
@@ -54,9 +62,17 @@ Run it with:
 
 ```sh
 cargo test --release -p jcode-desktop-ui interaction_latency_profile -- --ignored --nocapture
+cargo test --release -p jcode-desktop-ui loaded_animation_first_frame_profile -- --ignored --nocapture
 ```
 
 These measurements include key parsing, action dispatch, workspace mutation, focus updates, learning-model updates, and learning-state persistence. They exclude the physical keyboard, compositor, GPU presentation, and the subsequent animation frames. Policy-driven visual settling is listed separately.
+
+The loaded first-frame profile constructs 32 panel entities across four strips
+and includes GPUI's next rendered frame after each focus change. Persistent
+coach-state filesystem writes run on a coalescing worker, and settled transcript
+rows are borrowed rather than cloned during rendering. Panel entities remain
+GPUI cache boundaries, so a workspace strip translation does not require
+reparsing unchanged transcript markdown.
 
 ## Results
 
