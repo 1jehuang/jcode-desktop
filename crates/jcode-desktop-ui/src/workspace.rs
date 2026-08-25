@@ -114,6 +114,14 @@ const SIDEBAR_WIDTH: f32 = 264.0;
 /// room at the top or it renders underneath the traffic lights.
 const TITLEBAR_HEIGHT: f32 = 52.0;
 
+fn content_top_inset(show_sidebar: bool) -> f32 {
+    if cfg!(target_os = "macos") && !show_sidebar {
+        TITLEBAR_HEIGHT
+    } else {
+        0.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SidebarView {
     #[default]
@@ -4433,14 +4441,10 @@ impl Render for Workspace {
             0.0
         };
         let viewport_w = (f32::from(viewport.width) - sidebar_width).max(320.0);
-        // With the sidebar visible, its header covers the titlebar strip. Without
-        // it, the workspace itself must leave room so panels never paint beneath
-        // the traffic lights.
-        let content_top_inset = if self.show_sidebar {
-            0.0
-        } else {
-            TITLEBAR_HEIGHT
-        };
+        // On macOS the sidebar header covers the transparent titlebar strip.
+        // Without the sidebar, leave room for the traffic lights. Other platforms
+        // do not draw through a system titlebar, so an inset would be a visible gap.
+        let content_top_inset = content_top_inset(self.show_sidebar);
         let viewport_h = (f32::from(viewport.height) - content_top_inset).max(240.0);
 
         let now = Instant::now();
@@ -5217,6 +5221,23 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_never_adds_a_workspace_top_inset() {
+        assert_eq!(content_top_inset(true), 0.0);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn hidden_sidebar_does_not_leave_a_top_gap_off_macos() {
+        assert_eq!(content_top_inset(false), 0.0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn hidden_sidebar_preserves_room_for_macos_traffic_lights() {
+        assert_eq!(content_top_inset(false), TITLEBAR_HEIGHT);
+    }
 
     /// Opt-in micro-profiler for the complete keymap -> workspace state path.
     ///
