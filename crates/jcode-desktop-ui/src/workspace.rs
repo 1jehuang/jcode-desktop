@@ -20,6 +20,7 @@ use crate::harness::{self, Bridge, Command, Update};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
 use crate::panel::{Panel, PanelSnapshot};
+use crate::performance::{Health as PerformanceHealth, Profile as PerformanceProfile};
 use crate::theme::Theme;
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
@@ -409,6 +410,7 @@ pub struct Workspace {
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
     focus_restore: FocusSnapshot,
+    performance: Option<PerformanceProfile>,
     _poll_task: gpui::Task<()>,
 }
 
@@ -430,21 +432,36 @@ impl Workspace {
         let session_refresh_interval = crate::config::get().session_refresh_interval();
         let poll_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
+            let mut last_wake = Instant::now();
+            let mut last_profile_refresh = Instant::now();
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
+                let now = Instant::now();
+                let wake_lag = now
+                    .duration_since(last_wake)
+                    .saturating_sub(Duration::from_millis(16));
+                last_wake = now;
+                let refresh_profile = last_profile_refresh.elapsed() >= Duration::from_millis(250);
+                if refresh_profile {
+                    last_profile_refresh = now;
+                }
                 let updates = poll_bridge.drain();
                 let accounts = accounts_feed.latest();
                 if last_session_refresh.elapsed() >= session_refresh_interval {
                     poll_bridge.send(Command::RefreshSessions);
                     last_session_refresh = Instant::now();
                 }
-                if updates.is_empty() && accounts.is_none() {
+                if updates.is_empty() && accounts.is_none() && !refresh_profile {
                     continue;
                 }
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     let mut changed = false;
+                    if let Some(profile) = workspace.performance.as_mut() {
+                        profile.observe_wake_lag(wake_lag);
+                        changed |= refresh_profile;
+                    }
                     for update in updates {
                         changed |= workspace.apply(update, cx);
                     }
@@ -514,6 +531,8 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             focus_restore: FocusSnapshot::Workspace,
+            performance: crate::performance::enabled(std::env::args_os())
+                .then(PerformanceProfile::default),
             _poll_task: poll_task,
         };
         if let Some(snapshot) = snapshot {
@@ -573,6 +592,7 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             focus_restore: FocusSnapshot::Workspace,
+            performance: None,
             _poll_task: cx.spawn(async move |_, _| {}),
         }
     }
@@ -4144,6 +4164,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let render_started = Instant::now();
         self.dump_state();
         if self.focus_pending && !self.slots.is_empty() {
             self.focus_pending = false;
@@ -4238,7 +4259,33 @@ impl Render for Workspace {
             self.render_row(self.active_row, viewport_w, viewport_h, window, cx)
         };
 
-        div()
+        let performance = self.performance.as_ref().map(|profile| {
+            let snapshot = profile.snapshot();
+            let (label, color) = match snapshot.health {
+                PerformanceHealth::Good => ("GOOD", gpui::rgb(0x52d273)),
+                PerformanceHealth::Degraded => ("SLOW", gpui::rgb(0xf2c94c)),
+                PerformanceHealth::Bad => ("BAD", gpui::rgb(0xff6b6b)),
+            };
+            div()
+                .debug_selector(|| "selfdev-performance-profile".into())
+                .absolute()
+                .top(px(content_top_inset + 10.0))
+                .right(px(12.0))
+                .rounded_md()
+                .px_3()
+                .py_2()
+                .bg(gpui::rgba(0x111318e8))
+                .border_1()
+                .border_color(color)
+                .text_size(px(11.0))
+                .text_color(gpui::rgb(0xe5e7eb))
+                .child(format!(
+                    "PERF {label}  wake p95 {:.1} ms  render p95 {:.1} ms  worst {:.1} ms",
+                    snapshot.wake_p95_ms, snapshot.render_p95_ms, snapshot.worst_ms
+                ))
+        });
+
+        let root = div()
             .size_full()
             .flex()
             .flex_row()
@@ -4305,12 +4352,17 @@ impl Render for Workspace {
                     // needs to see that a fix is on its way.
                     .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
             )
+            .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
             .when(self.folder_picker_dir.is_some(), |root| {
                 root.child(self.render_folder_picker(cx))
-            })
+            });
+        if let Some(profile) = self.performance.as_mut() {
+            profile.observe_render(render_started.elapsed());
+        }
+        root
     }
 }
 

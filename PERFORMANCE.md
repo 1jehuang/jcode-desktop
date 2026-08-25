@@ -1,5 +1,17 @@
 # Interaction latency profile
 
+## Live self-development profile
+
+Self-development launches (`--hot-reload`) show a compact live performance
+badge in the upper-right corner. It reports the rolling p95 event-loop wake lag,
+UI render construction time, and the worst retained sample. The badge turns
+yellow when either budget is exceeded and red at twice the budget. Samples are
+bounded and the display refreshes four times per second to avoid becoming a
+source of continuous repaint overhead.
+
+The badge is intentionally absent from normal launches. To diagnose a packaged
+or non-hot-reload build, opt in with `JCODE_DESKTOP_PERF=1`.
+
 ## Development-build runtime
 
 The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies

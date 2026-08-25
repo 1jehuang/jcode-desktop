@@ -11,6 +11,7 @@ mod input;
 mod learning;
 mod markdown;
 mod panel;
+mod performance;
 mod platform;
 mod scrollbar;
 mod terminal;
