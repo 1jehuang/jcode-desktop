@@ -111,9 +111,6 @@ const SIDEBAR_WIDTH: f32 = 264.0;
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
 const TITLEBAR_HEIGHT: f32 = 52.0;
-/// Horizontal room the macOS traffic lights occupy, measured from the window's
-/// left edge, including the gap the system leaves after the zoom button.
-const TRAFFIC_LIGHT_INSET: f32 = 92.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SidebarView {
@@ -2860,21 +2857,15 @@ impl Workspace {
             .border_color(Theme::global().PANEL_BORDER)
             .child(
                 div()
-                    // The sidebar header doubles as the window's titlebar strip:
-                    // it matches the system titlebar height and starts after the
-                    // traffic lights, so the two read as one native bar.
+                    // Keep the sidebar navigation anchored to the same left edge
+                    // as the content below it.
                     .h(px(TITLEBAR_HEIGHT))
-                    .pl(px(TRAFFIC_LIGHT_INSET))
-                    .pr_4()
+                    .px_3()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .justify_start()
                     .border_b_1()
                     .border_color(Theme::global().PANEL_BORDER)
-                    .child(div().text_size(px(13.0)).child(match self.sidebar_view {
-                        SidebarView::Sessions => "sessions",
-                        SidebarView::Files => "files",
-                    }))
                     .child(
                         div()
                             .flex()
