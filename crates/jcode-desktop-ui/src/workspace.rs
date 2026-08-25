@@ -2503,6 +2503,12 @@ impl Workspace {
             let (icon, title) = sidebar_session_title(&session);
             let directory = sidebar_session_directory(&session);
             let meta = sidebar_session_meta(&session);
+            let details = match (directory, meta) {
+                (Some(directory), Some(meta)) => Some(format!("{directory} · {meta}")),
+                (Some(directory), None) => Some(directory),
+                (None, Some(meta)) => Some(meta),
+                (None, None) => None,
+            };
             let (status_icon, status_label, status_kind) = sidebar_session_status(
                 &session.status,
                 open_statuses.get(&session.session_id).map(String::as_str),
@@ -2520,11 +2526,11 @@ impl Workspace {
                     .debug_selector(move || format!("sidebar-session-{sidebar_index}").into())
                     .mx_2()
                     .mb_1()
-                    .px_3()
-                    .py_2()
+                    .px_2()
+                    .py_1()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap(px(1.0))
                     .rounded_lg()
                     .cursor_pointer()
                     .bg(if selected {
@@ -2552,8 +2558,8 @@ impl Workspace {
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .child(div().text_size(px(14.0)).child(icon))
+                            .gap_1()
+                            .child(div().text_size(px(12.0)).child(icon))
                             .child(
                                 div()
                                     .flex_1()
@@ -2569,24 +2575,14 @@ impl Workspace {
                                     .child(format!("{status_icon} {status_label}")),
                             ),
                     )
-                    .when_some(directory, |row, directory| {
+                    .when_some(details, |row, details| {
                         row.child(
                             div()
-                                .pl(px(36.0))
+                                .pl(px(20.0))
                                 .overflow_hidden()
-                                .text_size(px(10.0))
+                                .text_size(px(9.0))
                                 .text_color(Theme::global().TEXT_DIM)
-                                .child(directory),
-                        )
-                    })
-                    .when_some(meta, |row, meta| {
-                        row.child(
-                            div()
-                                .pl(px(36.0))
-                                .overflow_hidden()
-                                .text_size(px(10.0))
-                                .text_color(Theme::global().TEXT_FAINT)
-                                .child(meta),
+                                .child(details),
                         )
                     }),
             );
@@ -7243,12 +7239,37 @@ mod tests {
             "the overlay should explain what the shortcut did"
         );
 
+        // The user reads the action first, then the keybinding: the action
+        // text must paint to the left of the keybinding pill.
+        let action = cx.debug_bounds("showcase-action").expect("action bounds");
+        let key = cx.debug_bounds("showcase-key").expect("keybinding bounds");
+        assert!(
+            action.origin.x < key.origin.x,
+            "the action should be displayed before the keybinding"
+        );
+
         cx.simulate_keystrokes(&format!("{MOD}-b"));
         workspace.update(cx, |workspace, _| {
             assert_eq!(
                 workspace.showcase_cue.as_ref().map(|cue| cue.action),
                 Some("Focus right"),
                 "an unrelated shortcut must not replace the displayed motion"
+            );
+        });
+
+        // A real focus-left keystroke, through the actual keymap, must produce
+        // the matching cue even when focus cannot move (no panels exist).
+        cx.simulate_keystrokes(&format!("{MOD}-h"));
+        workspace.update(cx, |workspace, _| {
+            let cue = workspace.showcase_cue.as_ref().expect("focus-left cue");
+            assert_eq!(cue.action, "Focus left");
+            assert_eq!(
+                cue.shortcut,
+                if cfg!(target_os = "macos") {
+                    "Cmd + H"
+                } else {
+                    "Super + H"
+                }
             );
         });
 
