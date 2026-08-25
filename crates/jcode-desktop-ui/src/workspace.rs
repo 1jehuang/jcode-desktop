@@ -42,7 +42,9 @@ actions!(
         MovePanelToFirst,
         MovePanelToLast,
         NewPanel,
+        ForkPanel,
         NewTerminal,
+        OpenGmail,
         NewUnfinishedWork,
         OpenFolder,
         ClosePanel,
@@ -458,9 +460,7 @@ impl Workspace {
         let housekeeping_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(1))
-                    .await;
+                cx.background_executor().timer(Duration::from_secs(1)).await;
                 let accounts = accounts_feed.latest();
                 if last_session_refresh.elapsed() >= session_refresh_interval {
                     housekeeping_bridge.send(Command::RefreshSessions);
@@ -715,6 +715,8 @@ impl Workspace {
             } else if let Some(path) = panel_state.session_id.strip_prefix("file://") {
                 let path = PathBuf::from(path);
                 cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx))
+            } else if panel_state.session_id == "gmail://inbox" {
+                cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx))
             } else {
                 let session_id = panel_state.session_id.clone();
                 let title = Some(panel_state.title.clone());
@@ -963,6 +965,19 @@ impl Workspace {
                         images: Vec::new(),
                     });
                 }
+            }
+            Update::SessionForked { session } => {
+                let session_id = session.session_id.clone();
+                if !self
+                    .sessions
+                    .iter()
+                    .any(|known| known.session_id == session_id)
+                {
+                    self.sessions.push(session.clone());
+                }
+                let inserted = self.open_session(session, cx);
+                self.set_active(inserted, cx);
+                self.focus_pending = true;
             }
             Update::History {
                 session_id,
@@ -1614,6 +1629,16 @@ impl Workspace {
         self.open_new_session(cx);
     }
 
+    fn fork_panel(&mut self, _: &ForkPanel, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(session_id) = self.slots.get(self.active).and_then(|slot| {
+            let panel = slot.panel.read(cx);
+            panel.can_fork().then(|| panel.session_id.clone())
+        }) else {
+            return;
+        };
+        self.bridge.send(Command::Fork { session_id });
+    }
+
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
         let width_fraction = spawned_panel_width(self.slots.len());
         let panel = cx.new(|cx| {
@@ -1625,6 +1650,52 @@ impl Workspace {
                 cx,
             )
         });
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
+                restore_fraction: None,
+            },
+        );
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn open_gmail(&mut self, _: &OpenGmail, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == "gmail://inbox")
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let panel = cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx));
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -2817,12 +2888,12 @@ impl Workspace {
         // Match the TUI `/resume` picker exactly: saved sessions first, then
         // all other sessions, newest activity first within both sections.
         let ordered_sessions = sidebar_session_order(&self.sessions);
-        let saved_count = ordered_sessions.iter().take_while(|session| session.saved).count();
+        let saved_count = ordered_sessions
+            .iter()
+            .take_while(|session| session.saved)
+            .count();
         let session_count = ordered_sessions.len();
-        for (sidebar_index, session) in ordered_sessions
-            .into_iter()
-            .enumerate()
-        {
+        for (sidebar_index, session) in ordered_sessions.into_iter().enumerate() {
             if sidebar_index == saved_count && saved_count > 0 && saved_count < session_count {
                 list = list.child(
                     div()
@@ -3494,7 +3565,27 @@ impl Workspace {
                     .items_center()
                     .rounded_full()
                     .bg(Theme::global().HEADER_BG)
-                    .child(workspaces),
+                    .child(workspaces)
+                    .child(
+                        div()
+                            .id("open-gmail")
+                            .debug_selector(|| "open-gmail".into())
+                            .ml_2()
+                            .pl_2()
+                            .border_l_1()
+                            .border_color(Theme::global().PANEL_BORDER)
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .hover(|el| el.text_color(Theme::global().TEXT))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_gmail(&OpenGmail, window, cx)
+                                }),
+                            )
+                            .child("inbox"),
+                    ),
             )
             .into_any_element()
     }
@@ -4400,7 +4491,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_panel_to_first))
             .on_action(cx.listener(Self::move_panel_to_last))
             .on_action(cx.listener(Self::new_panel))
+            .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::new_terminal))
+            .on_action(cx.listener(Self::open_gmail))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_panel))
@@ -5333,7 +5426,11 @@ mod tests {
                 },
                 cx,
             );
-            assert!(workspace.sessions[0].updated_at_ms.is_some_and(|value| value > 1));
+            assert!(
+                workspace.sessions[0]
+                    .updated_at_ms
+                    .is_some_and(|value| value > 1)
+            );
         });
     }
 
@@ -7729,15 +7826,16 @@ mod tests {
         // text must paint above the keybinding pill.
         let action = cx.debug_bounds("showcase-action").expect("action bounds");
         let key = cx.debug_bounds("showcase-key").expect("keybinding bounds");
-        let card = cx.debug_bounds("showcase-card").expect("showcase card bounds");
+        let card = cx
+            .debug_bounds("showcase-card")
+            .expect("showcase card bounds");
         assert!(
             card.size.width < px(320.0) && card.size.height <= px(80.0),
             "the showcase card should shrink-wrap its content, got {:?}",
             card.size
         );
         assert!(
-            action.origin.x - card.origin.x <= px(13.0)
-                && key.origin.x - card.origin.x <= px(13.0),
+            action.origin.x - card.origin.x <= px(13.0) && key.origin.x - card.origin.x <= px(13.0),
             "the card border should closely fit the content"
         );
         assert!(

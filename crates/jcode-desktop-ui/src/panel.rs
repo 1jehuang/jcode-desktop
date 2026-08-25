@@ -173,6 +173,8 @@ pub struct Panel {
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
     /// A read-only source file opened from the workspace file browser.
     code_file: Option<CodeFile>,
+    /// A native, read-only view of the locally connected Gmail inbox.
+    gmail_inbox: Option<GmailInboxState>,
     model_picker_open: bool,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -181,6 +183,22 @@ pub struct Panel {
 struct CodeFile {
     path: std::path::PathBuf,
     contents: Result<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct GmailMessageSummary {
+    from: String,
+    subject: String,
+    date: String,
+    snippet: String,
+    unread: bool,
+}
+
+#[derive(Debug, Clone)]
+enum GmailInboxState {
+    Loading,
+    Ready(Vec<GmailMessageSummary>),
+    Error(String),
 }
 
 impl Panel {
@@ -245,6 +263,7 @@ impl Panel {
             terminal: None,
             unfinished_work: None,
             code_file: None,
+            gmail_inbox: None,
             model_picker_open: false,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -288,6 +307,62 @@ impl Panel {
         panel
     }
 
+    pub fn new_gmail(bridge: Bridge, cx: &mut Context<Self>) -> Self {
+        let mut panel = Self::new(
+            "gmail://inbox".into(),
+            Some("inbox".into()),
+            None,
+            bridge,
+            cx,
+        );
+        panel.items.clear();
+        panel.gmail_inbox = Some(GmailInboxState::Loading);
+        panel.refresh_gmail(cx);
+        panel
+    }
+
+    fn refresh_gmail(&mut self, cx: &mut Context<Self>) {
+        self.gmail_inbox = Some(GmailInboxState::Loading);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let client = jcode_base::gmail::GmailClient::new();
+                if !client.is_configured() {
+                    anyhow::bail!(client.not_configured_message());
+                }
+                let list = client
+                    .list_messages(Some("in:inbox"), Some(&["INBOX"]), 30)
+                    .await?;
+                let mut messages = Vec::new();
+                for item in list.messages.unwrap_or_default() {
+                    let message = client
+                        .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
+                        .await?;
+                    messages.push(GmailMessageSummary {
+                        from: message.from().unwrap_or("Unknown sender").to_owned(),
+                        subject: message.subject().unwrap_or("(no subject)").to_owned(),
+                        date: message.date().unwrap_or_default().to_owned(),
+                        snippet: message.snippet.unwrap_or_default(),
+                        unread: message
+                            .label_ids
+                            .as_ref()
+                            .is_some_and(|labels| labels.iter().any(|label| label == "UNREAD")),
+                    });
+                }
+                Ok::<_, anyhow::Error>(messages)
+            }
+            .await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.gmail_inbox = Some(match result {
+                    Ok(messages) => GmailInboxState::Ready(messages),
+                    Err(error) => GmailInboxState::Error(error.to_string()),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn new_terminal(
         working_dir: Option<String>,
         bridge: Bridge,
@@ -305,6 +380,10 @@ impl Panel {
         );
         panel.terminal = Some(terminal);
         panel
+    }
+
+    pub(crate) fn can_fork(&self) -> bool {
+        self.terminal.is_none() && self.code_file.is_none() && self.session_id != "unfinished-work"
     }
 
     pub fn new_unfinished_work(
@@ -1781,6 +1860,156 @@ impl Render for Panel {
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(path),
+                )
+                .child(body)
+                .into_any_element();
+        }
+        if let Some(inbox) = &self.gmail_inbox {
+            let mut body = div()
+                .id("gmail-inbox")
+                .debug_selector(|| "gmail-inbox".into())
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col();
+            match inbox {
+                GmailInboxState::Loading => {
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child("Loading inbox…"),
+                    );
+                }
+                GmailInboxState::Error(error) => {
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_color(Theme::global().ERROR)
+                                    .child("Could not load Gmail"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child(error.clone()),
+                            ),
+                    );
+                }
+                GmailInboxState::Ready(messages) if messages.is_empty() => {
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child("Your inbox is empty."),
+                    );
+                }
+                GmailInboxState::Ready(messages) => {
+                    for (index, message) in messages.iter().enumerate() {
+                        body = body.child(
+                            div()
+                                .id(("gmail-message", index))
+                                .debug_selector(move || format!("gmail-message-{index}").into())
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(Theme::global().PANEL_BORDER)
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .when(message.unread, |row| row.bg(Theme::global().HEADER_BG))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .font_weight(if message.unread {
+                                                    FontWeight::SEMIBOLD
+                                                } else {
+                                                    FontWeight::NORMAL
+                                                })
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(message.from.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(px(10.))
+                                                .text_color(Theme::global().TEXT_FAINT)
+                                                .child(message.date.clone()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .font_weight(if message.unread {
+                                            FontWeight::SEMIBOLD
+                                        } else {
+                                            FontWeight::NORMAL
+                                        })
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(message.subject.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(Theme::global().TEXT_DIM)
+                                        .child(message.snippet.clone()),
+                                ),
+                        );
+                    }
+                }
+            }
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .track_focus(&self.focus_handle)
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(42.))
+                        .px_4()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(Theme::global().PANEL_BORDER)
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Gmail · Inbox"),
+                        )
+                        .child(
+                            div()
+                                .id("gmail-refresh")
+                                .cursor_pointer()
+                                .rounded_md()
+                                .px_2()
+                                .py_1()
+                                .text_size(px(11.))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| this.refresh_gmail(cx)),
+                                )
+                                .child("refresh"),
+                        ),
                 )
                 .child(body)
                 .into_any_element();
