@@ -116,3 +116,12 @@ The terminal output poll remains at 16 ms to preserve one-frame output latency.
 Its 32 KiB read slab is now retained for the terminal lifetime instead of being
 allocated on every idle poll, removing approximately 62 allocations per second
 per open terminal without increasing latency.
+
+The rebuilt release binary was also exercised through its public
+`jcode-desktop --no-sidebar` entry point in a fresh state directory on an
+isolated headless Sway compositor. A real compositor window and the public
+diagnostic state both appeared after 259.5 ms. The process remained alive,
+produced no lag warnings, and averaged 1.13% CPU during the following 15-second
+idle sample. This validates the release host, GPUI Wayland renderer, UI plugin,
+state diagnostic, and persistent diagnostics boundaries together without
+touching the active desktop session.
