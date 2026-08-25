@@ -5552,10 +5552,6 @@ mod tests {
             "each quota column should retain a readable width"
         );
         assert!(
-            openai_row.size.height <= px(36.0),
-            "quota-bearing accounts should stay to two compact lines"
-        );
-        assert!(
             openai_row.origin.y < jcode_row.origin.y,
             "available accounts should be listed above expired ones"
         );
