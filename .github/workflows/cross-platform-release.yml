@@ -1,6 +1,12 @@
 name: Linux and Windows desktop release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version used for validation artifacts
+        required: true
+        default: 0.1.0-beta.21
   push:
     tags: ["desktop-v*"]
 
@@ -45,7 +51,7 @@ jobs:
       - name: Build and package Linux
         if: matrix.platform == 'linux'
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
           JCODE_REPO: ${{ github.workspace }}/jcode
         run: jcode-desktop/scripts/package-linux.sh
       - name: Verify Linux package
@@ -58,7 +64,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
           JCODE_REPO: ${{ github.workspace }}/jcode
         run: ./jcode-desktop/scripts/package-windows.ps1
       - name: Verify Windows package
@@ -72,6 +78,7 @@ jobs:
           path: jcode-desktop/dist/${{ matrix.platform }}/Jcode-*
 
   publish:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 190
