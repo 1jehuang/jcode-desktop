@@ -74,7 +74,6 @@ const STRIP_COUNT: usize = 4;
 struct ShowcaseCue {
     shortcut: String,
     action: &'static str,
-    key: String,
 }
 /// niri `window-rule { geometry-corner-radius 6 }`.
 const CORNER_RADIUS: f32 = 6.0;
@@ -1764,9 +1763,12 @@ impl Workspace {
     fn toggle_showcase(&mut self, _: &ToggleShowcase, _: &mut Window, cx: &mut Context<Self>) {
         self.showcase_mode = !self.showcase_mode;
         self.showcase_cue = self.showcase_mode.then(|| ShowcaseCue {
-            shortcut: "On".to_owned(),
-            action: "Showcase mode",
-            key: "S".to_owned(),
+            shortcut: if cfg!(target_os = "macos") {
+                "Cmd + Shift + S".to_owned()
+            } else {
+                "Super + Shift + S".to_owned()
+            },
+            action: "Showcase mode on",
         });
         self.schedule_showcase_expiry(cx);
         cx.notify();
@@ -1794,7 +1796,6 @@ impl Workspace {
                 format!("{modifier} + {key}")
             },
             action,
-            key: key.to_owned(),
         });
         self.schedule_showcase_expiry(cx);
         cx.notify();
@@ -3610,12 +3611,13 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
-                    .min_w(px(260.0))
+                    .min_w(px(360.0))
                     .px_4()
                     .py_3()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .justify_between()
+                    .gap_4()
                     .rounded_xl()
                     .bg(Theme::global().PANEL_BG)
                     .border_1()
@@ -3629,40 +3631,48 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .id("showcase-key")
-                            .debug_selector(|| "showcase-key".into())
-                            .min_w(px(52.0))
-                            .h(px(52.0))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_lg()
-                            .bg(Theme::global().HEADER_BG)
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_color(Theme::global().ACCENT)
-                            .text_size(px(if cue.key.len() > 2 { 18.0 } else { 28.0 }))
-                            .child(cue.key.clone()),
-                    )
-                    .child(
-                        div()
                             .flex()
                             .flex_col()
                             .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child("ACTION"),
+                            )
                             .child(
                                 div()
                                     .id("showcase-action")
                                     .debug_selector(|| "showcase-action".into())
                                     .text_size(px(17.0))
                                     .child(cue.action),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child("KEYBINDING"),
                             )
                             .child(
                                 div()
+                                    .id("showcase-key")
+                                    .debug_selector(|| "showcase-key".into())
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(Theme::global().HEADER_BG)
+                                    .border_1()
+                                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
                                     .font_family(Theme::global().FONT_MONO)
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::global().TEXT_DIM)
+                                    .text_color(Theme::global().ACCENT)
+                                    .text_size(px(13.0))
                                     .child(cue.shortcut.clone()),
                             ),
                     ),
@@ -7210,7 +7220,6 @@ mod tests {
             workspace.showcase_motion("L", false, "Focus right", cx);
             let cue = workspace.showcase_cue.as_ref().expect("showcase cue");
             assert_eq!(cue.action, "Focus right");
-            assert_eq!(cue.key, "L");
             assert_eq!(
                 cue.shortcut,
                 if cfg!(target_os = "macos") {
@@ -7227,7 +7236,7 @@ mod tests {
         );
         assert!(
             cx.debug_bounds("showcase-key").is_some(),
-            "the overlay should visualize the key that was pressed"
+            "the overlay should show the complete keybinding"
         );
         assert!(
             cx.debug_bounds("showcase-action").is_some(),
