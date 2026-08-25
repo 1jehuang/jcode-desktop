@@ -12,13 +12,13 @@ source of continuous repaint overhead.
 The badge is intentionally absent from normal launches. To diagnose a packaged
 or non-hot-reload build, opt in with `JCODE_DESKTOP_PERF=1`.
 
-The badge also reports animation construction cadence: effective FPS from the
-rolling p95 interval, that interval in milliseconds, and the number of samples
-that exceeded a 17.5 ms 60 Hz budget. When `JCODE_DESKTOP_STATE` is set, the
-same values are appended to the public diagnostic state so compositor-driven
-acceptance runs can inspect them without screen scraping. These are UI frame
-construction timestamps; compositor presentation remains a separate boundary
-and is measured from recorded presentation packets.
+The badge reports GPUI's direct p95 draw and presentation intervals, effective
+presented FPS, input-to-frame latency, view-construction time, coalesced input
+events, and inputs that arrived during a draw. When `JCODE_DESKTOP_STATE` is
+set, the same values are appended to the public diagnostic state so
+compositor-driven acceptance runs can inspect them without screen scraping.
+Recorded presentation packets remain an independent end-to-end check of the
+application, Wayland, Vulkan, and compositor boundary.
 
 ## Development-build runtime
 
