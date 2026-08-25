@@ -31,6 +31,10 @@ pub enum Update {
     SessionCreated {
         session: SessionInfo,
     },
+    /// A session was forked from an existing panel.
+    SessionForked {
+        session: SessionInfo,
+    },
     /// History fetched for a session after attach.
     History {
         session_id: String,
@@ -89,6 +93,9 @@ pub enum Command {
     Cancel {
         session_id: String,
     },
+    Fork {
+        session_id: String,
+    },
     SetModel {
         session_id: String,
         model: String,
@@ -115,6 +122,7 @@ enum SessionCommand {
         images: Vec<(String, String)>,
     },
     Cancel,
+    Fork,
     SetModel(String),
     Operation(SessionOperation),
     Stop,
@@ -308,6 +316,14 @@ fn run(updates: UpdateSender, commands: Receiver<Command>) {
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates)
                 });
+            }
+            Command::Fork { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::Fork,
+                    |session_id| spawn_session_worker(session_id, &updates),
+                );
             }
         }
     }
@@ -927,6 +943,17 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     SessionCommand::Cancel => {
                         let _ = client.cancel(&session_id);
                     }
+                    SessionCommand::Fork => match client.fork_session(&session_id) {
+                        Ok(session) => {
+                            let _ = updates.send(Update::SessionForked { session });
+                        }
+                        Err(error) => {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Failed to fork session: {error}"),
+                            });
+                        }
+                    },
                     SessionCommand::SetModel(model) => {
                         if let Err(error) = client.set_model(&session_id, &model) {
                             let _ = updates.send(Update::CommandFailed {
