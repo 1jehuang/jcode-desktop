@@ -216,6 +216,76 @@ struct GmailMessageSummary {
     category: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct GmailMetadata {
+    unread: bool,
+    important: bool,
+    starred: bool,
+    category: Option<String>,
+}
+
+fn gmail_metadata(labels: &[String]) -> GmailMetadata {
+    let has_label = |wanted: &str| labels.iter().any(|label| label == wanted);
+    let category = labels.iter().find_map(|label| {
+        label.strip_prefix("CATEGORY_").map(|category| {
+            let mut chars = category.chars();
+            chars
+                .next()
+                .map(|first| {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                })
+                .unwrap_or_default()
+        })
+    });
+    GmailMetadata {
+        unread: has_label("UNREAD"),
+        important: has_label("IMPORTANT"),
+        starred: has_label("STARRED"),
+        category,
+    }
+}
+
+#[cfg(test)]
+mod gmail_metadata_tests {
+    use super::{GmailMetadata, gmail_metadata};
+
+    fn labels(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn identifies_gmail_attention_metadata_and_category() {
+        assert_eq!(
+            gmail_metadata(&labels(&[
+                "INBOX",
+                "UNREAD",
+                "IMPORTANT",
+                "STARRED",
+                "CATEGORY_PROMOTIONS",
+            ])),
+            GmailMetadata {
+                unread: true,
+                important: true,
+                starred: true,
+                category: Some("Promotions".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn ordinary_and_custom_labels_do_not_create_false_priority() {
+        assert_eq!(
+            gmail_metadata(&labels(&["INBOX", "Label_42"])),
+            GmailMetadata {
+                unread: false,
+                important: false,
+                starred: false,
+                category: None,
+            }
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 struct GmailMessageDetail {
     summary: GmailMessageSummary,
@@ -253,20 +323,7 @@ async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
             let message = client
                 .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
                 .await?;
-            let labels = message.label_ids.as_deref().unwrap_or_default();
-            let has_label = |wanted: &str| labels.iter().any(|label| label == wanted);
-            let category = labels.iter().find_map(|label| {
-                label.strip_prefix("CATEGORY_").map(|category| {
-                    let mut chars = category.chars();
-                    chars
-                        .next()
-                        .map(|first| {
-                            first.to_uppercase().collect::<String>()
-                                + &chars.as_str().to_lowercase()
-                        })
-                        .unwrap_or_default()
-                })
-            });
+            let metadata = gmail_metadata(message.label_ids.as_deref().unwrap_or_default());
             anyhow::Ok((
                 index,
                 GmailMessageSummary {
@@ -275,10 +332,10 @@ async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
                     subject: message.subject().unwrap_or("(no subject)").to_owned(),
                     date: message.date().unwrap_or_default().to_owned(),
                     snippet: message.snippet.unwrap_or_default(),
-                    unread: has_label("UNREAD"),
-                    important: has_label("IMPORTANT"),
-                    starred: has_label("STARRED"),
-                    category,
+                    unread: metadata.unread,
+                    important: metadata.important,
+                    starred: metadata.starred,
+                    category: metadata.category,
                 },
             ))
         });
