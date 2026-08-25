@@ -51,7 +51,7 @@ jobs:
           # painted the interface without glyphs on a stock Mac. Assert both
           # sides of that regression against the downloaded public artifact:
           # the release binary selects Menlo and macOS can instantiate it.
-          strings "$app/Contents/MacOS/jcode-desktop" | grep -Fx Menlo
+          strings "$app/Contents/MacOS/jcode-desktop" | grep -F Menlo
           swift -e 'import AppKit; guard NSFont(name: "Menlo", size: 13) != nil else { fatalError("Menlo is unavailable") }'
           JCODE_DESKTOP_STATE="$RUNNER_TEMP/desktop-state.txt" \
             "$app/Contents/MacOS/jcode-desktop" >"$RUNNER_TEMP/desktop.log" 2>&1 &
