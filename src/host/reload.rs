@@ -294,7 +294,13 @@ fn validate_api(api: PluginApi) -> Result<()> {
 pub fn default_plugin_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target")
-        .join("debug")
+        // Keep the dynamically loaded GPUI build profile identical to the
+        // host's. These crates exchange Rust-owned state across the ABI.
+        .join(if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        })
         .join(format!(
             "{}jcode_desktop_ui{}",
             env::consts::DLL_PREFIX,

@@ -41,8 +41,17 @@ fn rebuild_ui() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("system clock is before the Unix epoch: {error}"))?
         .as_millis()
         .to_string();
-    let output = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-        .args(["build", "-p", "jcode-desktop-ui"])
+    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    command.args(["build", "-p", "jcode-desktop-ui"]);
+    // GPUI crosses the plugin ABI as concrete Rust types. A release host must
+    // therefore load a release plugin, since debug-only fields and assertions
+    // can change their in-memory layout and behavior. Loading a debug cdylib
+    // into a release host made `App::quitting` read as true and rejected every
+    // replacement workspace during activation.
+    if !cfg!(debug_assertions) {
+        command.arg("--release");
+    }
+    let output = command
         .env("JCODE_DESKTOP_BUILD_EPOCH", requested_at)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()?;
