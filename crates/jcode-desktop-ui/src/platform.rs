@@ -6,8 +6,16 @@ use std::path::{Path, PathBuf};
 /// to PATH for source builds. macOS GUI apps inherit a deliberately small PATH,
 /// so depending on shell startup files would make Finder launches unreliable.
 pub fn companion_executable(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    let name = if name.to_ascii_lowercase().ends_with(".exe") {
+        name.to_owned()
+    } else {
+        format!("{name}.exe")
+    };
+    #[cfg(not(windows))]
+    let name = name.to_owned();
     if let Ok(current) = std::env::current_exe()
-        && let Some(companion) = companion_next_to(&current, name)
+        && let Some(companion) = companion_next_to(&current, &name)
     {
         return companion;
     }

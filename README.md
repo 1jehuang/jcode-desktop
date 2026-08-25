@@ -91,6 +91,35 @@ development workflow. Release builds use the same UI through the linked API and
 remain a single `jcode-desktop` executable, so existing app packaging is
 unchanged.
 
+## Desktop releases
+
+`desktop-v*` tags build Linux x86_64, Windows x86_64, and the existing secure
+universal macOS release. Linux ships versioned `.tar.gz` and `.deb` artifacts;
+Windows ships a versioned ZIP. Every package bundles the desktop executable,
+Jcode CLI, harness bridge, and application artwork. The Linux package also
+installs a freedesktop launcher. The Windows ZIP includes an external execution
+manifest with DPI, long-path, and supported-OS metadata; executable icon resource
+embedding remains a future signing-time enhancement.
+
+The macOS workflow remains the release owner: it fails closed on tagged builds,
+performs signing and notarization, and creates the GitHub prerelease. The Linux
+and Windows workflow waits for that prerelease before uploading, avoiding parallel
+release creation races.
+
+Local packaging requires a sibling Jcode checkout (or `JCODE_REPO`):
+
+```sh
+VERSION=0.1.0-beta.1 ./scripts/package-linux.sh
+python3 scripts/verify-release-package.py dist/linux/Jcode-0.1.0-beta.1-linux-x86_64.tar.gz
+```
+
+```powershell
+$env:VERSION='0.1.0-beta.1'; ./scripts/package-windows.ps1
+python scripts/verify-release-package.py dist/windows/Jcode-0.1.0-beta.1-windows-x86_64.zip
+```
+
+Package contract tests run with `python3 -m unittest tests/test_verify_release_package.py`.
+
 ## macOS beta
 
 Jcode Desktop supports Apple Silicon and Intel Macs running macOS 13 or newer.
