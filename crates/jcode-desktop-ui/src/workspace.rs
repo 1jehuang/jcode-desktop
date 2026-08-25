@@ -3125,10 +3125,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The connected-accounts strip: one row per configured credential, led
-    /// by the provider's logo, with the auth method (OAuth / API key) and
-    /// state. Only configured providers appear, so the section stays honest
-    /// and short: it answers "what am I logged into right now".
+    /// The connected-accounts strip stays compact by keeping quota details to
+    /// one row and avoiding a second line when usage data is unavailable.
     fn render_accounts(&self) -> Option<gpui::AnyElement> {
         if self.accounts.is_empty() {
             return None;
@@ -3140,11 +3138,11 @@ impl Workspace {
             .flex_col()
             .border_t_1()
             .border_color(Theme::global().PANEL_BORDER)
-            .py_2()
+            .py_1()
             .child(
                 div()
                     .px_4()
-                    .pb_1()
+                    .pb(px(2.0))
                     .text_size(px(10.0))
                     .text_color(Theme::global().TEXT_DIM)
                     .child("accounts"),
@@ -3206,27 +3204,15 @@ impl Workspace {
                     ),
             );
 
-            if account.limits.is_empty() {
-                details = details.child(
-                    div()
-                        .debug_selector({
-                            let id = account.id.clone();
-                            move || format!("account-{id}-limit-unavailable")
-                        })
-                        .mt(px(3.0))
-                        .text_size(px(8.0))
-                        .text_color(Theme::global().TEXT_FAINT)
-                        .child("Usage limit unavailable"),
-                );
-            } else {
-                // Antigravity reports the same account-wide quota once for
-                // every model. Painting all of those duplicates overwhelms
-                // the sidebar, so use its first representative limit.
-                let visible_limits = if account.id == "antigravity" {
-                    &account.limits[..1]
+            if !account.limits.is_empty() {
+                // A single two-column quota row retains the useful summary
+                // without letting one account grow into a card.
+                let limit_count = if account.id == "antigravity" {
+                    1
                 } else {
-                    account.limits.as_slice()
+                    account.limits.len().min(2)
                 };
+                let visible_limits = &account.limits[..limit_count];
                 let mut limits = div().mt(px(3.0)).flex().flex_col().gap(px(4.0));
                 for (row_index, row) in visible_limits.chunks(2).enumerate() {
                     let mut limit_row = div().flex().gap(px(6.0));
@@ -3899,9 +3885,9 @@ impl Workspace {
                     .px_3()
                     .py_2()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
                     .rounded_lg()
                     .bg(Theme::global().PANEL_BG)
                     .border_1()
@@ -3915,50 +3901,25 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(9.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .child("ACTION"),
-                            )
-                            .child(
-                                div()
-                                    .id("showcase-action")
-                                    .debug_selector(|| "showcase-action".into())
-                                    .text_size(px(15.0))
-                                    .child(cue.action),
-                            ),
+                            .id("showcase-action")
+                            .debug_selector(|| "showcase-action".into())
+                            .text_size(px(15.0))
+                            .child(cue.action),
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .items_end()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(9.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .child("KEYBINDING"),
-                            )
-                            .child(
-                                div()
-                                    .id("showcase-key")
-                                    .debug_selector(|| "showcase-key".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(Theme::global().HEADER_BG)
-                                    .border_1()
-                                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                                    .font_family(Theme::global().FONT_MONO)
-                                    .text_color(Theme::global().ACCENT)
-                                    .text_size(px(12.0))
-                                    .child(cue.shortcut.clone()),
-                            ),
+                            .id("showcase-key")
+                            .debug_selector(|| "showcase-key".into())
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(Theme::global().HEADER_BG)
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                            .font_family(Theme::global().FONT_MONO)
+                            .text_color(Theme::global().ACCENT)
+                            .text_size(px(12.0))
+                            .child(cue.shortcut.clone()),
                     ),
             )
             .into_any_element()
@@ -5561,13 +5522,14 @@ mod tests {
         let second_limit = vcx
             .debug_bounds("account-openai-limit-1")
             .expect("the second usage limit should paint");
-        let third_limit = vcx
-            .debug_bounds("account-openai-limit-2")
-            .expect("additional usage limits should paint on another row");
+        assert!(
+            vcx.debug_bounds("account-openai-limit-2").is_none(),
+            "additional quotas should be hidden to keep the account compact"
+        );
         assert!(
             vcx.debug_bounds("account-jcode-limit-unavailable")
-                .is_some(),
-            "accounts without a reported quota should still show usage status"
+                .is_none(),
+            "missing quota data should not add a second line"
         );
         assert!(
             vcx.debug_bounds("account-antigravity-limit-0").is_some(),
@@ -5590,8 +5552,8 @@ mod tests {
             "each quota column should retain a readable width"
         );
         assert!(
-            third_limit.origin.y > first_limit.origin.y,
-            "more than two usage limits should wrap into another compact row"
+            openai_row.size.height <= px(36.0),
+            "quota-bearing accounts should stay to two compact lines"
         );
         assert!(
             openai_row.origin.y < jcode_row.origin.y,
@@ -7613,23 +7575,23 @@ mod tests {
         );
 
         // The user reads the action first, then the keybinding: the action
-        // text must paint to the left of the keybinding pill.
+        // text must paint above the keybinding pill.
         let action = cx.debug_bounds("showcase-action").expect("action bounds");
         let key = cx.debug_bounds("showcase-key").expect("keybinding bounds");
         let card = cx.debug_bounds("showcase-card").expect("showcase card bounds");
         assert!(
-            card.size.width < px(320.0) && card.size.height <= px(66.0),
+            card.size.width < px(320.0) && card.size.height <= px(80.0),
             "the showcase card should shrink-wrap its content, got {:?}",
             card.size
         );
         assert!(
             action.origin.x - card.origin.x <= px(13.0)
-                && card.origin.x + card.size.width - key.origin.x - key.size.width <= px(13.0),
+                && key.origin.x - card.origin.x <= px(13.0),
             "the card border should closely fit the content"
         );
         assert!(
-            action.origin.x < key.origin.x,
-            "the action should be displayed before the keybinding"
+            action.origin.y < key.origin.y,
+            "the action should be displayed above the keybinding"
         );
 
         cx.simulate_keystrokes(&format!("{MOD}-b"));
