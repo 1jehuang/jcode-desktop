@@ -425,6 +425,7 @@ pub struct Workspace {
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
     gpui_performance: GpuiPerformanceSnapshot,
+    animation_tick_task: Option<gpui::Task<()>>,
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _performance_task: gpui::Task<()>,
@@ -578,6 +579,7 @@ impl Workspace {
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
             gpui_performance: GpuiPerformanceSnapshot::default(),
+            animation_tick_task: None,
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _performance_task: performance_task,
@@ -642,6 +644,7 @@ impl Workspace {
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
             gpui_performance: GpuiPerformanceSnapshot::default(),
+            animation_tick_task: None,
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _performance_task: cx.spawn(async move |_, _| {}),
@@ -2306,6 +2309,28 @@ impl Workspace {
                 .slots
                 .iter()
                 .any(|slot| slot.animated_width.is_animating() || slot.order_offset.is_animating())
+    }
+
+    /// GPUI's next-frame callback is presentation-driven. Some Wayland
+    /// compositors can delay that callback despite accepting 60 Hz presents,
+    /// which leaves a lightweight workspace transition visibly stepping at
+    /// 20–30 Hz. A single coalesced timer wake keeps animation state advancing;
+    /// the compositor still decides when the resulting frame is presented.
+    fn ensure_animation_tick(&mut self, cx: &mut Context<Self>) {
+        if self.animation_tick_task.is_some() {
+            return;
+        }
+        self.animation_tick_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(8))
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.animation_tick_task = None;
+                if workspace.animation_active() {
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn render_strip(
@@ -4626,6 +4651,9 @@ impl Render for Workspace {
                 root.child(self.render_folder_picker(cx))
             });
         let animation_active = self.animation_active();
+        if animation_active {
+            self.ensure_animation_tick(cx);
+        }
         if let Some(profile) = self.performance.as_mut() {
             profile.observe_render(render_started.elapsed());
             profile.observe_frame(Instant::now(), animation_active);
