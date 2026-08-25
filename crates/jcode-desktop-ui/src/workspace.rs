@@ -268,6 +268,10 @@ struct Slot {
     /// one. The distance uses the swapped neighbour's width at render time.
     order_offset: AnimatedValue,
     order_distance_fraction: f32,
+    /// Visibility during dismissal. Closed panels remain mounted until this
+    /// reaches zero so their exit can actually be painted.
+    close_progress: AnimatedValue,
+    closing: bool,
     /// Width to restore when un-maximizing (niri `maximize-column` toggle).
     restore_fraction: Option<f32>,
 }
@@ -742,6 +746,11 @@ impl Workspace {
                     transition::policy(Transition::PanelOrder).duration,
                 ),
                 order_distance_fraction: saved.width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
                 restore_fraction: saved.restore_fraction,
             });
         }
@@ -837,6 +846,11 @@ impl Workspace {
                 transition::policy(Transition::PanelOrder).duration,
             ),
             order_distance_fraction: DEFAULT_WIDTH,
+            close_progress: AnimatedValue::new(
+                1.0,
+                transition::policy(Transition::PanelClose).duration,
+            ),
+            closing: false,
             restore_fraction: None,
         });
     }
@@ -1091,6 +1105,11 @@ impl Workspace {
                 transition::policy(Transition::PanelOrder).duration,
             ),
             order_distance_fraction: width_fraction,
+            close_progress: AnimatedValue::new(
+                1.0,
+                transition::policy(Transition::PanelClose).duration,
+            ),
+            closing: false,
             restore_fraction: None,
         };
         let active_is_on_strip = self
@@ -1626,6 +1645,11 @@ impl Workspace {
                     transition::policy(Transition::PanelOrder).duration,
                 ),
                 order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
                 restore_fraction: None,
             },
         );
@@ -1669,6 +1693,11 @@ impl Workspace {
                     transition::policy(Transition::PanelOrder).duration,
                 ),
                 order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
                 restore_fraction: None,
             },
         );
@@ -1721,6 +1750,11 @@ impl Workspace {
                     transition::policy(Transition::PanelOrder).duration,
                 ),
                 order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
                 restore_fraction: None,
             },
         );
@@ -1844,24 +1878,66 @@ impl Workspace {
         if self
             .slots
             .get(self.active)
-            .is_none_or(|slot| slot.row != self.active_row)
+            .is_none_or(|slot| slot.row != self.active_row || slot.closing)
         {
             return;
         }
         self.learned("close_panel", cx);
-        let removed = self.slots.remove(self.active);
-        let session_id = removed.panel.read(cx).session_id.clone();
+        let closed = self.active;
+        let closed_id = self.slots[closed].panel.entity_id();
+        self.slots[closed].closing = true;
+        self.slots[closed].close_progress.set(0.0, Instant::now());
+        let session_id = self.slots[closed].panel.read(cx).session_id.clone();
         if session_id != "terminal" {
             self.bridge.send(Command::Unwatch { session_id });
         }
-        if self.previous == Some(removed.panel.entity_id()) {
+        if self.previous == Some(closed_id) {
             self.previous = None;
         }
-        let remaining: Vec<_> = self.row_indices(self.active_row).collect();
-        self.active = focus_after_close(self.active, &remaining);
+        let remaining: Vec<_> = self
+            .row_indices(self.active_row)
+            .filter(|&index| index != closed)
+            .collect();
+        self.active = focus_after_close(closed, &remaining);
         self.retarget_camera();
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    fn remove_finished_closing_panels(
+        &mut self,
+        now: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active_id = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+        let mut finished = Vec::new();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let progress = slot.close_progress.sample(now);
+            if slot.closing && !slot.close_progress.is_animating() && progress <= f32::EPSILON {
+                finished.push(index);
+            }
+        }
+        if finished.is_empty() {
+            return;
+        }
+        for index in finished.into_iter().rev() {
+            self.slots.remove(index);
+        }
+        self.active = active_id
+            .and_then(|id| {
+                self.slots
+                    .iter()
+                    .position(|slot| slot.panel.entity_id() == id)
+            })
+            .unwrap_or_else(|| self.slots.len().saturating_sub(1));
+        if self.slots.is_empty() {
+            window.focus(&self.focus_handle, cx);
+        }
+        self.retarget_camera();
     }
 
     fn toggle_overview(&mut self, _: &ToggleOverview, _: &mut Window, cx: &mut Context<Self>) {
@@ -2121,6 +2197,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let now = Instant::now();
+        self.remove_finished_closing_panels(now, window, cx);
         if row == self.active_row && self.camera_dirty[row] {
             self.resolve_camera_target(viewport_w);
         }
@@ -2145,15 +2223,20 @@ impl Workspace {
 
         let panel_h = viewport_h - STRIP_PADDING_Y * 2.0;
         let indices = self.row_indices(row).collect::<Vec<_>>();
-        let now = Instant::now();
         let mut animated_widths = Vec::with_capacity(indices.len());
         let mut order_offsets = Vec::with_capacity(indices.len());
+        let mut close_progresses = Vec::with_capacity(indices.len());
         for &index in &indices {
             let fraction = self.slots[index].animated_width.sample(now);
             if self.slots[index].animated_width.is_animating() {
                 window.request_animation_frame();
             }
-            animated_widths.push(Self::width_for_fraction(fraction, viewport_w));
+            let close_progress = self.slots[index].close_progress.sample(now);
+            if self.slots[index].close_progress.is_animating() {
+                window.request_animation_frame();
+            }
+            close_progresses.push(close_progress);
+            animated_widths.push(Self::width_for_fraction(fraction, viewport_w) * close_progress);
             let progress = self.slots[index].order_offset.sample(now);
             if self.slots[index].order_offset.is_animating() {
                 window.request_animation_frame();
@@ -2171,8 +2254,11 @@ impl Workspace {
             .flex_row()
             .gap(px(GAP));
 
-        for ((index, width), order_offset) in
-            indices.into_iter().zip(animated_widths).zip(order_offsets)
+        for (((index, width), order_offset), close_progress) in indices
+            .into_iter()
+            .zip(animated_widths)
+            .zip(order_offsets)
+            .zip(close_progresses)
         {
             let slot = &self.slots[index];
             let focused = index == self.active;
@@ -2181,6 +2267,7 @@ impl Workspace {
                     .id(("panel", index))
                     .relative()
                     .left(px(order_offset))
+                    .opacity(close_progress)
                     // Tagged so a render test can click the real panel element
                     // and exercise the pointer slow-path detection.
                     .debug_selector(move || format!("panel-{index}"))
