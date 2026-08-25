@@ -3236,7 +3236,7 @@ impl Workspace {
                                             this.open_gmail(&OpenGmail, window, cx)
                                         }),
                                     )
-                                    .child("inbox"),
+                                    .child("email"),
                             )
                             .child(
                                 div()

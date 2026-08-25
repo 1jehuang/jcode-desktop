@@ -211,6 +211,9 @@ struct GmailMessageSummary {
     date: String,
     snippet: String,
     unread: bool,
+    important: bool,
+    starred: bool,
+    category: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +253,20 @@ async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
             let message = client
                 .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
                 .await?;
+            let labels = message.label_ids.as_deref().unwrap_or_default();
+            let has_label = |wanted: &str| labels.iter().any(|label| label == wanted);
+            let category = labels.iter().find_map(|label| {
+                label.strip_prefix("CATEGORY_").map(|category| {
+                    let mut chars = category.chars();
+                    chars
+                        .next()
+                        .map(|first| {
+                            first.to_uppercase().collect::<String>()
+                                + &chars.as_str().to_lowercase()
+                        })
+                        .unwrap_or_default()
+                })
+            });
             anyhow::Ok((
                 index,
                 GmailMessageSummary {
@@ -258,10 +275,10 @@ async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
                     subject: message.subject().unwrap_or("(no subject)").to_owned(),
                     date: message.date().unwrap_or_default().to_owned(),
                     snippet: message.snippet.unwrap_or_default(),
-                    unread: message
-                        .label_ids
-                        .as_ref()
-                        .is_some_and(|labels| labels.iter().any(|label| label == "UNREAD")),
+                    unread: has_label("UNREAD"),
+                    important: has_label("IMPORTANT"),
+                    starred: has_label("STARRED"),
+                    category,
                 },
             ))
         });
@@ -490,7 +507,7 @@ impl Panel {
 
     fn render_gmail(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let detail_open = self.gmail_message.is_some();
-        let title = if detail_open { "Message" } else { "Inbox" };
+        let title = if detail_open { "Message" } else { "Email" };
         let mut header = div()
             .flex_none()
             .h(px(52.))
@@ -517,7 +534,7 @@ impl Panel {
                             cx.notify();
                         }),
                     )
-                    .child("‹  Inbox"),
+                    .child("‹  Email"),
             );
         }
         header = header
@@ -690,7 +707,7 @@ impl Panel {
                         div()
                             .p_4()
                             .text_color(Theme::global().TEXT_DIM)
-                            .child("Loading your inbox…"),
+                            .child("Loading your email…"),
                     );
                 }
                 GmailInboxState::Error(error) => {
@@ -719,7 +736,7 @@ impl Panel {
                         div()
                             .p_6()
                             .text_color(Theme::global().TEXT_DIM)
-                            .child("You’re all caught up. Your inbox is empty."),
+                            .child("You’re all caught up. Your email inbox is empty."),
                     );
                 }
                 GmailInboxState::Ready(messages) => {
@@ -778,6 +795,33 @@ impl Panel {
                                 )
                                 .child(
                                     div()
+                                        .mt_1()
+                                        .w(px(18.))
+                                        .flex_none()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .gap(px(2.))
+                                        .when(message.starred, |el| {
+                                            el.child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .text_color(Theme::global().ACCENT)
+                                                    .child("★"),
+                                            )
+                                        })
+                                        .when(message.important, |el| {
+                                            el.child(
+                                                div()
+                                                    .text_size(px(10.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(Theme::global().USER_ACCENT)
+                                                    .child("››"),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
                                         .flex_1()
                                         .min_w_0()
                                         .flex()
@@ -821,6 +865,62 @@ impl Panel {
                                                     FontWeight::NORMAL
                                                 })
                                                 .child(message.subject.clone()),
+                                        )
+                                        .when(
+                                            message.unread
+                                                || message.important
+                                                || message.starred
+                                                || message.category.is_some(),
+                                            |content| {
+                                                let metadata = div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .text_size(px(9.));
+                                                let metadata =
+                                                    metadata.when(message.unread, |el| {
+                                                        el.child(
+                                                            div()
+                                                                .px_1()
+                                                                .rounded_sm()
+                                                                .bg(Theme::global().ACCENT_DIM)
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .child("Unread"),
+                                                        )
+                                                    });
+                                                let metadata =
+                                                    metadata.when(message.important, |el| {
+                                                        el.child(
+                                                            div()
+                                                                .px_1()
+                                                                .rounded_sm()
+                                                                .text_color(
+                                                                    Theme::global().USER_ACCENT,
+                                                                )
+                                                                .child("Important"),
+                                                        )
+                                                    });
+                                                let metadata =
+                                                    metadata.when(message.starred, |el| {
+                                                        el.child(
+                                                            div()
+                                                                .px_1()
+                                                                .rounded_sm()
+                                                                .child("Starred"),
+                                                        )
+                                                    });
+                                                let metadata = match &message.category {
+                                                    Some(category) => metadata.child(
+                                                        div()
+                                                            .px_1()
+                                                            .rounded_sm()
+                                                            .text_color(Theme::global().TEXT_DIM)
+                                                            .child(category.clone()),
+                                                    ),
+                                                    None => metadata,
+                                                };
+                                                content.child(metadata)
+                                            },
                                         )
                                         .child(
                                             div()
