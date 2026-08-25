@@ -217,6 +217,33 @@ enum GmailInboxState {
     Error(String),
 }
 
+async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
+    let client = jcode_base::gmail::GmailClient::new();
+    if !client.is_configured() {
+        anyhow::bail!(client.not_configured_message());
+    }
+    let list = client
+        .list_messages(Some("in:inbox"), Some(&["INBOX"]), 30)
+        .await?;
+    let mut messages = Vec::new();
+    for item in list.messages.unwrap_or_default() {
+        let message = client
+            .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
+            .await?;
+        messages.push(GmailMessageSummary {
+            from: message.from().unwrap_or("Unknown sender").to_owned(),
+            subject: message.subject().unwrap_or("(no subject)").to_owned(),
+            date: message.date().unwrap_or_default().to_owned(),
+            snippet: message.snippet.unwrap_or_default(),
+            unread: message
+                .label_ids
+                .as_ref()
+                .is_some_and(|labels| labels.iter().any(|label| label == "UNREAD")),
+        });
+    }
+    Ok(messages)
+}
+
 impl Panel {
     pub(crate) fn sidebar_runtime_status(&self) -> &str {
         &self.status
@@ -352,34 +379,21 @@ impl Panel {
     fn refresh_gmail(&mut self, cx: &mut Context<Self>) {
         self.gmail_inbox = Some(GmailInboxState::Loading);
         cx.notify();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("jcode-gmail-inbox".into())
+            .spawn(move || {
+                let result = tokio::runtime::Runtime::new()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|runtime| runtime.block_on(load_gmail_inbox()));
+                let _ = tx.send_blocking(result);
+            })
+            .expect("spawn Gmail inbox worker");
         cx.spawn(async move |this, cx| {
-            let result = async {
-                let client = jcode_base::gmail::GmailClient::new();
-                if !client.is_configured() {
-                    anyhow::bail!(client.not_configured_message());
-                }
-                let list = client
-                    .list_messages(Some("in:inbox"), Some(&["INBOX"]), 30)
-                    .await?;
-                let mut messages = Vec::new();
-                for item in list.messages.unwrap_or_default() {
-                    let message = client
-                        .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
-                        .await?;
-                    messages.push(GmailMessageSummary {
-                        from: message.from().unwrap_or("Unknown sender").to_owned(),
-                        subject: message.subject().unwrap_or("(no subject)").to_owned(),
-                        date: message.date().unwrap_or_default().to_owned(),
-                        snippet: message.snippet.unwrap_or_default(),
-                        unread: message
-                            .label_ids
-                            .as_ref()
-                            .is_some_and(|labels| labels.iter().any(|label| label == "UNREAD")),
-                    });
-                }
-                Ok::<_, anyhow::Error>(messages)
-            }
-            .await;
+            let result = rx
+                .recv()
+                .await
+                .unwrap_or_else(|error| Err(anyhow::Error::from(error)));
             let _ = this.update(cx, |panel, cx| {
                 panel.gmail_inbox = Some(match result {
                     Ok(messages) => GmailInboxState::Ready(messages),

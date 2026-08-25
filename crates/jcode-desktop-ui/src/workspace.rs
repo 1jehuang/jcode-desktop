@@ -8094,4 +8094,43 @@ mod tests {
             );
         });
     }
+
+    #[gpui::test]
+    fn super_shift_g_opens_and_paints_the_gmail_inbox_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            let workspace = Workspace::for_test(learning::Coach::new(), cx);
+            let _ = window;
+            workspace
+        });
+        cx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+
+        cx.simulate_keystrokes("super-shift-g");
+
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 1);
+            assert_eq!(
+                workspace.slots[0].panel.read(cx).session_id,
+                "gmail://inbox"
+            );
+        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        assert!(
+            cx.debug_bounds("gmail-inbox").is_some(),
+            "the Gmail inbox surface should paint in the newly created panel"
+        );
+        // Opening the public shortcut again focuses the existing inbox instead
+        // of creating duplicate panels.
+        cx.simulate_keystrokes("super-shift-g");
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(workspace.slots.len(), 1);
+        });
+    }
 }
