@@ -8,8 +8,8 @@ use std::time::Instant;
 use base64::Engine as _;
 use gpui::{
     Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, FontWeight, ImageSource,
-    ListAlignment, ListState, SharedString, StyledImage, Window, div, img, list, point, prelude::*,
-    px, relative,
+    ListAlignment, ListState, ScrollHandle, SharedString, StyledImage, Window, div, img, list,
+    point, prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
@@ -193,6 +193,8 @@ pub struct Panel {
     gmail_inbox: Option<GmailInboxState>,
     /// The message currently opened from the Gmail inbox.
     gmail_message: Option<GmailMessageState>,
+    /// Persistent scroll position shared by the inbox and opened message body.
+    gmail_scroll: ScrollHandle,
     model_picker_open: bool,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -438,6 +440,7 @@ impl Panel {
             code_file: None,
             gmail_inbox: None,
             gmail_message: None,
+            gmail_scroll: ScrollHandle::new(),
             model_picker_open: false,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -626,6 +629,8 @@ impl Panel {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .restrict_scroll_to_axis()
+            .track_scroll(&self.gmail_scroll)
             .p_4()
             .flex()
             .flex_col()
@@ -692,12 +697,14 @@ impl Panel {
                         .to_string();
                     body.child(
                         div()
+                            .flex_none()
                             .text_size(px(20.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(message.summary.subject.clone()),
                     )
                     .child(
                         div()
+                            .flex_none()
                             .mt_2()
                             .p_3()
                             .rounded_lg()
@@ -745,6 +752,7 @@ impl Panel {
                     )
                     .child(
                         div()
+                            .flex_none()
                             .mt_2()
                             .p_4()
                             .rounded_lg()
@@ -817,6 +825,7 @@ impl Panel {
                             div()
                                 .id(("gmail-message", index))
                                 .debug_selector(move || format!("gmail-message-{index}").into())
+                                .flex_none()
                                 .cursor_pointer()
                                 .p_3()
                                 .rounded_lg()
@@ -3672,6 +3681,54 @@ mod tests {
                 "Email acceptance surface must paint {selector}"
             );
         }
+    }
+
+    #[gpui::test]
+    fn email_inbox_moves_when_the_user_scrolls(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("gmail-scroll", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            panel.gmail_inbox = Some(GmailInboxState::Ready(
+                (0..60)
+                    .map(|index| GmailMessageSummary {
+                        id: format!("message-{index}"),
+                        from: format!("Sender {index}"),
+                        subject: format!("Message {index}"),
+                        date: "Today".into(),
+                        snippet: "Scrollable email preview".into(),
+                        unread: index % 2 == 0,
+                        important: false,
+                        starred: false,
+                        category: Some("Updates".into()),
+                    })
+                    .collect(),
+            ));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let before = panel.read_with(vcx, |panel, _| panel.gmail_scroll.offset().y);
+        let inbox = vcx
+            .debug_bounds("gmail-inbox")
+            .expect("Email inbox painted");
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: inbox.center(),
+            // Negative Y moves downward from the inbox's initial top position.
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -3.0)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        let after = panel.read_with(vcx, |panel, _| panel.gmail_scroll.offset().y);
+        assert_ne!(after, before, "wheel input must move the Email inbox");
     }
 
     #[gpui::test]
