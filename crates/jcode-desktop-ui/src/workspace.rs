@@ -3189,6 +3189,28 @@ impl Workspace {
                             )
                             .child(
                                 div()
+                                    .id("open-gmail")
+                                    .debug_selector(|| "open-gmail".into())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .hover(|el| {
+                                        el.bg(Theme::global().HEADER_BG)
+                                            .text_color(Theme::global().TEXT)
+                                    })
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.open_gmail(&OpenGmail, window, cx)
+                                        }),
+                                    )
+                                    .child("inbox"),
+                            )
+                            .child(
+                                div()
                                     .id("sidebar-open-folder")
                                     .debug_selector(|| "sidebar-open-folder".into())
                                     .px_2()
@@ -3646,27 +3668,7 @@ impl Workspace {
                     .items_center()
                     .rounded_full()
                     .bg(Theme::global().HEADER_BG)
-                    .child(workspaces)
-                    .child(
-                        div()
-                            .id("open-gmail")
-                            .debug_selector(|| "open-gmail".into())
-                            .ml_2()
-                            .pl_2()
-                            .border_l_1()
-                            .border_color(Theme::global().PANEL_BORDER)
-                            .cursor_pointer()
-                            .text_size(px(11.))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .hover(|el| el.text_color(Theme::global().TEXT))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.open_gmail(&OpenGmail, window, cx)
-                                }),
-                            )
-                            .child("inbox"),
-                    ),
+                    .child(workspaces),
             )
             .into_any_element()
     }
@@ -7066,6 +7068,34 @@ mod tests {
                 "clicking the button should be recorded as the long way round"
             );
             assert!(coach.effort_wasted > 0, "and should count as wasted effort");
+        });
+    }
+
+    #[gpui::test]
+    fn inbox_button_lives_in_the_sidebar_and_opens_gmail(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+
+        let button = vcx
+            .debug_bounds("open-gmail")
+            .expect("the Inbox button should have painted");
+        assert!(
+            f32::from(button.center().x) < SIDEBAR_WIDTH,
+            "the Inbox button should be inside the left sidebar"
+        );
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        workspace.update(vcx, |workspace, cx| {
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "gmail://inbox"
+            );
         });
     }
 
