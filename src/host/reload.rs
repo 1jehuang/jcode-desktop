@@ -84,8 +84,8 @@ impl ReloadManager {
     /// Snapshot the live workspace before its platform surface is closed.
     /// Host-owned PTYs and streams remain alive, while the serialized UI state
     /// is retained in memory for a fast restore into the next surface.
-    pub fn suspend(&mut self, cx: &mut App) -> Result<()> {
-        self.suspended = Some(self.snapshot_active(cx)?);
+    pub fn suspend(&mut self, window: &mut Window, cx: &mut App) -> Result<()> {
+        self.suspended = Some(self.snapshot_window(window, cx)?);
         self.window = None;
         Ok(())
     }
@@ -162,20 +162,23 @@ impl ReloadManager {
     }
 
     fn snapshot_active(&self, cx: &mut App) -> Result<(u32, Vec<u8>)> {
+        let window = self.window.context("desktop window is not attached")?;
+        window
+            .update(cx, |_, window, cx| self.snapshot_window(window, cx))
+            .context("update host window while snapshotting")?
+    }
+
+    fn snapshot_window(&self, window: &mut Window, cx: &mut App) -> Result<(u32, Vec<u8>)> {
         self.host.clear_snapshot();
         let api = self.generations[self.active].api;
         let host_api = self.host.api();
-        let result = self
-            .window
-            .context("desktop window is not attached")?
-            .update(cx, |_, window, cx| unsafe {
-                (api.snapshot)(
-                    window as *mut Window as *mut _,
-                    cx as *mut App as *mut _,
-                    &host_api,
-                )
-            })
-            .context("update host window while snapshotting")?;
+        let result = unsafe {
+            (api.snapshot)(
+                window as *mut Window as *mut _,
+                cx as *mut App as *mut _,
+                &host_api,
+            )
+        };
         if result != ACTIVATE_OK {
             bail!("active UI failed to snapshot; reload was cancelled")
         }

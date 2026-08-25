@@ -166,8 +166,8 @@ fn main() {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |_, window, cx| {
-                    window.on_window_should_close(cx, move |_, cx| {
-                        if let Err(error) = manager.borrow_mut().suspend(cx) {
+                    window.on_window_should_close(cx, move |window, cx| {
+                        if let Err(error) = manager.borrow_mut().suspend(window, cx) {
                             eprintln!("failed to suspend desktop workspace: {error:#}");
                             return false;
                         }
@@ -232,8 +232,8 @@ fn main() {
                             let manager = manager.clone();
                             let current_window = current_window.clone();
                             move |_, window, cx| {
-                                window.on_window_should_close(cx, move |_, cx| {
-                                    if let Err(error) = manager.borrow_mut().suspend(cx) {
+                                window.on_window_should_close(cx, move |window, cx| {
+                                    if let Err(error) = manager.borrow_mut().suspend(window, cx) {
                                         eprintln!("failed to suspend desktop workspace: {error:#}");
                                         return false;
                                     }
