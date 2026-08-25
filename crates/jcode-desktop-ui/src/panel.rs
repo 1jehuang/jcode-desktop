@@ -1,6 +1,5 @@
 //! Panel: one Jcode session as a spatial card with a live transcript.
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +8,8 @@ use std::time::Instant;
 use base64::Engine as _;
 use gpui::{
     Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, FontWeight, ImageSource,
-    ScrollHandle, SharedString, StyledImage, Window, div, img, point, prelude::*, px, relative,
+    ListAlignment, ListState, SharedString, StyledImage, Window, div, img, list, point, prelude::*,
+    px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
@@ -61,6 +61,20 @@ pub enum Item {
     },
     Todos(TodoCardPayload),
     Error(String),
+}
+
+#[derive(Clone)]
+enum TranscriptRowSource {
+    Settled(usize),
+    Owned(Item),
+}
+
+#[derive(Clone)]
+struct TranscriptRenderRow {
+    index: usize,
+    source: TranscriptRowSource,
+    role: Option<&'static str>,
+    show_label: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -155,7 +169,8 @@ pub struct Panel {
     streaming_reasoning: String,
     pub input: Entity<PromptInput>,
     pub focus_handle: FocusHandle,
-    scroll: ScrollHandle,
+    transcript_list: ListState,
+    transcript_row_count: usize,
     stick_to_bottom: bool,
     /// A detached reload offset cannot be applied until asynchronous history
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
@@ -235,6 +250,17 @@ impl Panel {
         let display_title = title
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| short_id(&session_id));
+        let transcript_list = ListState::new(0, ListAlignment::Bottom, px(600.));
+        let panel_entity = cx.entity();
+        transcript_list.set_scroll_handler(move |event, _, cx| {
+            let _ = panel_entity.update(cx, |panel, cx| {
+                let stick_to_bottom = event.is_following_tail;
+                if panel.stick_to_bottom != stick_to_bottom {
+                    panel.stick_to_bottom = stick_to_bottom;
+                    cx.notify();
+                }
+            });
+        });
         Self {
             session_id,
             title: display_title.into(),
@@ -251,7 +277,8 @@ impl Panel {
             streaming_reasoning: String::new(),
             input,
             focus_handle: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            transcript_list,
+            transcript_row_count: 0,
             stick_to_bottom: true,
             pending_history_scroll: None,
             bridge,
@@ -415,7 +442,7 @@ impl Panel {
     }
 
     pub fn snapshot(&self, cx: &App) -> PanelSnapshot {
-        let offset = self.scroll.offset();
+        let offset = self.transcript_list.scroll_px_offset_for_scrollbar();
         PanelSnapshot {
             session_id: self.session_id.clone(),
             title: self.title.to_string(),
@@ -437,8 +464,8 @@ impl Panel {
         self.stick_to_bottom = snapshot.stick_to_bottom;
         self.pending_history_scroll =
             (!snapshot.stick_to_bottom).then_some((snapshot.scroll_x, snapshot.scroll_y));
-        self.scroll
-            .set_offset(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
+        self.transcript_list
+            .set_offset_from_scrollbar(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
         self.input
             .update(cx, |input, cx| input.restore(snapshot.draft, cx));
     }
@@ -477,7 +504,7 @@ impl Panel {
                                 ));
                                 this.pending_users.push_back(index);
                                 this.stick_to_bottom = true;
-                                this.scroll.scroll_to_bottom();
+                                this.transcript_list.scroll_to_end();
                                 cx.notify();
                             });
                         }
@@ -631,7 +658,7 @@ impl Panel {
             }
         }
         self.stick_to_bottom = true;
-        self.scroll.scroll_to_bottom();
+        self.transcript_list.scroll_to_end();
         cx.notify();
         true
     }
@@ -688,7 +715,7 @@ impl Panel {
         self.items
             .push(Item::Assistant(format!("Switching model to `{model}`…")));
         self.stick_to_bottom = true;
-        self.scroll.scroll_to_bottom();
+        self.transcript_list.scroll_to_end();
         cx.notify();
     }
 
@@ -906,7 +933,7 @@ impl Panel {
             {
                 self.recover_response(response);
                 if self.stick_to_bottom {
-                    self.scroll.scroll_to_bottom();
+                    self.transcript_list.scroll_to_end();
                 }
                 cx.notify();
             }
@@ -973,10 +1000,8 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.items = items;
-        if let Some((x, y)) = self.pending_history_scroll.take() {
-            self.scroll.set_offset(point(px(x), px(y)));
-        } else if self.stick_to_bottom {
-            self.scroll.scroll_to_bottom();
+        if self.pending_history_scroll.is_none() && self.stick_to_bottom {
+            self.transcript_list.scroll_to_end();
         }
         cx.notify();
     }
@@ -1177,7 +1202,7 @@ impl Panel {
             _ => {}
         }
         if self.stick_to_bottom {
-            self.scroll.scroll_to_bottom();
+            self.transcript_list.scroll_to_end();
         }
         cx.notify();
     }
@@ -1266,7 +1291,7 @@ impl Panel {
         self.status = "idle".into();
         self.connection_phase.clear();
         self.stick_to_bottom = true;
-        self.scroll.scroll_to_bottom();
+        self.transcript_list.scroll_to_end();
         cx.notify();
     }
 
@@ -1281,6 +1306,93 @@ impl Panel {
             return Some(self.status.replace('_', " "));
         }
         None
+    }
+
+    fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
+        let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
+        let mut previous_role = None;
+
+        for (index, item) in self.items.iter().enumerate() {
+            if matches!(item, Item::Todos(_))
+                || matches!(item, Item::Tool { name, .. } if name == "todo")
+            {
+                continue;
+            }
+
+            if let Item::Reasoning(text) = item
+                && let Some(previous) = rows.last_mut()
+            {
+                let existing = match &mut previous.source {
+                    TranscriptRowSource::Settled(previous_index) => {
+                        let Item::Reasoning(existing) = &self.items[*previous_index] else {
+                            rows.push(TranscriptRenderRow {
+                                index,
+                                source: TranscriptRowSource::Settled(index),
+                                role: Some("reasoning"),
+                                show_label: previous_role != Some("reasoning"),
+                            });
+                            previous_role = Some("reasoning");
+                            continue;
+                        };
+                        previous.source =
+                            TranscriptRowSource::Owned(Item::Reasoning(existing.clone()));
+                        let TranscriptRowSource::Owned(Item::Reasoning(existing)) =
+                            &mut previous.source
+                        else {
+                            unreachable!()
+                        };
+                        existing
+                    }
+                    TranscriptRowSource::Owned(Item::Reasoning(existing)) => existing,
+                    _ => {
+                        rows.push(TranscriptRenderRow {
+                            index,
+                            source: TranscriptRowSource::Settled(index),
+                            role: Some("reasoning"),
+                            show_label: previous_role != Some("reasoning"),
+                        });
+                        previous_role = Some("reasoning");
+                        continue;
+                    }
+                };
+                append_reasoning_text(existing, text);
+                continue;
+            }
+
+            let role = role_of(item);
+            rows.push(TranscriptRenderRow {
+                index,
+                source: TranscriptRowSource::Settled(index),
+                role,
+                show_label: role.is_some() && role != previous_role,
+            });
+            previous_role = role.or(previous_role);
+        }
+
+        for (index, item) in [
+            (!self.streaming_reasoning.is_empty()).then(|| {
+                (
+                    usize::MAX - 1,
+                    Item::Reasoning(self.streaming_reasoning.clone()),
+                )
+            }),
+            (!self.streaming_text.is_empty())
+                .then(|| (usize::MAX, Item::Assistant(self.streaming_text.clone()))),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let role = role_of(&item);
+            rows.push(TranscriptRenderRow {
+                index,
+                source: TranscriptRowSource::Owned(item),
+                role,
+                show_label: role.is_some() && role != previous_role,
+            });
+            previous_role = role.or(previous_role);
+        }
+
+        rows
     }
 
     fn render_item(
@@ -1607,6 +1719,17 @@ impl Panel {
                     .border_1()
                     .border_color(Theme::global().TOOL_BORDER)
                     .overflow_hidden()
+                    .when(has_detail, |el| {
+                        el.cursor_pointer().on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                if !this.expanded_tools.remove(&call_id) {
+                                    this.expanded_tools.insert(call_id.clone());
+                                }
+                                cx.notify();
+                            }),
+                        )
+                    })
                     .child(
                         div()
                             .debug_selector(|| "tool-header".into())
@@ -1617,17 +1740,6 @@ impl Panel {
                             .px_2()
                             .py_1()
                             .text_size(px(11.5))
-                            .when(has_detail, |el| {
-                                el.cursor_pointer().on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        if !this.expanded_tools.remove(&call_id) {
-                                            this.expanded_tools.insert(call_id.clone());
-                                        }
-                                        cx.notify();
-                                    }),
-                                )
-                            })
                             .child(status)
                             .child(
                                 div()
@@ -1758,7 +1870,9 @@ impl Panel {
     /// did or did not scroll it.
     #[cfg(test)]
     pub fn test_scroll_offset_y(&self) -> gpui::Pixels {
-        self.scroll.offset().y
+        self.pending_history_scroll
+            .map(|(_, y)| px(y))
+            .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar().y)
     }
 }
 
@@ -1774,7 +1888,7 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 }
 
 impl Render for Panel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(terminal) = &self.terminal {
             return div()
                 .size_full()
@@ -2083,9 +2197,8 @@ impl Render for Panel {
                 .child(list)
                 .into_any_element();
         }
-        let scroll_handle = self.scroll.clone();
         let streaming = !self.streaming_text.is_empty();
-        let mut transcript = div()
+        let transcript_shell = div()
             .id(if streaming {
                 "transcript-with-response"
             } else {
@@ -2099,39 +2212,9 @@ impl Render for Panel {
                     "transcript".into()
                 }
             })
-            .flex()
-            .flex_col()
-            .gap_2p5()
             .size_full()
-            .px_3()
-            .py_2p5()
             .text_size(px(13.5))
-            .overflow_y_scroll()
-            // Vertical deltas only: horizontal two-finger swipes pan the
-            // workspace canvas instead of nudging the transcript.
-            .restrict_scroll_to_axis()
-            .track_scroll(&self.scroll)
-            // Reading history must win over following the stream: scrolling
-            // up releases stick-to-bottom, and returning near the bottom
-            // re-engages it.
-            .on_scroll_wheel(cx.listener(
-                move |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                    let delta = event.delta.pixel_delta(window.line_height()).y;
-                    if delta > px(0.) {
-                        if this.stick_to_bottom {
-                            this.stick_to_bottom = false;
-                            cx.notify();
-                        }
-                    } else if delta < px(0.) && !this.stick_to_bottom {
-                        let distance = scroll_handle.max_offset().y + scroll_handle.offset().y;
-                        if distance <= px(48.) {
-                            this.stick_to_bottom = true;
-                            this.scroll.scroll_to_bottom();
-                            cx.notify();
-                        }
-                    }
-                },
-            ));
+            .overflow_hidden();
 
         // Live rows are appended after the settled ones and share the same
         // renderer, so a streaming turn looks identical to a finished one.
@@ -2145,46 +2228,37 @@ impl Render for Panel {
             Item::User(prompt) if !prompt.trim().is_empty() => Some(prompt.clone()),
             _ => None,
         });
-        let mut rows: Vec<(usize, Cow<'_, Item>)> = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                !matches!(item, Item::Todos(_))
-                    && !matches!(item, Item::Tool { name, .. } if name == "todo")
-            })
-            .map(|(index, item)| (index, Cow::Borrowed(item)))
-            .collect();
-        if !self.streaming_reasoning.is_empty() {
-            rows.push((
-                usize::MAX - 1,
-                Cow::Owned(Item::Reasoning(self.streaming_reasoning.clone())),
-            ));
+        let rows = Arc::new(self.transcript_render_rows());
+        let row_count = rows.len();
+        if row_count != self.transcript_row_count {
+            if row_count > self.transcript_row_count {
+                self.transcript_list.splice(
+                    self.transcript_row_count..self.transcript_row_count,
+                    row_count - self.transcript_row_count,
+                );
+            } else {
+                self.transcript_list.reset(row_count);
+            }
+            self.transcript_row_count = row_count;
+        } else if row_count > 0 {
+            // Panel notifications can change a row's height without changing
+            // its count (tool expansion, streaming text, reasoning disclosure).
+            // Invalidate measurements while retaining virtualized painting.
+            self.transcript_list.remeasure_items(0..row_count);
         }
-        if !self.streaming_text.is_empty() {
-            rows.push((
-                usize::MAX,
-                Cow::Owned(Item::Assistant(self.streaming_text.clone())),
-            ));
+        if !self.items.is_empty() && self.pending_history_scroll.is_some() {
+            let (x, y) = self.pending_history_scroll.take().unwrap();
+            self.transcript_list
+                .set_offset_from_scrollbar(point(px(x), px(y)));
         }
-        let rows = coalesce_reasoning_row_refs(rows);
-
-        let mut previous: Option<&'static str> = None;
-        for (index, item) in &rows {
-            let role = role_of(item.as_ref());
-            // Group consecutive rows from the same speaker: only the first
-            // gets a caption, and tool runs sit tight under their turn.
-            let show_label = role.is_some() && role != previous;
-            previous = role.or(previous);
-            let element = self.render_item(*index, item.as_ref(), window, cx);
-            transcript = transcript.child(match (show_label, role) {
-                (true, Some(label)) => role_caption(label, element),
-                _ => element,
-            });
+        if self.stick_to_bottom {
+            self.transcript_list.scroll_to_end();
         }
 
-        if rows.is_empty() {
-            transcript = transcript.child(
+        let panel = cx.entity();
+        let list_rows = rows.clone();
+        let transcript = if row_count == 0 {
+            transcript_shell.child(
                 div()
                     .flex_1()
                     .flex()
@@ -2204,8 +2278,38 @@ impl Render for Panel {
                             .text_size(px(11.0))
                             .child("type below to start this session"),
                     ),
-            );
-        }
+            )
+        } else {
+            transcript_shell.child(
+                list(
+                    self.transcript_list.clone(),
+                    move |row_index, window, cx| {
+                        let row = &list_rows[row_index];
+                        panel.update(cx, |panel, cx| {
+                            let item = match &row.source {
+                                TranscriptRowSource::Settled(index) => &panel.items[*index],
+                                TranscriptRowSource::Owned(item) => item,
+                            };
+                            let element = panel.render_item(row.index, item, window, cx);
+                            let element = if row.show_label {
+                                role_caption(row.role.unwrap_or(""), element)
+                            } else {
+                                element
+                            };
+                            div()
+                                .debug_selector(move || {
+                                    format!("transcript-row-{row_index}").into()
+                                })
+                                .px_3()
+                                .pt_2p5()
+                                .child(element)
+                                .into_any_element()
+                        })
+                    },
+                )
+                .size_full(),
+            )
+        };
 
         let status_line = self.status_line();
         let meta_line = meta_line(
@@ -2270,8 +2374,8 @@ impl Render for Panel {
                     .min_h_0()
                     .relative()
                     .child(transcript)
-                    .child(crate::scrollbar::vertical(
-                        &self.scroll,
+                    .child(crate::scrollbar::vertical_list(
+                        &self.transcript_list,
                         "transcript-scrollbar",
                     ))
                     // Detached from the live end: one tap catches back up.
@@ -2299,7 +2403,7 @@ impl Render for Panel {
                                     gpui::MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
                                         this.stick_to_bottom = true;
-                                        this.scroll.scroll_to_bottom();
+                                        this.transcript_list.scroll_to_end();
                                         cx.notify();
                                     }),
                                 )
@@ -2383,26 +2487,6 @@ fn coalesce_reasoning_rows(rows: Vec<(usize, Item)>) -> Vec<(usize, Item)> {
             }
             (_, item) => grouped.push((index, item)),
         }
-    }
-    grouped
-}
-
-/// Borrow settled transcript items directly from panel state. Only adjacent
-/// reasoning groups and live rows need owned text, avoiding a full transcript
-/// clone whenever workspace motion asks the panel entity to paint again.
-fn coalesce_reasoning_row_refs<'a>(
-    rows: Vec<(usize, Cow<'a, Item>)>,
-) -> Vec<(usize, Cow<'a, Item>)> {
-    let mut grouped: Vec<(usize, Cow<'a, Item>)> = Vec::with_capacity(rows.len());
-    for (index, item) in rows {
-        if let Item::Reasoning(text) = item.as_ref()
-            && let Some((_, previous)) = grouped.last_mut()
-            && let Item::Reasoning(existing) = previous.to_mut()
-        {
-            append_reasoning_text(existing, text);
-            continue;
-        }
-        grouped.push((index, item));
     }
     grouped
 }
@@ -3075,7 +3159,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.restore_snapshot(saved, cx);
             panel.load_history(Vec::new(), Vec::new(), cx);
-            assert_eq!(f32::from(panel.scroll.offset().y), -137.0);
+            assert_eq!(f32::from(panel.test_scroll_offset_y()), -137.0);
             assert!(!panel.stick_to_bottom);
         });
     }
@@ -3122,7 +3206,7 @@ mod tests {
             vcx.debug_bounds("transcript-scrollbar").is_some(),
             "restored alternating history must produce scrollable overflow"
         );
-        let before = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        let before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         let transcript = vcx.debug_bounds("transcript").expect("transcript painted");
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position: transcript.center(),
@@ -3133,8 +3217,40 @@ mod tests {
             touch_phase: gpui::TouchPhase::Moved,
         });
         vcx.run_until_parked();
-        let after = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        let after = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         assert_ne!(after, before, "wheel input must move restored history");
+    }
+
+    #[gpui::test]
+    fn large_transcripts_only_paint_the_visible_tail(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.items = (0..1_000)
+                .map(|index| Item::Assistant(format!("message {index}")))
+                .collect();
+            panel.stick_to_bottom = true;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("transcript-row-999").is_some(),
+            "the newest row should be painted while following the tail"
+        );
+        assert!(
+            vcx.debug_bounds("transcript-row-0").is_none(),
+            "offscreen rows must not be painted"
+        );
     }
 
     #[test]
@@ -3484,7 +3600,7 @@ mod tests {
         assert!(chip.size.width > px(0.) && chip.size.height > px(0.));
 
         // While detached, streamed events must not yank the view back down.
-        let offset_before = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        let offset_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
@@ -3495,7 +3611,7 @@ mod tests {
             );
         });
         vcx.run_until_parked();
-        let offset_after = panel.read_with(vcx, |panel, _| panel.scroll.offset().y);
+        let offset_after = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         assert_eq!(
             offset_before, offset_after,
             "streaming must not move a detached viewport"
@@ -3658,7 +3774,10 @@ mod tests {
         let header = vcx
             .debug_bounds("tool-header")
             .expect("tool header painted");
-        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        let expanded_header = vcx
+            .debug_bounds("tool-header")
+            .expect("expanded tool header painted");
+        vcx.simulate_click(expanded_header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let detail = vcx
             .debug_bounds("tool-detail")

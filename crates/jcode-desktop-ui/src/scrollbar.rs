@@ -1,6 +1,6 @@
 //! Small overlay scrollbars for GPUI's scrollable divs.
 
-use gpui::{AnyElement, ScrollHandle, div, prelude::*, px};
+use gpui::{AnyElement, ListState, ScrollHandle, div, prelude::*, px};
 
 use crate::theme::Theme;
 
@@ -24,6 +24,34 @@ pub fn vertical(handle: &ScrollHandle, selector: &'static str) -> AnyElement {
     let thumb_height = (track_height * viewport_height / content_height)
         .clamp(MIN_THUMB_HEIGHT.min(track_height), track_height);
     let progress = (-f32::from(handle.offset().y) / max_offset).clamp(0.0, 1.0);
+    let thumb_top = INSET + (track_height - thumb_height) * progress;
+
+    div()
+        .debug_selector(move || selector.into())
+        .absolute()
+        .top(px(thumb_top))
+        .right(px(INSET))
+        .w(px(WIDTH))
+        .h(px(thumb_height))
+        .rounded_full()
+        .bg(Theme::global().TEXT_FAINT)
+        .into_any_element()
+}
+
+/// Paint the same overlay thumb for GPUI's variable-height virtual list.
+pub fn vertical_list(state: &ListState, selector: &'static str) -> AnyElement {
+    let viewport_height = f32::from(state.viewport_bounds().size.height);
+    let max_offset = f32::from(state.max_offset_for_scrollbar().y).max(0.0);
+    if viewport_height <= 0.0 || max_offset <= 0.5 {
+        return div().into_any_element();
+    }
+
+    let track_height = (viewport_height - INSET * 2.0).max(0.0);
+    let content_height = viewport_height + max_offset;
+    let thumb_height = (track_height * viewport_height / content_height)
+        .clamp(MIN_THUMB_HEIGHT.min(track_height), track_height);
+    let progress =
+        (-f32::from(state.scroll_px_offset_for_scrollbar().y) / max_offset).clamp(0.0, 1.0);
     let thumb_top = INSET + (track_height - thumb_height) * progress;
 
     div()
