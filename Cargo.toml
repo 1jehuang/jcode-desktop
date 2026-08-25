@@ -7,7 +7,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 

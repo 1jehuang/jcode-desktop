@@ -349,6 +349,15 @@ impl WorkspaceSnapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct GpuiPerformanceSnapshot {
+    draw_p95_ms: f64,
+    present_p95_ms: f64,
+    input_to_frame_p95_ms: f64,
+    input_events_per_frame_p95: u64,
+    mid_draw_inputs: u64,
+}
+
 pub struct Workspace {
     bridge: Bridge,
     host: HostHandle,
@@ -415,6 +424,7 @@ pub struct Workspace {
     folder_search: Option<Entity<PromptInput>>,
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
+    gpui_performance: GpuiPerformanceSnapshot,
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _performance_task: gpui::Task<()>,
@@ -567,6 +577,7 @@ impl Workspace {
             folder_search: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
+            gpui_performance: GpuiPerformanceSnapshot::default(),
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _performance_task: performance_task,
@@ -630,6 +641,7 @@ impl Workspace {
             folder_search: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
+            gpui_performance: GpuiPerformanceSnapshot::default(),
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _performance_task: cx.spawn(async move |_, _| {}),
@@ -2264,12 +2276,18 @@ impl Workspace {
         );
         let performance = self.performance.as_ref().map(|profile| {
             let snapshot = profile.snapshot();
+            let gpui = self.gpui_performance;
             format!(
-                "perf animation_fps={:.1} frame_p95_ms={:.1} missed={} render_p95_ms={:.1}",
+                "perf animation_fps={:.1} frame_p95_ms={:.1} missed={} view_p95_ms={:.1} draw_p95_ms={:.1} present_p95_ms={:.1} input_to_frame_p95_ms={:.1} coalesced={} mid_draw={}",
                 snapshot.animation_fps,
                 snapshot.animation_frame_p95_ms,
                 snapshot.missed_animation_frames,
                 snapshot.render_p95_ms,
+                gpui.draw_p95_ms,
+                gpui.present_p95_ms,
+                gpui.input_to_frame_p95_ms,
+                gpui.input_events_per_frame_p95,
+                gpui.mid_draw_inputs,
             )
         });
         let suffix = performance
@@ -4472,6 +4490,27 @@ impl Render for Workspace {
             self.render_row(self.active_row, viewport_w, viewport_h, window, cx)
         };
 
+        if self.performance.is_some() {
+            let frame = window.frame_duration_snapshot();
+            let input = window.input_latency_snapshot();
+            let milliseconds = |nanoseconds: u64| nanoseconds as f64 / 1_000_000.0;
+            self.gpui_performance = GpuiPerformanceSnapshot {
+                draw_p95_ms: milliseconds(
+                    frame.draw_duration_histogram.value_at_quantile(0.95),
+                ),
+                present_p95_ms: milliseconds(
+                    frame.present_interval_histogram.value_at_quantile(0.95),
+                ),
+                input_to_frame_p95_ms: milliseconds(
+                    input.latency_histogram.value_at_quantile(0.95),
+                ),
+                input_events_per_frame_p95: input
+                    .events_per_frame_histogram
+                    .value_at_quantile(0.95),
+                mid_draw_inputs: input.mid_draw_events_dropped,
+            };
+        }
+        let gpui_performance = self.gpui_performance;
         let performance = self.performance.as_ref().map(|profile| {
             let snapshot = profile.snapshot();
             let (label, color) = match snapshot.health {
@@ -4493,13 +4532,20 @@ impl Render for Workspace {
                 .text_size(px(11.0))
                 .text_color(gpui::rgb(0xe5e7eb))
                 .child(format!(
-                    "PERF {label}  anim {:.0} fps / p95 {:.1} ms / missed {}  wake {:.1} ms  render {:.1} ms  worst {:.1} ms",
-                    snapshot.animation_fps,
-                    snapshot.animation_frame_p95_ms,
-                    snapshot.missed_animation_frames,
-                    snapshot.wake_p95_ms,
+                    "PERF {label}  presented {:.0} fps / p95 {:.1} ms  input→frame {:.1} ms  draw {:.1} ms  view {:.1} ms / worst {:.1} ms  wake {:.1} ms  coalesced {}  mid-draw {}",
+                    if gpui_performance.present_p95_ms > 0.0 {
+                        1_000.0 / gpui_performance.present_p95_ms
+                    } else {
+                        0.0
+                    },
+                    gpui_performance.present_p95_ms,
+                    gpui_performance.input_to_frame_p95_ms,
+                    gpui_performance.draw_p95_ms,
                     snapshot.render_p95_ms,
                     snapshot.worst_ms,
+                    snapshot.wake_p95_ms,
+                    gpui_performance.input_events_per_frame_p95,
+                    gpui_performance.mid_draw_inputs,
                 ))
         });
 

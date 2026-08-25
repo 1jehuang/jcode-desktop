@@ -3326,6 +3326,7 @@ dependencies = [
  "gpui_macros",
  "gpui_shared_string",
  "gpui_util",
+ "hdrhistogram",
  "heapless",
  "http_client",
  "image",
@@ -3737,6 +3738,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
 dependencies = [
  "hashbrown 0.14.5",
+]
+
+[[package]]
+name = "hdrhistogram"
+version = "7.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d1053f4708f0af3cf9fc5bffc7e68a914a3c45becb231c80068c9c3f78bea"
+dependencies = [
+ "base64 0.22.1",
+ "byteorder",
+ "crossbeam-channel",
+ "flate2",
+ "nom 8.0.0",
+ "num-traits",
 ]
 
 [[package]]
