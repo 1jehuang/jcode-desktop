@@ -540,7 +540,11 @@ fn json_value_field(bytes: &[u8], field: &str, last: bool) -> Option<serde_json:
         .windows(needle.len())
         .enumerate()
         .filter_map(|(index, window)| (window == needle.as_bytes()).then_some(index));
-    let index = if last { starts.next_back()? } else { starts.next()? };
+    let index = if last {
+        starts.next_back()?
+    } else {
+        starts.next()?
+    };
     let mut value = &bytes[index + needle.len()..];
     value = value.strip_prefix(b":")?.trim_ascii_start();
     serde_json::Deserializer::from_slice(value)
@@ -680,7 +684,7 @@ pub(crate) fn merge_persisted_sessions(
             continue;
         }
         let transcript_bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
-            let Some(record) = read_persisted_session(&path, transcript_bytes.unwrap_or_default())
+        let Some(record) = read_persisted_session(&path, transcript_bytes.unwrap_or_default())
         else {
             continue;
         };
@@ -1079,7 +1083,10 @@ mod tests {
 
     #[test]
     fn persisted_status_handles_unit_and_detail_variants() {
-        assert_eq!(persisted_session_status(&serde_json::json!("Closed")), "closed");
+        assert_eq!(
+            persisted_session_status(&serde_json::json!("Closed")),
+            "closed"
+        );
         assert_eq!(
             persisted_session_status(&serde_json::json!({
                 "Crashed": { "message": "process exited" }

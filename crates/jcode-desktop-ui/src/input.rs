@@ -1520,9 +1520,7 @@ mod tests {
     /// MoveWordLeft. The prompt's context-scoped binding must win while the
     /// prompt has focus, otherwise typing would silently move window chrome.
     #[gpui::test]
-    fn ctrl_b_moves_by_word_in_the_prompt_despite_the_sidebar_shortcut(
-        cx: &mut TestAppContext,
-    ) {
+    fn ctrl_b_moves_by_word_in_the_prompt_despite_the_sidebar_shortcut(cx: &mut TestAppContext) {
         let window = input_window(cx);
         cx.update(|cx| crate::bind_workspace_keys(cx));
         cx.simulate_input(*window, "one two three");

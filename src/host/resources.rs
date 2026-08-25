@@ -231,7 +231,10 @@ fn terminal_query_responses(bytes: &[u8]) -> Vec<u8> {
         responses.extend_from_slice(b"\x1b[?1;2c");
     }
     for capability in [b"696e646e".as_slice(), b"71756572792d6f732d6e616d65"] {
-        if bytes.windows(capability.len()).any(|window| window == capability) {
+        if bytes
+            .windows(capability.len())
+            .any(|window| window == capability)
+        {
             responses.extend_from_slice(b"\x1bP0+r");
             responses.extend_from_slice(capability);
             responses.extend_from_slice(b"\x1b\\");
