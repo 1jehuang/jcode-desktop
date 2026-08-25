@@ -2550,6 +2550,13 @@ fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
 }
 
 fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
+    let intention = payload
+        .plan
+        .user_intention
+        .as_deref()
+        .map(str::trim)
+        .filter(|intention| !intention.is_empty())
+        .map(str::to_owned);
     let total = payload.todos.len();
     let completed = payload
         .todos
@@ -2707,12 +2714,18 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::global().HEADING)
-                        .child("Tasks"),
-                )
+                .when_some(intention, |header, intention| {
+                    header.child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(Theme::global().HEADING)
+                            .child(intention),
+                    )
+                })
                 .child(
                     div()
                         .text_size(px(10.5))
@@ -2735,18 +2748,6 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         .bg(Theme::global().OK),
                 ),
         )
-        .when_some(payload.plan.user_intention.clone(), |card, intention| {
-            card.child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_size(px(11.5))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(intention),
-            )
-        })
         .child(body)
 }
 
