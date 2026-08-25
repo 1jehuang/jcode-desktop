@@ -16,6 +16,7 @@ jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 anyhow = "1"
 arboard = "3"
+async-channel = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 unicode-segmentation = "1"

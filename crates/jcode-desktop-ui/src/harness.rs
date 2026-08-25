@@ -10,7 +10,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInfo};
@@ -124,7 +123,7 @@ enum SessionCommand {
 #[derive(Clone)]
 pub struct Bridge {
     commands: Sender<Command>,
-    updates: Arc<Mutex<Receiver<Update>>>,
+    updates: async_channel::Receiver<Update>,
 }
 
 impl Bridge {
@@ -135,28 +134,39 @@ impl Bridge {
     /// Drain every pending update without blocking.
     pub fn drain(&self) -> Vec<Update> {
         let mut out = Vec::new();
-        if let Ok(receiver) = self.updates.lock() {
-            while let Ok(update) = receiver.try_recv() {
-                out.push(update);
-            }
+        while let Ok(update) = self.updates.try_recv() {
+            out.push(update);
         }
         out
+    }
+
+    pub async fn recv(&self) -> Option<Update> {
+        self.updates.recv().await.ok()
+    }
+}
+
+#[derive(Clone)]
+struct UpdateSender(async_channel::Sender<Update>);
+
+impl UpdateSender {
+    fn send(&self, update: Update) -> Result<(), async_channel::SendError<Update>> {
+        self.0.send_blocking(update)
     }
 }
 
 /// Spawn the bridge. Returns immediately; connection happens on the thread.
 pub fn spawn() -> Bridge {
-    let (update_tx, update_rx) = channel::<Update>();
+    let (update_tx, update_rx) = async_channel::unbounded::<Update>();
     let (command_tx, command_rx) = channel::<Command>();
 
     std::thread::Builder::new()
         .name("jcode-bridge".into())
-        .spawn(move || run(update_tx, command_rx))
+        .spawn(move || run(UpdateSender(update_tx), command_rx))
         .expect("spawn bridge thread");
 
     Bridge {
         commands: command_tx,
-        updates: Arc::new(Mutex::new(update_rx)),
+        updates: update_rx,
     }
 }
 
@@ -164,7 +174,7 @@ pub fn spawn() -> Bridge {
 /// test can drive the UI without a jcode daemon.
 #[cfg(test)]
 pub fn spawn_inert() -> Bridge {
-    let (_update_tx, update_rx) = channel::<Update>();
+    let (_update_tx, update_rx) = async_channel::unbounded::<Update>();
     let (command_tx, _command_rx) = channel::<Command>();
     // Leak the receiving ends: nothing should observe or service them, and the
     // senders must stay usable for the lifetime of the test.
@@ -172,20 +182,20 @@ pub fn spawn_inert() -> Bridge {
     std::mem::forget(_update_tx);
     Bridge {
         commands: command_tx,
-        updates: Arc::new(Mutex::new(update_rx)),
+        updates: update_rx,
     }
 }
 
 /// A runtime-free bridge whose commands can be asserted by UI acceptance tests.
 #[cfg(test)]
 pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
-    let (_update_tx, update_rx) = channel::<Update>();
+    let (_update_tx, update_rx) = async_channel::unbounded::<Update>();
     let (command_tx, command_rx) = channel::<Command>();
     std::mem::forget(_update_tx);
     (
         Bridge {
             commands: command_tx,
-            updates: Arc::new(Mutex::new(update_rx)),
+            updates: update_rx,
         },
         command_rx,
     )
@@ -199,7 +209,7 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     })
 }
 
-fn run(updates: Sender<Update>, commands: Receiver<Command>) {
+fn run(updates: UpdateSender, commands: Receiver<Command>) {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
     // while it comes back instead of turning a transient failure into a dead
@@ -304,7 +314,7 @@ fn run(updates: Sender<Update>, commands: Receiver<Command>) {
 }
 
 fn refresh_sessions(
-    updates: Sender<Update>,
+    updates: UpdateSender,
     include_disk_snapshot: bool,
     in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -729,7 +739,7 @@ pub(crate) fn merge_persisted_sessions(
 fn ensure_session_worker(
     workers: &mut HashMap<String, Sender<SessionCommand>>,
     session_id: String,
-    updates: &Sender<Update>,
+    updates: &UpdateSender,
 ) -> Sender<SessionCommand> {
     if let Some(worker) = workers.get(&session_id) {
         return worker.clone();
@@ -739,7 +749,7 @@ fn ensure_session_worker(
     tx
 }
 
-fn spawn_session_worker(session_id: String, updates: &Sender<Update>) -> Sender<SessionCommand> {
+fn spawn_session_worker(session_id: String, updates: &UpdateSender) -> Sender<SessionCommand> {
     let (tx, rx) = channel::<SessionCommand>();
     let updates = updates.clone();
     std::thread::Builder::new()
@@ -791,7 +801,7 @@ fn next_worker_command(
 }
 
 /// One session's dedicated connection: attach, history, events, commands.
-fn session_worker(session_id: String, commands: Receiver<SessionCommand>, updates: Sender<Update>) {
+fn session_worker(session_id: String, commands: Receiver<SessionCommand>, updates: UpdateSender) {
     let lost = |reason: String| {
         let _ = updates.send(Update::SessionLost {
             session_id: session_id.clone(),
