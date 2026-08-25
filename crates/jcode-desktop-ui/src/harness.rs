@@ -373,6 +373,8 @@ struct PersistedSession {
     #[serde(default)]
     custom_title: Option<String>,
     #[serde(default)]
+    saved: bool,
+    #[serde(default)]
     status: serde_json::Value,
 }
 
@@ -540,6 +542,9 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         title: json_string_field(&head, "title", false),
         custom_title: json_string_field(&head, "custom_title", false)
             .or_else(|| json_string_field(&tail, "custom_title", true)),
+        saved: json_value_field(&tail, "saved", true)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
         status: json_value_field(&tail, "status", true).unwrap_or_default(),
     })
 }
@@ -712,6 +717,9 @@ pub(crate) fn merge_persisted_sessions(
                 title,
                 status,
                 transcript_bytes,
+                saved: record.saved,
+                updated_at_ms: i64::try_from(recency).ok(),
+                last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
             },
@@ -1086,6 +1094,9 @@ mod tests {
             title: None,
             status: "idle".into(),
             transcript_bytes: None,
+            saved: false,
+            updated_at_ms: None,
+            last_active_at_ms: None,
             archived: false,
             archived_at_ms: None,
         }

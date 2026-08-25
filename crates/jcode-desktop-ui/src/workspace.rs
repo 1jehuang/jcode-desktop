@@ -965,6 +965,16 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if let Some(session) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.session_id == session_id)
+                {
+                    // Live SDK events arrive before the next persisted metadata
+                    // refresh. Advance recency immediately so active work moves
+                    // exactly as it does in the TUI picker.
+                    session.updated_at_ms = Some(unix_now_ms());
+                }
                 let updated_title = match &event {
                     jcode_sdk::ApiEvent::SessionRenamed { display_title, .. } => {
                         Some(display_title.clone())
@@ -2718,21 +2728,16 @@ impl Workspace {
             .track_scroll(&self.sidebar_scroll)
             .py_2();
 
-        // Open sessions stay in the same order as their workspace panels, so
-        // streaming activity does not make rows jump around. Closed sessions
-        // follow them in transcript-recency order (newest first).
-        let open_session_ids = self
-            .slots
-            .iter()
-            .map(|slot| slot.panel.read(cx).session_id.clone())
-            .collect::<Vec<_>>();
-        let open_count = open_session_ids.len();
-        let session_count = self.sessions.len();
-        for (sidebar_index, session) in sidebar_session_order(&self.sessions, &open_session_ids)
+        // Match the TUI `/resume` picker exactly: saved sessions first, then
+        // all other sessions, newest activity first within both sections.
+        let ordered_sessions = sidebar_session_order(&self.sessions);
+        let saved_count = ordered_sessions.iter().take_while(|session| session.saved).count();
+        let session_count = ordered_sessions.len();
+        for (sidebar_index, session) in ordered_sessions
             .into_iter()
             .enumerate()
         {
-            if sidebar_index == open_count && open_count > 0 && open_count < session_count {
+            if sidebar_index == saved_count && saved_count > 0 && saved_count < session_count {
                 list = list.child(
                     div()
                         .id("sidebar-session-divider")
@@ -4568,27 +4573,32 @@ fn sidebar_session_status(
     }
 }
 
-fn sidebar_session_order(
-    sessions: &[jcode_sdk::SessionInfo],
-    open_session_ids: &[String],
-) -> Vec<jcode_sdk::SessionInfo> {
-    let open = open_session_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    let mut ordered = open_session_ids
-        .iter()
-        .filter_map(|id| sessions.iter().find(|session| &session.session_id == id))
-        .cloned()
-        .collect::<Vec<_>>();
-    ordered.extend(
-        sessions
-            .iter()
-            .rev()
-            .filter(|session| !open.contains(session.session_id.as_str()))
-            .cloned(),
-    );
+fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
+    let mut ordered = sessions.to_vec();
+    ordered.sort_by(|a, b| {
+        b.saved
+            .cmp(&a.saved)
+            .then_with(|| sidebar_session_recency_ms(b).cmp(&sidebar_session_recency_ms(a)))
+    });
     ordered
+}
+
+fn sidebar_session_recency_ms(session: &jcode_sdk::SessionInfo) -> i64 {
+    session
+        .updated_at_ms
+        .or_else(|| {
+            sidebar_session_created_ms(&session.session_id)
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .unwrap_or_default()
+}
+
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
@@ -5154,29 +5164,33 @@ mod tests {
             title: title.map(str::to_owned),
             status: "idle".into(),
             transcript_bytes: None,
+            saved: false,
+            updated_at_ms: None,
+            last_active_at_ms: None,
             archived: false,
             archived_at_ms: None,
         }
     }
 
     #[test]
-    fn sidebar_keeps_open_panels_stable_above_recently_closed_sessions() {
-        // Stored sessions are oldest to newest. Open panel order is deliberately
-        // different and must win without changing the closed-session recency.
-        let sessions = vec![
-            session_info("closed-old", None),
-            session_info("open-a", None),
-            session_info("closed-new", None),
-            session_info("open-b", None),
-        ];
-        let open = vec!["open-b".to_string(), "open-a".to_string()];
+    fn sidebar_matches_tui_saved_then_recency_order() {
+        let mut old = session_info("old", None);
+        old.updated_at_ms = Some(10);
+        let mut recent = session_info("recent", None);
+        recent.updated_at_ms = Some(30);
+        let mut saved_old = session_info("saved-old", None);
+        saved_old.saved = true;
+        saved_old.updated_at_ms = Some(5);
+        let mut saved_recent = session_info("saved-recent", None);
+        saved_recent.saved = true;
+        saved_recent.updated_at_ms = Some(20);
 
-        let ids = sidebar_session_order(&sessions, &open)
+        let ids = sidebar_session_order(&[old, saved_old, recent, saved_recent])
             .into_iter()
             .map(|session| session.session_id)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, ["open-b", "open-a", "closed-new", "closed-old"]);
+        assert_eq!(ids, ["saved-recent", "saved-old", "recent", "old"]);
     }
 
     #[test]
@@ -5210,6 +5224,34 @@ mod tests {
                 cx,
             ));
             assert!(!workspace.apply(Update::Sessions { sessions }, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn live_sdk_events_advance_sidebar_recency(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let mut session = session_info("session_fox_1234567890000_deadbeef", None);
+        session.updated_at_ms = Some(1);
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![session],
+                },
+                cx,
+            );
+            workspace.apply(
+                Update::Event {
+                    session_id: "session_fox_1234567890000_deadbeef".into(),
+                    event: jcode_sdk::ApiEvent::TextDelta {
+                        session_id: "session_fox_1234567890000_deadbeef".into(),
+                        text: "working".into(),
+                    },
+                },
+                cx,
+            );
+            assert!(workspace.sessions[0].updated_at_ms.is_some_and(|value| value > 1));
         });
     }
 
@@ -5326,16 +5368,17 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_divides_open_sessions_from_previous_sessions(cx: &mut gpui::TestAppContext) {
+    fn sidebar_divides_saved_sessions_from_other_sessions(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.push_test_panel("session_fox_open", cx);
+            let mut saved = session_info("session_fox_saved", Some("saved work"));
+            saved.saved = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
-                        session_info("session_fox_open", Some("open work")),
+                        saved,
                         session_info("session_owl_previous", Some("previous work")),
                     ],
                 },
@@ -5344,9 +5387,10 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+
         assert!(
             vcx.debug_bounds("sidebar-session-divider").is_some(),
-            "a horizontal rule should separate open sessions from previous sessions"
+            "a horizontal rule should separate saved sessions from other sessions"
         );
     }
 
@@ -5459,7 +5503,7 @@ mod tests {
                 .session_id
                 .clone();
             assert_eq!(
-                active, "session_fox_1234567890_deadbeef",
+                active, "session_owl_1234567890_deadbeef",
                 "clicking the row must activate the session it displays"
             );
         });
