@@ -3859,14 +3859,14 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
-                    .min_w(px(360.0))
-                    .px_4()
-                    .py_3()
+                    .min_w(px(320.0))
+                    .px_3()
+                    .py_2()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_4()
-                    .rounded_xl()
+                    .gap_3()
+                    .rounded_lg()
                     .bg(Theme::global().PANEL_BG)
                     .border_1()
                     .border_color(Theme::global().PANEL_BORDER_FOCUS)
@@ -3884,7 +3884,7 @@ impl Workspace {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(px(10.0))
+                                    .text_size(px(9.0))
                                     .text_color(Theme::global().TEXT_DIM)
                                     .child("ACTION"),
                             )
@@ -3892,7 +3892,7 @@ impl Workspace {
                                 div()
                                     .id("showcase-action")
                                     .debug_selector(|| "showcase-action".into())
-                                    .text_size(px(17.0))
+                                    .text_size(px(15.0))
                                     .child(cue.action),
                             ),
                     )
@@ -3904,7 +3904,7 @@ impl Workspace {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(px(10.0))
+                                    .text_size(px(9.0))
                                     .text_color(Theme::global().TEXT_DIM)
                                     .child("KEYBINDING"),
                             )
@@ -3912,7 +3912,7 @@ impl Workspace {
                                 div()
                                     .id("showcase-key")
                                     .debug_selector(|| "showcase-key".into())
-                                    .px_3()
+                                    .px_2()
                                     .py_1()
                                     .rounded_md()
                                     .bg(Theme::global().HEADER_BG)
@@ -3920,7 +3920,7 @@ impl Workspace {
                                     .border_color(Theme::global().PANEL_BORDER_FOCUS)
                                     .font_family(Theme::global().FONT_MONO)
                                     .text_color(Theme::global().ACCENT)
-                                    .text_size(px(13.0))
+                                    .text_size(px(12.0))
                                     .child(cue.shortcut.clone()),
                             ),
                     ),
