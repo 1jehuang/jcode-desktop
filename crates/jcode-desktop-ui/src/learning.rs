@@ -823,14 +823,49 @@ pub fn load() -> Coach {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 pub fn save(coach: &Coach) {
+    save_snapshot(coach.serialize());
+}
+
+fn save_snapshot(snapshot: String) {
     let Some(path) = state_path() else {
         return;
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, coach.serialize());
+    let _ = std::fs::write(path, snapshot);
+}
+
+/// Coalescing persistence worker. Interaction handlers only serialize the
+/// small model and enqueue it; directory creation and filesystem writes never
+/// consume the UI thread's frame budget.
+pub struct Persistence {
+    sender: std::sync::mpsc::Sender<String>,
+}
+
+impl Persistence {
+    pub fn spawn() -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel::<String>();
+        let _ = std::thread::Builder::new()
+            .name("jcode-learning-save".into())
+            .spawn(move || {
+                while let Ok(mut snapshot) = receiver.recv() {
+                    // A burst of navigation updates only needs its newest
+                    // durable state. Drain before touching the filesystem.
+                    for newer in receiver.try_iter() {
+                        snapshot = newer;
+                    }
+                    save_snapshot(snapshot);
+                }
+            });
+        Self { sender }
+    }
+
+    pub fn save(&self, coach: &Coach) {
+        let _ = self.sender.send(coach.serialize());
+    }
 }
 
 /// The wall clock, as the model wants it.

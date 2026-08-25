@@ -1,5 +1,6 @@
 //! Panel: one Jcode session as a spatial card with a live transcript.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2144,35 +2145,38 @@ impl Render for Panel {
             Item::User(prompt) if !prompt.trim().is_empty() => Some(prompt.clone()),
             _ => None,
         });
-        let mut rows: Vec<(usize, Item)> = self
+        let mut rows: Vec<(usize, Cow<'_, Item>)> = self
             .items
             .iter()
-            .cloned()
             .enumerate()
             .filter(|(_, item)| {
                 !matches!(item, Item::Todos(_))
                     && !matches!(item, Item::Tool { name, .. } if name == "todo")
             })
+            .map(|(index, item)| (index, Cow::Borrowed(item)))
             .collect();
         if !self.streaming_reasoning.is_empty() {
             rows.push((
                 usize::MAX - 1,
-                Item::Reasoning(self.streaming_reasoning.clone()),
+                Cow::Owned(Item::Reasoning(self.streaming_reasoning.clone())),
             ));
         }
         if !self.streaming_text.is_empty() {
-            rows.push((usize::MAX, Item::Assistant(self.streaming_text.clone())));
+            rows.push((
+                usize::MAX,
+                Cow::Owned(Item::Assistant(self.streaming_text.clone())),
+            ));
         }
-        let rows = coalesce_reasoning_rows(rows);
+        let rows = coalesce_reasoning_row_refs(rows);
 
         let mut previous: Option<&'static str> = None;
         for (index, item) in &rows {
-            let role = role_of(item);
+            let role = role_of(item.as_ref());
             // Group consecutive rows from the same speaker: only the first
             // gets a caption, and tool runs sit tight under their turn.
             let show_label = role.is_some() && role != previous;
             previous = role.or(previous);
-            let element = self.render_item(*index, item, window, cx);
+            let element = self.render_item(*index, item.as_ref(), window, cx);
             transcript = transcript.child(match (show_label, role) {
                 (true, Some(label)) => role_caption(label, element),
                 _ => element,
@@ -2369,6 +2373,7 @@ fn custom_session_title<'a>(session_id: &str, title: &'a str) -> Option<&'a str>
 /// reconnect or provider boundary can leave adjacent reasoning items behind.
 /// They are one uninterrupted visual phase and should therefore paint as one
 /// card. Keep the first index so expansion state remains stable.
+#[cfg(test)]
 fn coalesce_reasoning_rows(rows: Vec<(usize, Item)>) -> Vec<(usize, Item)> {
     let mut grouped: Vec<(usize, Item)> = Vec::with_capacity(rows.len());
     for (index, item) in rows {
@@ -2378,6 +2383,26 @@ fn coalesce_reasoning_rows(rows: Vec<(usize, Item)>) -> Vec<(usize, Item)> {
             }
             (_, item) => grouped.push((index, item)),
         }
+    }
+    grouped
+}
+
+/// Borrow settled transcript items directly from panel state. Only adjacent
+/// reasoning groups and live rows need owned text, avoiding a full transcript
+/// clone whenever workspace motion asks the panel entity to paint again.
+fn coalesce_reasoning_row_refs<'a>(
+    rows: Vec<(usize, Cow<'a, Item>)>,
+) -> Vec<(usize, Cow<'a, Item>)> {
+    let mut grouped: Vec<(usize, Cow<'a, Item>)> = Vec::with_capacity(rows.len());
+    for (index, item) in rows {
+        if let Item::Reasoning(text) = item.as_ref()
+            && let Some((_, previous)) = grouped.last_mut()
+            && let Item::Reasoning(existing) = previous.to_mut()
+        {
+            append_reasoning_text(existing, text);
+            continue;
+        }
+        grouped.push((index, item));
     }
     grouped
 }

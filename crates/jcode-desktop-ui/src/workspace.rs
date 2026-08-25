@@ -385,6 +385,7 @@ pub struct Workspace {
     showcase_task: Option<gpui::Task<()>>,
     /// Models which shortcuts the user knows, and teaches the ones they don't.
     coach: learning::Coach,
+    learning_persistence: Option<learning::Persistence>,
     /// Fade for the coach's hint toast.
     coach_progress: AnimatedValue,
     coach_expiry_task: Option<gpui::Task<()>>,
@@ -547,6 +548,7 @@ impl Workspace {
             showcase_cue: None,
             showcase_task: None,
             coach: learning::load(),
+            learning_persistence: Some(learning::Persistence::spawn()),
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
             pending_help_session: false,
@@ -609,6 +611,7 @@ impl Workspace {
             showcase_cue: None,
             showcase_task: None,
             coach,
+            learning_persistence: None,
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
             pending_help_session: false,
@@ -1337,7 +1340,9 @@ impl Workspace {
             self.coach_expiry_task = None;
         }
         if self.coach.take_dirty() {
-            learning::save(&self.coach);
+            if let Some(persistence) = &self.learning_persistence {
+                persistence.save(&self.coach);
+            }
         }
         cx.notify();
     }
@@ -2257,7 +2262,32 @@ impl Workspace {
             self.coach.effort_wasted,
             self.coach.active_hint_id(),
         );
-        let _ = std::fs::write(path, format!("{line}\n{coach}\n"));
+        let performance = self.performance.as_ref().map(|profile| {
+            let snapshot = profile.snapshot();
+            format!(
+                "perf animation_fps={:.1} frame_p95_ms={:.1} missed={} render_p95_ms={:.1}",
+                snapshot.animation_fps,
+                snapshot.animation_frame_p95_ms,
+                snapshot.missed_animation_frames,
+                snapshot.render_p95_ms,
+            )
+        });
+        let suffix = performance
+            .map(|line| format!("\n{line}"))
+            .unwrap_or_default();
+        let _ = std::fs::write(path, format!("{line}\n{coach}{suffix}\n"));
+    }
+
+    fn animation_active(&self) -> bool {
+        self.row_progress.is_animating()
+            || self.overview_progress.is_animating()
+            || self.hints_progress.is_animating()
+            || self.coach_progress.is_animating()
+            || self.camera_started.iter().any(Option::is_some)
+            || self
+                .slots
+                .iter()
+                .any(|slot| slot.animated_width.is_animating() || slot.order_offset.is_animating())
     }
 
     fn render_strip(
@@ -4463,8 +4493,13 @@ impl Render for Workspace {
                 .text_size(px(11.0))
                 .text_color(gpui::rgb(0xe5e7eb))
                 .child(format!(
-                    "PERF {label}  wake p95 {:.1} ms  render p95 {:.1} ms  worst {:.1} ms",
-                    snapshot.wake_p95_ms, snapshot.render_p95_ms, snapshot.worst_ms
+                    "PERF {label}  anim {:.0} fps / p95 {:.1} ms / missed {}  wake {:.1} ms  render {:.1} ms  worst {:.1} ms",
+                    snapshot.animation_fps,
+                    snapshot.animation_frame_p95_ms,
+                    snapshot.missed_animation_frames,
+                    snapshot.wake_p95_ms,
+                    snapshot.render_p95_ms,
+                    snapshot.worst_ms,
                 ))
         });
 
@@ -4544,8 +4579,10 @@ impl Render for Workspace {
             .when(self.folder_picker_dir.is_some(), |root| {
                 root.child(self.render_folder_picker(cx))
             });
+        let animation_active = self.animation_active();
         if let Some(profile) = self.performance.as_mut() {
             profile.observe_render(render_started.elapsed());
+            profile.observe_frame(Instant::now(), animation_active);
         }
         root
     }
@@ -5247,6 +5284,58 @@ mod tests {
                 transition::policy(transition).duration.as_millis(),
             );
         }
+    }
+
+    /// Loaded key-to-first-render profiler. Unlike `interaction_latency_profile`,
+    /// this lets GPUI construct the next frame for 32 live panel entities before
+    /// stopping the clock. Presentation cadence is measured by the opt-in runtime
+    /// profile because the test platform intentionally has no compositor.
+    #[gpui::test]
+    #[ignore = "manual loaded animation profiler"]
+    fn loaded_animation_first_frame_profile(cx: &mut gpui::TestAppContext) {
+        const WARMUP: usize = 10;
+        const SAMPLES: usize = 100;
+
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for row in 0..STRIP_COUNT {
+                workspace.active_row = row;
+                for column in 0..8 {
+                    workspace.push_test_panel(&format!("loaded-{row}-{column}"), cx);
+                }
+            }
+            workspace.active_row = 0;
+            workspace.active = 3;
+            let _ = window;
+            workspace
+        });
+        vcx.update(|window, cx| window.focus(&workspace.read(cx).focus_handle.clone(), cx));
+        vcx.run_until_parked();
+
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for iteration in 0..WARMUP + SAMPLES {
+            let key = if iteration % 2 == 0 {
+                "super-h"
+            } else {
+                "super-l"
+            };
+            let started = Instant::now();
+            vcx.simulate_keystrokes(key);
+            vcx.run_until_parked();
+            if iteration >= WARMUP {
+                samples.push(started.elapsed().as_nanos());
+            }
+        }
+        samples.sort_unstable();
+        let percentile = |value: usize| samples[(samples.len() - 1) * value / 100];
+        println!(
+            "LOADED_ANIMATION first_frame p50={:.1}us p95={:.1}us p99={:.1}us panels=32",
+            percentile(50) as f64 / 1_000.0,
+            percentile(95) as f64 / 1_000.0,
+            percentile(99) as f64 / 1_000.0,
+        );
+        assert_eq!(workspace.read_with(vcx, |workspace, _| workspace.active), 3);
     }
 
     #[test]
