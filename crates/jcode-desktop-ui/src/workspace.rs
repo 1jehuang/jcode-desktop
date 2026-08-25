@@ -411,7 +411,9 @@ pub struct Workspace {
     folder_search: Option<Entity<PromptInput>>,
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
-    _poll_task: gpui::Task<()>,
+    _bridge_task: gpui::Task<()>,
+    _housekeeping_task: gpui::Task<()>,
+    _performance_task: gpui::Task<()>,
 }
 
 impl Workspace {
@@ -424,55 +426,85 @@ impl Workspace {
         crate::input::bind_keys(cx);
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
+        let performance_enabled = crate::performance::enabled(std::env::args_os());
 
-        // Poll bridge updates ~60 times per second while anything is pending,
-        // and refresh the global session list periodically so the sidebar also
-        // follows work started or renamed in other Jcode processes.
-        let poll_bridge = bridge.clone();
-        let session_refresh_interval = crate::config::get().session_refresh_interval();
-        let poll_task = cx.spawn(async move |this, cx| {
-            let mut last_session_refresh = Instant::now();
-            let mut last_wake = Instant::now();
-            let mut last_profile_refresh = Instant::now();
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let now = Instant::now();
-                let wake_lag = now
-                    .duration_since(last_wake)
-                    .saturating_sub(Duration::from_millis(16));
-                last_wake = now;
-                let refresh_profile = last_profile_refresh.elapsed() >= Duration::from_millis(250);
-                if refresh_profile {
-                    last_profile_refresh = now;
-                }
-                let updates = poll_bridge.drain();
-                let accounts = accounts_feed.latest();
-                if last_session_refresh.elapsed() >= session_refresh_interval {
-                    poll_bridge.send(Command::RefreshSessions);
-                    last_session_refresh = Instant::now();
-                }
-                if updates.is_empty() && accounts.is_none() && !refresh_profile {
-                    continue;
-                }
+        // Wake immediately when a bridge update arrives rather than polling an
+        // empty channel at the display refresh rate.
+        let update_bridge = bridge.clone();
+        let bridge_task = cx.spawn(async move |this, cx| {
+            while let Some(first) = update_bridge.recv().await {
+                let mut updates = vec![first];
+                updates.extend(update_bridge.drain());
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     let mut changed = false;
-                    if let Some(profile) = workspace.performance.as_mut() {
-                        profile.observe_wake_lag(wake_lag);
-                        changed |= refresh_profile;
-                    }
                     for update in updates {
                         changed |= workspace.apply(update, cx);
                     }
-                    if let Some(accounts) = accounts {
-                        if workspace.accounts != accounts {
-                            workspace.accounts = accounts;
-                            changed = true;
-                        }
-                    }
                     if changed {
                         cx.notify();
+                    }
+                });
+                if outcome.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Account snapshots and cross-process session reconciliation are both
+        // slow-changing data and only need a low-frequency housekeeping wake.
+        let housekeeping_bridge = bridge.clone();
+        let session_refresh_interval = crate::config::get().session_refresh_interval();
+        let housekeeping_task = cx.spawn(async move |this, cx| {
+            let mut last_session_refresh = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(1))
+                    .await;
+                let accounts = accounts_feed.latest();
+                if last_session_refresh.elapsed() >= session_refresh_interval {
+                    housekeeping_bridge.send(Command::RefreshSessions);
+                    last_session_refresh = Instant::now();
+                }
+                let Some(accounts) = accounts else {
+                    continue;
+                };
+                let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
+                    if workspace.accounts != accounts {
+                        workspace.accounts = accounts;
+                        cx.notify();
+                    }
+                });
+                if outcome.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let performance_task = cx.spawn(async move |this, cx| {
+            if !performance_enabled {
+                return;
+            }
+            const SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
+            const DISPLAY_INTERVAL: Duration = Duration::from_millis(250);
+            let mut last_wake = Instant::now();
+            let mut last_display = Instant::now();
+            loop {
+                cx.background_executor().timer(SAMPLE_INTERVAL).await;
+                let now = Instant::now();
+                let wake_lag = now
+                    .duration_since(last_wake)
+                    .saturating_sub(SAMPLE_INTERVAL);
+                last_wake = now;
+                let refresh_display = last_display.elapsed() >= DISPLAY_INTERVAL;
+                if refresh_display {
+                    last_display = now;
+                }
+                let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
+                    if let Some(profile) = workspace.performance.as_mut() {
+                        profile.observe_wake_lag(wake_lag);
+                        if refresh_display {
+                            cx.notify();
+                        }
                     }
                 });
                 if outcome.is_err() {
@@ -531,9 +563,10 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             focus_restore: FocusSnapshot::Workspace,
-            performance: crate::performance::enabled(std::env::args_os())
-                .then(PerformanceProfile::default),
-            _poll_task: poll_task,
+            performance: performance_enabled.then(PerformanceProfile::default),
+            _bridge_task: bridge_task,
+            _housekeeping_task: housekeeping_task,
+            _performance_task: performance_task,
         };
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
@@ -593,7 +626,9 @@ impl Workspace {
             folder_search: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
-            _poll_task: cx.spawn(async move |_, _| {}),
+            _bridge_task: cx.spawn(async move |_, _| {}),
+            _housekeeping_task: cx.spawn(async move |_, _| {}),
+            _performance_task: cx.spawn(async move |_, _| {}),
         }
     }
 
@@ -3859,6 +3894,8 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
+                    .id("showcase-card")
+                    .debug_selector(|| "showcase-card".into())
                     .min_w(px(320.0))
                     .px_3()
                     .py_2()
@@ -7580,6 +7617,12 @@ mod tests {
         // text must paint to the left of the keybinding pill.
         let action = cx.debug_bounds("showcase-action").expect("action bounds");
         let key = cx.debug_bounds("showcase-key").expect("keybinding bounds");
+        let card = cx.debug_bounds("showcase-card").expect("showcase card bounds");
+        assert!(
+            card.size.width <= px(320.0) && card.size.height <= px(66.0),
+            "the showcase card should stay compact, got {:?}",
+            card.size
+        );
         assert!(
             action.origin.x < key.origin.x,
             "the action should be displayed before the keybinding"
