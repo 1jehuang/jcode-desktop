@@ -2729,10 +2729,23 @@ impl Workspace {
             .iter()
             .map(|slot| slot.panel.read(cx).session_id.clone())
             .collect::<Vec<_>>();
+        let open_count = open_session_ids.len();
+        let session_count = self.sessions.len();
         for (sidebar_index, session) in sidebar_session_order(&self.sessions, &open_session_ids)
             .into_iter()
             .enumerate()
         {
+            if sidebar_index == open_count && open_count > 0 && open_count < session_count {
+                list = list.child(
+                    div()
+                        .id("sidebar-session-divider")
+                        .debug_selector(|| "sidebar-session-divider".into())
+                        .mx_4()
+                        .my_2()
+                        .border_t_1()
+                        .border_color(Theme::global().PANEL_BORDER),
+                );
+            }
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
             let (icon, title) = sidebar_session_title(&session);
             let directory = sidebar_session_directory(&session);
@@ -5319,6 +5332,31 @@ mod tests {
             "an on-disk session must paint through the real sidebar renderer"
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[gpui::test]
+    fn sidebar_divides_open_sessions_from_previous_sessions(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("session_fox_open", cx);
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![
+                        session_info("session_fox_open", Some("open work")),
+                        session_info("session_owl_previous", Some("previous work")),
+                    ],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-session-divider").is_some(),
+            "a horizontal rule should separate open sessions from previous sessions"
+        );
     }
 
     #[gpui::test]
