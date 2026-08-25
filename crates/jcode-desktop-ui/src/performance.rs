@@ -62,13 +62,9 @@ impl Profile {
     }
 }
 
-pub fn enabled(arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> bool {
-    let override_enabled = std::env::var("JCODE_DESKTOP_PERF")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"));
-    override_enabled
-        || arguments
-            .into_iter()
-            .any(|argument| argument.as_ref() == "--hot-reload")
+pub fn enabled(_arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> bool {
+    std::env::var("JCODE_DESKTOP_PERF")
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
 }
 
 fn push(samples: &mut VecDeque<f64>, value: f64) {
@@ -114,8 +110,8 @@ mod tests {
     }
 
     #[test]
-    fn hot_reload_enables_the_profile() {
-        assert!(enabled(["jcode-desktop", "--hot-reload"]));
+    fn profile_requires_an_explicit_opt_in() {
+        assert!(!enabled(["jcode-desktop", "--hot-reload"]));
         assert!(!enabled(["jcode-desktop"]));
     }
 }
