@@ -191,6 +191,8 @@ pub struct Panel {
     code_file: Option<CodeFile>,
     /// A native, read-only view of the locally connected Gmail inbox.
     gmail_inbox: Option<GmailInboxState>,
+    /// The message currently opened from the Gmail inbox.
+    gmail_message: Option<GmailMessageState>,
     model_picker_open: bool,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -203,6 +205,7 @@ struct CodeFile {
 
 #[derive(Debug, Clone)]
 struct GmailMessageSummary {
+    id: String,
     from: String,
     subject: String,
     date: String,
@@ -211,10 +214,24 @@ struct GmailMessageSummary {
 }
 
 #[derive(Debug, Clone)]
+struct GmailMessageDetail {
+    summary: GmailMessageSummary,
+    to: String,
+    body: String,
+}
+
+#[derive(Debug, Clone)]
 enum GmailInboxState {
     Loading,
     Ready(Vec<GmailMessageSummary>),
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+enum GmailMessageState {
+    Loading(GmailMessageSummary),
+    Ready(GmailMessageDetail),
+    Error(GmailMessageSummary, String),
 }
 
 async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
@@ -225,23 +242,50 @@ async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
     let list = client
         .list_messages(Some("in:inbox"), Some(&["INBOX"]), 30)
         .await?;
-    let mut messages = Vec::new();
-    for item in list.messages.unwrap_or_default() {
-        let message = client
-            .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
-            .await?;
-        messages.push(GmailMessageSummary {
-            from: message.from().unwrap_or("Unknown sender").to_owned(),
-            subject: message.subject().unwrap_or("(no subject)").to_owned(),
-            date: message.date().unwrap_or_default().to_owned(),
-            snippet: message.snippet.unwrap_or_default(),
-            unread: message
-                .label_ids
-                .as_ref()
-                .is_some_and(|labels| labels.iter().any(|label| label == "UNREAD")),
+    let client = Arc::new(client);
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, item) in list.messages.unwrap_or_default().into_iter().enumerate() {
+        let client = Arc::clone(&client);
+        tasks.spawn(async move {
+            let message = client
+                .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
+                .await?;
+            anyhow::Ok((
+                index,
+                GmailMessageSummary {
+                    id: message.id.clone(),
+                    from: message.from().unwrap_or("Unknown sender").to_owned(),
+                    subject: message.subject().unwrap_or("(no subject)").to_owned(),
+                    date: message.date().unwrap_or_default().to_owned(),
+                    snippet: message.snippet.unwrap_or_default(),
+                    unread: message
+                        .label_ids
+                        .as_ref()
+                        .is_some_and(|labels| labels.iter().any(|label| label == "UNREAD")),
+                },
+            ))
         });
     }
+    let mut messages = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        messages.push(result??);
+    }
+    messages.sort_by_key(|(index, _)| *index);
+    let messages = messages.into_iter().map(|(_, message)| message).collect();
     Ok(messages)
+}
+
+async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<GmailMessageDetail> {
+    let client = jcode_base::gmail::GmailClient::new();
+    let message = client
+        .get_message(&summary.id, jcode_base::gmail::MessageFormat::Full)
+        .await?;
+    let to = message.header("To").unwrap_or_default().to_owned();
+    let body = message
+        .body_text()
+        .filter(|body| !body.trim().is_empty())
+        .unwrap_or_else(|| summary.snippet.clone());
+    Ok(GmailMessageDetail { summary, to, body })
 }
 
 impl Panel {
@@ -319,6 +363,7 @@ impl Panel {
             unfinished_work: None,
             code_file: None,
             gmail_inbox: None,
+            gmail_message: None,
             model_picker_open: false,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -377,6 +422,7 @@ impl Panel {
     }
 
     fn refresh_gmail(&mut self, cx: &mut Context<Self>) {
+        self.gmail_message = None;
         self.gmail_inbox = Some(GmailInboxState::Loading);
         cx.notify();
         let (tx, rx) = async_channel::bounded(1);
@@ -403,6 +449,404 @@ impl Panel {
             });
         })
         .detach();
+    }
+
+    fn open_gmail_message(&mut self, summary: GmailMessageSummary, cx: &mut Context<Self>) {
+        self.gmail_message = Some(GmailMessageState::Loading(summary.clone()));
+        cx.notify();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("jcode-gmail-message".into())
+            .spawn(move || {
+                let result = tokio::runtime::Runtime::new()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|runtime| runtime.block_on(load_gmail_message(summary)));
+                let _ = tx.send_blocking(result);
+            })
+            .expect("spawn Gmail message worker");
+        cx.spawn(async move |this, cx| {
+            let result = rx
+                .recv()
+                .await
+                .unwrap_or_else(|error| Err(anyhow::Error::from(error)));
+            let _ = this.update(cx, |panel, cx| {
+                panel.gmail_message = Some(match result {
+                    Ok(message) => GmailMessageState::Ready(message),
+                    Err(error) => {
+                        let summary = match panel.gmail_message.take() {
+                            Some(GmailMessageState::Loading(summary)) => summary,
+                            Some(GmailMessageState::Error(summary, _)) => summary,
+                            Some(GmailMessageState::Ready(message)) => message.summary,
+                            None => return,
+                        };
+                        GmailMessageState::Error(summary, error.to_string())
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_gmail(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let detail_open = self.gmail_message.is_some();
+        let title = if detail_open { "Message" } else { "Inbox" };
+        let mut header = div()
+            .flex_none()
+            .h(px(52.))
+            .px_4()
+            .flex()
+            .items_center()
+            .gap_3()
+            .border_b_1()
+            .border_color(Theme::global().PANEL_BORDER);
+        if detail_open {
+            header = header.child(
+                div()
+                    .id("gmail-back")
+                    .cursor_pointer()
+                    .rounded_md()
+                    .px_2()
+                    .py_1()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.gmail_message = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child("‹  Inbox"),
+            );
+        }
+        header = header
+            .child(
+                div()
+                    .flex_1()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Gmail  ·  {title}")),
+            )
+            .when(!detail_open, |header| {
+                header.child(
+                    div()
+                        .id("gmail-refresh")
+                        .cursor_pointer()
+                        .rounded_md()
+                        .px_2()
+                        .py_1()
+                        .text_size(px(11.))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.refresh_gmail(cx)),
+                        )
+                        .child("↻  Refresh"),
+                )
+            });
+
+        let mut body = div()
+            .id("gmail-inbox")
+            .debug_selector(|| "gmail-inbox".into())
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2();
+
+        if let Some(message) = &self.gmail_message {
+            body = match message {
+                GmailMessageState::Loading(summary) => body
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(summary.subject.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child("Loading message…"),
+                    ),
+                GmailMessageState::Error(summary, error) => {
+                    let retry = summary.clone();
+                    body.child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(summary.subject.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_color(Theme::global().ERROR)
+                            .child("Could not load this message"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(error.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("gmail-message-retry")
+                            .cursor_pointer()
+                            .rounded_md()
+                            .px_3()
+                            .py_2()
+                            .bg(Theme::global().INLINE_CODE_BG)
+                            .child("Try again")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_gmail_message(retry.clone(), cx)
+                                }),
+                            ),
+                    )
+                }
+                GmailMessageState::Ready(message) => {
+                    let initial = message
+                        .summary
+                        .from
+                        .chars()
+                        .next()
+                        .unwrap_or('?')
+                        .to_uppercase()
+                        .to_string();
+                    body.child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(message.summary.subject.clone()),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .p_3()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER)
+                            .bg(Theme::global().HEADER_BG)
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .size(px(36.))
+                                    .rounded_full()
+                                    .bg(Theme::global().INLINE_CODE_BG)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(initial),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(message.summary.from.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(Theme::global().TEXT_FAINT)
+                                            .child(format!("to {}", message.to)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child(message.summary.date.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .p_4()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER)
+                            .text_size(px(13.))
+                            .line_height(relative(1.55))
+                            .whitespace_normal()
+                            .child(message.body.clone()),
+                    )
+                }
+            };
+        } else if let Some(inbox) = &self.gmail_inbox {
+            match inbox {
+                GmailInboxState::Loading => {
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child("Loading your inbox…"),
+                    );
+                }
+                GmailInboxState::Error(error) => {
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER)
+                            .child(
+                                div()
+                                    .text_color(Theme::global().ERROR)
+                                    .child("Could not load Gmail"),
+                            )
+                            .child(
+                                div()
+                                    .mt_2()
+                                    .text_size(px(11.))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child(error.clone()),
+                            ),
+                    );
+                }
+                GmailInboxState::Ready(messages) if messages.is_empty() => {
+                    body = body.child(
+                        div()
+                            .p_6()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child("You’re all caught up. Your inbox is empty."),
+                    );
+                }
+                GmailInboxState::Ready(messages) => {
+                    body = body.child(
+                        div()
+                            .mb_2()
+                            .text_size(px(11.))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(format!("{} recent messages", messages.len())),
+                    );
+                    for (index, message) in messages.iter().enumerate() {
+                        let open_message = message.clone();
+                        let initial = message
+                            .from
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string();
+                        body = body.child(
+                            div()
+                                .id(("gmail-message", index))
+                                .debug_selector(move || format!("gmail-message-{index}").into())
+                                .cursor_pointer()
+                                .p_3()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(Theme::global().PANEL_BORDER)
+                                .bg(if message.unread {
+                                    Theme::global().HEADER_BG
+                                } else {
+                                    Theme::global().PANEL_BG
+                                })
+                                .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
+                                .flex()
+                                .items_start()
+                                .gap_3()
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.open_gmail_message(open_message.clone(), cx)
+                                    }),
+                                )
+                                .child(
+                                    div()
+                                        .mt_1()
+                                        .size(px(32.))
+                                        .rounded_full()
+                                        .bg(Theme::global().INLINE_CODE_BG)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(initial),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(3.))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .font_weight(if message.unread {
+                                                            FontWeight::SEMIBOLD
+                                                        } else {
+                                                            FontWeight::NORMAL
+                                                        })
+                                                        .child(message.from.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .text_size(px(10.))
+                                                        .text_color(Theme::global().TEXT_FAINT)
+                                                        .child(message.date.clone()),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .font_weight(if message.unread {
+                                                    FontWeight::SEMIBOLD
+                                                } else {
+                                                    FontWeight::NORMAL
+                                                })
+                                                .child(message.subject.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis()
+                                                .child(message.snippet.clone()),
+                                        ),
+                                ),
+                        );
+                    }
+                }
+            }
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .track_focus(&self.focus_handle)
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
 
     pub fn new_terminal(
@@ -2002,155 +2446,8 @@ impl Render for Panel {
                 .child(body)
                 .into_any_element();
         }
-        if let Some(inbox) = &self.gmail_inbox {
-            let mut body = div()
-                .id("gmail-inbox")
-                .debug_selector(|| "gmail-inbox".into())
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .flex()
-                .flex_col();
-            match inbox {
-                GmailInboxState::Loading => {
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child("Loading inbox…"),
-                    );
-                }
-                GmailInboxState::Error(error) => {
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_color(Theme::global().ERROR)
-                                    .child("Could not load Gmail"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .child(error.clone()),
-                            ),
-                    );
-                }
-                GmailInboxState::Ready(messages) if messages.is_empty() => {
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child("Your inbox is empty."),
-                    );
-                }
-                GmailInboxState::Ready(messages) => {
-                    for (index, message) in messages.iter().enumerate() {
-                        body = body.child(
-                            div()
-                                .id(("gmail-message", index))
-                                .debug_selector(move || format!("gmail-message-{index}").into())
-                                .px_4()
-                                .py_3()
-                                .border_b_1()
-                                .border_color(Theme::global().PANEL_BORDER)
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.))
-                                .when(message.unread, |row| row.bg(Theme::global().HEADER_BG))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .font_weight(if message.unread {
-                                                    FontWeight::SEMIBOLD
-                                                } else {
-                                                    FontWeight::NORMAL
-                                                })
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .child(message.from.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .text_size(px(10.))
-                                                .text_color(Theme::global().TEXT_FAINT)
-                                                .child(message.date.clone()),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .font_weight(if message.unread {
-                                            FontWeight::SEMIBOLD
-                                        } else {
-                                            FontWeight::NORMAL
-                                        })
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(message.subject.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(Theme::global().TEXT_DIM)
-                                        .child(message.snippet.clone()),
-                                ),
-                        );
-                    }
-                }
-            }
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .track_focus(&self.focus_handle)
-                .child(
-                    div()
-                        .flex_none()
-                        .h(px(42.))
-                        .px_4()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .border_b_1()
-                        .border_color(Theme::global().PANEL_BORDER)
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Gmail · Inbox"),
-                        )
-                        .child(
-                            div()
-                                .id("gmail-refresh")
-                                .cursor_pointer()
-                                .rounded_md()
-                                .px_2()
-                                .py_1()
-                                .text_size(px(11.))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| this.refresh_gmail(cx)),
-                                )
-                                .child("refresh"),
-                        ),
-                )
-                .child(body)
-                .into_any_element();
+        if self.gmail_inbox.is_some() {
+            return self.render_gmail(cx);
         }
         if let Some(sessions) = &self.unfinished_work {
             let mut list = div()
