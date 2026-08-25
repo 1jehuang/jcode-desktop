@@ -5621,14 +5621,52 @@ mod tests {
     fn session_catalog_refresh_keeps_a_restored_open_session_in_the_sidebar(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, cx) =
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
-        let mut restored =
-            session_info("session_fox_1234567890000_deadbeef", Some("Still running"));
-        restored.working_dir = Some("/home/example/project".into());
-
-        workspace.update(cx, |workspace, cx| {
-            workspace.open_session(restored, cx);
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply_snapshot(
+                WorkspaceSnapshot {
+                    format_version: SNAPSHOT_FORMAT_VERSION,
+                    slots: vec![SlotSnapshot {
+                        panel: PanelSnapshot {
+                            session_id: "session_fox_1234567890000_deadbeef".into(),
+                            title: "Still running".into(),
+                            working_dir: Some("/home/example/project".into()),
+                            draft: PromptInputSnapshot {
+                                content: String::new(),
+                                selection_start: 0,
+                                selection_end: 0,
+                                selection_reversed: false,
+                                history: Vec::new(),
+                                history_index: None,
+                                live_draft: String::new(),
+                                attachments: Vec::new(),
+                            },
+                            scroll_x: 0.0,
+                            scroll_y: 0.0,
+                            stick_to_bottom: true,
+                            terminal_resource_id: None,
+                        },
+                        row: 0,
+                        width_fraction: 1.0,
+                        restore_fraction: None,
+                    }],
+                    active: 0,
+                    active_row: 0,
+                    row_focus: [Some(0), None, None, None],
+                    previous: None,
+                    camera_x: [0.0; STRIP_COUNT],
+                    camera_target: [0.0; STRIP_COUNT],
+                    overview: false,
+                    hints_overlay: false,
+                    folder_picker_dir: None,
+                    folder_picker_error: None,
+                    folder_search: None,
+                    focus: FocusSnapshot::Workspace,
+                },
+                cx,
+            );
             assert!(workspace.apply(Update::Sessions { sessions: vec![] }, cx));
 
             assert_eq!(workspace.sessions.len(), 1);
@@ -5640,6 +5678,34 @@ mod tests {
                 Some("/home/example/project")
             );
             assert_eq!(session.status, "active");
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-session-0").is_some(),
+            "the snapshot-restored running session must paint a sidebar row"
+        );
+
+        workspace.update(vcx, |workspace, cx| {
+            let mut canonical = session_info(
+                "session_fox_1234567890000_deadbeef",
+                Some("Canonical runtime title"),
+            );
+            canonical.saved = true;
+            canonical.updated_at_ms = Some(1_787_695_000_000);
+            assert!(workspace.apply(
+                Update::Sessions {
+                    sessions: vec![canonical],
+                },
+                cx,
+            ));
+            assert_eq!(workspace.sessions.len(), 1, "the catalog must not duplicate it");
+            assert_eq!(
+                workspace.sessions[0].title.as_deref(),
+                Some("Canonical runtime title"),
+                "canonical metadata must replace the restored placeholder"
+            );
+            assert!(workspace.sessions[0].saved);
         });
     }
 
