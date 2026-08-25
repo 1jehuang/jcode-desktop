@@ -916,7 +916,36 @@ impl Workspace {
     /// Session refreshes arrive every two seconds. Most contain the exact same
     /// SDK snapshot, so treating them as changes would rebuild the complete
     /// sidebar and every open panel for no user-visible result.
-    fn apply(&mut self, update: Update, cx: &mut Context<Self>) -> bool {
+    fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
+        if let Update::Sessions { sessions } = &mut update {
+            // A desktop window can disappear while its daemon-owned sessions keep
+            // running. Those panels are restored from the workspace snapshot before
+            // the asynchronous session catalog arrives. Older runtimes and bounded
+            // catalogs can omit them, so never let a refresh erase an open session
+            // from the sidebar.
+            for slot in &self.slots {
+                let panel = slot.panel.read(cx);
+                if !panel.session_id.starts_with("session_")
+                    || sessions
+                        .iter()
+                        .any(|session| session.session_id == panel.session_id)
+                {
+                    continue;
+                }
+                sessions.push(jcode_sdk::SessionInfo {
+                    session_id: panel.session_id.clone(),
+                    working_dir: panel.working_dir.clone(),
+                    title: Some(panel.title.to_string()),
+                    status: "active".into(),
+                    transcript_bytes: None,
+                    saved: false,
+                    updated_at_ms: None,
+                    last_active_at_ms: None,
+                    archived: false,
+                    archived_at_ms: None,
+                });
+            }
+        }
         if let Update::Sessions { sessions } = &update
             && sessions == &self.sessions
         {
@@ -5585,6 +5614,32 @@ mod tests {
                 cx,
             ));
             assert!(!workspace.apply(Update::Sessions { sessions }, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn session_catalog_refresh_keeps_a_restored_open_session_in_the_sidebar(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let mut restored =
+            session_info("session_fox_1234567890000_deadbeef", Some("Still running"));
+        restored.working_dir = Some("/home/example/project".into());
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_session(restored, cx);
+            assert!(workspace.apply(Update::Sessions { sessions: vec![] }, cx));
+
+            assert_eq!(workspace.sessions.len(), 1);
+            let session = &workspace.sessions[0];
+            assert_eq!(session.session_id, "session_fox_1234567890000_deadbeef");
+            assert_eq!(session.title.as_deref(), Some("Still running"));
+            assert_eq!(
+                session.working_dir.as_deref(),
+                Some("/home/example/project")
+            );
+            assert_eq!(session.status, "active");
         });
     }
 
