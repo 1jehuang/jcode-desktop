@@ -5758,6 +5758,18 @@ mod tests {
             "clicking todos should spawn the dedicated panel"
         );
 
+        vcx.simulate_keystrokes("super-h");
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _cx| {
+            assert_eq!(
+                workspace.active, 0,
+                "focus-left should leave the focused todos panel"
+            );
+        });
+
+        vcx.simulate_keystrokes("super-l");
+        vcx.run_until_parked();
+
         // The todos view is a normal workspace slot, not an overlay. It must
         // therefore follow the same ordering and strip movement commands as a
         // chat panel and be included in the workspace snapshot.
