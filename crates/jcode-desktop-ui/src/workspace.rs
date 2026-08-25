@@ -2509,7 +2509,7 @@ impl Workspace {
                 (None, Some(meta)) => Some(meta),
                 (None, None) => None,
             };
-            let (status_icon, status_label, status_kind) = sidebar_session_status(
+            let (status_icon, _status_label, status_kind) = sidebar_session_status(
                 &session.status,
                 open_statuses.get(&session.session_id).map(String::as_str),
             );
@@ -2572,7 +2572,7 @@ impl Workspace {
                                     .flex_none()
                                     .text_size(px(10.0))
                                     .text_color(status_color)
-                                    .child(format!("{status_icon} {status_label}")),
+                                    .child(status_icon),
                             ),
                     )
                     .when_some(details, |row, details| {
