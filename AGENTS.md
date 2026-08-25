@@ -16,3 +16,9 @@
 - Do not use `niri` for testing or test verification.
 - Prefer headless tests that do not open windows, steal focus, move workspaces, or otherwise interfere with the user's active desktop session.
 - Use non-`niri` test methods, such as unit tests, integration tests, CLI checks, virtual displays, or isolated test harnesses.
+
+## Rebuild and Reload
+
+- After completing and verifying every change, rebuild and reload the running desktop application so the user immediately receives the updated behavior.
+- Use `selfdev build` for the standard self-development rebuild and reload workflow. Treat a successful rebuild and reload as part of completion, not as an optional follow-up.
+- If rebuilding or reloading fails, diagnose and fix it before reporting the change complete. Do not silently leave the running application on stale code.
