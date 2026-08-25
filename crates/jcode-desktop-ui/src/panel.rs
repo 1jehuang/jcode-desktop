@@ -938,6 +938,9 @@ impl Panel {
                                                     metadata.when(message.unread, |el| {
                                                         el.child(
                                                             div()
+                                                                .debug_selector(|| {
+                                                                    "gmail-metadata-unread".into()
+                                                                })
                                                                 .px_1()
                                                                 .rounded_sm()
                                                                 .bg(Theme::global().ACCENT_DIM)
@@ -949,6 +952,10 @@ impl Panel {
                                                     metadata.when(message.important, |el| {
                                                         el.child(
                                                             div()
+                                                                .debug_selector(|| {
+                                                                    "gmail-metadata-important"
+                                                                        .into()
+                                                                })
                                                                 .px_1()
                                                                 .rounded_sm()
                                                                 .text_color(
@@ -961,6 +968,9 @@ impl Panel {
                                                     metadata.when(message.starred, |el| {
                                                         el.child(
                                                             div()
+                                                                .debug_selector(|| {
+                                                                    "gmail-metadata-starred".into()
+                                                                })
                                                                 .px_1()
                                                                 .rounded_sm()
                                                                 .child("Starred"),
@@ -969,6 +979,9 @@ impl Panel {
                                                 let metadata = match &message.category {
                                                     Some(category) => metadata.child(
                                                         div()
+                                                            .debug_selector(|| {
+                                                                "gmail-metadata-category".into()
+                                                            })
                                                             .px_1()
                                                             .rounded_sm()
                                                             .text_color(Theme::global().TEXT_DIM)
@@ -3617,6 +3630,49 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn email_panel_paints_attention_metadata_from_gmail_labels(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("gmail-acceptance", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            panel.gmail_inbox = Some(GmailInboxState::Ready(vec![GmailMessageSummary {
+                id: "live-shape".into(),
+                from: "Important Sender".into(),
+                subject: "Priority message".into(),
+                date: "Today".into(),
+                snippet: "An important unread update".into(),
+                unread: true,
+                important: true,
+                starred: true,
+                category: Some("Updates".into()),
+            }]));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        for selector in [
+            "gmail-inbox",
+            "gmail-message-0",
+            "gmail-metadata-unread",
+            "gmail-metadata-important",
+            "gmail-metadata-starred",
+            "gmail-metadata-category",
+        ] {
+            assert!(
+                vcx.debug_bounds(selector).is_some(),
+                "Email acceptance surface must paint {selector}"
+            );
+        }
+    }
 
     #[gpui::test]
     fn restored_scroll_is_not_replaced_when_history_reattaches(cx: &mut gpui::TestAppContext) {
