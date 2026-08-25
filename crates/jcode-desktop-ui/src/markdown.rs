@@ -9,6 +9,8 @@ use gpui::{
     FontWeight, HighlightStyle, InteractiveText, SharedString, StrikethroughStyle, StyledText,
     UnderlineStyle, div, prelude::*, px, relative,
 };
+use std::collections::VecDeque;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::theme::{Theme, to_hsla};
 
@@ -1117,10 +1119,84 @@ fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement
         .into_any_element()
 }
 
-/// Render Mermaid source as a native, theme-aware diagram. This intentionally
-/// keeps the source parser permissive so incomplete streamed diagrams and new
-/// Mermaid directives still have a useful visual fallback.
+#[derive(Clone)]
+struct RenderedMermaid {
+    svg: Arc<[u8]>,
+    width: f32,
+    height: f32,
+}
+
+const MERMAID_CACHE_CAPACITY: usize = 64;
+static MERMAID_CACHE: LazyLock<Mutex<VecDeque<(u64, RenderedMermaid)>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+fn render_mermaid_svg(body: &str) -> Result<RenderedMermaid, String> {
+    let key = hash(body);
+    if let Ok(mut cache) = MERMAID_CACHE.lock()
+        && let Some(index) = cache.iter().position(|(cached_key, _)| *cached_key == key)
+    {
+        let entry = cache.remove(index).expect("cached Mermaid entry exists");
+        let rendered = entry.1.clone();
+        cache.push_back(entry);
+        return Ok(rendered);
+    }
+
+    // mmdr does all parsing and layout locally. Catching a renderer panic keeps
+    // malformed, partially streamed model output from taking down the desktop.
+    let source = body.to_owned();
+    let rendered = std::panic::catch_unwind(move || {
+        let options = mermaid_rs_renderer::RenderOptions {
+            theme: mermaid_rs_renderer::Theme::dark(),
+            ..Default::default()
+        };
+        let dimensions = mermaid_rs_renderer::measure(&source, options.clone())
+            .map_err(|error| error.to_string())?;
+        let svg = mermaid_rs_renderer::render_with_options(&source, options)
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(RenderedMermaid {
+            svg: Arc::from(svg.into_bytes()),
+            width: dimensions.width.max(1.0),
+            height: dimensions.height.max(1.0),
+        })
+    })
+    .map_err(|_| "Mermaid renderer panicked".to_string())??;
+
+    if let Ok(mut cache) = MERMAID_CACHE.lock() {
+        cache.push_back((key, rendered.clone()));
+        while cache.len() > MERMAID_CACHE_CAPACITY {
+            cache.pop_front();
+        }
+    }
+    Ok(rendered)
+}
+
+/// Render Mermaid source through mmdr as a real SVG. Incomplete streamed
+/// diagrams retain the lightweight text representation until they become
+/// valid, rather than flashing an error into the transcript.
 fn mermaid_diagram(body: &str) -> gpui::AnyElement {
+    if let Ok(rendered) = render_mermaid_svg(body) {
+        let display_height = (640.0 * rendered.height / rendered.width).clamp(120.0, 520.0);
+        return div()
+            .debug_selector(|| "md-mermaid".into())
+            .my_1()
+            .w_full()
+            .h(px(display_height))
+            .p_2()
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(Theme::global().PANEL_BORDER)
+            .bg(Theme::global().QUOTE_BG)
+            .child(
+                gpui::svg()
+                    .data(rendered.svg.as_ref())
+                    .w_full()
+                    .h_full()
+                    .text_color(Theme::global().TEXT),
+            )
+            .into_any_element();
+    }
+
     let mut lines = body.lines().filter_map(mermaid_display_line).peekable();
     let rows: Vec<String> = lines.by_ref().collect();
     div()
@@ -1529,6 +1605,16 @@ mod tests {
             mermaid_display_line("A[Start] --> B[Done]").as_deref(),
             Some("AStart → BDone")
         );
+    }
+
+    #[test]
+    fn renders_mermaid_with_mmdr_as_svg() {
+        let rendered = render_mermaid_svg("flowchart LR\nA[Start] --> B[Done]")
+            .expect("valid Mermaid should render");
+        let svg = std::str::from_utf8(rendered.svg.as_ref()).expect("mmdr emits UTF-8 SVG");
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains("Start"));
+        assert!(rendered.width > 0.0 && rendered.height > 0.0);
     }
 
     #[test]
