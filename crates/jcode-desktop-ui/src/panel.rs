@@ -2577,6 +2577,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .debug_selector(|| "todo-card-body".into())
         .flex()
         .flex_col()
+        .w_full()
         .gap_0p5()
         .max_h(px(132.0))
         .overflow_y_scroll();
@@ -2594,7 +2595,10 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .iter()
                 .filter(|todo| todo.status == "completed")
                 .count();
-            let mut section = div().flex().flex_col();
+            // GPUI does not always stretch nested flex rows through a scrolling
+            // column. Give every level an explicit width so each row's flex_1
+            // text child receives space instead of collapsing to zero width.
+            let mut section = div().flex().flex_col().w_full();
             if group.is_some() || payload.todos.iter().any(|todo| todo.group.is_some()) {
                 section = section.child(
                     div()
@@ -2624,6 +2628,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                     div()
                         .debug_selector(|| "todo-row".into())
                         .flex()
+                        .w_full()
                         .items_center()
                         .gap_1p5()
                         .child(render_todo_marker(todo))
@@ -2670,6 +2675,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                     header.child(
                         div()
                             .min_w_0()
+                            .flex_1()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
