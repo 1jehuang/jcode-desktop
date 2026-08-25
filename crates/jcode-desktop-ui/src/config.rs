@@ -73,7 +73,7 @@ impl Default for WorkspaceConfig {
             // events already update the current workspace immediately, so a
             // slower reconciliation cadence keeps external sessions fresh
             // without continuously competing with UI work.
-            session_refresh_seconds: 30,
+            session_refresh_seconds: 60,
         }
     }
 }
