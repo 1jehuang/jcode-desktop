@@ -82,10 +82,6 @@ struct TodoCardItem {
     #[serde(default)]
     group: Option<String>,
     #[serde(default)]
-    confidence: Option<serde_json::Value>,
-    #[serde(default)]
-    completion_confidence: Option<serde_json::Value>,
-    #[serde(default)]
     blocked_by: Vec<String>,
 }
 
@@ -2510,14 +2506,6 @@ fn parse_todo_tool_output(output: &str) -> Option<TodoCardPayload> {
     Some(TodoCardPayload { todos, plan })
 }
 
-fn semantic_value(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(value) => value.replace('_', " "),
-        serde_json::Value::Number(value) => format!("{value}%"),
-        _ => String::new(),
-    }
-}
-
 fn todo_status_color(todo: &TodoCardItem) -> gpui::Rgba {
     if !todo.blocked_by.is_empty() && todo.status != "completed" {
         Theme::global().WARN
@@ -2589,7 +2577,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .debug_selector(|| "todo-card-body".into())
         .flex()
         .flex_col()
-        .gap_1()
+        .gap_0p5()
         .max_h(px(132.0))
         .overflow_y_scroll();
     if payload.todos.is_empty() {
@@ -2606,7 +2594,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .iter()
                 .filter(|todo| todo.status == "completed")
                 .count();
-            let mut section = div().flex().flex_col().gap_0p5();
+            let mut section = div().flex().flex_col();
             if group.is_some() || payload.todos.iter().any(|todo| todo.group.is_some()) {
                 section = section.child(
                     div()
@@ -2632,65 +2620,29 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 );
             }
             for todo in todos {
-                let confidence = if todo.status == "completed" {
-                    todo.completion_confidence
-                        .as_ref()
-                        .or(todo.confidence.as_ref())
-                } else {
-                    todo.confidence.as_ref()
-                };
-                let blocked = !todo.blocked_by.is_empty() && todo.status != "completed";
                 section = section.child(
                     div()
                         .debug_selector(|| "todo-row".into())
                         .flex()
-                        .items_start()
+                        .items_center()
                         .gap_1p5()
                         .child(render_todo_marker(todo))
-                        .child(div().flex_1().min_w_0().flex().flex_col().gap_0p5().when(
-                            blocked || confidence.is_some(),
-                            |content| {
-                                content
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .text_size(px(12.5))
-                                            .text_color(if todo.status == "completed" {
-                                                Theme::global().TEXT_DIM
-                                            } else {
-                                                Theme::global().TEXT
-                                            })
-                                            .child(todo.content.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .gap_1()
-                                            .text_size(px(9.5))
-                                            .when(blocked, |meta| {
-                                                meta.child(
-                                                    div()
-                                                        .rounded_sm()
-                                                        .px_1()
-                                                        .bg(Theme::global().ERROR_BG)
-                                                        .text_color(Theme::global().WARN)
-                                                        .child("blocked"),
-                                                )
-                                            })
-                                            .when_some(confidence, |meta, confidence| {
-                                                meta.child(
-                                                    div()
-                                                        .text_color(Theme::global().TEXT_FAINT)
-                                                        .child(semantic_value(confidence)),
-                                                )
-                                            }),
-                                    )
-                            },
-                        )),
+                        .child(
+                            div()
+                                .debug_selector(|| "todo-row-content".into())
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(12.5))
+                                .text_color(if todo.status == "completed" {
+                                    Theme::global().TEXT_DIM
+                                } else {
+                                    Theme::global().TEXT
+                                })
+                                .child(todo.content.clone()),
+                        ),
                 );
             }
             body = body.child(section);
@@ -4187,7 +4139,11 @@ Goals: []"#,
             .debug_bounds("pinned-latest-prompt")
             .expect("latest prompt should stay visible above the todo card");
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
+        let row_content = vcx
+            .debug_bounds("todo-row-content")
+            .expect("todo content should always paint");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        assert!(row_content.size.width > px(0.) && row_content.size.height > px(0.));
         assert!(prompt.bottom() <= bounds.top());
         assert!(pinned.bottom() <= transcript.top());
         assert!(vcx.debug_bounds("tool-card").is_none());
