@@ -5737,10 +5737,14 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_todos_button_spawns_an_unfinished_work_panel(cx: &mut gpui::TestAppContext) {
+    fn sidebar_todos_button_spawns_a_persistent_movable_panel(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
-        let (_workspace, vcx) =
+        let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("chat", cx);
+            cx.notify();
+        });
         vcx.run_until_parked();
 
         let button = vcx
@@ -5753,6 +5757,22 @@ mod tests {
             vcx.debug_bounds("unfinished-work-list").is_some(),
             "clicking todos should spawn the dedicated panel"
         );
+
+        // The todos view is a normal workspace slot, not an overlay. It must
+        // therefore follow the same ordering and strip movement commands as a
+        // chat panel and be included in the workspace snapshot.
+        vcx.simulate_keystrokes("super-shift-h super-shift-j");
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(
+                workspace.slots[0].panel.read(cx).session_id,
+                "unfinished-work"
+            );
+            assert_eq!(workspace.slots[0].row, 1);
+            let panel_snapshot = workspace.slots[0].panel.read(cx).snapshot(cx);
+            assert_eq!(panel_snapshot.session_id, "unfinished-work");
+        });
     }
 
     #[gpui::test]
