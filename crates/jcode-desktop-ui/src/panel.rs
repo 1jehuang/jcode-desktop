@@ -79,7 +79,6 @@ struct TodoCardPlan {
 struct TodoCardItem {
     content: String,
     status: String,
-    priority: String,
     #[serde(default)]
     group: Option<String>,
     #[serde(default)]
@@ -2642,7 +2641,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                         .gap_1p5()
                         .child(render_todo_marker(todo))
                         .child(div().flex_1().min_w_0().flex().flex_col().gap_0p5().when(
-                            todo.priority == "high" || blocked || confidence.is_some(),
+                            blocked || confidence.is_some(),
                             |content| {
                                 content
                                     .child(
@@ -2665,16 +2664,6 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                                             .flex_wrap()
                                             .gap_1()
                                             .text_size(px(9.5))
-                                            .when(todo.priority == "high", |meta| {
-                                                meta.child(
-                                                    div()
-                                                        .rounded_sm()
-                                                        .px_1()
-                                                        .bg(Theme::global().ERROR_BG)
-                                                        .text_color(Theme::global().WARN)
-                                                        .child("high priority"),
-                                                )
-                                            })
                                             .when(blocked, |meta| {
                                                 meta.child(
                                                     div()
