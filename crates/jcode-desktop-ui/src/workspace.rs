@@ -114,6 +114,13 @@ const TITLEBAR_HEIGHT: f32 = 52.0;
 /// left edge, including the gap the system leaves after the zoom button.
 const TRAFFIC_LIGHT_INSET: f32 = 92.0;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SidebarView {
+    #[default]
+    Sessions,
+    Files,
+}
+
 // Minimap: a rounded square card in the top right that maps every strip to
 // scale, preserving the canvas aspect ratio so panels taller than wide on
 // screen stay taller than wide on the map.
@@ -342,6 +349,8 @@ pub struct Workspace {
     bridge: Bridge,
     host: HostHandle,
     show_sidebar: bool,
+    sidebar_view: SidebarView,
+    expanded_directories: HashSet<PathBuf>,
     slots: Vec<Slot>,
     active: usize,
     active_row: usize,
@@ -463,6 +472,8 @@ impl Workspace {
                 std::env::args_os(),
                 crate::config::get().workspace.sidebar,
             ),
+            sidebar_view: SidebarView::Sessions,
+            expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -520,6 +531,8 @@ impl Workspace {
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             show_sidebar: true,
+            sidebar_view: SidebarView::Sessions,
+            expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
             active_row: 0,
@@ -643,6 +656,9 @@ impl Workspace {
                         cx,
                     )
                 })
+            } else if let Some(path) = panel_state.session_id.strip_prefix("file://") {
+                let path = PathBuf::from(path);
+                cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx))
             } else {
                 let session_id = panel_state.session_id.clone();
                 let title = Some(panel_state.title.clone());
@@ -1528,6 +1544,49 @@ impl Workspace {
                 cx,
             )
         });
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                restore_fraction: None,
+            },
+        );
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn open_code_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let session_id = format!("file://{}", path.display());
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == session_id)
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let panel = cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx));
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -2462,6 +2521,126 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn file_browser_root(&self, cx: &App) -> PathBuf {
+        self.slots
+            .get(self.active)
+            .and_then(|slot| {
+                slot.panel
+                    .read(cx)
+                    .working_dir
+                    .as_deref()
+                    .map(PathBuf::from)
+            })
+            .filter(|path| path.is_dir())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("/"))
+    }
+
+    fn render_file_entries(
+        &self,
+        directory: &Path,
+        depth: usize,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let Ok(read_dir) = std::fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        let mut entries = read_dir
+            .filter_map(Result::ok)
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| {
+            let is_file = entry.file_type().map_or(true, |kind| !kind.is_dir());
+            (is_file, entry.file_name().to_ascii_lowercase())
+        });
+
+        let mut rows = Vec::new();
+        for entry in entries.into_iter().take(500) {
+            let path = entry.path();
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let expanded = is_dir && self.expanded_directories.contains(&path);
+            let row_path = path.clone();
+            let label = entry.file_name().to_string_lossy().into_owned();
+            rows.push(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "file-tree-row:{}",
+                        path.display()
+                    )))
+                    .debug_selector(move || format!("file-tree-{label}").into())
+                    .pl(px(10.0 + depth as f32 * 14.0))
+                    .pr_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .hover(|el| el.bg(Theme::global().HEADER_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, window, cx| {
+                            if is_dir {
+                                if !this.expanded_directories.remove(&row_path) {
+                                    this.expanded_directories.insert(row_path.clone());
+                                }
+                                cx.notify();
+                            } else {
+                                this.open_code_file(row_path.clone(), window, cx);
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(12.0))
+                            .flex_none()
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(if is_dir {
+                                if expanded { "▾" } else { "▸" }
+                            } else {
+                                "·"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(entry.file_name().to_string_lossy().into_owned()),
+                    )
+                    .into_any_element(),
+            );
+            if expanded {
+                rows.extend(self.render_file_entries(&path, depth + 1, cx));
+            }
+        }
+        rows
+    }
+
+    fn render_files_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let root = self.file_browser_root(cx);
+        div()
+            .id("sidebar-file-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.sidebar_scroll)
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_size(px(10.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(root.display().to_string()),
+            )
+            .children(self.render_file_entries(&root, 0, cx))
+            .into_any_element()
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_id = self
             .slots
@@ -2624,12 +2803,62 @@ impl Workspace {
                     .justify_between()
                     .border_b_1()
                     .border_color(Theme::global().PANEL_BORDER)
-                    .child(div().text_size(px(13.0)).child("sessions"))
+                    .child(div().text_size(px(13.0)).child(match self.sidebar_view {
+                        SidebarView::Sessions => "sessions",
+                        SidebarView::Files => "files",
+                    }))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_1()
+                            .child(
+                                div()
+                                    .id("sidebar-sessions-tab")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(if self.sidebar_view == SidebarView::Sessions {
+                                        Theme::global().TEXT
+                                    } else {
+                                        Theme::global().TEXT_DIM
+                                    })
+                                    .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.sidebar_view = SidebarView::Sessions;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child("chat"),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-files-tab")
+                                    .debug_selector(|| "sidebar-files-tab".into())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(if self.sidebar_view == SidebarView::Files {
+                                        Theme::global().TEXT
+                                    } else {
+                                        Theme::global().TEXT_DIM
+                                    })
+                                    .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.sidebar_view = SidebarView::Files;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child("files"),
+                            )
                             .child(
                                 div()
                                     .id("sidebar-unfinished-work")
@@ -2713,7 +2942,10 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .relative()
-                    .child(list)
+                    .child(match self.sidebar_view {
+                        SidebarView::Sessions => list.into_any_element(),
+                        SidebarView::Files => self.render_files_sidebar(cx),
+                    })
                     .child(crate::scrollbar::vertical(
                         &self.sidebar_scroll,
                         "sidebar-scrollbar",
@@ -5057,6 +5289,59 @@ mod tests {
             vcx.debug_bounds("unfinished-work-list").is_some(),
             "clicking todos should spawn the dedicated panel"
         );
+    }
+
+    #[gpui::test]
+    fn clicking_a_file_opens_it_in_a_new_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let project = std::env::temp_dir().join(format!(
+            "jcode-desktop-files-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("project", cx);
+            workspace.slots[0].panel.update(cx, |panel, _| {
+                panel.working_dir = Some(project.display().to_string());
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let files = vcx
+            .debug_bounds("sidebar-files-tab")
+            .expect("files tab paints in the sidebar");
+        vcx.simulate_click(files.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let source = vcx
+            .debug_bounds("file-tree-main.rs")
+            .expect("source file paints in the file tree");
+        vcx.simulate_click(source.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("code-file-contents").is_some(),
+            "clicking a source file should open its read-only panel"
+        );
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 2);
+            assert!(
+                workspace.slots[1]
+                    .panel
+                    .read(cx)
+                    .session_id
+                    .ends_with("/main.rs")
+            );
+        });
+        std::fs::remove_dir_all(project).unwrap();
     }
 
     /// Clicking a sidebar row must open and activate that session through the

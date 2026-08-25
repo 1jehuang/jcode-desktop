@@ -176,9 +176,16 @@ pub struct Panel {
     arriving_tools: HashMap<String, Instant>,
     terminal: Option<Entity<TerminalPanel>>,
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
+    /// A read-only source file opened from the workspace file browser.
+    code_file: Option<CodeFile>,
     model_picker_open: bool,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
+}
+
+struct CodeFile {
+    path: std::path::PathBuf,
+    contents: Result<String, String>,
 }
 
 impl Panel {
@@ -242,10 +249,48 @@ impl Panel {
             arriving_tools: HashMap::new(),
             terminal: None,
             unfinished_work: None,
+            code_file: None,
             model_picker_open: false,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
         }
+    }
+
+    pub fn new_code_file(path: std::path::PathBuf, bridge: Bridge, cx: &mut Context<Self>) -> Self {
+        const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+        let title = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let contents = std::fs::metadata(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|metadata| {
+                if metadata.len() > MAX_FILE_BYTES {
+                    Err(format!(
+                        "file is too large to preview ({} bytes)",
+                        metadata.len()
+                    ))
+                } else {
+                    std::fs::read_to_string(&path).map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::InvalidData {
+                            "binary files cannot be previewed".to_string()
+                        } else {
+                            error.to_string()
+                        }
+                    })
+                }
+            });
+        let working_dir = path.parent().map(|parent| parent.display().to_string());
+        let mut panel = Self::new(
+            format!("file://{}", path.display()),
+            Some(title),
+            working_dir,
+            bridge,
+            cx,
+        );
+        panel.items.clear();
+        panel.code_file = Some(CodeFile { path, contents });
+        panel
     }
 
     pub fn new_terminal(
@@ -1660,6 +1705,89 @@ impl Render for Panel {
                 .size_full()
                 .track_focus(&self.focus_handle)
                 .child(terminal.clone())
+                .into_any_element();
+        }
+        if let Some(file) = &self.code_file {
+            let path = file.path.display().to_string();
+            let mut body = div()
+                .id("code-file-contents")
+                .debug_selector(|| "code-file-contents".into())
+                .flex_1()
+                .min_h_0()
+                .overflow_scroll()
+                .font_family(Theme::global().FONT_MONO)
+                .text_size(px(12.0))
+                .py_2();
+            match &file.contents {
+                Ok(contents) => {
+                    for (index, line) in contents.lines().enumerate() {
+                        body = body.child(
+                            div()
+                                .flex()
+                                .min_w_full()
+                                .child(
+                                    div()
+                                        .w(px(52.0))
+                                        .flex_none()
+                                        .pr_3()
+                                        .text_align(gpui::TextAlign::Right)
+                                        .text_color(Theme::global().CODE_GUTTER)
+                                        .child((index + 1).to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .pr_4()
+                                        .whitespace_nowrap()
+                                        .text_color(Theme::global().CODE_TEXT)
+                                        .child(if line.is_empty() {
+                                            " ".to_string()
+                                        } else {
+                                            line.to_owned()
+                                        }),
+                                ),
+                        );
+                    }
+                    if contents.is_empty() {
+                        body = body.child(
+                            div()
+                                .px_4()
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child("empty file"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .text_color(Theme::global().ERROR)
+                            .child(error.clone()),
+                    );
+                }
+            }
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .track_focus(&self.focus_handle)
+                .child(
+                    div()
+                        .flex_none()
+                        .px_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(Theme::global().CODE_BORDER)
+                        .bg(Theme::global().CODE_HEADER_BG)
+                        .font_family(Theme::global().FONT_MONO)
+                        .text_size(px(11.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(path),
+                )
+                .child(body)
                 .into_any_element();
         }
         if let Some(sessions) = &self.unfinished_work {
