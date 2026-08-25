@@ -61,8 +61,8 @@ actions!(
     ]
 );
 
-/// niri `animations { window-resize / workspace-switch }` use 150ms with an
-/// `ease-out-expo` curve; the strip camera matches that.
+/// Spatial transitions settle in 150 ms. Cubic easing keeps motion visible
+/// across the available frames instead of concentrating it at the start.
 const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
 /// niri `layout { gaps 0 }`: columns sit flush against each other.
 const GAP: f32 = 0.0;
@@ -2202,8 +2202,7 @@ impl Workspace {
         if row == self.active_row && self.camera_dirty[row] {
             self.resolve_camera_target(viewport_w);
         }
-        // Animate the camera over CAMERA_DURATION on an ease-out-expo curve,
-        // matching niri's animation settings.
+        // Animate the camera over CAMERA_DURATION on the shared cubic curve.
         match self.camera_started[row] {
             Some(started) => {
                 let elapsed = started.elapsed();
@@ -2212,7 +2211,7 @@ impl Workspace {
                     self.camera_started[row] = None;
                 } else {
                     let t = elapsed.as_secs_f32() / CAMERA_DURATION.as_secs_f32();
-                    let eased = ease_out_expo(t);
+                    let eased = ease_out_cubic(t);
                     let from = self.camera_from[row];
                     self.camera_x[row] = from + (self.camera_target[row] - from) * eased;
                     window.request_animation_frame();
@@ -4825,13 +4824,9 @@ fn describe_coach(mastery: f32, saved: u32, wasted: u32, teaching: Option<&'stat
     )
 }
 
-/// CSS `ease-out-expo`, the curve used across the user's niri animations.
-fn ease_out_expo(t: f32) -> f32 {
-    if t >= 1.0 {
-        1.0
-    } else {
-        1.0 - 2f32.powf(-10.0 * t)
-    }
+/// Shared cubic ease-out used by the strip camera.
+fn ease_out_cubic(t: f32) -> f32 {
+    transition::ease_out_cubic(t)
 }
 
 /// Where a newly created panel is inserted: directly right of the focused
@@ -6415,18 +6410,18 @@ mod tests {
 
     #[test]
     fn camera_easing_is_monotonic_and_settles() {
-        assert_eq!(ease_out_expo(0.0), 0.0);
-        assert_eq!(ease_out_expo(1.0), 1.0);
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
         let mut previous = 0.0;
         for step in 1..=10 {
-            let value = ease_out_expo(step as f32 / 10.0);
+            let value = ease_out_cubic(step as f32 / 10.0);
             assert!(value > previous, "easing must increase at {step}");
             previous = value;
         }
-        // Ease-out: half the distance is covered in the first 10%, and three
-        // quarters within 20%.
-        assert!((ease_out_expo(0.1) - 0.5).abs() < 0.001);
-        assert!((ease_out_expo(0.2) - 0.75).abs() < 0.001);
+        // Cubic ease-out keeps the movement responsive while distributing it
+        // across substantially more of the 150 ms transition.
+        assert!((ease_out_cubic(0.1) - 0.271).abs() < 0.001);
+        assert!((ease_out_cubic(0.2) - 0.488).abs() < 0.001);
     }
 
     #[test]

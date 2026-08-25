@@ -181,7 +181,7 @@ impl AnimatedValue {
             self.started = None;
         } else {
             let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
-            self.value = self.from + (self.target - self.from) * ease_out_expo(t);
+            self.value = self.from + (self.target - self.from) * ease_out_cubic(t);
         }
         self.value
     }
@@ -191,13 +191,19 @@ impl AnimatedValue {
     }
 }
 
-pub fn ease_out_expo(t: f32) -> f32 {
+/// A smooth ease-out curve for spatial movement.
+///
+/// Exponential easing completed more than half of the movement in the first
+/// 16 ms at 60 Hz, leaving only a faint tail for the rest of the transition.
+/// Cubic easing distributes that same 150 ms transition across more visible
+/// frames while preserving a responsive start and a gentle stop.
+pub fn ease_out_cubic(t: f32) -> f32 {
     if t >= 1.0 {
         1.0
     } else if t <= 0.0 {
         0.0
     } else {
-        1.0 - 2.0_f32.powf(-10.0 * t)
+        1.0 - (1.0 - t).powi(3)
     }
 }
 
@@ -210,7 +216,7 @@ pub fn arrival_motion(started_at: Instant, now: Instant, duration: Duration) -> 
         return (0.0, 1.0, false);
     }
     let progress = elapsed.as_secs_f32() / duration.as_secs_f32();
-    let eased = ease_out_expo(progress);
+    let eased = ease_out_cubic(progress);
     (6.0 * (1.0 - eased), 0.55 + 0.45 * eased, true)
 }
 
