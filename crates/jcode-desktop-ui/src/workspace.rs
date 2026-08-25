@@ -3896,7 +3896,6 @@ impl Workspace {
                 div()
                     .id("showcase-card")
                     .debug_selector(|| "showcase-card".into())
-                    .min_w(px(320.0))
                     .px_3()
                     .py_2()
                     .flex()
@@ -7619,9 +7618,14 @@ mod tests {
         let key = cx.debug_bounds("showcase-key").expect("keybinding bounds");
         let card = cx.debug_bounds("showcase-card").expect("showcase card bounds");
         assert!(
-            card.size.width <= px(320.0) && card.size.height <= px(66.0),
-            "the showcase card should stay compact, got {:?}",
+            card.size.width < px(320.0) && card.size.height <= px(66.0),
+            "the showcase card should shrink-wrap its content, got {:?}",
             card.size
+        );
+        assert!(
+            action.origin.x - card.origin.x <= px(13.0)
+                && card.origin.x + card.size.width - key.origin.x - key.size.width <= px(13.0),
+            "the card border should closely fit the content"
         );
         assert!(
             action.origin.x < key.origin.x,
