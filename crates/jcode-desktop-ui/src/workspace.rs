@@ -4348,14 +4348,17 @@ impl Workspace {
 
         let arrow = |id: &'static str,
                      glyph: &'static str,
+                     key: &'static str,
                      action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             div()
                 .id(id)
                 .debug_selector(move || id.into())
-                .size(px(28.0))
+                .px_2()
+                .py_1()
                 .flex()
                 .items_center()
                 .justify_center()
+                .gap(px(5.0))
                 .rounded_md()
                 .border_1()
                 .border_color(if active == Some("navigate") {
@@ -4368,7 +4371,7 @@ impl Workspace {
                 } else {
                     Theme::global().HEADER_BG
                 })
-                .text_size(px(17.0))
+                .text_size(px(11.0))
                 .text_color(Theme::global().TEXT)
                 .cursor_pointer()
                 .occlude()
@@ -4380,50 +4383,46 @@ impl Workspace {
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _, window, cx| action(this, window, cx)),
                 )
-                .child(glyph)
+                .child(div().text_size(px(17.0)).child(glyph))
+                .child(format!("{modifier} {key}"))
         };
         let navigation = div()
             .id("tutorial-navigation")
             .debug_selector(|| "tutorial-navigation".into())
             .absolute()
-            .left(px(12.0))
-            .bottom(px(14.0))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(4.0))
-            .p_2()
-            .rounded_lg()
-            .bg(gpui::rgba(0x111318e8))
-            .border_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .shadow_sm()
+            .inset_0()
             .child(
-                div()
-                    .text_size(px(9.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(format!("{modifier} + arrows")),
+                arrow("tutorial-nav-up", "↑", "K", |this, window, cx| {
+                    this.focus_up(&FocusUp, window, cx)
+                })
+                .absolute()
+                .top(px(12.0))
+                .left(relative(0.5)),
             )
-            .child(arrow("tutorial-nav-up", "↑", |this, window, cx| {
-                this.focus_up(&FocusUp, window, cx)
-            }))
             .child(
-                div()
-                    .flex()
-                    .gap(px(4.0))
-                    .child(arrow("tutorial-nav-left", "←", |this, window, cx| {
-                        this.focus_left(&FocusLeft, window, cx)
-                    }))
-                    // A real cell, rather than a large flex gap, keeps both
-                    // arrow hitboxes inside the navigation pad's layout bounds.
-                    .child(div().size(px(28.0)).flex_none())
-                    .child(arrow("tutorial-nav-right", "→", |this, window, cx| {
-                        this.focus_right(&FocusRight, window, cx)
-                    })),
+                arrow("tutorial-nav-left", "←", "H", |this, window, cx| {
+                    this.focus_left(&FocusLeft, window, cx)
+                })
+                .absolute()
+                .left(px(12.0))
+                .top(relative(0.5)),
             )
-            .child(arrow("tutorial-nav-down", "↓", |this, window, cx| {
-                this.focus_down(&FocusDown, window, cx)
-            }));
+            .child(
+                arrow("tutorial-nav-right", "→", "L", |this, window, cx| {
+                    this.focus_right(&FocusRight, window, cx)
+                })
+                .absolute()
+                .right(px(12.0))
+                .top(relative(0.5)),
+            )
+            .child(
+                arrow("tutorial-nav-down", "↓", "J", |this, window, cx| {
+                    this.focus_down(&FocusDown, window, cx)
+                })
+                .absolute()
+                .bottom(px(14.0))
+                .left(relative(0.5)),
+            );
 
         let layout = div()
             .id("tutorial-layout")
@@ -4514,7 +4513,7 @@ impl Workspace {
             .hover(|el| el.border_color(Theme::global().ACCENT))
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                cx.listener(|this, _, window, cx| this.new_panel(&NewPanel, window, cx)),
             )
             .child(format!("＋  {modifier} N"));
 
