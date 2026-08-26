@@ -161,6 +161,20 @@ const COACH_TOAST_WIDTH: f32 = 288.0;
 /// of rebuilding every transcript at display refresh rate for the full lifetime.
 const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(10);
 const SHOWCASE_DURATION: Duration = Duration::from_millis(1800);
+/// The small, hands-on curriculum shown to a new user. Once every item has
+/// been practiced, onboarding gets out of the way permanently because the
+/// learning model is persisted across launches.
+const ONBOARDING_SKILLS: &[&str] = &[
+    "focus_left_right",
+    "focus_up_down",
+    "new_panel",
+    "close_panel",
+    "move_panel",
+    "move_panel_strip",
+    "width_presets",
+    "cycle_width",
+    "overview",
+];
 /// Rows split the square's inner height evenly, one per strip.
 const MINIMAP_ROW_HEIGHT: f32 =
     (MINIMAP_SIZE - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
@@ -1389,6 +1403,16 @@ impl Workspace {
     fn learned(&mut self, skill_id: &str, cx: &mut Context<Self>) {
         self.coach.used_shortcut(skill_id, learning::now());
         self.after_coach_update(cx);
+    }
+
+    /// Onboarding is complete after the user has successfully exercised every
+    /// control it presents. `practiced` intentionally accepts prompted use: the
+    /// full coach can continue building recall later without keeping the
+    /// onboarding chrome on screen.
+    fn onboarding_complete(&self) -> bool {
+        ONBOARDING_SKILLS
+            .iter()
+            .all(|skill| self.coach.trace(skill).practiced())
     }
 
     /// Record that the user reached the same outcome the long way, which is the
@@ -4450,6 +4474,13 @@ impl Workspace {
                      group: &'static str,
                      action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             let is_learned = learned(skill);
+            let is_pressed = self.showcase_cue.as_ref().is_some_and(|cue| {
+                cue.tutorial_group == group && cue.shortcut.ends_with(&format!(" + {key}"))
+            });
+            let animation_id = format!(
+                "{id}-{}",
+                cue_animation.as_deref().unwrap_or("tutorial-idle")
+            );
             div()
                 .id(id)
                 .debug_selector(move || id.into())
@@ -4491,7 +4522,18 @@ impl Workspace {
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _, window, cx| action(this, window, cx)),
                 )
-                .child(div().text_size(px(17.0)).child(glyph))
+                .child(div().text_size(px(17.0)).child(glyph).with_animation(
+                    animation_id,
+                    Animation::new(Duration::from_millis(220)),
+                    move |el, delta| {
+                        let press = if is_pressed {
+                            (std::f32::consts::PI * delta).sin() * 4.0
+                        } else {
+                            0.0
+                        };
+                        el.mt(px(press))
+                    },
+                ))
                 .child(format!("{modifier} {key}"))
                 .when(is_learned, |el| {
                     el.child(
@@ -4645,7 +4687,21 @@ impl Workspace {
                             this.cycle_width(&CycleWidth, window, cx)
                         }),
                     )
-                    .child(format!("↔  {modifier} R")),
+                    .child(format!("↔  {modifier} R"))
+                    .with_animation(
+                        format!(
+                            "tutorial-resize-{}",
+                            cue_animation.as_deref().unwrap_or("idle")
+                        ),
+                        Animation::new(Duration::from_millis(220)),
+                        move |el, delta| {
+                            el.mt(px(if active == Some("resize") {
+                                (std::f32::consts::PI * delta).sin() * 4.0
+                            } else {
+                                0.0
+                            }))
+                        },
+                    ),
             )
             .child(
                 div()
@@ -4673,7 +4729,21 @@ impl Workspace {
                             this.toggle_overview(&ToggleOverview, window, cx)
                         }),
                     )
-                    .child(format!("▦  {modifier} O")),
+                    .child(format!("▦  {modifier} O"))
+                    .with_animation(
+                        format!(
+                            "tutorial-overview-{}",
+                            cue_animation.as_deref().unwrap_or("idle")
+                        ),
+                        Animation::new(Duration::from_millis(220)),
+                        move |el, delta| {
+                            el.mt(px(if active == Some("overview") {
+                                (std::f32::consts::PI * delta).sin() * 4.0
+                            } else {
+                                0.0
+                            }))
+                        },
+                    ),
             );
 
         let new_session = div()
@@ -4721,7 +4791,21 @@ impl Workspace {
                         .debug_selector(|| "tutorial-learned-new_panel".into())
                         .child("✓"),
                 )
-            });
+            })
+            .with_animation(
+                format!(
+                    "tutorial-new-{}",
+                    cue_animation.as_deref().unwrap_or("idle")
+                ),
+                Animation::new(Duration::from_millis(220)),
+                move |el, delta| {
+                    el.mt(px(if active == Some("new") {
+                        (std::f32::consts::PI * delta).sin() * 4.0
+                    } else {
+                        0.0
+                    }))
+                },
+            );
 
         let close_session = div()
             .id("tutorial-close")
@@ -4791,7 +4875,7 @@ impl Workspace {
             .left(px(12.0))
             .text_size(px(10.0))
             .text_color(Theme::global().TEXT_DIM)
-            .child(format!("tutorial · stage {tutorial_stage}"));
+            .child(format!("onboarding · step {tutorial_stage} of 3"));
 
         div()
             .id("tutorial-guides")
@@ -5263,9 +5347,15 @@ impl Render for Workspace {
                     // Showcase feedback for tutorial actions lives on the
                     // corresponding lesson itself. Keep the standalone card
                     // only for mode/help feedback that has no tutorial icon.
-                    .when(self.showcase_mode, |el| {
-                        el.child(self.render_tutorial_guides(cx))
-                    })
+                    // The tutorial is first-run onboarding, not a permanent
+                    // workspace mode. Persisted practice makes it disappear as
+                    // soon as the final lesson is learned and keeps it gone on
+                    // future launches.
+                    .when(
+                        self.showcase_mode
+                            && (!self.onboarding_complete() || self.showcase_cue.is_some()),
+                        |el| el.child(self.render_tutorial_guides(cx)),
+                    )
                     // Paint non-tutorial feedback last so it remains above the
                     // canvas without covering an animated tutorial control.
                     .when_some(
@@ -9011,6 +9101,30 @@ mod tests {
         assert!(cx.debug_bounds("tutorial-width-presets").is_some());
         assert!(cx.debug_bounds("tutorial-nav-left").is_some());
         assert!(cx.debug_bounds("tutorial-resize").is_none());
+    }
+
+    #[gpui::test]
+    fn onboarding_disappears_after_every_presented_skill_is_practiced(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) = focused_workspace(cx);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tutorial-guides").is_some());
+
+        let now = learning::now();
+        workspace.update(cx, |workspace, cx| {
+            for skill in ONBOARDING_SKILLS {
+                workspace.test_coach_mut().used_shortcut(skill, now);
+            }
+            assert!(workspace.onboarding_complete());
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("tutorial-guides").is_none(),
+            "completed first-run onboarding should no longer cover the workspace"
+        );
     }
 
     #[gpui::test]
