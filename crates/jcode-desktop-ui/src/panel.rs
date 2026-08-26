@@ -4502,6 +4502,64 @@ mod tests {
     }
 
     #[gpui::test]
+    fn minimap_paints_live_state_and_todo_progress_through_the_workspace_surface(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("minimap-render-state", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.status = "streaming".into();
+            panel.streaming_text = "visible live response".into();
+            cx.notify();
+        });
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("minimap-panel-0-streaming").is_some(),
+            "the public workspace surface must paint the streaming state"
+        );
+
+        panel.update(vcx, |panel, cx| {
+            panel.streaming_text.clear();
+            panel.status = "idle".into();
+            panel.items.push(Item::Todos(TodoCardPayload {
+                todos: vec![TodoCardItem {
+                    content: "finished".into(),
+                    status: "completed".into(),
+                    group: None,
+                    blocked_by: vec![],
+                }],
+                plan: TodoCardPlan::default(),
+            }));
+            cx.notify();
+        });
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("minimap-panel-0-complete").is_some(),
+            "the public workspace surface must paint completed sessions"
+        );
+        let progress = vcx
+            .debug_bounds("minimap-panel-0-todo-progress")
+            .expect("completed todo progress indicator is painted");
+        let panel_bounds = vcx
+            .debug_bounds("minimap-panel-0-complete")
+            .expect("completed minimap panel is painted");
+        assert_eq!(
+            progress.size.width, panel_bounds.size.width,
+            "a fully complete todo set fills the minimap progress footline"
+        );
+    }
+
+    #[gpui::test]
     fn email_panel_paints_attention_metadata_from_gmail_labels(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
