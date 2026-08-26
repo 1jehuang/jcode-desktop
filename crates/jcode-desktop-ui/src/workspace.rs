@@ -3119,6 +3119,7 @@ impl Workspace {
             .collect::<HashMap<_, _>>();
         let mut list = div()
             .id("sidebar-session-list")
+            .debug_selector(|| "sidebar-session-list".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -3147,6 +3148,8 @@ impl Workspace {
                 .copied()
                 .unwrap_or(usize::MAX)
         });
+        let open_session_count = open_sessions.len();
+        let other_session_count = other_sessions.len();
         let ordered_sessions = open_sessions
             .into_iter()
             .map(|session| (true, session))
@@ -3158,21 +3161,57 @@ impl Workspace {
             if previous_section != Some(is_open) {
                 previous_section = Some(is_open);
                 previous_saved = None;
-                let (id, label) = if is_open {
-                    ("sidebar-open-panels-heading", "Open panels")
+                let (id, label, count, accent) = if is_open {
+                    (
+                        "sidebar-open-panels-heading",
+                        "Live panels",
+                        open_session_count,
+                        Theme::global().AI_ACCENT,
+                    )
                 } else {
-                    ("sidebar-other-sessions-heading", "Other sessions")
+                    (
+                        "sidebar-other-sessions-heading",
+                        "Session history",
+                        other_session_count,
+                        Theme::global().TEXT_DIM,
+                    )
                 };
                 list = list.child(
                     div()
                         .id(id)
                         .debug_selector(move || id.into())
-                        .mx_4()
-                        .mt_2()
-                        .mb_1()
+                        .mx_2()
+                        .mt(if is_open { px(4.0) } else { px(12.0) })
+                        .mb_2()
+                        .px_2()
+                        .pt(if is_open { px(4.0) } else { px(10.0) })
+                        .when(!is_open, |heading| {
+                            heading
+                                .border_t_1()
+                                .border_color(Theme::global().PANEL_BORDER)
+                        })
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .text_size(px(10.0))
                         .text_color(Theme::global().TEXT_DIM)
-                        .child(label),
+                        .child(div().size(px(6.0)).rounded_full().bg(accent))
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(18.0))
+                                .px_1()
+                                .rounded_full()
+                                .bg(Theme::global().HEADER_BG)
+                                .text_center()
+                                .text_size(px(9.0))
+                                .child(count.to_string()),
+                        ),
                 );
             }
             if previous_saved == Some(true) && !session.saved {
@@ -6620,6 +6659,49 @@ mod tests {
         assert!(
             vcx.debug_bounds("sidebar-other-sessions-heading").is_some(),
             "sessions without a panel should have their own section"
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_session_history_moves_when_the_user_scrolls(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Sessions {
+                    sessions: (0..80)
+                        .map(|index| {
+                            session_info(
+                                Box::leak(format!("session_fox_history_{index}").into_boxed_str()),
+                                Some("previous work"),
+                            )
+                        })
+                        .collect(),
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let before = workspace.read_with(vcx, |workspace, _| workspace.sidebar_scroll.offset().y);
+        let list = vcx
+            .debug_bounds("sidebar-session-list")
+            .expect("session list should paint");
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: list.center(),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -4.0)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+
+        let after = workspace.read_with(vcx, |workspace, _| workspace.sidebar_scroll.offset().y);
+        assert_ne!(after, before, "wheel input must move the session history");
+        assert!(
+            vcx.debug_bounds("sidebar-scrollbar").is_some(),
+            "overflowing session history should paint a scrollbar"
         );
     }
 
