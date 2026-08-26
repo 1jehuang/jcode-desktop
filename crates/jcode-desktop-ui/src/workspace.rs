@@ -3048,16 +3048,43 @@ impl Workspace {
             .track_scroll(&self.sidebar_scroll)
             .py_2();
 
-        // Match the TUI `/resume` picker exactly: saved sessions first, then
-        // all other sessions, newest activity first within both sections.
-        let ordered_sessions = sidebar_session_order(&self.sessions);
-        let saved_count = ordered_sessions
-            .iter()
-            .take_while(|session| session.saved)
-            .count();
-        let session_count = ordered_sessions.len();
-        for (sidebar_index, session) in ordered_sessions.into_iter().enumerate() {
-            if sidebar_index == saved_count && saved_count > 0 && saved_count < session_count {
+        // A session which already has a panel is navigation. Everything else
+        // is an invitation to open another panel, so keep those two actions in
+        // visibly separate sections. Preserve the TUI saved/recency ordering
+        // within each section.
+        let (open_sessions, other_sessions): (Vec<_>, Vec<_>) =
+            sidebar_session_order(&self.sessions)
+                .into_iter()
+                .partition(|session| open_statuses.contains_key(&session.session_id));
+        let ordered_sessions = open_sessions
+            .into_iter()
+            .map(|session| (true, session))
+            .chain(other_sessions.into_iter().map(|session| (false, session)))
+            .collect::<Vec<_>>();
+        let mut previous_section = None;
+        let mut previous_saved = None;
+        for (sidebar_index, (is_open, session)) in ordered_sessions.into_iter().enumerate() {
+            if previous_section != Some(is_open) {
+                previous_section = Some(is_open);
+                previous_saved = None;
+                let (id, label) = if is_open {
+                    ("sidebar-open-panels-heading", "Open panels")
+                } else {
+                    ("sidebar-other-sessions-heading", "Other sessions")
+                };
+                list = list.child(
+                    div()
+                        .id(id)
+                        .debug_selector(move || id.into())
+                        .mx_4()
+                        .mt_2()
+                        .mb_1()
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(label),
+                );
+            }
+            if previous_saved == Some(true) && !session.saved {
                 list = list.child(
                     div()
                         .id("sidebar-session-divider")
@@ -3068,6 +3095,7 @@ impl Workspace {
                         .border_color(Theme::global().PANEL_BORDER),
                 );
             }
+            previous_saved = Some(session.saved);
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
             let (icon, mut title) = sidebar_session_title(&session);
             if session
@@ -6159,6 +6187,36 @@ mod tests {
         assert!(
             vcx.debug_bounds("sidebar-session-divider").is_some(),
             "a horizontal rule should separate saved sessions from other sessions"
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_separates_open_panels_from_other_sessions(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("session_fox_open", cx);
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![
+                        session_info("session_owl_closed", Some("previous work")),
+                        session_info("session_fox_open", Some("visible work")),
+                    ],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        assert!(
+            vcx.debug_bounds("sidebar-open-panels-heading").is_some(),
+            "sessions represented by a visible panel should have their own section"
+        );
+        assert!(
+            vcx.debug_bounds("sidebar-other-sessions-heading").is_some(),
+            "sessions without a panel should have their own section"
         );
     }
 
