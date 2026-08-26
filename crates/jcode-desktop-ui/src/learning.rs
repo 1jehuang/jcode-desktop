@@ -289,6 +289,14 @@ impl Default for Trace {
 }
 
 impl Trace {
+    /// Whether the user has practiced this shortcut at least once, either from
+    /// memory or immediately after a prompt. Tutorial completion reflects
+    /// hands-on practice, while mastery still distinguishes copied from
+    /// unaided recall.
+    pub fn practiced(&self) -> bool {
+        self.recalled > 0 || self.copied > 0
+    }
+
     /// Probability of recalling the skill unaided right now, given how long it
     /// has been since the trace was last reinforced.
     ///
@@ -1481,5 +1489,18 @@ mod tests {
         let report = coach.report(1_000_000);
         let listed: usize = report.iter().map(|(_, rows)| rows.len()).sum();
         assert_eq!(listed, SKILLS.len(), "every skill must appear exactly once");
+    }
+
+    #[test]
+    fn prompted_shortcut_use_counts_as_tutorial_practice() {
+        let mut trace = Trace::default();
+        assert!(!trace.practiced());
+
+        trace.copied = 1;
+        assert!(trace.practiced());
+
+        trace.copied = 0;
+        trace.recalled = 1;
+        assert!(trace.practiced());
     }
 }

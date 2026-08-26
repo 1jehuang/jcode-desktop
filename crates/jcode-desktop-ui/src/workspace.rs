@@ -4350,7 +4350,11 @@ impl Workspace {
             "Super"
         };
         let active = self.showcase_cue.as_ref().map(|cue| cue.tutorial_group);
-        let learned = |skill: &str| self.coach.trace(skill).recalled > 0;
+        // A tutorial control turns green once it has been practiced. The
+        // learning model still treats prompted use as weaker than unaided
+        // recall, but leaving prompted navigation unmarked made the tutorial
+        // appear to ignore successful use.
+        let learned = |skill: &str| self.coach.trace(skill).practiced();
         let stage_one_complete = [
             "focus_left_right",
             "focus_up_down",
