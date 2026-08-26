@@ -555,6 +555,16 @@ impl Panel {
         self.schedule_transcript_wheel_tick(cx);
     }
 
+    fn scroll_transcript_direct(&mut self, delta_y: f32, cx: &mut Context<Self>) {
+        if delta_y > 0.0 && self.stick_to_bottom {
+            self.stick_to_bottom = false;
+        }
+        let current = self.transcript_list.scroll_px_offset_for_scrollbar();
+        self.transcript_list
+            .set_offset_from_scrollbar(point(current.x, current.y + px(delta_y)));
+        cx.notify();
+    }
+
     fn schedule_transcript_wheel_tick(&mut self, cx: &mut Context<Self>) {
         self.transcript_wheel_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -3509,7 +3519,6 @@ impl Render for Panel {
                                 window.on_mouse_event(
                                     move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
                                         if phase != gpui::DispatchPhase::Capture
-                                            || event.delta.precise()
                                             || !hitbox.should_handle_scroll(window)
                                         {
                                             return;
@@ -3519,8 +3528,13 @@ impl Render for Panel {
                                         if y == 0.0 {
                                             return;
                                         }
+                                        let precise = event.delta.precise();
                                         let _ = wheel_panel.update(cx, |panel, cx| {
-                                            panel.glide_transcript_wheel(-y, cx);
+                                            if precise {
+                                                panel.scroll_transcript_direct(y, cx);
+                                            } else {
+                                                panel.glide_transcript_wheel(-y, cx);
+                                            }
                                         });
                                         cx.stop_propagation();
                                     },
@@ -4831,7 +4845,18 @@ mod tests {
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });
-        vcx.run_until_parked();
+        let (during_dispatch, glide_started) = panel.read_with(vcx, |panel, _| {
+            (
+                panel.test_scroll_offset_y(),
+                panel.transcript_wheel_task.is_some(),
+            )
+        });
+        assert_eq!(during_dispatch, before, "restored history must not jump");
+        assert!(glide_started, "restored history starts a momentum glide");
+        panel.update(vcx, |panel, cx| {
+            panel.transcript_wheel_task = None;
+            assert!(panel.advance_transcript_wheel(cx));
+        });
         let after = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         assert_ne!(after, before, "wheel input must move restored history");
     }
