@@ -48,8 +48,14 @@ jobs:
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev weston xvfb
-      - name: Test desktop workspace
+      - name: Test desktop workspace on Linux
+        if: matrix.platform == 'linux'
         working-directory: jcode-desktop
+        run: cargo test --workspace --locked
+      - name: Test desktop workspace on Windows
+        if: matrix.platform == 'windows'
+        working-directory: jcode-desktop
+        shell: pwsh
         run: cargo test --workspace --locked
       - name: Build and package Linux
         if: matrix.platform == 'linux'

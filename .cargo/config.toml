@@ -1,7 +1,7 @@
-# Keep local edit/build cycles fast. The wrapper uses sccache when it is
-# installed and transparently falls back to rustc everywhere else.
-[build]
-rustc-wrapper = "scripts/rustc-wrapper"
+# Developers with sccache can opt in with
+# `RUSTC_WRAPPER=scripts/rustc-wrapper cargo build`. Keeping a POSIX wrapper in
+# the repository-wide `[build]` table prevents Cargo from starting at all on
+# native Windows.
 
 # mold is substantially faster than the system linker for this large GPUI
 # dependency graph. This setting is Linux-only, so macOS packaging is intact.
