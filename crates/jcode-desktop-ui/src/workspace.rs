@@ -2764,6 +2764,52 @@ impl Workspace {
             }
             dy = 0.0;
         }
+        let empty_panel = self
+            .slots
+            .get(self.active)
+            .filter(|slot| slot.row == row)
+            .is_some_and(|slot| !slot.panel.read(cx).has_scrollable_conversation());
+        if empty_panel && dx == 0.0 && dy != 0.0 {
+            // With no conversation beneath the pointer, vertical scrolling is
+            // workspace navigation. A wheel notch moves one row immediately;
+            // precise touchpad deltas accumulate to the same deliberate
+            // threshold used by a vertical breakout from a horizontal pan.
+            let switch = if event.delta.precise() {
+                if event.touch_phase == gpui::TouchPhase::Started
+                    || self.gesture.axis != GestureAxis::Vertical
+                {
+                    self.gesture.reset();
+                    self.gesture.axis = GestureAxis::Vertical;
+                }
+                self.gesture.pull += dy;
+                if self.gesture.pull.abs() >= STRIP_BREAK {
+                    let switch = if self.gesture.pull < 0.0 { 1 } else { -1 };
+                    self.gesture.pull = 0.0;
+                    switch
+                } else {
+                    0
+                }
+            } else if dy < 0.0 {
+                1
+            } else {
+                -1
+            };
+            if switch != 0 {
+                let target = if switch > 0 {
+                    (self.active_row + 1).min(STRIP_COUNT - 1)
+                } else {
+                    self.active_row.saturating_sub(1)
+                };
+                if target != self.active_row {
+                    self.switch_row_animated(target, window, cx);
+                }
+            }
+            if event.touch_phase == gpui::TouchPhase::Ended {
+                self.gesture.reset();
+            }
+            cx.notify();
+            return true;
+        }
         if !event.delta.precise() {
             // Mouse wheels have no gesture continuity: horizontal clicks pan,
             // vertical ones stay with the panel under the pointer.
@@ -7650,6 +7696,44 @@ mod tests {
             assert_eq!(
                 workspace.active_row, 1,
                 "a vertical-first gesture must never hop strips"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn vertical_scroll_over_an_empty_panel_moves_between_strips(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("empty", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(cx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(cx, |panel, cx| {
+            panel.items.clear();
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let target = cx
+            .debug_bounds("panel-0")
+            .expect("the empty panel should paint")
+            .center();
+        for phase in [gpui::TouchPhase::Started, gpui::TouchPhase::Moved] {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: target,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-STRIP_BREAK * 0.6))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: phase,
+            });
+            cx.run_until_parked();
+        }
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 1,
+                "vertical travel over an empty conversation should navigate strips"
             );
         });
     }

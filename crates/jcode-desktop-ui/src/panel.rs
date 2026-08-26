@@ -440,6 +440,20 @@ impl Panel {
         &self.status
     }
 
+    /// Whether the regular conversation surface has anything that can consume
+    /// a vertical scroll. Workspace gesture routing uses this to let an empty
+    /// panel behave like bare canvas and move between strips instead.
+    pub(crate) fn has_scrollable_conversation(&self) -> bool {
+        self.code_file.is_some()
+            || self.gmail_inbox.is_some()
+            || self.gmail_message.is_some()
+            || self.todoist.is_some()
+            || self.terminal.is_some()
+            || self.transcript_row_count > 0
+            || !self.streaming_text.is_empty()
+            || !self.streaming_reasoning.is_empty()
+    }
+
     pub fn new(
         session_id: String,
         title: Option<String>,
