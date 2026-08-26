@@ -123,12 +123,24 @@ const SIDEBAR_WIDTH: f32 = 264.0;
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
 const TITLEBAR_HEIGHT: f32 = 52.0;
+/// Horizontal space occupied by the macOS close, minimize, and zoom controls.
+/// Keep sidebar navigation out of this region while retaining Linux's current
+/// left alignment.
+const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 76.0;
 
 fn content_top_inset(show_sidebar: bool) -> f32 {
     if cfg!(target_os = "macos") && !show_sidebar {
         TITLEBAR_HEIGHT
     } else {
         0.0
+    }
+}
+
+fn sidebar_header_left_padding() -> f32 {
+    if cfg!(target_os = "macos") {
+        MACOS_TRAFFIC_LIGHTS_WIDTH
+    } else {
+        12.0
     }
 }
 
@@ -3188,10 +3200,12 @@ impl Workspace {
             .border_color(Theme::global().PANEL_BORDER)
             .child(
                 div()
-                    // Keep the sidebar navigation anchored to the same left edge
-                    // as the content below it.
                     .h(px(TITLEBAR_HEIGHT))
-                    .px_3()
+                    // The transparent macOS titlebar puts the traffic lights in
+                    // this row. Start navigation after them; on other platforms
+                    // preserve the existing 12px inset.
+                    .pl(px(sidebar_header_left_padding()))
+                    .pr_3()
                     .flex()
                     .items_center()
                     .justify_start()
@@ -5405,6 +5419,18 @@ mod tests {
     #[test]
     fn sidebar_never_adds_a_workspace_top_inset() {
         assert_eq!(content_top_inset(true), 0.0);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn sidebar_header_keeps_its_linux_alignment() {
+        assert_eq!(sidebar_header_left_padding(), 12.0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn sidebar_header_clears_macos_traffic_lights() {
+        assert_eq!(sidebar_header_left_padding(), MACOS_TRAFFIC_LIGHTS_WIDTH);
     }
 
     #[test]
