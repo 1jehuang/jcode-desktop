@@ -4950,9 +4950,6 @@ impl Render for Workspace {
                     .pt(px(content_top_inset))
                     .child(content)
                     .child(self.render_workspace_bar(cx))
-                    .when(self.showcase_mode, |el| {
-                        el.child(self.render_tutorial_guides(cx))
-                    })
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
                         el.child(self.render_minimap(viewport_w, viewport_h, cx))
                     })
@@ -4964,6 +4961,11 @@ impl Render for Workspace {
                     })
                     .when_some(self.showcase_cue.as_ref(), |el, cue| {
                         el.child(self.render_showcase_cue(cue))
+                    })
+                    // Keep lessons above both canvas affordances and action
+                    // feedback so one successful click cannot block the next.
+                    .when(self.showcase_mode, |el| {
+                        el.child(self.render_tutorial_guides(cx))
                     })
                     // Update status stays visible in every mode, including
                     // overview: a user whose build cannot render text still
@@ -8493,6 +8495,70 @@ mod tests {
                 workspace.show_sidebar, !visible_first,
                 "the ctrl-shift-e alias should toggle the sidebar too"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn contextual_tutorial_controls_drive_the_actions_they_depict(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = focused_workspace(cx);
+        cx.run_until_parked();
+
+        let new_session = cx.debug_bounds("tutorial-new").expect("new session guide");
+        cx.simulate_click(new_session.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert!(
+                workspace.test_coach().trace("new_panel").recalled > 0,
+                "the + guide should dispatch the same learned action as the shortcut"
+            );
+        });
+
+        // Terminals appear synchronously, giving the arrow controls two real
+        // neighbours without depending on an external session bridge response.
+        cx.simulate_keystrokes(&format!("{MOD}-enter {MOD}-enter"));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| assert_eq!(workspace.active, 1));
+
+        let left = cx
+            .debug_bounds("tutorial-nav-left")
+            .expect("left arrow guide");
+        cx.simulate_click(left.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(workspace.active, 0, "the left arrow should focus left");
+        });
+        // The right arrow is rendered and wired through the same helper as the
+        // directly exercised left arrow. Return focus with the canonical action
+        // so the remaining contextual controls run against the second panel.
+        cx.simulate_keystrokes(&format!("{MOD}-l"));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active, 1,
+                "the canonical action should focus right"
+            );
+        });
+
+        let width_before = workspace.update(cx, |workspace, _| {
+            workspace.slots[workspace.active].width_fraction
+        });
+        let resize = cx.debug_bounds("tutorial-resize").expect("resize guide");
+        cx.simulate_click(resize.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_ne!(
+                workspace.slots[workspace.active].width_fraction, width_before,
+                "the resize guide should cycle the focused panel width"
+            );
+        });
+
+        let overview = cx
+            .debug_bounds("tutorial-overview")
+            .expect("overview guide");
+        cx.simulate_click(overview.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert!(workspace.overview, "the grid guide should open overview");
         });
     }
 
