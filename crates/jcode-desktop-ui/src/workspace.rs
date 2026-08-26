@@ -4420,7 +4420,9 @@ impl Workspace {
                     this.focus_down(&FocusDown, window, cx)
                 })
                 .absolute()
-                .bottom(px(14.0))
+                // Keep the down lesson clear of the prompt composer, which is
+                // anchored to the bottom of every session panel.
+                .bottom(px(104.0))
                 .left(relative(0.5)),
             );
 
@@ -4494,7 +4496,10 @@ impl Workspace {
             .debug_selector(|| "tutorial-new".into())
             .absolute()
             .right(px(10.0))
-            .top(relative(0.5))
+            // The right navigation lesson also lives at mid-height. Keep the
+            // creation lesson in the upper tool cluster instead of stacking it
+            // over Super+L.
+            .top(px(MINIMAP_TOP + MINIMAP_SIZE + 42.0))
             .px_2()
             .py_1()
             .rounded_lg()
@@ -8569,6 +8574,27 @@ mod tests {
         cx.run_until_parked();
 
         let new_session = cx.debug_bounds("tutorial-new").expect("new session guide");
+        let right_guide = cx
+            .debug_bounds("tutorial-nav-right")
+            .expect("right navigation guide");
+        assert!(
+            new_session.origin.y + new_session.size.height <= right_guide.origin.y
+                || right_guide.origin.y + right_guide.size.height <= new_session.origin.y,
+            "the Super+N and Super+L lessons must not overlap"
+        );
+
+        let down_guide = cx
+            .debug_bounds("tutorial-nav-down")
+            .expect("down navigation guide");
+        let tutorial = cx
+            .debug_bounds("tutorial-guides")
+            .expect("tutorial guide canvas");
+        assert!(
+            down_guide.origin.y + down_guide.size.height
+                <= tutorial.origin.y + tutorial.size.height - px(96.0),
+            "the Super+J lesson must leave the bottom input area unobstructed"
+        );
+
         cx.simulate_click(new_session.center(), gpui::Modifiers::default());
         cx.run_until_parked();
         workspace.update(cx, |workspace, _| {
