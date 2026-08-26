@@ -1132,6 +1132,13 @@ impl Panel {
                                     content: content.clone(),
                                     images,
                                 });
+                                if !this.items.iter().any(|item| matches!(item, Item::User(_)))
+                                    && custom_session_title(&this.session_id, this.title.as_ref())
+                                        .is_none()
+                                    && let Some(title) = first_prompt_title(&content)
+                                {
+                                    this.title = title.into();
+                                }
                                 let index = this.items.len();
                                 this.items.push(Item::User(content));
                                 this.items.extend(echoed_images.into_iter().map(
@@ -2971,6 +2978,23 @@ fn custom_session_title<'a>(session_id: &str, title: &'a str) -> Option<&'a str>
     (!title.is_empty() && title != short_id(session_id)).then_some(title)
 }
 
+/// Give a new conversation an immediate, useful label while the agent is still
+/// working out the more durable todo/plan title.
+fn first_prompt_title(prompt: &str) -> Option<String> {
+    const MAX_CHARS: usize = 64;
+    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() || normalized.starts_with('/') {
+        return None;
+    }
+    let mut chars = normalized.chars();
+    let title = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    Some(if chars.next().is_some() {
+        format!("{}…", title.trim_end())
+    } else {
+        title
+    })
+}
+
 /// Defensive render-time grouping for transcripts assembled from more than one
 /// event source. Streaming normally merges reasoning as it arrives, but a
 /// reconnect or provider boundary can leave adjacent reasoning items behind.
@@ -3880,6 +3904,16 @@ mod tests {
         );
         assert_eq!(custom_session_title(session_id, &fallback), None);
         assert_eq!(custom_session_title(session_id, "  "), None);
+    }
+
+    #[test]
+    fn first_prompt_becomes_a_compact_provisional_title() {
+        assert_eq!(
+            first_prompt_title("  help me   improve the session sidebar\nplease ").as_deref(),
+            Some("help me improve the session sidebar please")
+        );
+        assert_eq!(first_prompt_title(" /model gpt-5.6 "), None);
+        assert!(first_prompt_title(&"x".repeat(80)).unwrap().ends_with('…'));
     }
 
     #[test]

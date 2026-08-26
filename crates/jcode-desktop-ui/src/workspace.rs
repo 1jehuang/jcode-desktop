@@ -2986,6 +2986,14 @@ impl Workspace {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let open_titles = self
+            .slots
+            .iter()
+            .map(|slot| {
+                let panel = slot.panel.read(cx);
+                (panel.session_id.clone(), panel.title.to_string())
+            })
+            .collect::<HashMap<_, _>>();
         let mut list = div()
             .id("sidebar-session-list")
             .flex_1()
@@ -3016,7 +3024,17 @@ impl Workspace {
                 );
             }
             let selected = active_id.as_deref() == Some(session.session_id.as_str());
-            let (icon, title) = sidebar_session_title(&session);
+            let (icon, mut title) = sidebar_session_title(&session);
+            if session
+                .title
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+                && let Some(open_title) = open_titles.get(&session.session_id)
+                && custom_sidebar_title(&session.session_id, open_title)
+            {
+                title.clone_from(open_title);
+            }
             let directory = sidebar_session_directory(&session);
             let meta = sidebar_session_meta(&session);
             let details = match (directory, meta) {
@@ -4861,6 +4879,12 @@ fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, Str
         .or_else(|| animal.map(str::to_owned))
         .unwrap_or_else(|| session.session_id.chars().take(12).collect());
     (icon, title)
+}
+
+fn custom_sidebar_title(session_id: &str, title: &str) -> bool {
+    let title = title.trim();
+    !title.is_empty()
+        && title != jcode_core::id::extract_session_name(session_id).unwrap_or(session_id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
