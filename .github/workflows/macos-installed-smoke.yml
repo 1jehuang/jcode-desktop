@@ -7,6 +7,10 @@ on:
         description: Published desktop release tag
         required: true
         default: desktop-v0.1.0-beta.2
+      expected_update_build:
+        description: Optional newer CFBundleVersion expected after automatic update and relaunch
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -38,6 +42,7 @@ jobs:
           test "$(grep -c 'universal binary with 2 architectures' binaries.txt)" = 3
           Jcode.app/Contents/MacOS/jcode --version
       - name: Launch the app bundle
+        if: inputs.expected_update_build == ''
         run: |
           set -euo pipefail
           JCODE_DESKTOP_STATE="$RUNNER_TEMP/desktop-state.txt" \
@@ -51,3 +56,46 @@ jobs:
           fi
           kill "$pid"
           wait "$pid" || true
+      - name: Update an installed older app and relaunch it
+        if: inputs.expected_update_build != ''
+        env:
+          EXPECTED_UPDATE_BUILD: ${{ inputs.expected_update_build }}
+        run: |
+          set -euo pipefail
+          app="$PWD/Jcode.app"
+          before=$(defaults read "$app/Contents/Info" CFBundleVersion)
+          test "$before" != "$EXPECTED_UPDATE_BUILD"
+
+          # Launch through LaunchServices so Sparkle observes the same lifecycle
+          # as a Finder-launched installed app. The packaged bootstrap performs
+          # an immediate background check after NSApplication finishes launching.
+          open "$app"
+          for attempt in {1..90}; do
+            if pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null
+
+          # SUAutomaticallyUpdate stages the signed archive and installs it when
+          # the application terminates. Give the real network/download path time
+          # to finish, then request a normal application quit rather than killing
+          # the process and bypassing Sparkle's termination observer.
+          sleep 90
+          osascript -e 'tell application id "dev.solosystems.jcode.desktop" to quit'
+
+          for attempt in {1..120}; do
+            build=$(defaults read "$app/Contents/Info" CFBundleVersion)
+            if [[ "$build" == "$EXPECTED_UPDATE_BUILD" ]]; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(defaults read "$app/Contents/Info" CFBundleVersion)" = "$EXPECTED_UPDATE_BUILD"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          open "$app"
+          sleep 12
+          pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null
+          osascript -e 'tell application id "dev.solosystems.jcode.desktop" to quit'
