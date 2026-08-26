@@ -217,6 +217,19 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     })
 }
 
+/// Disarm server-side crash detection when a desktop-owned attachment ends
+/// normally. A process crash skips `Drop`, leaving the server to mark it crashed.
+struct GracefulDetach<'a> {
+    client: &'a JcodeClient,
+    session_id: &'a str,
+}
+
+impl Drop for GracefulDetach<'_> {
+    fn drop(&mut self) {
+        let _ = self.client.detach_session(self.session_id);
+    }
+}
+
 fn run(updates: UpdateSender, commands: Receiver<Command>) {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
@@ -264,6 +277,11 @@ fn run(updates: UpdateSender, commands: Receiver<Command>) {
                     .spawn(move || match connect("create") {
                         Ok(client) => match client.create_session(working_dir) {
                             Ok(session) => {
+                                let session_id = session.session_id.clone();
+                                let _detach = GracefulDetach {
+                                    client: &client,
+                                    session_id: &session_id,
+                                };
                                 let _ = updates.send(Update::SessionCreated { session });
                             }
                             Err(error) => {
@@ -861,6 +879,10 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             std::thread::sleep(Duration::from_millis(300));
             continue;
         }
+        let _detach = GracefulDetach {
+            client: &client,
+            session_id: &session_id,
+        };
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
         });
