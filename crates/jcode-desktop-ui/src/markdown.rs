@@ -12,6 +12,7 @@ use gpui::{
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::text_selection::{self, TextSelection};
 use crate::theme::{Theme, to_hsla};
 
 #[derive(Debug, PartialEq)]
@@ -764,28 +765,41 @@ fn convert_scripts(source: &str, marker: char) -> String {
 }
 
 /// A styled inline run. Links are clickable when any are present.
-fn styled_line(source: &str, window: &gpui::Window) -> gpui::AnyElement {
+fn styled_line(
+    source: &str,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui::AnyElement {
     let inline = inline_spans(source);
     let style = window.text_style();
-    let text = StyledText::new(inline.plain.clone())
-        .with_default_highlights(&style, flatten_highlights(&inline.highlights));
-    if inline.links.is_empty() {
-        return text.into_any_element();
+    let mut highlights = inline.highlights.clone();
+    if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
+        highlights.push(highlight);
     }
-    let ranges: Vec<_> = inline
-        .links
-        .iter()
-        .map(|(range, _)| range.clone())
-        .collect();
-    let urls: Vec<String> = inline.links.iter().map(|(_, url)| url.clone()).collect();
-    let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
-    InteractiveText::new(id, text)
-        .on_click(ranges, move |index, _window, cx| {
-            if let Some(url) = urls.get(index) {
-                cx.open_url(url);
-            }
-        })
-        .into_any_element()
+    let text = StyledText::new(inline.plain.clone())
+        .with_default_highlights(&style, flatten_highlights(&highlights));
+    let layout = text.layout().clone();
+    let child = if inline.links.is_empty() {
+        text.into_any_element()
+    } else {
+        let ranges: Vec<_> = inline
+            .links
+            .iter()
+            .map(|(range, _)| range.clone())
+            .collect();
+        let urls: Vec<String> = inline.links.iter().map(|(_, url)| url.clone()).collect();
+        let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
+        InteractiveText::new(id, text)
+            .on_click(ranges, move |index, _window, cx| {
+                if let Some(url) = urls.get(index) {
+                    cx.open_url(url);
+                }
+            })
+            .into_any_element()
+    };
+    text_selection::selectable(selection.clone(), key, inline.plain, layout, child, cx)
 }
 
 fn hash(text: &str) -> u64 {
@@ -1304,12 +1318,19 @@ fn mermaid_display_line(line: &str) -> Option<String> {
 // --- Rendering -------------------------------------------------------------
 
 /// Render markdown into a column of GPUI elements.
-pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
+pub fn render(
+    source: &str,
+    row: usize,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> impl IntoElement {
     let blocks = parse(source);
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
 
-    for block in blocks {
+    for (block_index, block) in blocks.into_iter().enumerate() {
+        let text_key = || -> SharedString { format!("{row}-{block_index}").into() };
         let is_list = matches!(block, Block::Bullet { .. } | Block::Numbered { .. });
         let tight = is_list && previous_was_list;
         previous_was_list = is_list;
@@ -1333,7 +1354,7 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                             .font_weight(weight)
                             .text_color(Theme::global().HEADING)
                             .line_height(relative(1.35))
-                            .child(styled_line(&text, window)),
+                            .child(styled_line(&text, selection, text_key(), window, cx)),
                     )
                     .when(level <= 2, |el| {
                         el.child(div().h(px(1.0)).w_full().bg(Theme::global().PANEL_BORDER))
@@ -1342,7 +1363,7 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
             }
             Block::Paragraph(text) => div()
                 .line_height(relative(1.55))
-                .child(styled_line(&text, window))
+                .child(styled_line(&text, selection, text_key(), window, cx))
                 .into_any_element(),
             Block::Bullet { depth, text, task } => {
                 let marker = match task {
@@ -1359,7 +1380,18 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                     Some(false) => Theme::global().TEXT_DIM,
                     None => Theme::global().ACCENT_MUTED,
                 };
-                list_row(depth, marker, marker_color, &text, window, tight, task)
+                list_row(
+                    depth,
+                    marker,
+                    marker_color,
+                    &text,
+                    selection,
+                    text_key(),
+                    window,
+                    cx,
+                    tight,
+                    task,
+                )
             }
             Block::Numbered {
                 depth,
@@ -1370,7 +1402,10 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 format!("{number}."),
                 Theme::global().ACCENT_MUTED,
                 &text,
+                selection,
+                text_key(),
                 window,
+                cx,
                 tight,
                 None,
             ),
@@ -1399,13 +1434,22 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                             lines
                                 .iter()
                                 .filter(|line| !line.trim().is_empty())
-                                .map(|line| div().child(styled_line(line, window))),
+                                .enumerate()
+                                .map(|(line_index, line)| {
+                                    div().child(styled_line(
+                                        line,
+                                        selection,
+                                        format!("{row}-{block_index}-{line_index}").into(),
+                                        window,
+                                        cx,
+                                    ))
+                                }),
                         ),
                 )
                 .into_any_element(),
             Block::Code { lang, body } => code_block(&lang, &body, window),
             Block::Mermaid(body) => mermaid_diagram(&body),
-            Block::Table { header, rows } => table(header, rows, window),
+            Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
             Block::Math(text) => div()
                 .w_full()
                 .my_0p5()
@@ -1418,7 +1462,13 @@ pub fn render(source: &str, window: &gpui::Window) -> impl IntoElement {
                 .text_center()
                 .text_size(px(16.0))
                 .text_color(Theme::global().TEXT)
-                .child(text)
+                .child(text_selection::plain(
+                    selection.clone(),
+                    text_key(),
+                    text,
+                    window,
+                    cx,
+                ))
                 .into_any_element(),
             Block::Rule => div()
                 .h(px(1.0))
@@ -1438,7 +1488,10 @@ fn list_row(
     marker: String,
     marker_color: gpui::Rgba,
     text: &str,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
     window: &gpui::Window,
+    cx: &gpui::App,
     tight: bool,
     task: Option<bool>,
 ) -> gpui::AnyElement {
@@ -1465,12 +1518,19 @@ fn list_row(
                 .when(task == Some(true), |el| {
                     el.text_color(Theme::global().TEXT_DIM)
                 })
-                .child(styled_line(text, window)),
+                .child(styled_line(text, selection, key, window, cx)),
         )
         .into_any_element()
 }
 
-fn table(header: Vec<String>, rows: Vec<Vec<String>>, window: &gpui::Window) -> gpui::AnyElement {
+fn table(
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui::AnyElement {
     let columns = header
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0));
@@ -1481,7 +1541,13 @@ fn table(header: Vec<String>, rows: Vec<Vec<String>>, window: &gpui::Window) -> 
             .px_2p5()
             .py_1p5()
             .line_height(relative(1.45))
-            .child(styled_line(text, window))
+            .child(styled_line(
+                text,
+                selection,
+                format!("{key}-{:x}", hash(text)).into(),
+                window,
+                cx,
+            ))
     };
     div()
         .flex()

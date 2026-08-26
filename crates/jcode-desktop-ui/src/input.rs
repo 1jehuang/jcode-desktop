@@ -53,6 +53,7 @@ actions!(
 );
 
 pub fn bind_keys(cx: &mut App) {
+    crate::text_selection::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("PromptInput")),
         KeyBinding::new("delete", Delete, Some("PromptInput")),

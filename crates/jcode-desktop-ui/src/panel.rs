@@ -20,7 +20,9 @@ use crate::harness::{Bridge, Command, SessionOperation};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::markdown;
 use crate::terminal::TerminalPanel;
+use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
+use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
@@ -171,6 +173,7 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
+    transcript_selection: Entity<TextSelection>,
     stick_to_bottom: bool,
     /// A detached reload offset cannot be applied until asynchronous history
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
@@ -195,6 +198,9 @@ pub struct Panel {
     gmail_message: Option<GmailMessageState>,
     /// Persistent scroll position shared by the inbox and opened message body.
     gmail_scroll: ScrollHandle,
+    /// A native Todoist-backed task view. The existing session todo cards remain
+    /// independent and continue to represent the agent's current work.
+    todoist: Option<TodoistPanelState>,
     model_picker_open: bool,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -203,6 +209,22 @@ pub struct Panel {
 struct CodeFile {
     path: std::path::PathBuf,
     contents: Result<String, String>,
+}
+
+#[derive(Debug)]
+enum TodoistLoadState {
+    Loading,
+    Ready,
+    Error(String),
+}
+
+#[derive(Debug)]
+struct TodoistPanelState {
+    load: TodoistLoadState,
+    tasks: Vec<TodoistTask>,
+    projects: Vec<TodoistProject>,
+    selected_project: Option<String>,
+    busy_tasks: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -398,6 +420,9 @@ impl Panel {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| short_id(&session_id));
         let transcript_list = ListState::new(0, ListAlignment::Bottom, px(600.));
+        let transcript_selection = cx.new(TextSelection::new);
+        cx.observe(&transcript_selection, |_, _, cx| cx.notify())
+            .detach();
         let panel_entity = cx.entity();
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
@@ -426,6 +451,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
+            transcript_selection,
             stick_to_bottom: true,
             pending_history_scroll: None,
             bridge,
@@ -441,6 +467,7 @@ impl Panel {
             gmail_inbox: None,
             gmail_message: None,
             gmail_scroll: ScrollHandle::new(),
+            todoist: None,
             model_picker_open: false,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -496,6 +523,382 @@ impl Panel {
         panel.gmail_inbox = Some(GmailInboxState::Loading);
         panel.refresh_gmail(cx);
         panel
+    }
+
+    pub fn new_todoist(bridge: Bridge, cx: &mut Context<Self>) -> Self {
+        let mut panel = Self::new(
+            "todoist://tasks".into(),
+            Some("todos".into()),
+            None,
+            bridge,
+            cx,
+        );
+        panel.items.clear();
+        panel.todoist = Some(TodoistPanelState {
+            load: TodoistLoadState::Loading,
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            selected_project: None,
+            busy_tasks: HashSet::new(),
+        });
+        let weak = cx.weak_entity();
+        panel.input = cx.new(|cx| {
+            PromptInput::new(
+                cx,
+                "add a task, for example: Review PR tomorrow",
+                move |content, _, _, app| {
+                    let _ = weak.update(app, |panel, cx| panel.create_todoist_task(content, cx));
+                },
+            )
+        });
+        panel.refresh_todoist(cx);
+        panel
+    }
+
+    fn refresh_todoist(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.todoist.as_mut() else {
+            return;
+        };
+        state.load = TodoistLoadState::Loading;
+        cx.notify();
+        self.run_todoist(
+            cx,
+            |client| Ok((client.tasks()?, client.projects()?)),
+            |panel, result, cx| {
+                let Some(state) = panel.todoist.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok((tasks, projects)) => {
+                        state.tasks = tasks;
+                        state.projects = projects;
+                        state.load = TodoistLoadState::Ready;
+                    }
+                    Err(error) => state.load = TodoistLoadState::Error(error),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn create_todoist_task(&mut self, content: String, cx: &mut Context<Self>) {
+        let content = content.trim().to_owned();
+        if content.is_empty() {
+            return;
+        }
+        let project_id = self
+            .todoist
+            .as_ref()
+            .and_then(|state| state.selected_project.clone());
+        self.run_todoist(
+            cx,
+            move |client| {
+                client.create_task(&CreateTask {
+                    content: &content,
+                    project_id: project_id.as_deref(),
+                    ..CreateTask::default()
+                })
+            },
+            |panel, result, cx| {
+                let Some(state) = panel.todoist.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(task) => {
+                        state.tasks.push(task);
+                        state.load = TodoistLoadState::Ready;
+                    }
+                    Err(error) => state.load = TodoistLoadState::Error(error),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn complete_todoist_task(&mut self, id: String, cx: &mut Context<Self>) {
+        if let Some(state) = self.todoist.as_mut() {
+            state.busy_tasks.insert(id.clone());
+        }
+        self.run_todoist(
+            cx,
+            move |client| client.close_task(&id).map(|_| id),
+            |panel, result, cx| {
+                let Some(state) = panel.todoist.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(id) => state.tasks.retain(|task| task.id != id),
+                    Err(error) => state.load = TodoistLoadState::Error(error),
+                }
+                state.busy_tasks.clear();
+                cx.notify();
+            },
+        );
+    }
+
+    fn run_todoist<T: Send + 'static>(
+        &self,
+        cx: &mut Context<Self>,
+        operation: impl FnOnce(TodoistClient) -> crate::todoist::Result<T> + Send + 'static,
+        apply: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+    ) {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("jcode-todoist".into())
+            .spawn(move || {
+                let result = TodoistClient::from_env()
+                    .and_then(operation)
+                    .map_err(|error| error.to_string());
+                let _ = tx.send_blocking(result);
+            })
+            .expect("spawn Todoist worker");
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = rx.recv().await {
+                let _ = this.update(cx, |panel, cx| apply(panel, result, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn render_todoist(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let state = self.todoist.as_ref().expect("Todoist state");
+        let selected = state.selected_project.clone();
+        let mut tasks = state
+            .tasks
+            .iter()
+            .filter(|task| {
+                selected
+                    .as_ref()
+                    .is_none_or(|project| &task.project_id == project)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+        let mut projects = div().flex().flex_wrap().gap_1().child(
+            div()
+                .id("todoist-project-all")
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .bg(if selected.is_none() {
+                    Theme::global().ACCENT_DIM
+                } else {
+                    Theme::global().HEADER_BG
+                })
+                .text_size(px(11.))
+                .child("All")
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|panel, _, _, cx| {
+                        if let Some(state) = panel.todoist.as_mut() {
+                            state.selected_project = None;
+                        }
+                        cx.notify();
+                    }),
+                ),
+        );
+        for (index, project) in state.projects.iter().cloned().enumerate() {
+            let project_id = project.id.clone();
+            let is_selected = selected.as_deref() == Some(project.id.as_str());
+            projects = projects.child(
+                div()
+                    .id(("todoist-project", index))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .bg(if is_selected {
+                        Theme::global().ACCENT_DIM
+                    } else {
+                        Theme::global().HEADER_BG
+                    })
+                    .hover(|el| el.bg(Theme::global().ACCENT_DIM))
+                    .text_size(px(11.))
+                    .child(
+                        div()
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(todoist_named_color(project.color.as_deref())),
+                    )
+                    .child(project.name)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |panel, _, _, cx| {
+                            if let Some(state) = panel.todoist.as_mut() {
+                                state.selected_project = Some(project_id.clone());
+                            }
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+
+        let mut list = div()
+            .id("todoist-task-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px_4()
+            .pb_4()
+            .flex()
+            .flex_col()
+            .gap_1();
+        if tasks.is_empty() {
+            let message = match &state.load {
+                TodoistLoadState::Loading => "Loading Todoist…".to_owned(),
+                TodoistLoadState::Ready => "No open tasks in this view.".to_owned(),
+                TodoistLoadState::Error(error) => format!(
+                    "{error}\n\nSet TODOIST_API_TOKEN, then refresh. The token is never written to Jcode config."
+                ),
+            };
+            list = list.child(
+                div()
+                    .p_4()
+                    .whitespace_normal()
+                    .text_color(match state.load {
+                        TodoistLoadState::Error(_) => Theme::global().ERROR,
+                        _ => Theme::global().TEXT_DIM,
+                    })
+                    .child(message),
+            );
+        }
+        for (index, task) in tasks.into_iter().enumerate() {
+            let id = task.id.clone();
+            let busy = state.busy_tasks.contains(&task.id);
+            let project_name = state
+                .projects
+                .iter()
+                .find(|project| project.id == task.project_id)
+                .map(|p| p.name.clone());
+            let priority = todoist_priority_color(task.priority);
+            list = list.child(
+                div()
+                    .id(("todoist-task", index))
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(Theme::global().PANEL_BORDER_IDLE)
+                    .bg(Theme::global().BG)
+                    .hover(|el| {
+                        el.bg(Theme::global().HEADER_BG)
+                            .border_color(Theme::global().PANEL_BORDER)
+                    })
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(("todoist-complete", index))
+                            .mt(px(2.))
+                            .size(px(16.))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(priority)
+                            .cursor_pointer()
+                            .when(busy, |el| el.bg(priority))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |panel, _, _, cx| {
+                                    panel.complete_todoist_task(id.clone(), cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(div().text_size(px(13.)).child(task.content))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .text_size(px(10.))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .when_some(task.due.map(|due| due.string), |el, due| {
+                                        el.child(format!("◷ {due}"))
+                                    })
+                                    .when_some(project_name, |el, name| {
+                                        el.child(format!("# {name}"))
+                                    })
+                                    .when(task.priority > 1, |el| {
+                                        el.child(format!("P{}", 5 - task.priority))
+                                    }),
+                            ),
+                    ),
+            );
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .track_focus(&self.input.read(cx).focus_handle)
+            .child(
+                div()
+                    .px_4()
+                    .pt_4()
+                    .pb_2()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Todos"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child(format!(
+                                        "{} open · synced with Todoist",
+                                        state.tasks.len()
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("todoist-refresh")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .hover(|el| el.bg(Theme::global().HEADER_BG))
+                            .child("↻ refresh")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|panel, _, _, cx| panel.refresh_todoist(cx)),
+                            ),
+                    ),
+            )
+            .child(div().px_4().pb_3().child(projects))
+            .child(list)
+            .child(
+                div()
+                    .flex_none()
+                    .border_t_1()
+                    .border_color(Theme::global().PANEL_BORDER)
+                    .p_3()
+                    .child(self.input.clone()),
+            )
+            .into_any_element()
     }
 
     fn refresh_gmail(&mut self, cx: &mut Context<Self>) {
@@ -2113,7 +2516,13 @@ impl Panel {
                     .px_3()
                     .py_2()
                     .text_color(Theme::global().TEXT_USER)
-                    .child(markdown::render(text, window))
+                    .child(markdown::render(
+                        text,
+                        index,
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    ))
                     .into_any_element()
             }
             Item::Image(image) => {
@@ -2155,7 +2564,13 @@ impl Panel {
                 .debug_selector(|| "assistant-response".into())
                 .px_1()
                 .text_color(Theme::global().TEXT)
-                .child(markdown::render(text, window))
+                .child(markdown::render(
+                    text,
+                    index,
+                    &self.transcript_selection,
+                    window,
+                    cx,
+                ))
                 // Streaming updates already repaint this row as text arrives. A
                 // repeating GPUI animation here would repaint every settled
                 // markdown row at display rate between chunks.
@@ -2236,7 +2651,13 @@ impl Panel {
                             .text_color(Theme::global().REASONING)
                             .italic()
                             .line_height(relative(1.45))
-                            .child(body),
+                            .child(text_selection::plain(
+                                self.transcript_selection.clone(),
+                                format!("{index}-reasoning"),
+                                body,
+                                window,
+                                cx,
+                            )),
                     )
                     .into_any_element()
             }
@@ -2521,13 +2942,15 @@ impl Panel {
                 .text_size(px(12.0))
                 .text_color(Theme::global().ERROR)
                 .child(div().flex_none().child("!"))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .line_height(relative(1.45))
-                        .child(message.clone()),
-                )
+                .child(div().flex_1().min_w_0().line_height(relative(1.45)).child(
+                    text_selection::plain(
+                        self.transcript_selection.clone(),
+                        format!("{index}-error"),
+                        message.clone(),
+                        window,
+                        cx,
+                    ),
+                ))
                 .into_any_element(),
         }
     }
@@ -2676,6 +3099,9 @@ impl Render for Panel {
         if self.gmail_inbox.is_some() {
             return self.render_gmail(cx);
         }
+        if self.todoist.is_some() {
+            return self.render_todoist(cx);
+        }
         if let Some(sessions) = &self.unfinished_work {
             let mut list = div()
                 .id("unfinished-work-list")
@@ -2745,6 +3171,8 @@ impl Render for Panel {
                 .into_any_element();
         }
         let streaming = !self.streaming_text.is_empty();
+        let transcript_selection = self.transcript_selection.clone();
+        let transcript_selection_focus = transcript_selection.read(cx).focus_handle();
         let transcript_shell = div()
             .id(if streaming {
                 "transcript-with-response"
@@ -2758,6 +3186,20 @@ impl Render for Panel {
                 } else {
                     "transcript".into()
                 }
+            })
+            .key_context(TextSelection::key_context())
+            .track_focus(&transcript_selection_focus)
+            .on_action({
+                let transcript_selection = transcript_selection.clone();
+                move |_: &text_selection::Copy, _window, cx| {
+                    transcript_selection.update(cx, |selection, cx| selection.copy(cx));
+                }
+            })
+            .on_mouse_up(gpui::MouseButton::Left, move |_event, _window, cx| {
+                transcript_selection.update(cx, |selection, cx| {
+                    selection.finish();
+                    cx.notify();
+                });
             })
             .size_full()
             .text_size(px(13.5))
@@ -3418,6 +3860,26 @@ fn todo_status_color(todo: &TodoCardItem) -> gpui::Rgba {
             "cancelled" => Theme::global().ERROR,
             _ => Theme::global().TEXT_FAINT,
         }
+    }
+}
+
+fn todoist_priority_color(priority: u8) -> gpui::Rgba {
+    match priority {
+        4 => Theme::global().ERROR,
+        3 => Theme::global().WARN,
+        2 => Theme::global().ACCENT,
+        _ => Theme::global().TEXT_FAINT,
+    }
+}
+
+fn todoist_named_color(color: Option<&str>) -> gpui::Rgba {
+    match color.unwrap_or_default() {
+        "berry_red" | "red" => Theme::global().ERROR,
+        "orange" | "yellow" => Theme::global().WARN,
+        "blue" | "light_blue" | "teal" => Theme::global().ACCENT,
+        "green" | "lime_green" | "mint_green" => Theme::global().AI_ACCENT,
+        "purple" | "violet" | "magenta" | "lavender" => Theme::global().USER_ACCENT,
+        _ => Theme::global().TEXT_FAINT,
     }
 }
 

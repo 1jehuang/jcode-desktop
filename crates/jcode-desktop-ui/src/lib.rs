@@ -15,6 +15,7 @@ mod performance;
 mod platform;
 mod scrollbar;
 mod terminal;
+mod text_selection;
 mod theme;
 pub mod todoist;
 mod transition;
@@ -27,8 +28,8 @@ use workspace::{
     ClosePanel, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious, FocusRight,
     FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
     MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel, NewTerminal,
-    OpenFolder, OpenGmail, Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar,
-    WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
+    OpenFolder, OpenGmail, OpenTodoist, Quit, ToggleHints, ToggleOverview, ToggleShowcase,
+    ToggleSidebar, WidthPreset1, WidthPreset2, WidthPreset3, WidthPreset4, Workspace,
 };
 
 /// The workspace keymap. Extracted so tests can dispatch through exactly the
@@ -71,6 +72,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-space", ForkPanel, None),
         KeyBinding::new("super-t", NewTerminal, None),
         KeyBinding::new("super-shift-g", OpenGmail, None),
+        KeyBinding::new("super-shift-d", OpenTodoist, None),
         // Cmd+Enter opens a terminal and Cmd+; opens a session, both landing
         // directly right of the focused panel. On macOS the `cmd-*` block below
         // states them explicitly; elsewhere these Super aliases carry them.
@@ -137,6 +139,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         // binding, so macOS opened a session panel instead of a terminal.
         KeyBinding::new("cmd-t", NewTerminal, None),
         KeyBinding::new("cmd-shift-g", OpenGmail, None),
+        KeyBinding::new("cmd-shift-d", OpenTodoist, None),
         KeyBinding::new("cmd-enter", NewTerminal, None),
         KeyBinding::new("cmd-;", NewPanel, None),
         KeyBinding::new("cmd-w", ClosePanel, None),

@@ -45,6 +45,7 @@ actions!(
         ForkPanel,
         NewTerminal,
         OpenGmail,
+        OpenTodoist,
         NewUnfinishedWork,
         OpenFolder,
         ClosePanel,
@@ -757,6 +758,8 @@ impl Workspace {
                 cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx))
             } else if panel_state.session_id == "gmail://inbox" {
                 cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx))
+            } else if panel_state.session_id == "todoist://tasks" {
+                cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx))
             } else {
                 let session_id = panel_state.session_id.clone();
                 let title = Some(panel_state.title.clone());
@@ -1896,6 +1899,52 @@ impl Workspace {
                 order_offset: AnimatedValue::new(
                     0.0,
                     transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
+                restore_fraction: None,
+            },
+        );
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn open_todoist(&mut self, _: &OpenTodoist, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).session_id == "todoist://tasks")
+        {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let panel = cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx));
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOpen).duration,
                 ),
                 order_distance_fraction: width_fraction,
                 close_progress: AnimatedValue::new(
@@ -3061,18 +3110,12 @@ impl Workspace {
             sidebar_session_order(&self.sessions)
                 .into_iter()
                 .partition(|session| open_statuses.contains_key(&session.session_id));
-        let mut panel_positions = self
-            .slots
-            .iter()
-            .enumerate()
-            .collect::<Vec<_>>();
+        let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
         let panel_positions = panel_positions
             .into_iter()
             .enumerate()
-            .map(|(position, (_, slot))| {
-                (slot.panel.read(cx).session_id.clone(), position)
-            })
+            .map(|(position, (_, slot))| (slot.panel.read(cx).session_id.clone(), position))
             .collect::<HashMap<_, _>>();
         open_sessions.sort_by_key(|session| {
             panel_positions
@@ -3332,6 +3375,28 @@ impl Workspace {
                                         }),
                                     )
                                     .child("todos"),
+                            )
+                            .child(
+                                div()
+                                    .id("open-todoist")
+                                    .debug_selector(|| "open-todoist".into())
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .hover(|el| {
+                                        el.bg(Theme::global().HEADER_BG)
+                                            .text_color(Theme::global().TEXT)
+                                    })
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.open_todoist(&OpenTodoist, window, cx)
+                                        }),
+                                    )
+                                    .child("todoist"),
                             )
                             .child(
                                 div()
@@ -4350,6 +4415,10 @@ impl Workspace {
             "Super"
         };
         let active = self.showcase_cue.as_ref().map(|cue| cue.tutorial_group);
+        let cue_animation = self
+            .showcase_cue
+            .as_ref()
+            .map(|cue| format!("tutorial-trigger-{}", cue.shortcut));
         // A tutorial control turns green once it has been practiced. The
         // learning model still treats prompted use as weaker than unaided
         // recall, but leaving prompted navigation unmarked made the tutorial
@@ -5073,9 +5142,7 @@ impl Render for Workspace {
             let input = window.input_latency_snapshot();
             let milliseconds = |nanoseconds: u64| nanoseconds as f64 / 1_000_000.0;
             self.gpui_performance = GpuiPerformanceSnapshot {
-                draw_p95_ms: milliseconds(
-                    frame.draw_duration_histogram.value_at_quantile(0.95),
-                ),
+                draw_p95_ms: milliseconds(frame.draw_duration_histogram.value_at_quantile(0.95)),
                 present_p95_ms: milliseconds(
                     frame.present_interval_histogram.value_at_quantile(0.95),
                 ),
@@ -5157,6 +5224,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
+            .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_panel))
@@ -5192,14 +5260,20 @@ impl Render for Workspace {
                     .when(overview_progress <= 0.0, |el| {
                         el.child(self.render_edge_new_session(cx))
                     })
-                    .when_some(self.showcase_cue.as_ref(), |el, cue| {
-                        el.child(self.render_showcase_cue(cue))
-                    })
-                    // Keep lessons above both canvas affordances and action
-                    // feedback so one successful click cannot block the next.
+                    // Showcase feedback for tutorial actions lives on the
+                    // corresponding lesson itself. Keep the standalone card
+                    // only for mode/help feedback that has no tutorial icon.
                     .when(self.showcase_mode, |el| {
                         el.child(self.render_tutorial_guides(cx))
                     })
+                    // Paint non-tutorial feedback last so it remains above the
+                    // canvas without covering an animated tutorial control.
+                    .when_some(
+                        self.showcase_cue
+                            .as_ref()
+                            .filter(|cue| matches!(cue.tutorial_group, "" | "help")),
+                        |el, cue| el.child(self.render_showcase_cue(cue)),
+                    )
                     // Update status stays visible in every mode, including
                     // overview: a user whose build cannot render text still
                     // needs to see that a fix is on its way.
@@ -6244,7 +6318,11 @@ mod tests {
                 },
                 cx,
             ));
-            assert_eq!(workspace.sessions.len(), 1, "the catalog must not duplicate it");
+            assert_eq!(
+                workspace.sessions.len(),
+                1,
+                "the catalog must not duplicate it"
+            );
             assert_eq!(
                 workspace.sessions[0].title.as_deref(),
                 Some("Canonical runtime title"),
@@ -8957,8 +9035,8 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(
-            cx.debug_bounds("showcase-shortcut").is_some(),
-            "a real workspace motion should paint the bottom-center overlay"
+            cx.debug_bounds("showcase-shortcut").is_none(),
+            "tutorial motions should animate their contextual controls instead of covering them"
         );
         assert!(
             cx.debug_bounds("tutorial-guides").is_some(),
