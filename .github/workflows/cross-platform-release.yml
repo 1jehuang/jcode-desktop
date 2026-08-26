@@ -75,7 +75,11 @@ jobs:
         with:
           name: desktop-${{ matrix.platform }}-x86_64
           if-no-files-found: error
-          path: jcode-desktop/dist/${{ matrix.platform }}/Jcode-*
+          path: |
+            jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.tar.gz
+            jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.deb
+            jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.zip
+            jcode-desktop/dist/${{ matrix.platform }}/SHA256SUMS-*
 
   publish:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
@@ -94,7 +98,9 @@ jobs:
         run: |
           for attempt in {1..90}; do
             if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease' | grep -qx true; then
-              gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
+              mapfile -d '' files < <(find artifacts -type f -print0)
+              test "${#files[@]}" -gt 0
+              gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
               exit 0
             fi
             echo "Waiting for notarized macOS workflow to create prerelease ($attempt/90)..."
