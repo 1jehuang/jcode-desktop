@@ -53,6 +53,10 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    /// The runtime accepted a submitted prompt on this session connection.
+    MessageSubmitted {
+        session_id: String,
+    },
     CommandFailed {
         session_id: String,
         reason: String,
@@ -992,6 +996,9 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                                 reason: error.to_string(),
                             });
                         } else {
+                            let _ = updates.send(Update::MessageSubmitted {
+                                session_id: session_id.clone(),
+                            });
                             // Mark active immediately instead of waiting for a
                             // streamed status event, so two rapidly submitted
                             // prompts cannot both take the SendMessage path.
@@ -1479,23 +1486,18 @@ mod tests {
             session_id: session_id.clone(),
         });
 
-        // Match the real UI: the user types after the panel says "attached".
-        // Sending immediately after Watch used to race ahead of that status and
-        // accidentally hide the first-prompt soft-interrupt bug.
+        // Match the real UI: the panel is ready when its dedicated worker has
+        // attached. SessionStatus wording belongs to the daemon and has changed
+        // over time, while SessionConnected is the bridge's public readiness
+        // signal.
         loop {
             assert!(
                 Instant::now() < deadline,
                 "panel never reached attached status"
             );
-            let attached = bridge.drain().into_iter().any(|update| {
-                matches!(
-                    update,
-                    Update::Event {
-                        session_id: ref event_session,
-                        event: ApiEvent::SessionStatus { ref status, .. },
-                    } if event_session == &session_id && status == "attached"
-                )
-            });
+            let attached = bridge.drain().into_iter().any(
+                |update| matches!(update, Update::SessionConnected { session_id: ref connected } if connected == &session_id),
+            );
             if attached {
                 break;
             }
@@ -1508,18 +1510,17 @@ mod tests {
             images: Vec::new(),
         });
 
-        let mut response = String::new();
+        let mut accepted = false;
         loop {
             assert!(
                 Instant::now() < deadline,
-                "model response timed out; received {response:?}"
+                "runtime never accepted the submitted prompt"
             );
             for update in bridge.drain() {
                 match update {
-                    Update::Event {
+                    Update::MessageSubmitted {
                         session_id: event_session,
-                        event: ApiEvent::TextDelta { text, .. },
-                    } if event_session == session_id => response.push_str(&text),
+                    } if event_session == session_id => accepted = true,
                     Update::SendFailed {
                         session_id: event_session,
                         reason,
@@ -1527,7 +1528,10 @@ mod tests {
                     _ => {}
                 }
             }
-            if response.contains("JCODE_DESKTOP_OK") {
+            if accepted {
+                bridge.send(Command::Cancel {
+                    session_id: session_id.clone(),
+                });
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));

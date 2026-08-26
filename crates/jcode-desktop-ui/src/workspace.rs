@@ -1141,6 +1141,7 @@ impl Workspace {
                     }
                 }
             }
+            Update::MessageSubmitted { .. } => {}
             Update::CommandFailed { session_id, reason } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
