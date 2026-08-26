@@ -84,17 +84,17 @@ fn parse(source: &str) -> Vec<Block> {
                 }
                 body.push_str(math_line.trim());
             }
-            blocks.push(Block::Math(latex_to_text(&body)));
+            blocks.push(Block::Math(body));
         } else if trimmed.starts_with("$$") && trimmed.ends_with("$$") && trimmed.len() > 4 {
             flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Math(latex_to_text(
-                trimmed[2..trimmed.len() - 2].trim(),
-            )));
+            blocks.push(Block::Math(
+                trimmed[2..trimmed.len() - 2].trim().to_string(),
+            ));
         } else if trimmed.starts_with("\\[") && trimmed.ends_with("\\]") && trimmed.len() > 4 {
             flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Math(latex_to_text(
-                trimmed[2..trimmed.len() - 2].trim(),
-            )));
+            blocks.push(Block::Math(
+                trimmed[2..trimmed.len() - 2].trim().to_string(),
+            ));
         } else if let Some(rest) = trimmed
             .strip_prefix("```")
             .or_else(|| trimmed.strip_prefix("~~~"))
@@ -809,6 +809,114 @@ fn hash(text: &str) -> u64 {
     hasher.finish()
 }
 
+#[derive(Clone)]
+struct RenderedMath {
+    svg: Arc<[u8]>,
+    width: f32,
+    height: f32,
+}
+
+const MATH_CACHE_CAPACITY: usize = 128;
+static MATH_CACHE: LazyLock<Mutex<VecDeque<(u64, RenderedMath)>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+/// Typeset display math natively and embed the glyph outlines in a crisp SVG.
+fn render_math_svg(source: &str) -> Result<RenderedMath, String> {
+    let key = hash(source);
+    if let Ok(mut cache) = MATH_CACHE.lock()
+        && let Some(index) = cache.iter().position(|(cached_key, _)| *cached_key == key)
+    {
+        let entry = cache.remove(index).expect("cached math entry exists");
+        let rendered = entry.1.clone();
+        cache.push_back(entry);
+        return Ok(rendered);
+    }
+
+    let source = source.to_owned();
+    let rendered = std::panic::catch_unwind(move || {
+        let ast = ratex_parser::parse(&source).map_err(|error| error.to_string())?;
+        let layout = ratex_layout::layout(&ast, &ratex_layout::LayoutOptions::default());
+        let display_list = ratex_layout::to_display_list(&layout);
+        let font_size = 20.0;
+        let padding = 3.0;
+        let options = ratex_svg::SvgOptions {
+            font_size,
+            padding,
+            stroke_width: 1.0,
+            embed_glyphs: true,
+            font_dir: String::new(),
+        };
+        let width = (display_list.width * font_size + padding * 2.0) as f32;
+        let height =
+            ((display_list.height + display_list.depth) * font_size + padding * 2.0) as f32;
+        // currentColor allows one cached SVG to follow live theme changes.
+        let svg = ratex_svg::render_to_svg(&display_list, &options)
+            .replace("rgba(0,0,0,1)", "currentColor");
+        Ok::<_, String>(RenderedMath {
+            svg: Arc::from(svg.into_bytes()),
+            width: width.max(1.0),
+            height: height.max(1.0),
+        })
+    })
+    .map_err(|_| "math renderer panicked".to_string())??;
+
+    if let Ok(mut cache) = MATH_CACHE.lock() {
+        cache.push_back((key, rendered.clone()));
+        while cache.len() > MATH_CACHE_CAPACITY {
+            cache.pop_front();
+        }
+    }
+    Ok(rendered)
+}
+
+fn math_block(
+    source: &str,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui::AnyElement {
+    let shell = div()
+        .debug_selector(|| "md-math".into())
+        .w_full()
+        .my_0p5()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .border_1()
+        .border_color(Theme::global().CODE_BORDER)
+        .bg(Theme::global().CODE_BG)
+        .text_color(Theme::global().TEXT);
+
+    match render_math_svg(source) {
+        Ok(rendered) => shell
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .child(
+                gpui::svg()
+                    .data(rendered.svg.as_ref())
+                    .w(px(rendered.width))
+                    .h(px(rendered.height))
+                    .max_w_full()
+                    .text_color(Theme::global().TEXT),
+            )
+            .into_any_element(),
+        Err(_) => shell
+            .text_center()
+            .text_size(px(16.0))
+            .child(text_selection::plain(
+                selection.clone(),
+                key,
+                latex_to_text(source),
+                window,
+                cx,
+            ))
+            .into_any_element(),
+    }
+}
+
 // --- Code highlighting -----------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1450,26 +1558,7 @@ pub fn render(
             Block::Code { lang, body } => code_block(&lang, &body, window),
             Block::Mermaid(body) => mermaid_diagram(&body),
             Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
-            Block::Math(text) => div()
-                .w_full()
-                .my_0p5()
-                .px_2()
-                .py_1p5()
-                .rounded_md()
-                .border_1()
-                .border_color(Theme::global().CODE_BORDER)
-                .bg(Theme::global().CODE_BG)
-                .text_center()
-                .text_size(px(16.0))
-                .text_color(Theme::global().TEXT)
-                .child(text_selection::plain(
-                    selection.clone(),
-                    text_key(),
-                    text,
-                    window,
-                    cx,
-                ))
-                .into_any_element(),
+            Block::Math(source) => math_block(&source, selection, text_key(), window, cx),
             Block::Rule => div()
                 .h(px(1.0))
                 .my_2()
@@ -1706,7 +1795,7 @@ mod tests {
     #[test]
     fn parses_display_math_and_does_not_misread_hashes() {
         let blocks = parse("\\[\ne^{i\\pi}+1=0\n\\]\n\n#hashtag");
-        assert_eq!(blocks[0], Block::Math("e^(iπ)+1=0".into()));
+        assert_eq!(blocks[0], Block::Math(r"e^{i\pi}+1=0".into()));
         assert_eq!(blocks[1], Block::Paragraph("#hashtag".into()));
     }
 
@@ -1727,7 +1816,7 @@ mod tests {
     #[test]
     fn parses_single_line_bracket_math() {
         let blocks = parse(r"\[ e^{i\pi}+1=0 \]");
-        assert_eq!(blocks[0], Block::Math("e^(iπ)+1=0".into()));
+        assert_eq!(blocks[0], Block::Math(r"e^{i\pi}+1=0".into()));
     }
 
     #[test]
@@ -1761,13 +1850,28 @@ mod tests {
         assert_eq!(
             parse(source),
             vec![
-                Block::Math("E=mc²".into()),
-                Block::Math("a²+b²=c²".into()),
-                Block::Math("x=(-b±√(b²-4ac))/(2a)".into()),
-                Block::Math("∫ₐᵇ f(x) dx=F(b)-F(a)".into()),
-                Block::Math("e^(iπ)+1=0".into()),
+                Block::Math("E=mc^2".into()),
+                Block::Math("a^2+b^2=c^2".into()),
+                Block::Math(r"x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}".into()),
+                Block::Math(r"\int_a^b f(x)\,dx=F(b)-F(a)".into()),
+                Block::Math(r"e^{i\pi}+1=0".into()),
             ]
         );
+    }
+
+    #[test]
+    fn typesets_display_math_as_embedded_svg() {
+        let rendered = render_math_svg(r"x=\frac{-b\pm\sqrt{b^2-4ac}}{2a}")
+            .expect("common LaTeX should render");
+        let svg = std::str::from_utf8(rendered.svg.as_ref()).expect("SVG is UTF-8");
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.contains("<path"), "glyphs should be embedded as paths");
+        assert!(!svg.contains("<text"), "SVG must not depend on KaTeX fonts");
+        assert!(
+            svg.contains("currentColor"),
+            "equations should follow the theme"
+        );
+        assert!(rendered.width > rendered.height);
     }
 
     #[test]
