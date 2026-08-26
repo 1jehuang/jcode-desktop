@@ -4875,13 +4875,17 @@ impl Render for Workspace {
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::focus_left))
-            .on_action(cx.listener(Self::focus_right))
-            .on_action(cx.listener(Self::focus_up))
-            .on_action(cx.listener(Self::focus_down))
-            .on_action(cx.listener(Self::focus_first))
-            .on_action(cx.listener(Self::focus_last))
-            .on_action(cx.listener(Self::focus_previous))
+            // Navigation belongs to the canvas, regardless of which control in
+            // the active panel currently owns keyboard focus. Capture these at
+            // the workspace boundary so a terminal, composer, picker, or other
+            // focused child cannot consume the action before it reaches us.
+            .capture_action(cx.listener(Self::focus_left))
+            .capture_action(cx.listener(Self::focus_right))
+            .capture_action(cx.listener(Self::focus_up))
+            .capture_action(cx.listener(Self::focus_down))
+            .capture_action(cx.listener(Self::focus_first))
+            .capture_action(cx.listener(Self::focus_last))
+            .capture_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))
             .on_action(cx.listener(Self::move_panel_up))
