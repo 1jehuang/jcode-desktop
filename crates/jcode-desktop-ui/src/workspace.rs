@@ -4387,8 +4387,10 @@ impl Workspace {
                 .child(format!("{modifier} {key}"))
         };
         let navigation = div()
-            .id("tutorial-navigation")
-            .debug_selector(|| "tutorial-navigation".into())
+            // This is only a positioning layer. Giving the full-window layer
+            // an id creates a hitbox above the strip's capture-phase gesture
+            // router, which makes touchpad swipes disappear while tutorial
+            // mode is enabled. The individual controls remain interactive.
             .absolute()
             .inset_0()
             .child(
@@ -8615,6 +8617,23 @@ mod tests {
         });
         cx.run_until_parked();
 
+        let tutorial = cx
+            .debug_bounds("tutorial-guides")
+            .expect("tutorial guide canvas");
+        let camera_before = workspace.update(cx, |workspace, _| workspace.camera_x[0]);
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: tutorial.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(-100.0), px(0.0))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        workspace.update(cx, |workspace, _| {
+            assert!(
+                workspace.camera_x[0] > camera_before,
+                "the tutorial positioning layer must not block touchpad gestures"
+            );
+        });
+
         let right = cx
             .debug_bounds("tutorial-nav-right")
             .expect("right arrow guide");
@@ -8723,10 +8742,6 @@ mod tests {
         assert!(
             cx.debug_bounds("tutorial-guides").is_some(),
             "tutorial mode should keep contextual controls visible"
-        );
-        assert!(
-            cx.debug_bounds("tutorial-navigation").is_some(),
-            "the visual navigation pad should be painted"
         );
         assert!(
             cx.debug_bounds("tutorial-nav-left").is_some()
