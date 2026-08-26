@@ -7,6 +7,7 @@
 //! that panel's commands. Session creation also uses a fresh connection each
 //! time, because a connection re-serves its already-attached session.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -222,12 +223,28 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
 struct GracefulDetach<'a> {
     client: &'a JcodeClient,
     session_id: &'a str,
+    processing: Cell<bool>,
+}
+
+impl GracefulDetach<'_> {
+    fn set_processing(&self, processing: bool) {
+        self.processing.set(processing);
+    }
 }
 
 impl Drop for GracefulDetach<'_> {
     fn drop(&mut self) {
-        let _ = self.client.detach_session(self.session_id);
+        // A desktop window disappearing during a live turn is an interruption,
+        // not a graceful detach. Keep crash-on-disconnect armed so the runtime
+        // persists `crashed`; startup restoration can then surface and resume it.
+        if should_detach_on_drop(self.processing.get()) {
+            let _ = self.client.detach_session(self.session_id);
+        }
     }
+}
+
+fn should_detach_on_drop(processing: bool) -> bool {
+    !processing
 }
 
 fn run(updates: UpdateSender, commands: Receiver<Command>) {
@@ -281,6 +298,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>) {
                                 let _detach = GracefulDetach {
                                     client: &client,
                                     session_id: &session_id,
+                                    processing: Cell::new(false),
                                 };
                                 let _ = updates.send(Update::SessionCreated { session });
                             }
@@ -882,6 +900,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
         let _detach = GracefulDetach {
             client: &client,
             session_id: &session_id,
+            processing: Cell::new(false),
         };
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
@@ -960,6 +979,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                             // streamed status event, so two rapidly submitted
                             // prompts cannot both take the SendMessage path.
                             turn_active = true;
+                            _detach.set_processing(true);
                         }
                     }
                     SessionCommand::Cancel => {
@@ -1029,6 +1049,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                     continue;
                 }
                 update_turn_activity(&event, &mut turn_active);
+                _detach.set_processing(turn_active);
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
                     event,
@@ -1573,6 +1594,12 @@ mod tests {
             &mut active,
         );
         assert!(!active);
+    }
+
+    #[test]
+    fn streaming_worker_disconnect_keeps_crash_detection_armed() {
+        assert!(!should_detach_on_drop(true));
+        assert!(should_detach_on_drop(false));
     }
 
     #[test]
