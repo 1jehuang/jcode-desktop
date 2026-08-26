@@ -144,10 +144,12 @@ enum SidebarView {
     Files,
 }
 
-// Minimap: a rounded square card in the top right that maps every strip to
+// Minimap: a compact card in the top right that maps every strip to
 // scale, preserving the canvas aspect ratio so panels taller than wide on
 // screen stay taller than wide on the map.
-const MINIMAP_SIZE: f32 = 96.0;
+const MINIMAP_WIDTH: f32 = 112.0;
+const MINIMAP_HEIGHT: f32 = 118.0;
+const MINIMAP_HEADER_HEIGHT: f32 = 17.0;
 const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
 const MINIMAP_TOP: f32 = 8.0;
@@ -176,9 +178,11 @@ const ONBOARDING_SKILLS: &[&str] = &[
     "overview",
 ];
 /// Rows split the square's inner height evenly, one per strip.
-const MINIMAP_ROW_HEIGHT: f32 =
-    (MINIMAP_SIZE - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
-        / STRIP_COUNT as f32;
+const MINIMAP_ROW_HEIGHT: f32 = (MINIMAP_HEIGHT
+    - MINIMAP_PADDING * 2.0
+    - MINIMAP_HEADER_HEIGHT
+    - MINIMAP_ROW_GAP * STRIP_COUNT as f32)
+    / STRIP_COUNT as f32;
 /// Vertical inset between a panel rectangle and its track edge.
 const MINIMAP_PANEL_INSET: f32 = 1.5;
 /// The gesture reticle: how long it stays fully lit after the last touchpad
@@ -3966,7 +3970,7 @@ impl Workspace {
         viewport_h: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let track_w = MINIMAP_SIZE - MINIMAP_PADDING * 2.0;
+        let track_w = MINIMAP_WIDTH - MINIMAP_PADDING * 2.0;
         let panel_track_h = MINIMAP_ROW_HEIGHT - MINIMAP_PANEL_INSET * 2.0;
         let widest = (0..STRIP_COUNT)
             .map(|row| {
@@ -3984,8 +3988,8 @@ impl Workspace {
             .absolute()
             .top(px(MINIMAP_TOP))
             .right(px(MINIMAP_RIGHT))
-            .w(px(MINIMAP_SIZE))
-            .h(px(MINIMAP_SIZE))
+            .w(px(MINIMAP_WIDTH))
+            .h(px(MINIMAP_HEIGHT))
             .p(px(MINIMAP_PADDING))
             .flex()
             .flex_col()
@@ -4023,7 +4027,29 @@ impl Workspace {
                     }
                     cx.notify();
                 },
-            ));
+            ))
+            .child(
+                div()
+                    .debug_selector(|| "minimap-location-label".into())
+                    .h(px(MINIMAP_HEADER_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .text_size(px(9.0))
+                    .text_color(Theme::global().TEXT)
+                    .child(
+                        div()
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(Theme::global().ACCENT),
+                    )
+                    .child(format!(
+                        "YOU · ROW {} · PANEL {}",
+                        self.active_row + 1,
+                        self.active_position_in_row() + 1
+                    )),
+            );
 
         for row in 0..STRIP_COUNT {
             let active_row = row == self.active_row;
@@ -4038,6 +4064,9 @@ impl Workspace {
                     Theme::global().MINIMAP_TRACK_ACTIVE
                 } else {
                     Theme::global().MINIMAP_TRACK
+                })
+                .when(active_row, |el| {
+                    el.border_1().border_color(Theme::global().ACCENT)
                 })
                 .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
                 .on_mouse_down(
@@ -4059,7 +4088,19 @@ impl Workspace {
                 let height = (viewport_h * scale).clamp(3.0, panel_track_h);
                 let top = MINIMAP_PANEL_INSET + (panel_track_h - height) / 2.0;
                 let focused = index == self.active;
-                let busy = self.slots[index].panel.read(cx).is_busy();
+                let panel = self.slots[index].panel.read(cx);
+                let state = panel.minimap_state();
+                let todo_progress = panel.latest_todo_progress().and_then(|(done, total)| {
+                    (total > 0).then_some(done as f32 / total as f32)
+                });
+                let state_color = match state {
+                    crate::panel::MinimapSessionState::Idle => Theme::global().MINIMAP_PANEL,
+                    crate::panel::MinimapSessionState::Working => Theme::global().WARN,
+                    crate::panel::MinimapSessionState::Streaming => Theme::global().ACCENT,
+                    crate::panel::MinimapSessionState::Complete => Theme::global().OK,
+                    crate::panel::MinimapSessionState::Error => Theme::global().ERROR,
+                };
+                drop(panel);
                 track = track.child(
                     div()
                         .id(("minimap-panel", index))
@@ -4071,12 +4112,23 @@ impl Workspace {
                         .h(px(height))
                         .rounded(px(2.0))
                         .cursor_pointer()
-                        .bg(if focused {
-                            Theme::global().ACCENT
-                        } else if busy {
-                            Theme::global().MINIMAP_PANEL_BUSY
-                        } else {
-                            Theme::global().MINIMAP_PANEL
+                        .bg(state_color)
+                        // The green footline is a literal completion meter for
+                        // the latest todo card. Session color remains visible
+                        // above it, so progress and live state do not compete.
+                        .when_some(todo_progress, |panel, progress| {
+                            panel.child(
+                                div()
+                                    .absolute()
+                                    .bottom_0()
+                                    .left_0()
+                                    .h(px(2.0))
+                                    .w(relative(progress))
+                                    .bg(Theme::global().OK),
+                            )
+                        })
+                        .when(focused, |el| {
+                            el.border_2().border_color(Theme::global().TEXT)
                         })
                         .hover(|el| el.bg(Theme::global().ACCENT))
                         .on_mouse_down(
@@ -4109,6 +4161,27 @@ impl Workspace {
                         .border_color(Theme::global().MINIMAP_VIEWPORT)
                         .bg(gpui::rgba(0xffffff08)),
                 );
+
+                // A persistent pin marks the exact focused panel. Unlike the
+                // viewport lens, it remains unambiguous when several panels
+                // overlap the visible camera region.
+                if let Some(index) = self.row_indices(row).find(|index| *index == self.active) {
+                    let panel_left = self.slot_left(index, viewport_w) * scale;
+                    let panel_width = (self.slot_width(index, viewport_w) * scale - 1.0).max(2.0);
+                    track = track.child(
+                        div()
+                            .debug_selector(|| "minimap-you-pin".into())
+                            .absolute()
+                            .left(px(panel_left + panel_width / 2.0 - 3.0))
+                            .top(px(MINIMAP_ROW_HEIGHT / 2.0 - 3.0))
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(gpui::rgb(0x090909))
+                            .bg(Theme::global().TEXT),
+                    );
+                }
 
                 // The gesture dot: the same focal point the canvas reticle
                 // marks, mirrored onto the map at the lens center so the eye
@@ -4149,7 +4222,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         div()
             .absolute()
-            .top(px(MINIMAP_TOP + MINIMAP_SIZE + COACH_TOAST_GAP))
+            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + COACH_TOAST_GAP))
             .right(px(MINIMAP_RIGHT))
             .w(px(COACH_TOAST_WIDTH))
             .min_w_0()
@@ -4704,7 +4777,7 @@ impl Workspace {
             .id("tutorial-layout")
             .debug_selector(|| "tutorial-layout".into())
             .absolute()
-            .top(px(MINIMAP_TOP + MINIMAP_SIZE + 8.0))
+            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 8.0))
             .right(px(MINIMAP_RIGHT))
             .flex()
             .gap(px(5.0))
@@ -4801,7 +4874,7 @@ impl Workspace {
             // The right navigation lesson also lives at mid-height. Keep the
             // creation lesson in the upper tool cluster instead of stacking it
             // over Super+L.
-            .top(px(MINIMAP_TOP + MINIMAP_SIZE + 42.0))
+            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 42.0))
             .px_2()
             .py_1()
             .rounded_lg()
@@ -4859,7 +4932,7 @@ impl Workspace {
             .debug_selector(|| "tutorial-close".into())
             .absolute()
             .left(px(10.0))
-            .top(px(MINIMAP_TOP + MINIMAP_SIZE + 42.0))
+            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 42.0))
             .px_2()
             .py_1()
             .rounded_lg()
@@ -4891,7 +4964,7 @@ impl Workspace {
             .id("tutorial-width-presets")
             .debug_selector(|| "tutorial-width-presets".into())
             .absolute()
-            .top(px(MINIMAP_TOP + MINIMAP_SIZE + 8.0))
+            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 8.0))
             .right(px(MINIMAP_RIGHT))
             .px_2()
             .py_1()
