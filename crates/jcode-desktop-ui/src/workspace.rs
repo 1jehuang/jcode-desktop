@@ -4371,6 +4371,7 @@ impl Workspace {
                 .text_size(px(17.0))
                 .text_color(Theme::global().TEXT)
                 .cursor_pointer()
+                .occlude()
                 .hover(|el| {
                     el.border_color(Theme::global().ACCENT)
                         .text_color(Theme::global().ACCENT)
@@ -4409,10 +4410,13 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .gap(px(32.0))
+                    .gap(px(4.0))
                     .child(arrow("tutorial-nav-left", "←", |this, window, cx| {
                         this.focus_left(&FocusLeft, window, cx)
                     }))
+                    // A real cell, rather than a large flex gap, keeps both
+                    // arrow hitboxes inside the navigation pad's layout bounds.
+                    .child(div().size(px(28.0)).flex_none())
                     .child(arrow("tutorial-nav-right", "→", |this, window, cx| {
                         this.focus_right(&FocusRight, window, cx)
                     })),
@@ -8579,7 +8583,21 @@ mod tests {
         // neighbours without depending on an external session bridge response.
         cx.simulate_keystrokes(&format!("{MOD}-enter {MOD}-enter"));
         cx.run_until_parked();
-        workspace.update(cx, |workspace, _| assert_eq!(workspace.active, 1));
+        workspace.update(cx, |workspace, cx| {
+            assert_eq!(workspace.active, 1);
+            workspace.set_active(0, cx);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let right = cx
+            .debug_bounds("tutorial-nav-right")
+            .expect("right arrow guide");
+        cx.simulate_click(right.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(workspace.active, 1, "the right arrow should focus right");
+        });
 
         let left = cx
             .debug_bounds("tutorial-nav-left")
