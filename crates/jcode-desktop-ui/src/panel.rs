@@ -604,6 +604,25 @@ impl Panel {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(format!("Gmail  ·  {title}")),
             )
+            .child(
+                div()
+                    .id("gmail-chat")
+                    .cursor_pointer()
+                    .rounded_md()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(11.))
+                    .bg(Theme::global().ACCENT_DIM)
+                    .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, _| {
+                            this.bridge
+                                .send(Command::CreateSession { working_dir: None });
+                        }),
+                    )
+                    .child("Chat with email"),
+            )
             .when(!detail_open, |header| {
                 header.child(
                     div()
@@ -1024,7 +1043,9 @@ impl Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .child(header)
-            .child(body)
+            .child(div().flex_1().min_h_0().relative().child(body).child(
+                crate::scrollbar::vertical(&self.gmail_scroll, "gmail-scrollbar"),
+            ))
             .into_any_element()
     }
 
@@ -3743,6 +3764,10 @@ mod tests {
         let inbox = vcx
             .debug_bounds("gmail-inbox")
             .expect("Email inbox painted");
+        assert!(
+            vcx.debug_bounds("gmail-chat").is_some(),
+            "Email panel paints the Chat with email action"
+        );
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position: inbox.center(),
             // Negative Y moves downward from the inbox's initial top position.
@@ -3753,6 +3778,10 @@ mod tests {
         vcx.run_until_parked();
         let after = panel.read_with(vcx, |panel, _| panel.gmail_scroll.offset().y);
         assert_ne!(after, before, "wheel input must move the Email inbox");
+        let scrollbar = vcx
+            .debug_bounds("gmail-scrollbar")
+            .expect("an overflowing Email inbox paints a scrollbar");
+        assert_eq!(scrollbar.size.width, px(4.0));
     }
 
     #[gpui::test]
