@@ -2526,10 +2526,12 @@ impl Workspace {
                     self.camera_started[row] = None;
                     self.camera_touch_pan[row] = false;
                 } else {
-                    let t = elapsed.as_secs_f32() / camera_duration.as_secs_f32();
-                    let eased = ease_out_cubic(t);
-                    let from = self.camera_from[row];
-                    self.camera_x[row] = from + (self.camera_target[row] - from) * eased;
+                    self.camera_x[row] = smoothed_camera_position(
+                        self.camera_from[row],
+                        self.camera_target[row],
+                        elapsed,
+                        camera_duration,
+                    );
                     window.request_animation_frame();
                 }
             }
@@ -6036,6 +6038,14 @@ fn pan_camera(current: f32, delta: f32, total_width: f32, viewport: f32) -> f32 
     (current + delta).clamp(-STRUT, max_scroll)
 }
 
+fn smoothed_camera_position(from: f32, target: f32, elapsed: Duration, duration: Duration) -> f32 {
+    if elapsed >= duration {
+        return target;
+    }
+    let t = elapsed.as_secs_f32() / duration.as_secs_f32();
+    from + (target - from) * ease_out_cubic(t)
+}
+
 /// Pixels-per-canvas-pixel for the minimap: fit the widest strip (never less
 /// than one viewport) into the track width, then cap the scale so a panel's
 /// mapped height fits the track. One shared scale on both axes keeps every
@@ -7423,6 +7433,23 @@ mod tests {
         assert_eq!(pan_camera(900.0, 500.0, 2000.0, 1000.0), 1000.0);
         // Content narrower than the viewport cannot pan at all.
         assert_eq!(pan_camera(0.0, 300.0, 500.0, 1000.0), -GAP);
+    }
+
+    #[test]
+    fn touchpad_pan_filters_frame_jitter_then_settles_exactly() {
+        let target = 100.0;
+        let first_frame =
+            smoothed_camera_position(0.0, target, Duration::from_millis(8), TOUCH_PAN_DURATION);
+        let second_frame =
+            smoothed_camera_position(0.0, target, Duration::from_millis(16), TOUCH_PAN_DURATION);
+
+        assert!(first_frame > 0.0 && first_frame < target);
+        assert!(second_frame > first_frame && second_frame < target);
+        assert_eq!(
+            smoothed_camera_position(0.0, target, TOUCH_PAN_DURATION, TOUCH_PAN_DURATION),
+            target,
+            "smoothing must never lose touchpad travel"
+        );
     }
 
     #[test]
