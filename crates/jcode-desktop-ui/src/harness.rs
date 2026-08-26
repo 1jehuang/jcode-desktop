@@ -879,7 +879,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
 
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
-    loop {
+    'reconnect: loop {
         let client = match connect("panel") {
             Ok(client) => client,
             Err(error) => {
@@ -944,6 +944,8 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 match command {
                     SessionCommand::Send { content, images } => {
                         let text_only = images.is_empty();
+                        let retry_content = content.clone();
+                        let retry_images = images.clone();
                         let mut result = if turn_active && text_only {
                             client.soft_interrupt(&session_id, &content, true)
                         } else {
@@ -970,6 +972,20 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                             result = client.soft_interrupt(&session_id, &content, true);
                         }
                         if let Err(error) = result {
+                            // A daemon reload can briefly hand this SDK socket
+                            // the state of another legacy subscription. Never
+                            // surface that transport mix-up as a failed user
+                            // message: replace the connection and retry the
+                            // original submission on the correctly attached
+                            // session worker.
+                            if is_wrong_session_attachment_error(&error.to_string()) {
+                                pending.push_front(SessionCommand::Send {
+                                    content: retry_content,
+                                    images: retry_images,
+                                });
+                                lost("session connection changed; reconnecting".into());
+                                continue 'reconnect;
+                            }
                             let _ = updates.send(Update::SendFailed {
                                 session_id: session_id.clone(),
                                 reason: error.to_string(),
@@ -1111,6 +1127,11 @@ fn is_daemon_connection_closed(event: &ApiEvent) -> bool {
         ApiEvent::Error { message, .. }
             if message.eq_ignore_ascii_case("daemon connection closed")
     )
+}
+
+fn is_wrong_session_attachment_error(message: &str) -> bool {
+    message.contains("this connection is attached to `")
+        && message.contains("; attach to it first or use another connection")
 }
 
 fn is_already_processing_error(message: &str) -> bool {
@@ -1375,6 +1396,16 @@ mod tests {
             message: "daemon connection closed".into(),
         };
         assert!(is_daemon_connection_closed(&event));
+    }
+
+    #[test]
+    fn wrong_session_attachment_is_retried_as_a_transport_failure() {
+        assert!(is_wrong_session_attachment_error(
+            "this connection is attached to `session_old`, not `session_new`; attach to it first or use another connection"
+        ));
+        assert!(!is_wrong_session_attachment_error(
+            "not attached to session `session_new`; call attach_session first"
+        ));
     }
 
     #[test]
