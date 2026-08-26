@@ -2381,7 +2381,8 @@ impl Panel {
                 let expanded = self.expanded_tools.contains(call_id);
                 let summary = tool_summary(input);
                 let detail = tool_detail(name, input, output);
-                let has_detail = !detail.is_empty();
+                let edit_preview = code_edit_preview(name, input);
+                let has_detail = !detail.is_empty() || edit_preview.is_some();
                 let output_lines = output.lines().filter(|l| !l.trim().is_empty()).count();
                 let call_id = call_id.clone();
                 div()
@@ -2474,6 +2475,9 @@ impl Panel {
                                 )
                             }),
                     )
+                    .when_some(edit_preview, |el, preview| {
+                        el.child(render_code_edit_preview(preview))
+                    })
                     .when(expanded && has_detail, |el| {
                         el.child(
                             div()
@@ -3670,6 +3674,132 @@ fn tool_detail(name: &str, input: &str, output: &str) -> String {
     parts.join("\n\n")
 }
 
+#[derive(Debug, PartialEq)]
+struct CodeEditPreview {
+    file: String,
+    lines: Vec<String>,
+}
+
+/// Extract an edit while its tool call is still live so the transcript shows
+/// the actual code change, rather than making users expand raw JSON arguments.
+fn code_edit_preview(name: &str, input: &str) -> Option<CodeEditPreview> {
+    let value = serde_json::from_str::<serde_json::Value>(input).ok()?;
+    let string = |key: &str| value.get(key).and_then(|v| v.as_str());
+    match name {
+        "edit" => Some(CodeEditPreview {
+            file: string("file_path")?.to_owned(),
+            lines: removed_and_added(string("old_string")?, string("new_string")?),
+        }),
+        "write" => Some(CodeEditPreview {
+            file: string("file_path")?.to_owned(),
+            lines: prefixed_lines(string("content")?, "+"),
+        }),
+        "multiedit" => {
+            let mut lines = Vec::new();
+            for edit in value.get("edits")?.as_array()? {
+                lines.extend(removed_and_added(
+                    edit.get("old_string")?.as_str()?,
+                    edit.get("new_string")?.as_str()?,
+                ));
+            }
+            Some(CodeEditPreview {
+                file: string("file_path")?.to_owned(),
+                lines,
+            })
+        }
+        "apply_patch" | "patch" => patch_preview(string("patch_text")?),
+        _ => None,
+    }
+}
+
+fn removed_and_added(old: &str, new: &str) -> Vec<String> {
+    let mut lines = prefixed_lines(old, "-");
+    lines.extend(prefixed_lines(new, "+"));
+    lines
+}
+
+fn prefixed_lines(text: &str, prefix: &str) -> Vec<String> {
+    text.lines().map(|line| format!("{prefix}{line}")).collect()
+}
+
+fn patch_preview(patch: &str) -> Option<CodeEditPreview> {
+    let file = patch
+        .lines()
+        .find_map(|line| line.strip_prefix("*** Update File: "))
+        .or_else(|| {
+            patch
+                .lines()
+                .find_map(|line| line.strip_prefix("*** Add File: "))
+        })
+        .or_else(|| {
+            patch.lines().find_map(|line| {
+                line.strip_prefix("+++ ")
+                    .map(|path| path.trim_start_matches("b/"))
+            })
+        })?
+        .to_owned();
+    let lines = patch
+        .lines()
+        .filter(|line| {
+            (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+                || line.starts_with("@@")
+        })
+        .map(str::to_owned)
+        .collect();
+    Some(CodeEditPreview { file, lines })
+}
+
+fn render_code_edit_preview(preview: CodeEditPreview) -> gpui::AnyElement {
+    const MAX_LINES: usize = 120;
+    let hidden = preview.lines.len().saturating_sub(MAX_LINES);
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .font_family(Theme::global().FONT_MONO)
+        .text_size(px(11.0));
+    for line in preview.lines.into_iter().take(MAX_LINES) {
+        let color = if line.starts_with('+') {
+            Theme::global().OK
+        } else if line.starts_with('-') {
+            Theme::global().ERROR
+        } else {
+            Theme::global().TEXT_FAINT
+        };
+        body = body.child(div().text_color(color).child(if line.is_empty() {
+            " ".to_owned()
+        } else {
+            line
+        }));
+    }
+    if hidden > 0 {
+        body = body.child(
+            div()
+                .text_color(Theme::global().TEXT_FAINT)
+                .child(format!("… {hidden} more changed lines")),
+        );
+    }
+    div()
+        .debug_selector(|| "code-edit-preview".into())
+        .border_t_1()
+        .border_color(Theme::global().TOOL_BORDER)
+        .bg(Theme::global().CODE_BG)
+        .px_2p5()
+        .py_1p5()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .font_family(Theme::global().FONT_MONO)
+                .text_size(px(10.0))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(preview.file),
+        )
+        .child(body)
+        .into_any_element()
+}
+
 /// Keep a block short from the top, noting how much was hidden.
 fn acknowledge_next(
     pending: &mut VecDeque<usize>,
@@ -3975,6 +4105,28 @@ mod tests {
         // The tail survives: results and errors live at the end of output.
         assert!(clipped.contains("l49"));
         assert!(clipped.contains("l0"));
+    }
+
+    #[test]
+    fn edit_tools_expose_inline_removed_and_added_lines() {
+        let preview = code_edit_preview(
+            "edit",
+            r#"{"file_path":"src/main.rs","old_string":"let old = 1;","new_string":"let new = 2;"}"#,
+        )
+        .expect("edit preview");
+        assert_eq!(preview.file, "src/main.rs");
+        assert_eq!(preview.lines, ["-let old = 1;", "+let new = 2;"]);
+    }
+
+    #[test]
+    fn patch_tools_expose_inline_changed_lines() {
+        let preview = code_edit_preview(
+            "apply_patch",
+            r#"{"patch_text":"*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch"}"#,
+        )
+        .expect("patch preview");
+        assert_eq!(preview.file, "src/lib.rs");
+        assert_eq!(preview.lines, ["@@", "-old", "+new"]);
     }
 
     #[test]
