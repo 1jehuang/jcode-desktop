@@ -84,7 +84,7 @@ jobs:
           # the process and bypassing Sparkle's termination observer.
           sleep 90
           if pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null; then
-            pkill -TERM -f "$app/Contents/MacOS/jcode-desktop"
+            pkill -TERM -f "$app/Contents/MacOS/jcode-desktop" || true
             for attempt in {1..30}; do
               pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null || break
               sleep 1
@@ -107,4 +107,4 @@ jobs:
           open "$app"
           sleep 12
           pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null
-          pkill -TERM -f "$app/Contents/MacOS/jcode-desktop"
+          pkill -TERM -f "$app/Contents/MacOS/jcode-desktop" || true
