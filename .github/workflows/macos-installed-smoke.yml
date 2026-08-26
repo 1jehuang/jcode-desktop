@@ -84,7 +84,11 @@ jobs:
           # the process and bypassing Sparkle's termination observer.
           sleep 90
           if pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null; then
-            osascript -e 'tell application id "dev.solosystems.jcode.desktop" to quit'
+            pkill -TERM -f "$app/Contents/MacOS/jcode-desktop"
+            for attempt in {1..30}; do
+              pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null || break
+              sleep 1
+            done
           else
             echo "Jcode exited while Sparkle handled the update"
           fi
@@ -103,4 +107,4 @@ jobs:
           open "$app"
           sleep 12
           pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null
-          osascript -e 'tell application id "dev.solosystems.jcode.desktop" to quit'
+          pkill -TERM -f "$app/Contents/MacOS/jcode-desktop"
