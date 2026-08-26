@@ -3253,27 +3253,7 @@ impl Render for Panel {
         let panel = cx.entity();
         let list_rows = rows.clone();
         let transcript = if row_count == 0 {
-            transcript_shell.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .text_size(px(13.0))
-                            .child("no messages yet"),
-                    )
-                    .child(
-                        div()
-                            .text_color(Theme::global().TEXT_FAINT)
-                            .text_size(px(11.0))
-                            .child("type below to start this session"),
-                    ),
-            )
+            transcript_shell
         } else {
             transcript_shell.child(
                 list(
