@@ -77,7 +77,17 @@ const STRIP_COUNT: usize = 4;
 struct ShowcaseCue {
     shortcut: String,
     action: &'static str,
+    tutorial_group: &'static str,
 }
+
+const TUTORIAL_SHORTCUTS: &[(&str, &str, &str)] = &[
+    ("navigate", "H J K L", "navigate"),
+    ("move", "⇧ H J K L", "move panel"),
+    ("new", "N", "new session"),
+    ("resize", "R / F", "resize"),
+    ("overview", "O", "overview"),
+    ("help", "/", "all shortcuts"),
+];
 /// niri `window-rule { geometry-corner-radius 6 }`.
 const CORNER_RADIUS: f32 = 6.0;
 /// niri `preset-column-widths`: Alt+R cycles through these in order.
@@ -1682,6 +1692,7 @@ impl Workspace {
     }
 
     fn new_panel(&mut self, _: &NewPanel, _: &mut Window, cx: &mut Context<Self>) {
+        self.tutorial_cue("N", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_new_session(cx);
     }
@@ -2069,6 +2080,7 @@ impl Workspace {
     }
 
     fn toggle_overview(&mut self, _: &ToggleOverview, _: &mut Window, cx: &mut Context<Self>) {
+        self.tutorial_cue("O", "Toggle overview", "overview", cx);
         self.learned("overview", cx);
         self.overview = !self.overview;
         self.overview_progress
@@ -2079,6 +2091,7 @@ impl Workspace {
     }
 
     fn toggle_hints(&mut self, _: &ToggleHints, _: &mut Window, cx: &mut Context<Self>) {
+        self.tutorial_cue("/", "Show all shortcuts", "help", cx);
         self.hints_overlay = !self.hints_overlay;
         self.hints_progress
             .set(if self.hints_overlay { 1.0 } else { 0.0 }, Instant::now());
@@ -2094,6 +2107,7 @@ impl Workspace {
                 "Super + Shift + S".to_owned()
             },
             action: "Showcase mode on",
+            tutorial_group: "",
         });
         self.schedule_showcase_expiry(cx);
         cx.notify();
@@ -2121,6 +2135,31 @@ impl Workspace {
                 format!("{modifier} + {key}")
             },
             action,
+            tutorial_group: if shifted { "move" } else { "navigate" },
+        });
+        self.schedule_showcase_expiry(cx);
+        cx.notify();
+    }
+
+    fn tutorial_cue(
+        &mut self,
+        key: &str,
+        action: &'static str,
+        tutorial_group: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.showcase_mode {
+            return;
+        }
+        let modifier = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Super"
+        };
+        self.showcase_cue = Some(ShowcaseCue {
+            shortcut: format!("{modifier} + {key}"),
+            action,
+            tutorial_group,
         });
         self.schedule_showcase_expiry(cx);
         cx.notify();
@@ -2176,6 +2215,7 @@ impl Workspace {
     /// niri `switch-preset-column-width` (Alt+R): step to the next preset,
     /// wrapping around.
     fn cycle_width(&mut self, _: &CycleWidth, _: &mut Window, cx: &mut Context<Self>) {
+        self.tutorial_cue("R", "Cycle panel width", "resize", cx);
         let Some(slot) = self
             .slots
             .get_mut(self.active)
@@ -2193,6 +2233,7 @@ impl Workspace {
     /// niri `maximize-column` (Alt+F): fill the viewport, or restore the
     /// previous width when already maximized.
     fn maximize_width(&mut self, _: &MaximizeWidth, _: &mut Window, cx: &mut Context<Self>) {
+        self.tutorial_cue("F", "Maximize or restore panel", "resize", cx);
         let Some(slot) = self
             .slots
             .get_mut(self.active)
@@ -4240,6 +4281,87 @@ impl Workspace {
             )
             .into_any_element()
     }
+
+    /// Always-visible, low-profile tutorial. It teaches the small command set
+    /// needed to become productive, then lights the matching pill when the user
+    /// performs an action so the key and its effect are learned together.
+    fn render_tutorial_bar(&self) -> gpui::AnyElement {
+        let modifier = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Super"
+        };
+        let active = self.showcase_cue.as_ref().map(|cue| cue.tutorial_group);
+        let mut shortcuts = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap(px(6.0));
+        for (index, &(id, keys, label)) in TUTORIAL_SHORTCUTS.iter().enumerate() {
+            let selected = active == Some(id);
+            shortcuts = shortcuts.child(
+                div()
+                    .id(("tutorial-shortcut", index))
+                    .debug_selector(move || format!("tutorial-{id}"))
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if selected {
+                        Theme::global().ACCENT
+                    } else {
+                        Theme::global().PANEL_BORDER
+                    })
+                    .bg(if selected {
+                        Theme::global().ACCENT_DIM
+                    } else {
+                        Theme::global().HEADER_BG
+                    })
+                    .child(
+                        div()
+                            .font_family(Theme::global().FONT_MONO)
+                            .text_size(px(11.0))
+                            .text_color(if selected {
+                                Theme::global().ACCENT
+                            } else {
+                                Theme::global().TEXT
+                            })
+                            .child(format!("{modifier} {keys}")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(label),
+                    ),
+            );
+        }
+        div()
+            .id("tutorial-bar")
+            .debug_selector(|| "tutorial-bar".into())
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(8.0))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_lg()
+                    .bg(gpui::rgba(0x111318e8))
+                    .border_1()
+                    .border_color(Theme::global().PANEL_BORDER)
+                    .shadow_sm()
+                    .child(shortcuts),
+            )
+            .into_any_element()
+    }
 }
 
 impl Workspace {
@@ -4679,6 +4801,9 @@ impl Render for Workspace {
                     .pt(px(content_top_inset))
                     .child(content)
                     .child(self.render_workspace_bar(cx))
+                    .when(self.showcase_mode, |el| {
+                        el.child(self.render_tutorial_bar())
+                    })
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
                         el.child(self.render_minimap(viewport_w, viewport_h, cx))
                     })
@@ -8190,6 +8315,7 @@ mod tests {
             workspace.showcase_motion("L", false, "Focus right", cx);
             let cue = workspace.showcase_cue.as_ref().expect("showcase cue");
             assert_eq!(cue.action, "Focus right");
+            assert_eq!(cue.tutorial_group, "navigate");
             assert_eq!(
                 cue.shortcut,
                 if cfg!(target_os = "macos") {
@@ -8203,6 +8329,14 @@ mod tests {
         assert!(
             cx.debug_bounds("showcase-shortcut").is_some(),
             "a real workspace motion should paint the bottom-center overlay"
+        );
+        assert!(
+            cx.debug_bounds("tutorial-bar").is_some(),
+            "tutorial mode should keep the essential keybindings visible"
+        );
+        assert!(
+            cx.debug_bounds("tutorial-navigate").is_some(),
+            "the navigation shortcut pill should be painted"
         );
         assert!(
             cx.debug_bounds("showcase-key").is_some(),
