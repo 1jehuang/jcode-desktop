@@ -23,7 +23,7 @@ use gpui::{
 use gpui_platform::application;
 
 use host::{
-    instance::{self, Instance},
+    instance::{self, Command as InstanceCommand, Instance},
     reload::ReloadManager,
     resources::HostState,
 };
@@ -130,12 +130,18 @@ fn main() {
     let instance_name = env::args_os()
         .any(|argument| argument == "--no-sidebar" || argument == "--workspace")
         .then_some("no-sidebar");
-    let (commands, instance_socket) = match instance::acquire_named(instance_name)
-        .expect("initialize Jcode Desktop instance socket")
-    {
-        Instance::Primary { commands, _socket } => (commands, _socket),
-        Instance::Secondary => return,
+    let requested_command = if env::args_os().any(|argument| argument == "--reload-ui") {
+        InstanceCommand::Reload
+    } else {
+        InstanceCommand::Show
     };
+    let (commands, instance_socket) =
+        match instance::acquire_named(instance_name, requested_command)
+            .expect("initialize Jcode Desktop instance socket")
+        {
+            Instance::Primary { commands, _socket } => (commands, _socket),
+            Instance::Secondary => return,
+        };
     let plugin_path = hot_reload_path();
     // A development launcher must not show the UI that happened to be linked
     // the last time the host executable was built. Rebuild the plugin before
@@ -220,8 +226,19 @@ fn main() {
                         })
                         .await;
                     commands = receiver;
-                    if command.is_err() {
-                        return;
+                    let Ok(command) = command else { return };
+
+                    if command == InstanceCommand::Reload {
+                        let result = cx.background_executor().spawn(async { rebuild_ui() }).await;
+                        match result {
+                            Ok(()) => {
+                                if let Err(error) = cx.update(|cx| manager.borrow_mut().reload(cx)) {
+                                    eprintln!("remote UI reload failed after rebuild: {error:#}");
+                                }
+                            }
+                            Err(error) => eprintln!("remote UI rebuild failed: {error:#}"),
+                        }
+                        continue;
                     }
 
                     let result = cx.update(|cx| {

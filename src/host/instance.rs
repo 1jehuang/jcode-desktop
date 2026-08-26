@@ -13,12 +13,19 @@ mod platform {
         time::Duration,
     };
 
-    const SHOW: &[u8] = b"show\n";
+    const SHOW: u8 = b'S';
+    const RELOAD: u8 = b'R';
     const OK: &[u8] = b"ok\n";
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Command {
+        Show,
+        Reload,
+    }
 
     pub enum Instance {
         Primary {
-            commands: Receiver<()>,
+            commands: Receiver<Command>,
             _socket: SocketGuard,
         },
         Secondary,
@@ -32,8 +39,8 @@ mod platform {
         }
     }
 
-    pub fn acquire_named(name: Option<&str>) -> io::Result<Instance> {
-        acquire_at(socket_path(name))
+    pub fn acquire_named(name: Option<&str>, command: Command) -> io::Result<Instance> {
+        acquire_at(socket_path(name), command)
     }
 
     fn socket_path(name: Option<&str>) -> PathBuf {
@@ -48,8 +55,8 @@ mod platform {
         std::env::temp_dir().join(format!("{user}-{socket}"))
     }
 
-    fn acquire_at(path: PathBuf) -> io::Result<Instance> {
-        if notify(&path).is_ok() {
+    fn acquire_at(path: PathBuf, command: Command) -> io::Result<Instance> {
+        if notify(&path, command).is_ok() {
             return Ok(Instance::Secondary);
         }
 
@@ -60,7 +67,7 @@ mod platform {
                 // a short opportunity to begin accepting before treating it as stale.
                 for _ in 0..10 {
                     thread::sleep(Duration::from_millis(5));
-                    if notify(&path).is_ok() {
+                    if notify(&path, command).is_ok() {
                         return Ok(Instance::Secondary);
                     }
                 }
@@ -81,10 +88,13 @@ mod platform {
         })
     }
 
-    fn notify(path: &Path) -> io::Result<()> {
+    fn notify(path: &Path, command: Command) -> io::Result<()> {
         let mut stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_millis(250)))?;
-        stream.write_all(SHOW)?;
+        stream.write_all(&[match command {
+            Command::Show => SHOW,
+            Command::Reload => RELOAD,
+        }])?;
         let mut response = [0; 3];
         stream.read_exact(&mut response)?;
         if response == OK {
@@ -97,12 +107,17 @@ mod platform {
         }
     }
 
-    fn serve(listener: UnixListener, commands: mpsc::Sender<()>) {
+    fn serve(listener: UnixListener, commands: mpsc::Sender<Command>) {
         for incoming in listener.incoming() {
             let Ok(mut stream) = incoming else { continue };
-            let mut command = [0; 5];
-            if stream.read_exact(&mut command).is_ok() && command == SHOW {
-                let _ = commands.send(());
+            let mut command = [0; 1];
+            if stream.read_exact(&mut command).is_ok() {
+                let command = match command[0] {
+                    SHOW => Command::Show,
+                    RELOAD => Command::Reload,
+                    _ => continue,
+                };
+                let _ = commands.send(command);
                 let _ = stream.write_all(OK);
             }
         }
@@ -121,27 +136,33 @@ mod platform {
         #[test]
         fn second_instance_notifies_the_primary() {
             let (_root, path) = path("instance.sock");
-            let primary = acquire_at(path.clone()).unwrap();
+            let primary = acquire_at(path.clone(), Command::Show).unwrap();
             let commands = match &primary {
                 Instance::Primary { commands, .. } => commands,
                 Instance::Secondary => panic!(),
             };
-            assert!(matches!(acquire_at(path), Ok(Instance::Secondary)));
-            commands.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(matches!(
+                acquire_at(path, Command::Reload),
+                Ok(Instance::Secondary)
+            ));
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Command::Reload
+            );
         }
 
         #[test]
         fn stale_socket_is_replaced() {
             let (_root, path) = path("stale.sock");
             fs::write(&path, b"stale").unwrap();
-            let primary = acquire_at(path).unwrap();
+            let primary = acquire_at(path, Command::Show).unwrap();
             assert!(matches!(&primary, Instance::Primary { .. }));
         }
 
         #[test]
         fn socket_is_private() {
             let (_root, path) = path("private.sock");
-            let primary = acquire_at(path.clone()).unwrap();
+            let primary = acquire_at(path.clone(), Command::Show).unwrap();
             assert!(matches!(&primary, Instance::Primary { .. }));
             assert_eq!(
                 fs::metadata(path).unwrap().permissions().mode() & 0o777,
@@ -152,7 +173,7 @@ mod platform {
 } // unix platform
 
 #[cfg(unix)]
-pub use platform::{Instance, acquire_named};
+pub use platform::{Command, Instance, acquire_named};
 
 // GPUI's Windows event loop is supported, but Unix-domain socket ownership and
 // permissions are not. Permit independent instances until named pipes land.
@@ -163,9 +184,15 @@ mod platform {
         sync::mpsc::{self, Receiver},
     };
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Command {
+        Show,
+        Reload,
+    }
+
     pub enum Instance {
         Primary {
-            commands: Receiver<()>,
+            commands: Receiver<Command>,
             _socket: SocketGuard,
         },
         Secondary,
@@ -173,7 +200,7 @@ mod platform {
 
     pub struct SocketGuard;
 
-    pub fn acquire_named(_name: Option<&str>) -> io::Result<Instance> {
+    pub fn acquire_named(_name: Option<&str>, _command: Command) -> io::Result<Instance> {
         let (_sender, commands) = mpsc::channel();
         Ok(Instance::Primary {
             commands,
@@ -183,4 +210,4 @@ mod platform {
 }
 
 #[cfg(not(unix))]
-pub use platform::{Instance, acquire_named};
+pub use platform::{Command, Instance, acquire_named};
