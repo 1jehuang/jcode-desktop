@@ -99,11 +99,21 @@ jobs:
             sleep 0.1
           done
           [[ -S "$runtime/jcode-ci-wayland" ]]
+          # Weston creates its socket before all registry globals are available.
+          # Starting GPUI in that window can fail with `NoCompositor`, so require
+          # the compositor process to remain alive and give registry setup a
+          # brief grace period before connecting the packaged application.
+          kill -0 "$weston_pid"
+          sleep 2
           XDG_RUNTIME_DIR="$runtime" HOME="$home" WAYLAND_DISPLAY=jcode-ci-wayland DISPLAY= \
             "$app" >"$RUNNER_TEMP/jcode-desktop-wayland.log" 2>&1 &
           pid=$!
           sleep 8
-          kill -0 "$pid"
+          if ! kill -0 "$pid" 2>/dev/null; then
+            cat "$RUNNER_TEMP/weston.log" || true
+            cat "$RUNNER_TEMP/jcode-desktop-wayland.log" || true
+            wait "$pid"
+          fi
           kill "$pid"
           wait "$pid" || true
       - name: Build and package Windows
