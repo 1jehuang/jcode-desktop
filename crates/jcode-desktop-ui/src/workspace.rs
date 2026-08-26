@@ -1038,13 +1038,8 @@ impl Workspace {
             }
             Update::SessionCreated { session } => {
                 let session_id = session.session_id.clone();
-                if !self
-                    .sessions
-                    .iter()
-                    .any(|known| known.session_id == session.session_id)
-                {
-                    self.sessions.push(session.clone());
-                }
+                // A brand-new panel is only a local draft until its first prompt.
+                // The persisted/runtime session refresh adds it after activity.
                 let inserted = self.open_session(session, cx);
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
