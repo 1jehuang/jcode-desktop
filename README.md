@@ -101,6 +101,19 @@ installs a freedesktop launcher. The Windows ZIP includes an external execution
 manifest with DPI, long-path, and supported-OS metadata; executable icon resource
 embedding remains a future signing-time enhancement.
 
+The supported release matrix is intentionally explicit:
+
+| Platform | Architectures | Window system / minimum version | Release validation |
+| --- | --- | --- | --- |
+| Linux | x86-64 | Wayland and X11 | Workspace tests, package contract, bundled CLI, and packaged-app launch on headless Weston and Xvfb |
+| Windows | x86-64 | Windows 10 and 11 | Workspace tests, package contract, bundled CLI, and packaged-app launch |
+| macOS | Apple silicon and Intel | macOS 13 or newer | Workspace/package checks, universal binaries, signing, notarization, DMG install, bundled CLI, and installed-app launch |
+
+Other architectures, older operating systems, and alternative Linux package
+formats are not advertised as supported until their release artifacts and smoke
+tests exist. This keeps “supported” tied to a repeatable acceptance check rather
+than compilation alone.
+
 The macOS workflow remains the release owner: it fails closed on tagged builds,
 performs signing and notarization, and creates the GitHub prerelease. The Linux
 and Windows workflow waits for that prerelease before uploading, avoiding parallel

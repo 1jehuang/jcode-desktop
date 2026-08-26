@@ -47,7 +47,10 @@ jobs:
             jcode
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev weston xvfb
+      - name: Test desktop workspace
+        working-directory: jcode-desktop
+        run: cargo test --workspace --locked
       - name: Build and package Linux
         if: matrix.platform == 'linux'
         env:
@@ -60,6 +63,52 @@ jobs:
           python3 jcode-desktop/scripts/verify-release-package.py jcode-desktop/dist/linux/*.tar.gz
           dpkg-deb --info jcode-desktop/dist/linux/*.deb
           dpkg-deb --contents jcode-desktop/dist/linux/*.deb | grep -E 'jcode-desktop|jcode-harness-api-bridge|jcode.desktop|jcode.png'
+      - name: Smoke-test Linux package on X11
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find jcode-desktop/dist/linux -type f -name jcode-desktop | head -1)
+          cli=$(dirname "$app")/jcode
+          "$cli" --version
+          runtime="$RUNNER_TEMP/jcode-x11-runtime"
+          home="$RUNNER_TEMP/jcode-x11-home"
+          mkdir -p "$runtime" "$home"
+          chmod 700 "$runtime"
+          timeout 20s xvfb-run -a sh -c '
+            unset WAYLAND_DISPLAY
+            XDG_RUNTIME_DIR="$2" HOME="$3" "$1" >"$RUNNER_TEMP/jcode-desktop-x11.log" 2>&1 &
+            pid=$!
+            sleep 8
+            kill -0 "$pid"
+            kill "$pid"
+            wait "$pid" || true
+          ' sh "$app" "$runtime" "$home"
+      - name: Smoke-test Linux package on Wayland
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find jcode-desktop/dist/linux -type f -name jcode-desktop | head -1)
+          runtime="$RUNNER_TEMP/jcode-wayland-runtime"
+          home="$RUNNER_TEMP/jcode-wayland-home"
+          mkdir -p "$runtime" "$home"
+          chmod 700 "$runtime"
+          XDG_RUNTIME_DIR="$runtime" weston --backend=headless-backend.so --socket=jcode-ci-wayland --idle-time=0 >"$RUNNER_TEMP/weston.log" 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for _ in {1..50}; do
+            [[ -S "$runtime/jcode-ci-wayland" ]] && break
+            sleep 0.1
+          done
+          [[ -S "$runtime/jcode-ci-wayland" ]]
+          XDG_RUNTIME_DIR="$runtime" HOME="$home" WAYLAND_DISPLAY=jcode-ci-wayland DISPLAY= \
+            "$app" >"$RUNNER_TEMP/jcode-desktop-wayland.log" 2>&1 &
+          pid=$!
+          sleep 8
+          kill -0 "$pid"
+          kill "$pid"
+          wait "$pid" || true
       - name: Build and package Windows
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -70,7 +119,25 @@ jobs:
       - name: Verify Windows package
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: python jcode-desktop/scripts/verify-release-package.py (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName
+        run: |
+          python jcode-desktop/scripts/verify-release-package.py (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName
+          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-x86_64' | Select-Object -First 1
+          & "$($stage.FullName)/jcode.exe" --version
+          if ($LASTEXITCODE) { throw 'Bundled Jcode CLI did not start' }
+      - name: Smoke-test Windows package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-x86_64' | Select-Object -First 1
+          $log = Join-Path $env:RUNNER_TEMP 'jcode-desktop-windows.log'
+          $process = Start-Process -FilePath "$($stage.FullName)/jcode-desktop.exe" -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) {
+            Get-Content $log, "$log.err" -ErrorAction SilentlyContinue
+            throw "Jcode Desktop exited during launch with code $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id
+          $process.WaitForExit()
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-${{ matrix.platform }}-x86_64
