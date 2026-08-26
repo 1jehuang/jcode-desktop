@@ -1301,6 +1301,21 @@ impl Panel {
                     }
                 }
                 "/model" | "/models" => self.open_model_picker(cx),
+                "/update" => {
+                    let message = match crate::updates::request_now() {
+                        crate::updates::UpdateRequest::Checking =>
+                            "Checking for Jcode Desktop updates…",
+                        crate::updates::UpdateRequest::AlreadyChecking =>
+                            "Jcode Desktop is already checking for updates.",
+                        crate::updates::UpdateRequest::Downloading =>
+                            "A Jcode Desktop update is downloading in the background.",
+                        crate::updates::UpdateRequest::Restarting =>
+                            "Installing the update and restarting Jcode Desktop…",
+                        crate::updates::UpdateRequest::Unavailable =>
+                            "Automatic updates are unavailable in this build of Jcode Desktop.",
+                    };
+                    self.items.push(Item::Assistant(message.into()));
+                }
                 "/effort" => self.items.push(Item::Assistant(
                     "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
                 )),

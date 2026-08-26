@@ -23,7 +23,7 @@ typedef NS_ENUM(uint32_t, JcodeUpdateState) {
 };
 
 extern void jcode_update_report(uint32_t state, const char *version);
-extern void jcode_update_register_actions(void (*install_now)(void));
+extern void jcode_update_register_actions(void (*check_now)(void), void (*install_now)(void));
 
 static void JcodeReport(JcodeUpdateState state, NSString *version)
 {
@@ -126,6 +126,16 @@ static NSString *JcodeVersionOf(id item)
 + (void)checkInBackground;
 @end
 
+// Called from Rust for `/update`. Keep all Sparkle interaction on AppKit's main
+// thread even when the command originates in a session callback.
+static void JcodeCheckNow(void)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        JcodeReport(JcodeUpdateStateChecking, @"");
+        [JcodeUpdaterBootstrap checkInBackground];
+    });
+}
+
 @implementation JcodeUpdaterBootstrap
 
 + (void)load
@@ -178,7 +188,7 @@ static NSString *JcodeVersionOf(id item)
                 updaterDelegate:updaterDelegate
              userDriverDelegate:nil];
 
-    jcode_update_register_actions(JcodeInstallNow);
+    jcode_update_register_actions(JcodeCheckNow, JcodeInstallNow);
 
     // A launch-time check turns "a fix shipped" into something the user sees
     // now, instead of up to a scheduled day later. It matters most for a build

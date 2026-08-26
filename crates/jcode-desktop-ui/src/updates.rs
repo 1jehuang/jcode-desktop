@@ -115,30 +115,73 @@ pub(crate) fn from_parts(state: u32, version: String) -> UpdateState {
 
 /// Entry point registered by the platform layer to relaunch into the staged
 /// update. Stored as a raw pointer so this crate never links against Sparkle.
+static CHECK_NOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static INSTALL_NOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Result of asking the platform updater to act now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdateRequest {
+    Checking,
+    AlreadyChecking,
+    Downloading,
+    Restarting,
+    Unavailable,
+}
 
 /// Called by the macOS updater bootstrap once Sparkle is live.
 ///
 /// # Safety
-/// `install_now` must be a valid `extern "C" fn()` pointer that stays valid for
+/// Both arguments must be valid `extern "C" fn()` pointers that stay valid for
 /// the lifetime of the process.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jcode_update_register_actions(install_now: extern "C" fn()) {
+pub unsafe extern "C" fn jcode_update_register_actions(
+    check_now: extern "C" fn(),
+    install_now: extern "C" fn(),
+) {
+    CHECK_NOW.store(check_now as *mut c_void, Ordering::Release);
     INSTALL_NOW.store(install_now as *mut c_void, Ordering::Release);
+}
+
+fn call_action(action: &AtomicPtr<c_void>) -> bool {
+    let pointer = action.load(Ordering::Acquire);
+    if pointer.is_null() {
+        return false;
+    }
+    // Safety: only `jcode_update_register_actions` stores these pointers, and
+    // it requires `extern "C" fn()` values valid for the process lifetime.
+    let action: extern "C" fn() = unsafe { std::mem::transmute(pointer) };
+    action();
+    true
+}
+
+/// Check for an update, continue an active download, or install a staged build.
+/// This is the single entry point used by `/update`.
+pub fn request_now() -> UpdateRequest {
+    match current() {
+        UpdateState::Idle => {
+            if call_action(&CHECK_NOW) {
+                set(UpdateState::Checking);
+                UpdateRequest::Checking
+            } else {
+                UpdateRequest::Unavailable
+            }
+        }
+        UpdateState::Checking => UpdateRequest::AlreadyChecking,
+        UpdateState::Available { .. } => UpdateRequest::Downloading,
+        UpdateState::ReadyToRestart { .. } => {
+            if install_now() {
+                UpdateRequest::Restarting
+            } else {
+                UpdateRequest::Unavailable
+            }
+        }
+    }
 }
 
 /// Ask the platform updater to install the staged build and relaunch.
 /// Returns whether an installer was actually available to call.
 pub fn install_now() -> bool {
-    let pointer = INSTALL_NOW.load(Ordering::Acquire);
-    if pointer.is_null() {
-        return false;
-    }
-    // Safety: only `jcode_update_register_actions` ever stores here, and it
-    // documents that the pointer is a `extern "C" fn()` valid for the process.
-    let install: extern "C" fn() = unsafe { std::mem::transmute(pointer) };
-    install();
-    true
+    call_action(&INSTALL_NOW)
 }
 
 #[cfg(test)]
@@ -245,10 +288,35 @@ mod tests {
         );
         assert!(!install_now(), "an unregistered installer cannot run");
 
-        unsafe { jcode_update_register_actions(install) };
+        unsafe { jcode_update_register_actions(install, install) };
         assert!(install_now(), "a registered installer should run");
         assert!(CALLED.load(Ordering::Acquire));
 
         INSTALL_NOW.store(std::ptr::null_mut(), Ordering::Release);
+        CHECK_NOW.store(std::ptr::null_mut(), Ordering::Release);
+    }
+
+    #[test]
+    fn update_request_checks_when_idle_and_installs_when_ready() {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        extern "C" fn action() {
+            CALLS.fetch_add(1, Ordering::AcqRel);
+        }
+
+        unsafe { jcode_update_register_actions(action, action) };
+        set(UpdateState::Idle);
+        assert_eq!(request_now(), UpdateRequest::Checking);
+        assert_eq!(current(), UpdateState::Checking);
+        assert_eq!(request_now(), UpdateRequest::AlreadyChecking);
+
+        set(UpdateState::ReadyToRestart {
+            version: "0.1.0-beta.16".to_owned(),
+        });
+        assert_eq!(request_now(), UpdateRequest::Restarting);
+        assert_eq!(CALLS.load(Ordering::Acquire), 2);
+
+        INSTALL_NOW.store(std::ptr::null_mut(), Ordering::Release);
+        CHECK_NOW.store(std::ptr::null_mut(), Ordering::Release);
+        set(UpdateState::Idle);
     }
 }
