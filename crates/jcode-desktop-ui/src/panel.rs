@@ -4529,7 +4529,37 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .expect("panel exists");
 
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("minimap-panel-0-idle").is_some(),
+            "the public workspace surface must paint the idle state"
+        );
+
         panel.update(vcx, |panel, cx| {
+            panel.status = "running_tools".into();
+            cx.notify();
+        });
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("minimap-panel-0-working").is_some(),
+            "the public workspace surface must paint the working state"
+        );
+
+        panel.update(vcx, |panel, cx| {
+            panel.status = "idle".into();
+            panel.items.push(Item::Error("visible failure".into()));
+            cx.notify();
+        });
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("minimap-panel-0-error").is_some(),
+            "the public workspace surface must paint the error state"
+        );
+
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
             panel.status = "streaming".into();
             panel.streaming_text = "visible live response".into();
             cx.notify();
