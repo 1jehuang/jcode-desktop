@@ -8997,6 +8997,23 @@ mod tests {
             f32::from(map.origin.y) < 40.0,
             "the minimap should hug the top edge"
         );
+        let location_label = cx
+            .debug_bounds("minimap-location-label")
+            .expect("the map should visibly identify the user's location");
+        assert!(
+            map.contains(&location_label.center()),
+            "the location label should paint inside the minimap card"
+        );
+        let initial_pin = cx
+            .debug_bounds("minimap-you-pin")
+            .expect("the focused panel should have a persistent location pin");
+        let initial_panel = cx
+            .debug_bounds("minimap-panel-0")
+            .expect("the focused panel should appear on the map");
+        assert!(
+            initial_panel.contains(&initial_pin.center()),
+            "the location pin should start inside the focused panel"
+        );
 
         let target = cx
             .debug_bounds("minimap-panel-2")
@@ -9011,6 +9028,16 @@ mod tests {
                 "clicking the minimap rectangle should jump focus to that panel"
             );
         });
+        let moved_pin = cx
+            .debug_bounds("minimap-you-pin")
+            .expect("the location pin should remain visible after focus moves");
+        let focused_panel = cx
+            .debug_bounds("minimap-panel-2")
+            .expect("the newly focused panel should remain on the map");
+        assert!(
+            focused_panel.contains(&moved_pin.center()),
+            "the location pin should move into the newly focused panel"
+        );
     }
 
     /// Clicking an empty minimap track switches to that strip, mirroring the
