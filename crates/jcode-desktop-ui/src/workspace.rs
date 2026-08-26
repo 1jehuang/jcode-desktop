@@ -8632,6 +8632,34 @@ mod tests {
             );
         });
 
+        // Put the focused panel on the second strip, then traverse both ways
+        // using the rendered tutorial arrows rather than keyboard dispatch.
+        cx.simulate_keystrokes(&format!("{MOD}-shift-j"));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| assert_eq!(workspace.active_row, 1));
+
+        let up = cx.debug_bounds("tutorial-nav-up").expect("up arrow guide");
+        cx.simulate_click(up.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 0,
+                "the up arrow should focus the strip above"
+            );
+        });
+
+        let down = cx
+            .debug_bounds("tutorial-nav-down")
+            .expect("down arrow guide");
+        cx.simulate_click(down.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.active_row, 1,
+                "the down arrow should focus the strip below"
+            );
+        });
+
         let overview = cx
             .debug_bounds("tutorial-overview")
             .expect("overview guide");
