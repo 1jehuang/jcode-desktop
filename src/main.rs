@@ -137,6 +137,15 @@ fn main() {
         Instance::Secondary => return,
     };
     let plugin_path = hot_reload_path();
+    // A development launcher must not show the UI that happened to be linked
+    // the last time the host executable was built. Rebuild the plugin before
+    // opening the window, then activate it as the initial live generation.
+    // This makes a fresh `--hot-reload` launch equivalent to pressing Ctrl+R.
+    if plugin_path.is_some()
+        && let Err(error) = rebuild_ui()
+    {
+        eprintln!("initial UI rebuild failed; using the linked UI: {error:#}");
+    }
     application().run(move |cx: &mut App| {
         cx.bind_keys([
             // Ctrl+R must always activate code built from the current checkout,
@@ -326,6 +335,9 @@ fn main() {
             .activate_initial(cx)
             .expect("activate linked Jcode Desktop UI");
         if let Some(path) = plugin_path.as_ref() {
+            if let Err(error) = manager.borrow_mut().reload(cx) {
+                eprintln!("initial UI plugin activation failed; using the linked UI: {error:#}");
+            }
             eprintln!(
                 "Jcode Desktop hot reload enabled: Ctrl+R rebuilds and reloads the latest UI from {}; Ctrl+Shift+R does the same; F6 rolls back",
                 path.display()
