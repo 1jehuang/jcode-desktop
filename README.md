@@ -105,8 +105,8 @@ The supported release matrix is intentionally explicit:
 
 | Platform | Architectures | Window system / minimum version | Release validation |
 | --- | --- | --- | --- |
-| Linux | x86-64 | Wayland and X11 | Workspace tests, package contract, bundled CLI, and packaged-app launch on headless Weston and Xvfb |
-| Windows | x86-64 | Windows 10 and 11 | Workspace tests, package contract, bundled CLI, and packaged-app launch |
+| Linux | x86-64 | Wayland and X11 | Package contract, bundled CLI, and packaged-app launch on headless Weston and Xvfb |
+| Windows | x86-64 | Windows 10 and 11 | Package contract, bundled CLI, and packaged-app launch |
 | macOS | Apple silicon and Intel | macOS 13 or newer | Workspace/package checks, universal binaries, signing, notarization, DMG install, bundled CLI, and installed-app launch |
 
 Other architectures, older operating systems, and alternative Linux package
