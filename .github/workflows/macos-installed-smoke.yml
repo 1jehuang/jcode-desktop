@@ -71,22 +71,22 @@ jobs:
           # an immediate background check after NSApplication finishes launching.
           open "$app"
           for attempt in {1..90}; do
-            if pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null; then
+            if pgrep -x jcode-desktop >/dev/null; then
               break
             fi
             sleep 1
           done
-          pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null
+          pgrep -x jcode-desktop >/dev/null
 
           # SUAutomaticallyUpdate stages the signed archive and installs it when
           # the application terminates. Give the real network/download path time
           # to finish, then request a normal application quit rather than killing
           # the process and bypassing Sparkle's termination observer.
           sleep 90
-          if pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null; then
-            pkill -TERM -f "$app/Contents/MacOS/jcode-desktop" || true
+          if pgrep -x jcode-desktop >/dev/null; then
+            pkill -TERM -x jcode-desktop || true
             for attempt in {1..30}; do
-              pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null || break
+              pgrep -x jcode-desktop >/dev/null || break
               sleep 1
             done
           else
@@ -94,7 +94,10 @@ jobs:
           fi
 
           for attempt in {1..120}; do
-            build=$(defaults read "$app/Contents/Info" CFBundleVersion)
+            # Sparkle replaces the bundle atomically, but there is a brief
+            # interval where Info.plist is unavailable. Keep polling through
+            # that valid installation state instead of letting `set -e` abort.
+            build=$(defaults read "$app/Contents/Info" CFBundleVersion 2>/dev/null || true)
             echo "update poll $attempt: bundle build $build"
             if [[ "$build" == "$EXPECTED_UPDATE_BUILD" ]]; then
               break
@@ -106,5 +109,5 @@ jobs:
 
           open "$app"
           sleep 12
-          pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null
-          pkill -TERM -f "$app/Contents/MacOS/jcode-desktop" || true
+          pgrep -x jcode-desktop >/dev/null
+          pkill -TERM -x jcode-desktop || true
