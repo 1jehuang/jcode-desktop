@@ -67,6 +67,10 @@ actions!(
 /// Spatial transitions settle in 150 ms. Cubic easing keeps motion visible
 /// across the available frames instead of concentrating it at the start.
 const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
+/// A tiny amount of presentation smoothing removes the one-frame stepping
+/// caused by touchpad events arriving between compositor frames without making
+/// the canvas feel detached from the fingers.
+const TOUCH_PAN_DURATION: Duration = Duration::from_millis(42);
 /// niri `layout { gaps 0 }`: columns sit flush against each other.
 const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
@@ -148,8 +152,7 @@ enum SidebarView {
 // scale, preserving the canvas aspect ratio so panels taller than wide on
 // screen stay taller than wide on the map.
 const MINIMAP_WIDTH: f32 = 112.0;
-const MINIMAP_HEIGHT: f32 = 118.0;
-const MINIMAP_HEADER_HEIGHT: f32 = 17.0;
+const MINIMAP_HEIGHT: f32 = 96.0;
 const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
 const MINIMAP_TOP: f32 = 8.0;
@@ -178,11 +181,9 @@ const ONBOARDING_SKILLS: &[&str] = &[
     "overview",
 ];
 /// Rows split the square's inner height evenly, one per strip.
-const MINIMAP_ROW_HEIGHT: f32 = (MINIMAP_HEIGHT
-    - MINIMAP_PADDING * 2.0
-    - MINIMAP_HEADER_HEIGHT
-    - MINIMAP_ROW_GAP * STRIP_COUNT as f32)
-    / STRIP_COUNT as f32;
+const MINIMAP_ROW_HEIGHT: f32 =
+    (MINIMAP_HEIGHT - MINIMAP_PADDING * 2.0 - MINIMAP_ROW_GAP * (STRIP_COUNT as f32 - 1.0))
+        / STRIP_COUNT as f32;
 /// Vertical inset between a panel rectangle and its track edge.
 const MINIMAP_PANEL_INSET: f32 = 1.5;
 /// The gesture reticle: how long it stays fully lit after the last touchpad
@@ -422,6 +423,7 @@ pub struct Workspace {
     /// Where the current camera animation started, and when.
     camera_from: [f32; STRIP_COUNT],
     camera_started: [Option<Instant>; STRIP_COUNT],
+    camera_touch_pan: [bool; STRIP_COUNT],
     /// Set when a strip's camera target must be recomputed at render time,
     /// once the viewport width is known.
     camera_dirty: [bool; STRIP_COUNT],
@@ -588,6 +590,7 @@ impl Workspace {
             camera_target: [0.0; STRIP_COUNT],
             camera_from: [0.0; STRIP_COUNT],
             camera_started: [None; STRIP_COUNT],
+            camera_touch_pan: [false; STRIP_COUNT],
             camera_dirty: [true; STRIP_COUNT],
             overview: false,
             overview_progress: AnimatedValue::new(
@@ -653,6 +656,7 @@ impl Workspace {
             camera_target: [0.0; STRIP_COUNT],
             camera_from: [0.0; STRIP_COUNT],
             camera_started: [None; STRIP_COUNT],
+            camera_touch_pan: [false; STRIP_COUNT],
             camera_dirty: [true; STRIP_COUNT],
             overview: false,
             overview_progress: AnimatedValue::new(
@@ -829,6 +833,7 @@ impl Workspace {
         self.camera_target = snapshot.camera_target;
         self.camera_from = snapshot.camera_x;
         self.camera_started = [None; STRIP_COUNT];
+        self.camera_touch_pan = [false; STRIP_COUNT];
         self.camera_dirty = [false; STRIP_COUNT];
         self.overview = snapshot.overview;
         self.overview_progress = AnimatedValue::new(
@@ -2505,15 +2510,23 @@ impl Workspace {
         if row == self.active_row && self.camera_dirty[row] {
             self.resolve_camera_target(viewport_w);
         }
-        // Animate the camera over CAMERA_DURATION on the shared cubic curve.
+        // Touchpad pans use a much shorter interpolation than navigation. This
+        // coalesces irregular input delivery into presentation frames while
+        // remaining close enough to the fingers to feel direct.
+        let camera_duration = if self.camera_touch_pan[row] {
+            TOUCH_PAN_DURATION
+        } else {
+            CAMERA_DURATION
+        };
         match self.camera_started[row] {
             Some(started) => {
                 let elapsed = started.elapsed();
-                if elapsed >= CAMERA_DURATION {
+                if elapsed >= camera_duration {
                     self.camera_x[row] = self.camera_target[row];
                     self.camera_started[row] = None;
+                    self.camera_touch_pan[row] = false;
                 } else {
-                    let t = elapsed.as_secs_f32() / CAMERA_DURATION.as_secs_f32();
+                    let t = elapsed.as_secs_f32() / camera_duration.as_secs_f32();
                     let eased = ease_out_cubic(t);
                     let from = self.camera_from[row];
                     self.camera_x[row] = from + (self.camera_target[row] - from) * eased;
@@ -2753,7 +2766,7 @@ impl Workspace {
             // Mouse wheels have no gesture continuity: horizontal clicks pan,
             // vertical ones stay with the panel under the pointer.
             if dx != 0.0 {
-                self.pan_strip(row, dx, total_width, viewport_w, window, cx);
+                self.pan_strip(row, dx, total_width, viewport_w, false, window, cx);
                 cx.notify();
             }
             return false;
@@ -2781,7 +2794,7 @@ impl Workspace {
                     self.gesture_last = Some(now);
                 }
                 if dx != 0.0 {
-                    self.pan_strip(row, dx, total_width, viewport_w, window, cx);
+                    self.pan_strip(row, dx, total_width, viewport_w, true, window, cx);
                 }
                 if switch != 0 {
                     // The vertical pull broke the sticky axis: hop to the
@@ -2813,19 +2826,35 @@ impl Workspace {
         dx: f32,
         total_width: f32,
         viewport_w: f32,
+        smooth: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // Natural scrolling: content follows the fingers, so the camera
         // moves opposite the delta.
-        let next = pan_camera(self.camera_x[row], -dx, total_width, viewport_w);
-        if (next - self.camera_x[row]).abs() < f32::EPSILON {
+        // Accumulate precise deltas onto the target, not the lagging painted
+        // position. This preserves every pixel of travel while the short
+        // interpolation filters event/compositor timing jitter.
+        let base = if smooth {
+            self.camera_target[row]
+        } else {
+            self.camera_x[row]
+        };
+        let next = pan_camera(base, -dx, total_width, viewport_w);
+        if (next - base).abs() < f32::EPSILON {
             return;
         }
-        self.camera_x[row] = next;
         self.camera_target[row] = next;
-        self.camera_from[row] = next;
-        self.camera_started[row] = None;
+        if smooth {
+            self.camera_from[row] = self.camera_x[row];
+            self.camera_started[row] = Some(Instant::now());
+            self.camera_touch_pan[row] = true;
+        } else {
+            self.camera_x[row] = next;
+            self.camera_from[row] = next;
+            self.camera_started[row] = None;
+            self.camera_touch_pan[row] = false;
+        }
         self.camera_dirty[row] = false;
         if let Some(index) = panel_at_viewport_center(
             self.slots.iter().enumerate().filter_map(|(index, slot)| {
@@ -4027,29 +4056,7 @@ impl Workspace {
                     }
                     cx.notify();
                 },
-            ))
-            .child(
-                div()
-                    .debug_selector(|| "minimap-location-label".into())
-                    .h(px(MINIMAP_HEADER_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
-                    .text_size(px(9.0))
-                    .text_color(Theme::global().TEXT)
-                    .child(
-                        div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .rounded_full()
-                            .bg(Theme::global().ACCENT),
-                    )
-                    .child(format!(
-                        "YOU · ROW {} · PANEL {}",
-                        self.active_row + 1,
-                        self.active_position_in_row() + 1
-                    )),
-            );
+            ));
 
         for row in 0..STRIP_COUNT {
             let active_row = row == self.active_row;
@@ -4061,12 +4068,12 @@ impl Workspace {
                 .rounded(px(3.0))
                 .cursor_pointer()
                 .bg(if active_row {
-                    Theme::global().MINIMAP_TRACK_ACTIVE
+                    Theme::global().USER_BG
                 } else {
                     Theme::global().MINIMAP_TRACK
                 })
                 .when(active_row, |el| {
-                    el.border_1().border_color(Theme::global().ACCENT)
+                    el.border_1().border_color(Theme::global().USER_ACCENT)
                 })
                 .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
                 .on_mouse_down(
@@ -4095,12 +4102,16 @@ impl Workspace {
                     });
                     (panel.minimap_state(), progress)
                 };
-                let state_color = match state {
-                    crate::panel::MinimapSessionState::Idle => Theme::global().MINIMAP_PANEL,
-                    crate::panel::MinimapSessionState::Working => Theme::global().WARN,
-                    crate::panel::MinimapSessionState::Streaming => Theme::global().ACCENT,
-                    crate::panel::MinimapSessionState::Complete => Theme::global().OK,
-                    crate::panel::MinimapSessionState::Error => Theme::global().ERROR,
+                let (state_name, state_color) = match state {
+                    crate::panel::MinimapSessionState::Idle => {
+                        ("idle", Theme::global().MINIMAP_PANEL)
+                    }
+                    crate::panel::MinimapSessionState::Working => ("working", Theme::global().WARN),
+                    crate::panel::MinimapSessionState::Streaming => {
+                        ("streaming", Theme::global().ACCENT)
+                    }
+                    crate::panel::MinimapSessionState::Complete => ("complete", Theme::global().OK),
+                    crate::panel::MinimapSessionState::Error => ("error", Theme::global().ERROR),
                 };
                 track = track.child(
                     div()
@@ -4114,12 +4125,25 @@ impl Workspace {
                         .rounded(px(2.0))
                         .cursor_pointer()
                         .bg(state_color)
+                        .child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("minimap-panel-{index}-{state_name}")
+                                })
+                                .absolute()
+                                .size_full()
+                                .rounded(px(2.0))
+                                .bg(state_color),
+                        )
                         // The green footline is a literal completion meter for
                         // the latest todo card. Session color remains visible
                         // above it, so progress and live state do not compete.
                         .when_some(todo_progress, |panel, progress| {
                             panel.child(
                                 div()
+                                    .debug_selector(move || {
+                                        format!("minimap-panel-{index}-todo-progress")
+                                    })
                                     .absolute()
                                     .bottom_0()
                                     .left_0()
@@ -4129,9 +4153,9 @@ impl Workspace {
                             )
                         })
                         .when(focused, |el| {
-                            el.border_2().border_color(Theme::global().TEXT)
+                            el.border_2().border_color(Theme::global().USER_ACCENT)
                         })
-                        .hover(|el| el.bg(Theme::global().ACCENT))
+                        .hover(|el| el.bg(Theme::global().USER_ACCENT))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
@@ -4179,8 +4203,8 @@ impl Workspace {
                             .h(px(6.0))
                             .rounded_full()
                             .border_1()
-                            .border_color(gpui::rgb(0x090909))
-                            .bg(Theme::global().TEXT),
+                            .border_color(Theme::global().TEXT)
+                            .bg(Theme::global().USER_ACCENT),
                     );
                 }
 
@@ -8997,16 +9021,9 @@ mod tests {
             f32::from(map.origin.y) < 40.0,
             "the minimap should hug the top edge"
         );
-        let location_label = cx
-            .debug_bounds("minimap-location-label")
-            .expect("the map should visibly identify the user's location");
-        assert!(
-            map.contains(&location_label.center()),
-            "the location label should paint inside the minimap card"
-        );
         let initial_pin = cx
             .debug_bounds("minimap-you-pin")
-            .expect("the focused panel should have a persistent location pin");
+            .expect("the focused panel should have a persistent visual pin");
         let initial_panel = cx
             .debug_bounds("minimap-panel-0")
             .expect("the focused panel should appear on the map");
