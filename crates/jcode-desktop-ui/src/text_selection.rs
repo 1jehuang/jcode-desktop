@@ -223,7 +223,8 @@ pub fn selectable(
     let element_id: SharedString = format!("selectable-text-{key}").into();
 
     div()
-        .id(element_id)
+        .id(element_id.clone())
+        .debug_selector(move || element_id.to_string())
         .cursor(CursorStyle::IBeam)
         .track_focus(&focus_handle)
         .on_mouse_down(MouseButton::Left, {

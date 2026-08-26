@@ -2595,6 +2595,19 @@ impl Workspace {
                             cx.notify();
                         }),
                     )
+                    // Selectable transcript text intentionally consumes mouse-down
+                    // so it can retain keyboard focus for copy. Mouse-up still
+                    // bubbles, which lets an inactive panel become active without
+                    // stealing that focus. This is especially important after a
+                    // hot reload, when every restored panel contains a fresh text
+                    // selection model.
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.clicked_to_focus(index, cx);
+                            this.set_active(index, cx);
+                        }),
+                    )
                     .child(slot.panel.clone()),
             );
         }
@@ -8016,6 +8029,39 @@ mod tests {
                 coach.active_hint_id(),
                 Some("focus_left_right"),
                 "and should teach the navigation keys"
+            );
+        });
+    }
+
+    /// Hot reload reconstructs each panel and its selectable-text focus model.
+    /// Selectable text consumes mouse-down to preserve copy focus, so panel
+    /// activation must still happen when the corresponding mouse-up bubbles.
+    #[gpui::test]
+    fn clicking_selectable_text_in_a_restored_panel_activates_it(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, cx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            workspace.push_test_panel("restored", cx);
+            workspace
+                .test_panel(1)
+                .expect("second test panel")
+                .update(cx, |panel, cx| panel.append_test_error("restored text", cx));
+            workspace
+        });
+        cx.run_until_parked();
+
+        let text = cx
+            .debug_bounds("selectable-text-0-error")
+            .expect("the restored panel's selectable text should paint");
+        cx.simulate_click(text.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        workspace.update(cx, |workspace, _| {
+            assert_eq!(
+                workspace.test_focus_position(),
+                Some(1),
+                "mouse-up should activate the panel even when text consumed mouse-down"
             );
         });
     }

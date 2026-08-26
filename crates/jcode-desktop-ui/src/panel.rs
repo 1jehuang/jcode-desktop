@@ -2991,6 +2991,12 @@ impl Panel {
             .map(|(_, y)| px(y))
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar().y)
     }
+
+    #[cfg(test)]
+    pub fn append_test_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.items.push(Item::Error(message.into()));
+        cx.notify();
+    }
 }
 
 /// Keep provider-level reasoning segments in one visual card. Some providers
