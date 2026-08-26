@@ -7498,6 +7498,60 @@ mod tests {
         );
     }
 
+    /// Public acceptance path: a precise scroll event enters through GPUI and
+    /// the rendered panel position advances over frames instead of jumping.
+    #[gpui::test]
+    fn precise_horizontal_scroll_moves_rendered_panels_smoothly(cx: &mut gpui::TestAppContext) {
+        let (_workspace, cx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two", "three"] {
+                workspace.push_test_panel(name, cx);
+            }
+            workspace
+        });
+        cx.run_until_parked();
+
+        let initial = cx
+            .debug_bounds("panel-0")
+            .expect("the first panel should paint");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: initial.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(-120.), px(0.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Started,
+        });
+
+        std::thread::sleep(Duration::from_millis(8));
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        let first_frame = cx
+            .debug_bounds("panel-0")
+            .expect("the panning panel should remain rendered");
+        let first_travel = f32::from(initial.origin.x - first_frame.origin.x);
+        assert!(
+            first_travel > 0.0 && first_travel < 120.0,
+            "the first presented frame should interpolate rather than jump: {first_travel}"
+        );
+
+        std::thread::sleep(TOUCH_PAN_DURATION);
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        let settled = cx
+            .debug_bounds("panel-0")
+            .expect("the settled panel should remain rendered");
+        let settled_travel = f32::from(initial.origin.x - settled.origin.x);
+        assert!(
+            (settled_travel - 120.0).abs() < 0.5,
+            "the rendered canvas must settle at the full gesture distance: {settled_travel}"
+        );
+    }
+
     #[test]
     fn touchpad_camera_focuses_the_panel_nearest_the_viewport_center() {
         let viewport = 1000.0;
