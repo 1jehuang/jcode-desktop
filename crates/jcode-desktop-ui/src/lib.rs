@@ -16,6 +16,7 @@ mod platform;
 mod scrollbar;
 mod terminal;
 mod theme;
+pub mod todoist;
 mod transition;
 mod updates;
 mod workspace;
