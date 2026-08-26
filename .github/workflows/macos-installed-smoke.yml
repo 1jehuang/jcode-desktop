@@ -83,10 +83,15 @@ jobs:
           # to finish, then request a normal application quit rather than killing
           # the process and bypassing Sparkle's termination observer.
           sleep 90
-          osascript -e 'tell application id "dev.solosystems.jcode.desktop" to quit'
+          if pgrep -f "$app/Contents/MacOS/jcode-desktop" >/dev/null; then
+            osascript -e 'tell application id "dev.solosystems.jcode.desktop" to quit'
+          else
+            echo "Jcode exited while Sparkle handled the update"
+          fi
 
           for attempt in {1..120}; do
             build=$(defaults read "$app/Contents/Info" CFBundleVersion)
+            echo "update poll $attempt: bundle build $build"
             if [[ "$build" == "$EXPECTED_UPDATE_BUILD" ]]; then
               break
             fi
