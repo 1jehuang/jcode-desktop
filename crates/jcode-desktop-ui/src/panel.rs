@@ -540,6 +540,14 @@ impl Panel {
     }
 
     fn glide_transcript_wheel(&mut self, pixels: f32, cx: &mut Context<Self>) {
+        // `ListState::scroll_by` is a programmatic movement and therefore does
+        // not invoke the list's user-scroll callback. Release follow mode here
+        // before the first animated frame, or render would pin every step back
+        // to the live tail.
+        if pixels < 0.0 && self.stick_to_bottom {
+            self.stick_to_bottom = false;
+            cx.notify();
+        }
         self.transcript_wheel_glide.push(pixels);
         if self.transcript_wheel_task.is_some() {
             return;
@@ -554,13 +562,22 @@ impl Panel {
                 .await;
             let _ = this.update(cx, |panel, cx| {
                 panel.transcript_wheel_task = None;
-                if let Some(step) = panel.transcript_wheel_glide.take_step() {
-                    panel.transcript_list.scroll_by(px(step));
-                    cx.notify();
+                if panel.advance_transcript_wheel(cx) {
                     panel.schedule_transcript_wheel_tick(cx);
                 }
             });
         }));
+    }
+
+    fn advance_transcript_wheel(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(step) = self.transcript_wheel_glide.take_step() else {
+            return false;
+        };
+        let current = self.transcript_list.scroll_px_offset_for_scrollbar();
+        self.transcript_list
+            .set_offset_from_scrollbar(point(current.x, current.y - px(step)));
+        cx.notify();
+        true
     }
 
     pub fn new_code_file(path: std::path::PathBuf, bridge: Bridge, cx: &mut Context<Self>) -> Self {
@@ -5228,14 +5245,40 @@ mod tests {
         assert_eq!(scrollbar_before.size.width, px(4.0));
         assert!(scrollbar_before.size.height >= px(28.0));
 
-        // A real upward wheel event over the transcript.
+        // A real discrete upward wheel event over the transcript. Unlike a
+        // touchpad pixel delta, it must be captured and animated rather than
+        // moving the list by the full notch distance in this dispatch.
         let transcript = vcx.debug_bounds("transcript").expect("transcript painted");
+        let offset_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         vcx.simulate_event(gpui::ScrollWheelEvent {
             position: transcript.center(),
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(60.))),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 3.0)),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });
+        let (offset_during_dispatch, glide_started) = panel.read_with(vcx, |panel, _| {
+            (
+                panel.test_scroll_offset_y(),
+                panel.transcript_wheel_task.is_some(),
+            )
+        });
+        assert_eq!(
+            offset_during_dispatch, offset_before,
+            "a wheel notch is eased instead of jumping immediately"
+        );
+        assert!(
+            glide_started,
+            "the painted transcript starts a momentum glide"
+        );
+        panel.update(vcx, |panel, cx| {
+            panel.transcript_wheel_task = None;
+            assert!(panel.advance_transcript_wheel(cx));
+        });
+        let offset_after_frame = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+        assert_ne!(
+            offset_after_frame, offset_before,
+            "one eased frame moves the real transcript list state"
+        );
         vcx.run_until_parked();
         panel.update(vcx, |_panel, cx| cx.notify());
         vcx.run_until_parked();
