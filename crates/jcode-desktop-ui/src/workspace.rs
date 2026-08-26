@@ -80,14 +80,6 @@ struct ShowcaseCue {
     tutorial_group: &'static str,
 }
 
-const TUTORIAL_SHORTCUTS: &[(&str, &str, &str)] = &[
-    ("navigate", "H J K L", "navigate"),
-    ("move", "⇧ H J K L", "move panel"),
-    ("new", "N", "new session"),
-    ("resize", "R / F", "resize"),
-    ("overview", "O", "overview"),
-    ("help", "/", "all shortcuts"),
-];
 /// niri `window-rule { geometry-corner-radius 6 }`.
 const CORNER_RADIUS: f32 = 6.0;
 /// niri `preset-column-widths`: Alt+R cycles through these in order.
@@ -4296,84 +4288,195 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Always-visible, low-profile tutorial. It teaches the small command set
-    /// needed to become productive, then lights the matching pill when the user
-    /// performs an action so the key and its effect are learned together.
-    fn render_tutorial_bar(&self) -> gpui::AnyElement {
+    /// Contextual, clickable tutorial controls. Rather than collecting abstract
+    /// English descriptions in a footer, each lesson lives beside the part of
+    /// the canvas it affects and depicts the resulting motion directly.
+    fn render_tutorial_guides(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let modifier = if cfg!(target_os = "macos") {
             "⌘"
         } else {
             "Super"
         };
         let active = self.showcase_cue.as_ref().map(|cue| cue.tutorial_group);
-        let mut shortcuts = div()
+
+        let arrow = |id: &'static str,
+                     glyph: &'static str,
+                     action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .size(px(28.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .border_1()
+                .border_color(if active == Some("navigate") {
+                    Theme::global().ACCENT
+                } else {
+                    Theme::global().PANEL_BORDER
+                })
+                .bg(if active == Some("navigate") {
+                    Theme::global().ACCENT_DIM
+                } else {
+                    Theme::global().HEADER_BG
+                })
+                .text_size(px(17.0))
+                .text_color(Theme::global().TEXT)
+                .cursor_pointer()
+                .hover(|el| {
+                    el.border_color(Theme::global().ACCENT)
+                        .text_color(Theme::global().ACCENT)
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| action(this, window, cx)),
+                )
+                .child(glyph)
+        };
+        let navigation = div()
+            .id("tutorial-navigation")
+            .debug_selector(|| "tutorial-navigation".into())
+            .absolute()
+            .left(px(12.0))
+            .bottom(px(14.0))
             .flex()
-            .flex_wrap()
+            .flex_col()
             .items_center()
-            .justify_center()
-            .gap(px(6.0));
-        for (index, &(id, keys, label)) in TUTORIAL_SHORTCUTS.iter().enumerate() {
-            let selected = active == Some(id);
-            shortcuts = shortcuts.child(
+            .gap(px(4.0))
+            .p_2()
+            .rounded_lg()
+            .bg(gpui::rgba(0x111318e8))
+            .border_1()
+            .border_color(Theme::global().PANEL_BORDER)
+            .shadow_sm()
+            .child(
                 div()
-                    .id(("tutorial-shortcut", index))
-                    .debug_selector(move || format!("tutorial-{id}"))
+                    .text_size(px(9.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(format!("{modifier} + arrows")),
+            )
+            .child(arrow("tutorial-nav-up", "↑", |this, window, cx| {
+                this.focus_up(&FocusUp, window, cx)
+            }))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(32.0))
+                    .child(arrow("tutorial-nav-left", "←", |this, window, cx| {
+                        this.focus_left(&FocusLeft, window, cx)
+                    }))
+                    .child(arrow("tutorial-nav-right", "→", |this, window, cx| {
+                        this.focus_right(&FocusRight, window, cx)
+                    })),
+            )
+            .child(arrow("tutorial-nav-down", "↓", |this, window, cx| {
+                this.focus_down(&FocusDown, window, cx)
+            }));
+
+        let layout = div()
+            .id("tutorial-layout")
+            .debug_selector(|| "tutorial-layout".into())
+            .absolute()
+            .top(px(MINIMAP_TOP + MINIMAP_SIZE + 8.0))
+            .right(px(MINIMAP_RIGHT))
+            .flex()
+            .gap(px(5.0))
+            .child(
+                div()
+                    .id("tutorial-resize")
+                    .debug_selector(|| "tutorial-resize".into())
                     .px_2()
                     .py_1()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.0))
                     .rounded_md()
-                    .border_1()
-                    .border_color(if selected {
-                        Theme::global().ACCENT
-                    } else {
-                        Theme::global().PANEL_BORDER
-                    })
-                    .bg(if selected {
+                    .cursor_pointer()
+                    .bg(if active == Some("resize") {
                         Theme::global().ACCENT_DIM
                     } else {
                         Theme::global().HEADER_BG
                     })
-                    .child(
-                        div()
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_size(px(11.0))
-                            .text_color(if selected {
-                                Theme::global().ACCENT
-                            } else {
-                                Theme::global().TEXT
-                            })
-                            .child(format!("{modifier} {keys}")),
+                    .border_1()
+                    .border_color(if active == Some("resize") {
+                        Theme::global().ACCENT
+                    } else {
+                        Theme::global().PANEL_BORDER
+                    })
+                    .hover(|el| el.border_color(Theme::global().ACCENT))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.cycle_width(&CycleWidth, window, cx)
+                        }),
                     )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(label),
-                    ),
-            );
-        }
-        div()
-            .id("tutorial-bar")
-            .debug_selector(|| "tutorial-bar".into())
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom(px(8.0))
-            .flex()
-            .justify_center()
+                    .child(format!("↔  {modifier} R")),
+            )
             .child(
                 div()
+                    .id("tutorial-overview")
+                    .debug_selector(|| "tutorial-overview".into())
                     .px_2()
                     .py_1()
-                    .rounded_lg()
-                    .bg(gpui::rgba(0x111318e8))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .bg(if active == Some("overview") {
+                        Theme::global().ACCENT_DIM
+                    } else {
+                        Theme::global().HEADER_BG
+                    })
                     .border_1()
-                    .border_color(Theme::global().PANEL_BORDER)
-                    .shadow_sm()
-                    .child(shortcuts),
+                    .border_color(if active == Some("overview") {
+                        Theme::global().ACCENT
+                    } else {
+                        Theme::global().PANEL_BORDER
+                    })
+                    .hover(|el| el.border_color(Theme::global().ACCENT))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.toggle_overview(&ToggleOverview, window, cx)
+                        }),
+                    )
+                    .child(format!("▦  {modifier} O")),
+            );
+
+        let new_session = div()
+            .id("tutorial-new")
+            .debug_selector(|| "tutorial-new".into())
+            .absolute()
+            .right(px(10.0))
+            .top(relative(0.5))
+            .px_2()
+            .py_1()
+            .rounded_lg()
+            .cursor_pointer()
+            .bg(if active == Some("new") {
+                Theme::global().ACCENT_DIM
+            } else {
+                gpui::rgba(0x111318e8)
+            })
+            .border_1()
+            .border_color(if active == Some("new") {
+                Theme::global().ACCENT
+            } else {
+                Theme::global().PANEL_BORDER
+            })
+            .hover(|el| el.border_color(Theme::global().ACCENT))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.open_new_session(cx)),
             )
+            .child(format!("＋  {modifier} N"));
+
+        div()
+            .id("tutorial-guides")
+            .debug_selector(|| "tutorial-guides".into())
+            .absolute()
+            .inset_0()
+            .text_size(px(10.0))
+            .font_family(Theme::global().FONT_MONO)
+            .child(navigation)
+            .child(layout)
+            .child(new_session)
             .into_any_element()
     }
 }
@@ -4816,7 +4919,7 @@ impl Render for Workspace {
                     .child(content)
                     .child(self.render_workspace_bar(cx))
                     .when(self.showcase_mode, |el| {
-                        el.child(self.render_tutorial_bar())
+                        el.child(self.render_tutorial_guides(cx))
                     })
                     .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
                         el.child(self.render_minimap(viewport_w, viewport_h, cx))
@@ -8357,12 +8460,23 @@ mod tests {
             "a real workspace motion should paint the bottom-center overlay"
         );
         assert!(
-            cx.debug_bounds("tutorial-bar").is_some(),
-            "tutorial mode should keep the essential keybindings visible"
+            cx.debug_bounds("tutorial-guides").is_some(),
+            "tutorial mode should keep contextual controls visible"
         );
         assert!(
-            cx.debug_bounds("tutorial-navigate").is_some(),
-            "the navigation shortcut pill should be painted"
+            cx.debug_bounds("tutorial-navigation").is_some(),
+            "the visual navigation pad should be painted"
+        );
+        assert!(
+            cx.debug_bounds("tutorial-nav-left").is_some()
+                && cx.debug_bounds("tutorial-nav-right").is_some(),
+            "navigation should use directional arrow controls"
+        );
+        assert!(
+            cx.debug_bounds("tutorial-resize").is_some()
+                && cx.debug_bounds("tutorial-overview").is_some()
+                && cx.debug_bounds("tutorial-new").is_some(),
+            "layout and creation lessons should be placed beside their related UI"
         );
         assert!(
             cx.debug_bounds("showcase-key").is_some(),
