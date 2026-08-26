@@ -3052,10 +3052,29 @@ impl Workspace {
         // is an invitation to open another panel, so keep those two actions in
         // visibly separate sections. Preserve the TUI saved/recency ordering
         // within each section.
-        let (open_sessions, other_sessions): (Vec<_>, Vec<_>) =
+        let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) =
             sidebar_session_order(&self.sessions)
                 .into_iter()
                 .partition(|session| open_statuses.contains_key(&session.session_id));
+        let mut panel_positions = self
+            .slots
+            .iter()
+            .enumerate()
+            .collect::<Vec<_>>();
+        panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
+        let panel_positions = panel_positions
+            .into_iter()
+            .enumerate()
+            .map(|(position, (_, slot))| {
+                (slot.panel.read(cx).session_id.clone(), position)
+            })
+            .collect::<HashMap<_, _>>();
+        open_sessions.sort_by_key(|session| {
+            panel_positions
+                .get(&session.session_id)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
         let ordered_sessions = open_sessions
             .into_iter()
             .map(|session| (true, session))
@@ -6220,6 +6239,49 @@ mod tests {
             vcx.debug_bounds("sidebar-other-sessions-heading").is_some(),
             "sessions without a panel should have their own section"
         );
+    }
+
+    #[gpui::test]
+    fn open_sidebar_sessions_follow_strips_top_to_bottom(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.active_row = 1;
+            workspace.push_test_panel("session_fox_lower", cx);
+            workspace.active_row = 0;
+            workspace.push_test_panel("session_owl_upper_left", cx);
+            workspace.push_test_panel("session_hare_upper_right", cx);
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![
+                        session_info("session_fox_lower", Some("lower")),
+                        session_info("session_hare_upper_right", Some("upper right")),
+                        session_info("session_owl_upper_left", Some("upper left")),
+                    ],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        for (selector, expected_session) in [
+            ("sidebar-session-0", "session_owl_upper_left"),
+            ("sidebar-session-1", "session_hare_upper_right"),
+            ("sidebar-session-2", "session_fox_lower"),
+        ] {
+            let row = vcx
+                .debug_bounds(selector)
+                .expect("open session row should paint");
+            vcx.simulate_click(row.center(), gpui::Modifiers::default());
+            workspace.update(vcx, |workspace, cx| {
+                assert_eq!(
+                    workspace.slots[workspace.active].panel.read(cx).session_id,
+                    expected_session
+                );
+            });
+        }
     }
 
     #[gpui::test]
