@@ -4431,6 +4431,77 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn minimap_state_covers_session_lifecycle_and_latest_todo_progress(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("minimap-state", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, _| {
+            panel.status = "idle".into();
+            panel.items.clear();
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Idle);
+            assert_eq!(panel.latest_todo_progress(), None);
+
+            panel.status = "running_tools".into();
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Working);
+
+            panel.streaming_text = "live token".into();
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Streaming);
+            panel.streaming_text.clear();
+            panel.status = "idle".into();
+
+            panel.items.push(Item::Todos(TodoCardPayload {
+                todos: vec![
+                    TodoCardItem {
+                        content: "done".into(),
+                        status: "completed".into(),
+                        group: None,
+                        blocked_by: vec![],
+                    },
+                    TodoCardItem {
+                        content: "next".into(),
+                        status: "pending".into(),
+                        group: None,
+                        blocked_by: vec![],
+                    },
+                ],
+                plan: TodoCardPlan::default(),
+            }));
+            assert_eq!(panel.latest_todo_progress(), Some((1, 2)));
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Idle);
+
+            panel.items.push(Item::Todos(TodoCardPayload {
+                todos: vec![TodoCardItem {
+                    content: "finished".into(),
+                    status: "completed".into(),
+                    group: None,
+                    blocked_by: vec![],
+                }],
+                plan: TodoCardPlan::default(),
+            }));
+            assert_eq!(panel.latest_todo_progress(), Some((1, 1)));
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Complete);
+
+            panel.items.push(Item::Error("provider failed".into()));
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Error);
+
+            // A coarse crash status must win even when no error transcript row
+            // was emitted, which covers disconnected or abruptly ended turns.
+            panel.items.clear();
+            panel.status = "crashed".into();
+            assert_eq!(panel.minimap_state(), MinimapSessionState::Error);
+        });
+    }
+
+    #[gpui::test]
     fn email_panel_paints_attention_metadata_from_gmail_labels(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
