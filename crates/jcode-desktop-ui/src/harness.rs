@@ -978,11 +978,12 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                             // message: replace the connection and retry the
                             // original submission on the correctly attached
                             // session worker.
-                            if is_wrong_session_attachment_error(&error.to_string()) {
-                                pending.push_front(SessionCommand::Send {
-                                    content: retry_content,
-                                    images: retry_images,
-                                });
+                            if queue_wrong_session_retry(
+                                &error.to_string(),
+                                &mut pending,
+                                retry_content,
+                                retry_images,
+                            ) {
                                 lost("session connection changed; reconnecting".into());
                                 continue 'reconnect;
                             }
@@ -1132,6 +1133,19 @@ fn is_daemon_connection_closed(event: &ApiEvent) -> bool {
 fn is_wrong_session_attachment_error(message: &str) -> bool {
     message.contains("this connection is attached to `")
         && message.contains("; attach to it first or use another connection")
+}
+
+fn queue_wrong_session_retry(
+    error: &str,
+    pending: &mut VecDeque<SessionCommand>,
+    content: String,
+    images: Vec<(String, String)>,
+) -> bool {
+    if !is_wrong_session_attachment_error(error) {
+        return false;
+    }
+    pending.push_front(SessionCommand::Send { content, images });
+    true
 }
 
 fn is_already_processing_error(message: &str) -> bool {
@@ -1400,12 +1414,32 @@ mod tests {
 
     #[test]
     fn wrong_session_attachment_is_retried_as_a_transport_failure() {
-        assert!(is_wrong_session_attachment_error(
-            "this connection is attached to `session_old`, not `session_new`; attach to it first or use another connection"
+        let mismatch = "this connection is attached to `session_old`, not `session_new`; attach to it first or use another connection";
+        let images = vec![("image/png".into(), "payload".into())];
+        let mut pending = VecDeque::new();
+        assert!(queue_wrong_session_retry(
+            mismatch,
+            &mut pending,
+            "original prompt".into(),
+            images.clone(),
         ));
-        assert!(!is_wrong_session_attachment_error(
-            "not attached to session `session_new`; call attach_session first"
+        let Some(SessionCommand::Send {
+            content,
+            images: queued_images,
+        }) = pending.pop_front()
+        else {
+            panic!("original send was not queued for retry");
+        };
+        assert_eq!(content, "original prompt");
+        assert_eq!(queued_images, images);
+
+        assert!(!queue_wrong_session_retry(
+            "ordinary provider error",
+            &mut pending,
+            "must not retry".into(),
+            Vec::new(),
         ));
+        assert!(pending.is_empty());
     }
 
     #[test]
