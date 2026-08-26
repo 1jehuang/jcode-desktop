@@ -5042,6 +5042,46 @@ mod tests {
     }
 
     #[gpui::test]
+    fn update_command_submits_through_the_prompt_and_reports_platform_availability(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        crate::updates::set(crate::updates::UpdateState::Idle);
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+        vcx.update(|window, cx| {
+            let handle = panel.read(cx).input.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+
+        vcx.simulate_input("/update");
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+
+        assert!(commands.try_recv().is_err(), "slash command stays local");
+        panel.read_with(vcx, |panel, _| {
+            assert!(matches!(
+                panel.items.last(),
+                Some(Item::Assistant(message))
+                    if message == "Automatic updates are unavailable in this build of Jcode Desktop."
+            ));
+        });
+        let bounds = vcx
+            .debug_bounds("assistant-response")
+            .expect("the update result should paint in the transcript");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
+    #[gpui::test]
     fn model_command_opens_center_picker_and_enter_switches_selection(
         cx: &mut gpui::TestAppContext,
     ) {
