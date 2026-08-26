@@ -4088,11 +4088,13 @@ impl Workspace {
                 let height = (viewport_h * scale).clamp(3.0, panel_track_h);
                 let top = MINIMAP_PANEL_INSET + (panel_track_h - height) / 2.0;
                 let focused = index == self.active;
-                let panel = self.slots[index].panel.read(cx);
-                let state = panel.minimap_state();
-                let todo_progress = panel.latest_todo_progress().and_then(|(done, total)| {
-                    (total > 0).then_some(done as f32 / total as f32)
-                });
+                let (state, todo_progress) = {
+                    let panel = self.slots[index].panel.read(cx);
+                    let progress = panel.latest_todo_progress().and_then(|(done, total)| {
+                        (total > 0).then_some(done as f32 / total as f32)
+                    });
+                    (panel.minimap_state(), progress)
+                };
                 let state_color = match state {
                     crate::panel::MinimapSessionState::Idle => Theme::global().MINIMAP_PANEL,
                     crate::panel::MinimapSessionState::Working => Theme::global().WARN,
@@ -4100,7 +4102,6 @@ impl Workspace {
                     crate::panel::MinimapSessionState::Complete => Theme::global().OK,
                     crate::panel::MinimapSessionState::Error => Theme::global().ERROR,
                 };
-                drop(panel);
                 track = track.child(
                     div()
                         .id(("minimap-panel", index))
