@@ -4575,6 +4575,43 @@ mod tests {
             panel.streaming_text.clear();
             panel.status = "idle".into();
             panel.items.push(Item::Todos(TodoCardPayload {
+                todos: vec![
+                    TodoCardItem {
+                        content: "finished".into(),
+                        status: "completed".into(),
+                        group: None,
+                        blocked_by: vec![],
+                    },
+                    TodoCardItem {
+                        content: "remaining".into(),
+                        status: "pending".into(),
+                        group: None,
+                        blocked_by: vec![],
+                    },
+                ],
+                plan: TodoCardPlan::default(),
+            }));
+            cx.notify();
+        });
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("minimap-panel-0-idle").is_some(),
+            "a partially complete idle session keeps its idle state color"
+        );
+        let partial = vcx
+            .debug_bounds("minimap-panel-0-todo-progress")
+            .expect("partial todo progress indicator is painted");
+        let idle_panel = vcx
+            .debug_bounds("minimap-panel-0-idle")
+            .expect("idle minimap panel is painted");
+        assert!(
+            (f32::from(partial.size.width) - f32::from(idle_panel.size.width) / 2.0).abs() < 0.6,
+            "one of two completed todos fills half the minimap progress footline"
+        );
+
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Todos(TodoCardPayload {
                 todos: vec![TodoCardItem {
                     content: "finished".into(),
                     status: "completed".into(),
