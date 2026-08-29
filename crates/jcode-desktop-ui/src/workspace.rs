@@ -125,16 +125,21 @@ const TITLEBAR_HEIGHT: f32 = 52.0;
 /// left alignment.
 const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 76.0;
 
-fn content_top_inset(show_sidebar: bool) -> f32 {
-    if cfg!(target_os = "macos") && !show_sidebar {
+fn content_top_inset(show_sidebar: bool, fullscreen: bool) -> f32 {
+    // Fullscreen macOS windows have no titlebar and the traffic lights are
+    // hidden (they only float in on hover, above our content), so reserving
+    // room for them would leave a dead strip across the top.
+    if cfg!(target_os = "macos") && !show_sidebar && !fullscreen {
         TITLEBAR_HEIGHT
     } else {
         0.0
     }
 }
 
-fn sidebar_header_left_padding() -> f32 {
-    if cfg!(target_os = "macos") {
+fn sidebar_header_left_padding(fullscreen: bool) -> f32 {
+    // Same reasoning as `content_top_inset`: in fullscreen the traffic lights
+    // are not in the header row, so keep the normal navigation alignment.
+    if cfg!(target_os = "macos") && !fullscreen {
         MACOS_TRAFFIC_LIGHTS_WIDTH
     } else {
         12.0
@@ -3183,7 +3188,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_sidebar(&self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_id = self
             .slots
             .get(self.active)
@@ -3444,7 +3449,7 @@ impl Workspace {
                     // The transparent macOS titlebar puts the traffic lights in
                     // this row. Start navigation after them; on other platforms
                     // preserve the existing 12px inset.
-                    .pl(px(sidebar_header_left_padding()))
+                    .pl(px(sidebar_header_left_padding(fullscreen)))
                     .pr_3()
                     .flex()
                     .items_center()
@@ -5340,7 +5345,10 @@ impl Render for Workspace {
         // On macOS the sidebar header covers the transparent titlebar strip.
         // Without the sidebar, leave room for the traffic lights. Other platforms
         // do not draw through a system titlebar, so an inset would be a visible gap.
-        let content_top_inset = content_top_inset(self.show_sidebar);
+        // In native macOS fullscreen the titlebar and traffic lights are hidden,
+        // so no chrome should reserve space for them.
+        let fullscreen = window.is_fullscreen();
+        let content_top_inset = content_top_inset(self.show_sidebar, fullscreen);
         let viewport_h = (f32::from(viewport.height) - content_top_inset).max(240.0);
 
         let now = Instant::now();
@@ -5518,7 +5526,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
             .when(self.show_sidebar, |root| {
-                root.child(self.render_sidebar(cx))
+                root.child(self.render_sidebar(fullscreen, cx))
             })
             .child(
                 div()
@@ -6154,31 +6162,49 @@ mod tests {
 
     #[test]
     fn sidebar_never_adds_a_workspace_top_inset() {
-        assert_eq!(content_top_inset(true), 0.0);
+        assert_eq!(content_top_inset(true, false), 0.0);
+        assert_eq!(content_top_inset(true, true), 0.0);
     }
 
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn sidebar_header_keeps_its_linux_alignment() {
-        assert_eq!(sidebar_header_left_padding(), 12.0);
+        assert_eq!(sidebar_header_left_padding(false), 12.0);
+        assert_eq!(sidebar_header_left_padding(true), 12.0);
     }
 
     #[test]
     #[cfg(target_os = "macos")]
     fn sidebar_header_clears_macos_traffic_lights() {
-        assert_eq!(sidebar_header_left_padding(), MACOS_TRAFFIC_LIGHTS_WIDTH);
+        assert_eq!(
+            sidebar_header_left_padding(false),
+            MACOS_TRAFFIC_LIGHTS_WIDTH
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn fullscreen_hides_traffic_lights_so_the_header_realigns() {
+        assert_eq!(sidebar_header_left_padding(true), 12.0);
     }
 
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn hidden_sidebar_does_not_leave_a_top_gap_off_macos() {
-        assert_eq!(content_top_inset(false), 0.0);
+        assert_eq!(content_top_inset(false, false), 0.0);
+        assert_eq!(content_top_inset(false, true), 0.0);
     }
 
     #[test]
     #[cfg(target_os = "macos")]
     fn hidden_sidebar_preserves_room_for_macos_traffic_lights() {
-        assert_eq!(content_top_inset(false), TITLEBAR_HEIGHT);
+        assert_eq!(content_top_inset(false, false), TITLEBAR_HEIGHT);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn fullscreen_reclaims_the_titlebar_strip() {
+        assert_eq!(content_top_inset(false, true), 0.0);
     }
 
     /// Opt-in micro-profiler for the complete keymap -> workspace state path.
