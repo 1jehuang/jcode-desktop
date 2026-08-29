@@ -2200,6 +2200,16 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.items = items;
+        // A saved offset is meaningful only for a transcript that can scroll.
+        // Applying an old negative offset to a short history leaves every row
+        // outside the viewport, so selecting that session appears to open an
+        // empty panel even though its minimap contains messages. Short histories
+        // fit comfortably in the panel at the minimum supported window size.
+        if self.pending_history_scroll.is_some() && self.items.len() <= 6 {
+            self.pending_history_scroll = None;
+            self.stick_to_bottom = true;
+            self.transcript_list.scroll_to_end();
+        }
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
@@ -4790,6 +4800,43 @@ mod tests {
             panel.load_history(Vec::new(), Vec::new(), cx);
             assert_eq!(f32::from(panel.test_scroll_offset_y()), -137.0);
             assert!(!panel.stick_to_bottom);
+        });
+    }
+
+    #[gpui::test]
+    fn short_restored_history_discards_stale_offscreen_scroll(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            let mut snapshot = panel.snapshot(cx);
+            snapshot.scroll_y = -10_000.0;
+            snapshot.stick_to_bottom = false;
+            panel.restore_snapshot(snapshot, cx);
+            panel.load_history(
+                vec![
+                    jcode_sdk::HistoryMessage {
+                        role: "user".into(),
+                        content: "Fix the rendering".into(),
+                    },
+                    jcode_sdk::HistoryMessage {
+                        role: "assistant".into(),
+                        content: "Fixed.".into(),
+                    },
+                ],
+                Vec::new(),
+                cx,
+            );
+
+            assert!(panel.pending_history_scroll.is_none());
+            assert!(panel.stick_to_bottom);
         });
     }
 
