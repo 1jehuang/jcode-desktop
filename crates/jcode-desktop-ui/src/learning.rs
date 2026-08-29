@@ -264,6 +264,10 @@ pub struct Trace {
     pub last_evidence_at: Option<Seconds>,
     pub recalled: u32,
     pub copied: u32,
+    /// Times the key was pressed when it could not do anything, such as
+    /// stepping into an empty strip. Counts as hands-on tutorial practice but
+    /// never as evidence of skill.
+    pub performed: u32,
     pub slow_paths: u32,
     pub hints_shown: u32,
     pub hints_declined: u32,
@@ -280,6 +284,7 @@ impl Default for Trace {
             last_evidence_at: None,
             recalled: 0,
             copied: 0,
+            performed: 0,
             slow_paths: 0,
             hints_shown: 0,
             hints_declined: 0,
@@ -294,7 +299,7 @@ impl Trace {
     /// hands-on practice, while mastery still distinguishes copied from
     /// unaided recall.
     pub fn practiced(&self) -> bool {
-        self.recalled > 0 || self.copied > 0
+        self.recalled > 0 || self.copied > 0 || self.performed > 0
     }
 
     /// Probability of recalling the skill unaided right now, given how long it
@@ -534,6 +539,15 @@ impl Coach {
         self.note_repeat(skill_id, now);
     }
 
+    /// The user pressed `skill_id`'s keys but the action had nothing to do,
+    /// such as focusing into an empty strip. That is hands-on practice for the
+    /// tutorial, and only that: a keypress with no effect proves the user can
+    /// produce the chord, not that they navigate with it, so belief, stability,
+    /// and the effort ledger stay untouched.
+    pub fn used_shortcut_without_effect(&mut self, skill_id: &str) {
+        self.trace_mut(skill_id).performed += 1;
+    }
+
     /// The user achieved `skill_id`'s outcome the long way. This is the signal
     /// that actually drives teaching, since it proves both the gap and that the
     /// skill is relevant to what they are doing right now.
@@ -733,7 +747,7 @@ impl Coach {
         for id in ids {
             let trace = &self.traces[id];
             lines.push(format!(
-                "skill {} {:.4} {:.4} {:.4} {} {} {} {} {} {}",
+                "skill {} {:.4} {:.4} {:.4} {} {} {} {} {} {} {}",
                 id,
                 trace.belief,
                 trace.stability,
@@ -744,6 +758,7 @@ impl Coach {
                 trace.slow_paths,
                 trace.hints_shown,
                 trace.hints_declined,
+                trace.performed,
             ));
         }
         lines.join("\n")
@@ -761,6 +776,9 @@ impl Coach {
                     coach.effort_saved = saved.parse().unwrap_or(0);
                     coach.effort_wasted = wasted.parse().unwrap_or(0);
                 }
+                // The `performed` count was added after the first release, so
+                // both line widths must load; an old file simply reads as
+                // never having practiced without effect.
                 [
                     "skill",
                     id,
@@ -773,7 +791,8 @@ impl Coach {
                     slow,
                     shown,
                     declined,
-                ] => {
+                    rest @ ..,
+                ] if rest.len() <= 1 => {
                     // Drop skills that have left the catalog.
                     if skill(id).is_none() {
                         continue;
@@ -792,6 +811,7 @@ impl Coach {
                         last_evidence_at: (last > 0).then_some(last),
                         recalled: recalled.parse().unwrap_or(0),
                         copied: copied.parse().unwrap_or(0),
+                        performed: rest.first().and_then(|v| v.parse().ok()).unwrap_or(0),
                         slow_paths: slow.parse().unwrap_or(0),
                         hints_shown: shown.parse().unwrap_or(0),
                         hints_declined: declined.parse().unwrap_or(0),
@@ -1501,6 +1521,44 @@ mod tests {
 
         trace.copied = 0;
         trace.recalled = 1;
+        assert!(trace.practiced());
+    }
+
+    #[test]
+    fn a_no_effect_keypress_is_practice_but_not_knowledge() {
+        // Pressing the chord into an empty strip must clear the tutorial
+        // (practiced) without fabricating mastery, effort, or a hint.
+        let mut coach = Coach::new();
+        coach.used_shortcut_without_effect("focus_up_down");
+        assert!(coach.trace("focus_up_down").practiced());
+        assert_eq!(coach.mastery("focus_up_down", 1_000_000), 0.0);
+        assert_eq!(coach.effort_saved, 0);
+        assert_eq!(coach.effort_wasted, 0);
+        assert_eq!(coach.active_hint_id(), None);
+        assert!(coach.take_dirty(), "practice must be persisted");
+    }
+
+    #[test]
+    fn no_effect_practice_survives_a_round_trip() {
+        let mut coach = Coach::new();
+        coach.used_shortcut_without_effect("focus_up_down");
+        let restored = Coach::deserialize(&coach.serialize());
+        assert!(
+            restored.trace("focus_up_down").practiced(),
+            "performed presses must survive persistence, or the tutorial \
+             lesson would come back on the next launch"
+        );
+    }
+
+    #[test]
+    fn a_state_file_without_the_performed_column_still_loads() {
+        // Files written before the column existed have ten skill fields.
+        let saved = "v1 effort 5 2\n\
+                     skill maximize 0.9000 4.0000 4.0000 1700000000 3 1 2 1 0";
+        let coach = Coach::deserialize(saved);
+        let trace = coach.trace("maximize");
+        assert_eq!(trace.recalled, 3);
+        assert_eq!(trace.performed, 0);
         assert!(trace.practiced());
     }
 }

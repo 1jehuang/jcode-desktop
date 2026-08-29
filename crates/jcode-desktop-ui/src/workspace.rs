@@ -1563,6 +1563,11 @@ impl Workspace {
         self.showcase_motion("K", false, "Focus strip above", cx);
         if self.active_row > 0 {
             self.change_row(self.active_row - 1, window, cx);
+        } else {
+            // Pressing into the top edge cannot navigate, but the chord was
+            // still produced by hand, so the tutorial lesson must not linger.
+            self.coach.used_shortcut_without_effect("focus_up_down");
+            self.after_coach_update(cx);
         }
     }
 
@@ -1570,17 +1575,26 @@ impl Workspace {
         self.showcase_motion("J", false, "Focus strip below", cx);
         if self.active_row + 1 < STRIP_COUNT {
             self.change_row(self.active_row + 1, window, cx);
+        } else {
+            self.coach.used_shortcut_without_effect("focus_up_down");
+            self.after_coach_update(cx);
         }
     }
 
     /// Move focus to another strip, crediting the shortcut only when the move
     /// was meaningful. Stepping onto an empty strip when there is nothing else
     /// open shows the user pressed a key, not that they navigated anywhere, so
-    /// it must not be taken as evidence of skill.
+    /// it must not be taken as evidence of skill. It is still hands-on
+    /// practice, though: the tutorial asked for the chord and the user
+    /// produced it, so the lesson must clear rather than linger forever on a
+    /// workspace whose other strips happen to be empty.
     fn change_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let meaningful = self.switch_row_animated(row, window, cx);
         if meaningful {
             self.learned("focus_up_down", cx);
+        } else {
+            self.coach.used_shortcut_without_effect("focus_up_down");
+            self.after_coach_update(cx);
         }
         cx.notify();
     }
@@ -8732,6 +8746,55 @@ mod tests {
                         > 0.0,
                     "landing on a populated strip should count"
                 );
+            })
+            .unwrap();
+    }
+
+    /// The tutorial bug this pins down: on a fresh workspace with one panel,
+    /// every other strip is empty, so super-j/super-k never counted as
+    /// practiced and the ⌘J/⌘K lesson chips never went away. Pressing the
+    /// chord must clear the lesson even when the strip switch is a no-op,
+    /// while still granting no mastery and showing no hint.
+    #[gpui::test]
+    fn pressing_into_empty_strips_clears_the_lesson_without_teaching(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let window = cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                    workspace.push_test_panel("only", cx);
+                    let _ = window;
+                    workspace
+                })
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |workspace, window, cx| {
+                window.focus(&workspace.focus_handle, cx);
+            })
+            .unwrap();
+
+        // Down onto an empty strip, and up against the top edge: both are
+        // no-ops as navigation, both are the user producing the chord.
+        cx.simulate_keystrokes(*window, "super-j super-k super-k");
+        window
+            .update(cx, |workspace, _, _| {
+                let coach = workspace.test_coach();
+                assert!(
+                    coach.trace("focus_up_down").practiced(),
+                    "the lesson should clear once the chord has been pressed"
+                );
+                assert_eq!(
+                    coach.mastery("focus_up_down", learning::now()),
+                    0.0,
+                    "a no-op press proves the chord, not the navigation"
+                );
+                assert_eq!(coach.effort_saved, 0);
+                assert_eq!(coach.effort_wasted, 0);
+                assert_eq!(coach.active_hint_id(), None);
             })
             .unwrap();
     }
