@@ -5504,7 +5504,13 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_row()
-            .bg(Theme::global().BG)
+            // A slight warm lift across the black canvas suggests matte paper
+            // while preserving every workspace interaction above it.
+            .bg(gpui::linear_gradient(
+                138.0,
+                gpui::linear_color_stop(gpui::rgb(0x080808), 0.0),
+                gpui::linear_color_stop(gpui::rgb(0x141311), 1.0),
+            ))
             .font_family(Theme::global().FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
