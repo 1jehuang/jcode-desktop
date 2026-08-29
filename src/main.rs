@@ -116,6 +116,73 @@ fn titlebar_options() -> TitlebarOptions {
     }
 }
 
+/// Bring the desktop window back, whatever the traffic lights did to it.
+///
+/// If a window still exists (visible or minimized), activate it. If the red
+/// close button destroyed it, open a replacement and resume the suspended
+/// workspace into it. Shared by the single-instance `Show` command and the
+/// macOS Dock reopen event so both paths behave identically.
+fn restore_window(
+    manager: &Rc<RefCell<ReloadManager>>,
+    current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    if let Some(window) = *current_window.borrow() {
+        if window
+            .update(cx, |_, window, cx| {
+                window.activate_window();
+                cx.activate(true);
+            })
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    let bounds = Bounds::centered(None, size(px(1500.0), px(950.0)), cx);
+    let replacement = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(titlebar_options()),
+            ..Default::default()
+        },
+        |_, cx| cx.new(|_| HostFallback),
+    )?;
+    replacement.update(cx, {
+        let manager = manager.clone();
+        let current_window = current_window.clone();
+        move |_, window, cx| {
+            install_close_handler(window, cx, manager, current_window);
+            window.activate_window();
+        }
+    })?;
+    let replacement = gpui::AnyWindowHandle::from(replacement);
+    manager.borrow_mut().resume(replacement, cx)?;
+    *current_window.borrow_mut() = Some(replacement);
+    cx.activate(true);
+    Ok(())
+}
+
+/// The red close button hides the app rather than losing the workspace: the
+/// UI state is suspended so a later reopen resumes exactly where the user
+/// left off. Refusing to close on a failed suspend keeps the workspace alive
+/// instead of silently discarding it.
+fn install_close_handler(
+    window: &mut Window,
+    cx: &mut gpui::Context<HostFallback>,
+    manager: Rc<RefCell<ReloadManager>>,
+    current_window: Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
+) {
+    window.on_window_should_close(cx, move |window, cx| {
+        if let Err(error) = manager.borrow_mut().suspend(window, cx) {
+            eprintln!("failed to suspend desktop workspace: {error:#}");
+            return false;
+        }
+        *current_window.borrow_mut() = None;
+        true
+    });
+}
+
 fn main() {
     let diagnostics_path = diagnostics::install().unwrap_or_else(|error| {
         eprintln!("failed to initialize desktop diagnostics: {error}");
@@ -152,7 +219,26 @@ fn main() {
     {
         eprintln!("initial UI rebuild failed; using the linked UI: {error:#}");
     }
-    application().run(move |cx: &mut App| {
+    let app = application();
+    // Clicking the Dock icon after the red button closed the last window must
+    // bring the workspace back, exactly like a second `jcode-desktop` launch
+    // does through the instance socket. GPUI only fires this when no window is
+    // visible, which also covers a window hidden by the yellow minimize button.
+    type ReopenState = Rc<RefCell<Option<gpui::AnyWindowHandle>>>;
+    let reopen_state: Rc<RefCell<Option<(Rc<RefCell<ReloadManager>>, ReopenState)>>> =
+        Rc::new(RefCell::new(None));
+    app.on_reopen({
+        let reopen_state = reopen_state.clone();
+        move |cx| {
+            let state = reopen_state.borrow().clone();
+            if let Some((manager, current_window)) = state {
+                if let Err(error) = restore_window(&manager, &current_window, cx) {
+                    eprintln!("failed to reopen desktop window from the Dock: {error:#}");
+                }
+            }
+        }
+    });
+    app.run(move |cx: &mut App| {
         cx.bind_keys([
             // Ctrl+R must always activate code built from the current checkout,
             // rather than silently reloading a stale cdylib from an earlier build.
@@ -185,19 +271,13 @@ fn main() {
         ));
 
         let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
+        *reopen_state.borrow_mut() = Some((manager.clone(), current_window.clone()));
         window
             .update(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |_, window, cx| {
-                    window.on_window_should_close(cx, move |window, cx| {
-                        if let Err(error) = manager.borrow_mut().suspend(window, cx) {
-                            eprintln!("failed to suspend desktop workspace: {error:#}");
-                            return false;
-                        }
-                        *current_window.borrow_mut() = None;
-                        true
-                    });
+                    install_close_handler(window, cx, manager, current_window);
                 }
             })
             .expect("install persistent host close handler");
@@ -241,49 +321,7 @@ fn main() {
                         continue;
                     }
 
-                    let result = cx.update(|cx| {
-                        if let Some(window) = *current_window.borrow() {
-                            if window
-                                .update(cx, |_, window, cx| {
-                                    window.activate_window();
-                                    cx.activate(true);
-                                })
-                                .is_ok()
-                            {
-                                return Ok(());
-                            }
-                        }
-
-                        let bounds = Bounds::centered(None, size(px(1500.0), px(950.0)), cx);
-                        let replacement = cx.open_window(
-                            WindowOptions {
-                                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                                titlebar: Some(titlebar_options()),
-                                ..Default::default()
-                            },
-                            |_, cx| cx.new(|_| HostFallback),
-                        )?;
-                        replacement.update(cx, {
-                            let manager = manager.clone();
-                            let current_window = current_window.clone();
-                            move |_, window, cx| {
-                                window.on_window_should_close(cx, move |window, cx| {
-                                    if let Err(error) = manager.borrow_mut().suspend(window, cx) {
-                                        eprintln!("failed to suspend desktop workspace: {error:#}");
-                                        return false;
-                                    }
-                                    *current_window.borrow_mut() = None;
-                                    true
-                                });
-                                window.activate_window();
-                            }
-                        })?;
-                        let replacement = gpui::AnyWindowHandle::from(replacement);
-                        manager.borrow_mut().resume(replacement, cx)?;
-                        *current_window.borrow_mut() = Some(replacement);
-                        cx.activate(true);
-                        Ok::<_, anyhow::Error>(())
-                    });
+                    let result = cx.update(|cx| restore_window(&manager, &current_window, cx));
                     if let Err(error) = result {
                         eprintln!("failed to restore desktop window: {error:#}");
                     }
