@@ -6,8 +6,8 @@
 //! self-contained, but shaped so a half-finished response still reads well.
 
 use gpui::{
-    FontWeight, HighlightStyle, InteractiveText, SharedString, StrikethroughStyle, StyledText,
-    UnderlineStyle, div, prelude::*, px, relative,
+    FontWeight, HighlightStyle, InteractiveText, ObjectFit, SharedString, StrikethroughStyle,
+    StyledText, UnderlineStyle, div, prelude::*, px, relative,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -1298,6 +1298,15 @@ fn render_mermaid_svg(body: &str) -> Result<RenderedMermaid, String> {
 fn mermaid_diagram(body: &str) -> gpui::AnyElement {
     if let Ok(rendered) = render_mermaid_svg(body) {
         let display_height = (640.0 * rendered.height / rendered.width).clamp(120.0, 520.0);
+        // `gpui::svg` is an icon primitive: it rasterizes the SVG to an alpha
+        // mask and tints every opaque pixel with `text_color`. Mermaid SVGs are
+        // full-color illustrations with an opaque canvas, so that path turns
+        // the entire diagram into a solid rectangle. The image primitive keeps
+        // the SVG's fills, strokes, and text colors intact.
+        let image = Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Svg,
+            rendered.svg.to_vec(),
+        ));
         return div()
             .debug_selector(|| "md-mermaid".into())
             .my_1()
@@ -1310,11 +1319,10 @@ fn mermaid_diagram(body: &str) -> gpui::AnyElement {
             .border_color(Theme::global().PANEL_BORDER)
             .bg(Theme::global().QUOTE_BG)
             .child(
-                gpui::svg()
-                    .data(rendered.svg.as_ref())
+                gpui::img(image)
                     .w_full()
                     .h_full()
-                    .text_color(Theme::global().TEXT),
+                    .object_fit(ObjectFit::Contain),
             )
             .into_any_element();
     }
@@ -1769,6 +1777,7 @@ mod tests {
         let svg = std::str::from_utf8(rendered.svg.as_ref()).expect("mmdr emits UTF-8 SVG");
         assert!(svg.contains("<svg"));
         assert!(svg.contains("Start"));
+        assert!(svg.contains("fill=\"#333333\""));
         assert!(rendered.width > 0.0 && rendered.height > 0.0);
     }
 
