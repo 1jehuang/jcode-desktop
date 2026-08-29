@@ -109,6 +109,11 @@ pub enum Command {
         session_id: String,
         operation: SessionOperation,
     },
+    /// Internal handoff from the asynchronous creator back to the bridge loop.
+    CreatedInternal {
+        session: SessionInfo,
+        client: JcodeClient,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -174,7 +179,10 @@ pub fn spawn() -> Bridge {
 
     std::thread::Builder::new()
         .name("jcode-bridge".into())
-        .spawn(move || run(UpdateSender(update_tx), command_rx))
+        .spawn({
+            let command_tx = command_tx.clone();
+            move || run(UpdateSender(update_tx), command_rx, command_tx)
+        })
         .expect("spawn bridge thread");
 
     Bridge {
@@ -251,7 +259,7 @@ fn should_detach_on_drop(processing: bool) -> bool {
     !processing
 }
 
-fn run(updates: UpdateSender, commands: Receiver<Command>) {
+fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Command>) {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
     // while it comes back instead of turning a transient failure into a dead
@@ -293,18 +301,13 @@ fn run(updates: UpdateSender, commands: Receiver<Command>) {
                 // A fresh connection per creation: an existing connection
                 // returns its already-attached session instead of a new one.
                 let updates = updates.clone();
+                let internal = internal.clone();
                 std::thread::Builder::new()
                     .name("jcode-bridge-create".into())
                     .spawn(move || match connect("create") {
                         Ok(client) => match client.create_session(working_dir) {
                             Ok(session) => {
-                                let session_id = session.session_id.clone();
-                                let _detach = GracefulDetach {
-                                    client: &client,
-                                    session_id: &session_id,
-                                    processing: Cell::new(false),
-                                };
-                                let _ = updates.send(Update::SessionCreated { session });
+                                let _ = internal.send(Command::CreatedInternal { session, client });
                             }
                             Err(error) => {
                                 let _ = updates.send(Update::Status(format!(
@@ -318,6 +321,19 @@ fn run(updates: UpdateSender, commands: Receiver<Command>) {
                         }
                     })
                     .expect("spawn create thread");
+            }
+            Command::CreatedInternal { session, client } => {
+                let session_id = session.session_id.clone();
+                eprintln!("jcode desktop: adopting created session {session_id}");
+                // The adopted worker can report SessionConnected immediately.
+                // Publish the panel first so readiness is not drained before the
+                // UI has somewhere to apply it. This loop still installs the
+                // worker before it can receive the UI's later Watch command.
+                let _ = updates.send(Update::SessionCreated { session });
+                let worker = spawn_attached_session_worker(session_id.clone(), client, &updates);
+                if let Some(old) = workers.insert(session_id, worker) {
+                    let _ = old.send(SessionCommand::Stop);
+                }
             }
             Command::Watch { session_id } => {
                 ensure_session_worker(&mut workers, session_id, &updates);
@@ -818,8 +834,22 @@ fn spawn_session_worker(session_id: String, updates: &UpdateSender) -> Sender<Se
     let updates = updates.clone();
     std::thread::Builder::new()
         .name(format!("jcode-session-{session_id}"))
-        .spawn(move || session_worker(session_id, rx, updates))
+        .spawn(move || session_worker(session_id, rx, updates, None))
         .expect("spawn session worker");
+    tx
+}
+
+fn spawn_attached_session_worker(
+    session_id: String,
+    client: JcodeClient,
+    updates: &UpdateSender,
+) -> Sender<SessionCommand> {
+    let (tx, rx) = channel::<SessionCommand>();
+    let updates = updates.clone();
+    std::thread::Builder::new()
+        .name(format!("jcode-session-{session_id}"))
+        .spawn(move || session_worker(session_id, rx, updates, Some(client)))
+        .expect("spawn attached session worker");
     tx
 }
 
@@ -865,7 +895,12 @@ fn next_worker_command(
 }
 
 /// One session's dedicated connection: attach, history, events, commands.
-fn session_worker(session_id: String, commands: Receiver<SessionCommand>, updates: UpdateSender) {
+fn session_worker(
+    session_id: String,
+    commands: Receiver<SessionCommand>,
+    updates: UpdateSender,
+    mut initial_client: Option<JcodeClient>,
+) {
     let lost = |reason: String| {
         eprintln!("jcode desktop: session {session_id} lost: {reason}");
         let _ = updates.send(Update::SessionLost {
@@ -875,6 +910,12 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
     };
 
     let mut pending = VecDeque::new();
+    // `send_message` is fire-and-forget at the SDK layer. A bridge-side
+    // validation failure therefore arrives on the event stream rather than as
+    // the return value from `send_message`. Retain submissions until the daemon
+    // accepts them so an attachment mismatch can reconnect and replay the
+    // original prompt instead of painting the asynchronous error.
+    let mut unaccepted_sends = VecDeque::new();
     // The harness rejects a second SendMessage while a turn is active. Keep the
     // activity bit in this worker so subsequent composer submissions use the
     // SDK's urgent soft-interrupt queue instead. That is the same "ASAP"
@@ -885,7 +926,12 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
     'reconnect: loop {
-        let client = match connect("panel") {
+        let already_attached = initial_client.is_some();
+        let client = match initial_client
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| connect("panel"))
+        {
             Ok(client) => client,
             Err(error) => {
                 lost(format!("{error}; reconnecting"));
@@ -897,7 +943,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             }
         };
         let events = client.events(None);
-        if let Err(error) = client.attach_session(&session_id) {
+        if !already_attached && let Err(error) = client.attach_session(&session_id) {
             lost(format!("{error}; reconnecting"));
             std::thread::sleep(Duration::from_millis(300));
             continue;
@@ -907,6 +953,7 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             session_id: &session_id,
             processing: Cell::new(false),
         };
+        eprintln!("jcode desktop: session {session_id} connected");
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
         });
@@ -997,6 +1044,10 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                                 reason: error.to_string(),
                             });
                         } else {
+                            unaccepted_sends.push_back(SessionCommand::Send {
+                                content: retry_content,
+                                images: retry_images,
+                            });
                             let _ = updates.send(Update::MessageSubmitted {
                                 session_id: session_id.clone(),
                             });
@@ -1056,6 +1107,10 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
             let event_wait_started = std::time::Instant::now();
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
                 reported_disconnected_events = false;
+                if recover_async_attachment_mismatch(&event, &mut unaccepted_sends, &mut pending) {
+                    lost("session connection changed; reconnecting".into());
+                    continue 'reconnect;
+                }
                 // The API bridge emits this event immediately before closing its
                 // stream when the legacy daemon connection disappears. It is a
                 // transport lifecycle notification, not a failed model turn.
@@ -1072,6 +1127,9 @@ fn session_worker(session_id: String, commands: Receiver<SessionCommand>, update
                 // new session has no active turn to interrupt.
                 if event_session_id(&event).is_some_and(|id| id != session_id) {
                     continue;
+                }
+                if matches!(event, ApiEvent::MessageAccepted { .. }) {
+                    unaccepted_sends.pop_front();
                 }
                 update_turn_activity(&event, &mut turn_active);
                 _detach.set_processing(turn_active);
@@ -1141,6 +1199,24 @@ fn is_daemon_connection_closed(event: &ApiEvent) -> bool {
 fn is_wrong_session_attachment_error(message: &str) -> bool {
     message.contains("this connection is attached to `")
         && message.contains("; attach to it first or use another connection")
+}
+
+fn recover_async_attachment_mismatch(
+    event: &ApiEvent,
+    unaccepted: &mut VecDeque<SessionCommand>,
+    pending: &mut VecDeque<SessionCommand>,
+) -> bool {
+    let ApiEvent::Error { message, .. } = event else {
+        return false;
+    };
+    if !is_wrong_session_attachment_error(message) {
+        return false;
+    }
+    let Some(submission) = unaccepted.pop_front() else {
+        return false;
+    };
+    pending.push_front(submission);
+    true
 }
 
 fn queue_wrong_session_retry(
@@ -1451,6 +1527,32 @@ mod tests {
     }
 
     #[test]
+    fn asynchronous_attachment_error_replays_the_unaccepted_prompt() {
+        let event = ApiEvent::Error {
+            code: jcode_sdk::api::ErrorCode::UnknownSession,
+            message: "this connection is attached to `old`, not `wanted`; attach to it first or use another connection".into(),
+        };
+        let images = vec![("image/png".into(), "payload".into())];
+        let mut unaccepted = VecDeque::from([SessionCommand::Send {
+            content: "hi".into(),
+            images: images.clone(),
+        }]);
+        let mut pending = VecDeque::new();
+
+        assert!(recover_async_attachment_mismatch(
+            &event,
+            &mut unaccepted,
+            &mut pending
+        ));
+        assert!(unaccepted.is_empty());
+        assert!(matches!(
+            pending.pop_front(),
+            Some(SessionCommand::Send { content, images: queued })
+                if content == "hi" && queued == images
+        ));
+    }
+
+    #[test]
     fn session_event_identity_prevents_cross_session_activity() {
         let event = ApiEvent::SessionStatus {
             session_id: "other-session".into(),
@@ -1469,16 +1571,20 @@ mod tests {
         bridge.send(Command::CreateSession { working_dir: None });
 
         let deadline = Instant::now() + Duration::from_secs(120);
-        let session_id = loop {
+        let (session_id, mut attached) = loop {
             assert!(
                 Instant::now() < deadline,
                 "runtime did not create a session"
             );
-            if let Some(session_id) = bridge.drain().into_iter().find_map(|update| match update {
-                Update::SessionCreated { session } => Some(session.session_id),
+            let updates = bridge.drain();
+            if let Some(session_id) = updates.iter().find_map(|update| match update {
+                Update::SessionCreated { session } => Some(session.session_id.clone()),
                 _ => None,
             }) {
-                break session_id;
+                let attached = updates.iter().any(|update| {
+                    matches!(update, Update::SessionConnected { session_id: connected } if connected == &session_id)
+                });
+                break (session_id, attached);
             }
             std::thread::sleep(Duration::from_millis(50));
         };
@@ -1491,18 +1597,17 @@ mod tests {
         // attached. SessionStatus wording belongs to the daemon and has changed
         // over time, while SessionConnected is the bridge's public readiness
         // signal.
-        loop {
+        while !attached {
             assert!(
                 Instant::now() < deadline,
                 "panel never reached attached status"
             );
-            let attached = bridge.drain().into_iter().any(
+            attached = bridge.drain().into_iter().any(
                 |update| matches!(update, Update::SessionConnected { session_id: ref connected } if connected == &session_id),
             );
-            if attached {
-                break;
+            if !attached {
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
 
         bridge.send(Command::Send {
