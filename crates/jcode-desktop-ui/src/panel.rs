@@ -6053,6 +6053,41 @@ mod tests {
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
     }
 
+    /// Mermaid support must travel through the same streamed assistant event and
+    /// virtualized transcript paint path used by a real session. Testing the SVG
+    /// helper alone would not catch a panel that still displayed the fenced source.
+    #[gpui::test]
+    fn streamed_mermaid_renders_as_a_visible_panel_diagram(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (bridge, _commands) = crate::harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let mut panel = None;
+        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
+        let panel = panel.expect("test panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    session_id: "session-a".into(),
+                    text: "```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+
+        let bounds = vcx
+            .debug_bounds("md-mermaid")
+            .expect("Mermaid fence should paint as a diagram in the panel");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    }
+
     #[gpui::test]
     fn slash_commands_dispatch_native_session_operations(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::input::bind_keys(cx));
