@@ -8754,49 +8754,52 @@ mod tests {
     /// every other strip is empty, so super-j/super-k never counted as
     /// practiced and the ⌘J/⌘K lesson chips never went away. Pressing the
     /// chord must clear the lesson even when the strip switch is a no-op,
-    /// while still granting no mastery and showing no hint.
+    /// while still granting no mastery and showing no hint. Asserted at the
+    /// rendered surface: the chip's completion checkmark must appear.
     #[gpui::test]
     fn pressing_into_empty_strips_clears_the_lesson_without_teaching(
         cx: &mut gpui::TestAppContext,
     ) {
-        let window = cx.update(|cx| {
-            crate::bind_workspace_keys(cx);
-            cx.open_window(gpui::WindowOptions::default(), |window, cx| {
-                cx.new(|cx| {
-                    let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-                    workspace.push_test_panel("only", cx);
-                    let _ = window;
-                    workspace
-                })
-            })
-            .unwrap()
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("only", cx);
+            let _ = window;
+            workspace
         });
-        window
-            .update(cx, |workspace, window, cx| {
-                window.focus(&workspace.focus_handle, cx);
-            })
-            .unwrap();
+        vcx.update(|window, cx| {
+            let handle = workspace.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("tutorial-learned-focus_up_down").is_none(),
+            "the strip lesson should start incomplete"
+        );
 
         // Down onto an empty strip, and up against the top edge: both are
         // no-ops as navigation, both are the user producing the chord.
-        cx.simulate_keystrokes(*window, "super-j super-k super-k");
-        window
-            .update(cx, |workspace, _, _| {
-                let coach = workspace.test_coach();
-                assert!(
-                    coach.trace("focus_up_down").practiced(),
-                    "the lesson should clear once the chord has been pressed"
-                );
-                assert_eq!(
-                    coach.mastery("focus_up_down", learning::now()),
-                    0.0,
-                    "a no-op press proves the chord, not the navigation"
-                );
-                assert_eq!(coach.effort_saved, 0);
-                assert_eq!(coach.effort_wasted, 0);
-                assert_eq!(coach.active_hint_id(), None);
-            })
-            .unwrap();
+        vcx.simulate_keystrokes("super-j super-k super-k");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, _| {
+            let coach = workspace.test_coach();
+            assert!(
+                coach.trace("focus_up_down").practiced(),
+                "the lesson should clear once the chord has been pressed"
+            );
+            assert_eq!(
+                coach.mastery("focus_up_down", learning::now()),
+                0.0,
+                "a no-op press proves the chord, not the navigation"
+            );
+            assert_eq!(coach.effort_saved, 0);
+            assert_eq!(coach.effort_wasted, 0);
+            assert_eq!(coach.active_hint_id(), None);
+        });
+        assert!(
+            vcx.debug_bounds("tutorial-learned-focus_up_down").is_some(),
+            "the J/K chips should render their green completion state"
+        );
     }
 
     /// This is the public acceptance path for vertical navigation: real bound
