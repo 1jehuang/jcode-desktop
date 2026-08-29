@@ -867,6 +867,7 @@ fn next_worker_command(
 /// One session's dedicated connection: attach, history, events, commands.
 fn session_worker(session_id: String, commands: Receiver<SessionCommand>, updates: UpdateSender) {
     let lost = |reason: String| {
+        eprintln!("jcode desktop: session {session_id} lost: {reason}");
         let _ = updates.send(Update::SessionLost {
             session_id: session_id.clone(),
             reason,
