@@ -3458,9 +3458,15 @@ impl Workspace {
                     .border_color(Theme::global().PANEL_BORDER)
                     .child(
                         div()
+                            .id("sidebar-navigation-tabs")
+                            .debug_selector(|| "sidebar-navigation-tabs".into())
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap_1()
+                            .overflow_x_scroll()
+                            .restrict_scroll_to_axis()
                             .child(
                                 div()
                                     .id("sidebar-sessions-tab")
