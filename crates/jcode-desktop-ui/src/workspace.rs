@@ -761,9 +761,17 @@ impl Workspace {
             let terminal =
                 panel_state.terminal_resource_id.is_some() || panel_state.session_id == "terminal";
             let panel = if panel_state.session_id == "unfinished-work" {
+                let workspace = cx.weak_entity();
                 cx.new(|cx| {
                     Panel::new_unfinished_work(
                         harness::unfinished_sessions(&self.sessions),
+                        std::sync::Arc::new(move |session, window, cx| {
+                            workspace
+                                .update(cx, |workspace, cx| {
+                                    workspace.activate_unfinished_session(session, window, cx);
+                                })
+                                .expect("unfinished-work workspace is still available");
+                        }),
                         self.bridge.clone(),
                         cx,
                     )
@@ -1271,6 +1279,46 @@ impl Workspace {
             .slots
             .iter()
             .position(|slot| slot.panel.read(cx).session_id == session.session_id)
+            .unwrap_or_else(|| self.open_session(session, cx));
+        self.set_active(index, cx);
+        self.overview = false;
+        self.overview_progress.set(0.0, Instant::now());
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn activate_unfinished_session(
+        &mut self,
+        unfinished: harness::UnfinishedSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self
+            .sessions
+            .iter()
+            .find(|session| session.session_id == unfinished.session_id)
+            .cloned()
+            .unwrap_or_else(|| jcode_sdk::SessionInfo {
+                session_id: unfinished.session_id,
+                working_dir: unfinished.working_dir,
+                title: Some(unfinished.title),
+                status: "idle".into(),
+                transcript_bytes: None,
+                saved: false,
+                updated_at_ms: None,
+                last_active_at_ms: None,
+                archived: false,
+                archived_at_ms: None,
+            });
+        // This can run from a click listener on the active unfinished-work
+        // panel. Do not read that same entity while GPUI is updating it.
+        let index = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != self.active)
+            .find(|(_, slot)| slot.panel.read(cx).session_id == session.session_id)
+            .map(|(index, _)| index)
             .unwrap_or_else(|| self.open_session(session, cx));
         self.set_active(index, cx);
         self.overview = false;
@@ -1922,9 +1970,17 @@ impl Workspace {
             return;
         }
         let width_fraction = spawned_panel_width(self.slots.len());
+        let workspace = cx.weak_entity();
         let panel = cx.new(|cx| {
             Panel::new_unfinished_work(
                 harness::unfinished_sessions(&self.sessions),
+                std::sync::Arc::new(move |session, window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            workspace.activate_unfinished_session(session, window, cx);
+                        })
+                        .expect("unfinished-work workspace is still available");
+                }),
                 self.bridge.clone(),
                 cx,
             )
@@ -7011,6 +7067,75 @@ mod tests {
             assert_eq!(workspace.slots[0].row, 1);
             let panel_snapshot = workspace.slots[0].panel.read(cx).snapshot(cx);
             assert_eq!(panel_snapshot.session_id, "unfinished-work");
+        });
+    }
+
+    #[gpui::test]
+    fn clicking_an_unfinished_work_card_opens_its_chat_session(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("current-chat", cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let button = vcx
+            .debug_bounds("sidebar-unfinished-work")
+            .expect("todos launcher paints in the sidebar");
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        workspace.update(vcx, |workspace, cx| {
+            let panel = workspace.slots[workspace.active].panel.clone();
+            panel.update(cx, |panel, cx| {
+                panel.set_unfinished_work(
+                    vec![crate::harness::UnfinishedSession {
+                        session_id: "todo-chat".into(),
+                        title: "Todo chat".into(),
+                        working_dir: None,
+                        todos: vec![crate::harness::UnfinishedTodo {
+                            content: "Finish this work".into(),
+                            status: "pending".into(),
+                            group: None,
+                        }],
+                    }],
+                    cx,
+                );
+            });
+        });
+        vcx.run_until_parked();
+
+        workspace.update(vcx, |workspace, _cx| {
+            workspace
+                .sessions
+                .push(session_info("todo-chat", Some("Todo chat")));
+            assert!(
+                workspace
+                    .sessions
+                    .iter()
+                    .any(|session| session.session_id == "todo-chat")
+            );
+        });
+
+        let card = vcx
+            .debug_bounds("unfinished-session-0")
+            .expect("unfinished session card paints");
+        vcx.simulate_click(card.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        workspace.read_with(vcx, |workspace, cx| {
+            assert!(
+                workspace
+                    .slots
+                    .iter()
+                    .any(|slot| slot.panel.read(cx).session_id == "todo-chat"),
+                "clicking the card should open the chat panel"
+            );
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "todo-chat"
+            );
         });
     }
 

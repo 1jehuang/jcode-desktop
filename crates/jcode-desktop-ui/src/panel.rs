@@ -24,6 +24,8 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
+
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
     match registered_command(name) {
@@ -194,6 +196,7 @@ pub struct Panel {
     arriving_tools: HashMap<String, Instant>,
     terminal: Option<Entity<TerminalPanel>>,
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
+    unfinished_session_opener: Option<SessionOpener>,
     /// A read-only source file opened from the workspace file browser.
     code_file: Option<CodeFile>,
     /// A native, read-only view of the locally connected Gmail inbox.
@@ -528,6 +531,7 @@ impl Panel {
             arriving_tools: HashMap::new(),
             terminal: None,
             unfinished_work: None,
+            unfinished_session_opener: None,
             code_file: None,
             gmail_inbox: None,
             gmail_message: None,
@@ -1594,6 +1598,7 @@ impl Panel {
 
     pub fn new_unfinished_work(
         sessions: Vec<crate::harness::UnfinishedSession>,
+        session_opener: SessionOpener,
         bridge: Bridge,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1605,6 +1610,7 @@ impl Panel {
             cx,
         );
         panel.unfinished_work = Some(sessions);
+        panel.unfinished_session_opener = Some(session_opener);
         panel
     }
 
@@ -3295,6 +3301,7 @@ impl Render for Panel {
                 );
             }
             for (index, session) in sessions.iter().enumerate() {
+                let session_to_open = session.clone();
                 let mut card = div()
                     .id(("unfinished-session", index))
                     .debug_selector(move || format!("unfinished-session-{index}").into())
@@ -3303,6 +3310,26 @@ impl Render for Panel {
                     .border_1()
                     .border_color(Theme::global().PANEL_BORDER)
                     .bg(Theme::global().HEADER_BG)
+                    .cursor_pointer()
+                    .hover(|card| {
+                        card.border_color(Theme::global().PANEL_BORDER_FOCUS)
+                            .bg(Theme::global().ACCENT_DIM)
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |panel, _event, window, cx| {
+                            if let Some(open_session) = &panel.unfinished_session_opener {
+                                open_session(session_to_open.clone(), window, cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |_panel, _event, _window, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
                     .flex()
                     .flex_col()
                     .gap_2()
