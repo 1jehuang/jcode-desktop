@@ -3659,7 +3659,7 @@ impl Workspace {
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Files => self.render_files_sidebar(cx),
                     })
-                    .child(crate::scrollbar::vertical(
+                    .child(crate::scrollbar::vertical_with_track(
                         &self.sidebar_scroll,
                         "sidebar-scrollbar",
                     )),
