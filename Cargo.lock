@@ -4488,6 +4488,7 @@ dependencies = [
  "base64 0.22.1",
  "gpui",
  "gpui_platform",
+ "hdrhistogram",
  "image",
  "jcode-base",
  "jcode-core",

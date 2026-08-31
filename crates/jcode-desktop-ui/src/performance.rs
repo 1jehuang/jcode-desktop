@@ -48,6 +48,7 @@ struct PendingAction {
     frames: usize,
     missed_frames: usize,
     previous_frame: Option<Instant>,
+    frame_intervals_ms: Vec<f64>,
 }
 
 /// A deliberately small, synchronous recorder used only when explicitly opted
@@ -63,10 +64,13 @@ struct ActionRecord {
     elapsed_ms: f64,
     draw_p95_ms: f64,
     present_p95_ms: f64,
+    presented_fps: f64,
     input_p95_ms: f64,
     presented_frame_count: u64,
     frame_count: usize,
     missed_frames: usize,
+    construction_p95_ms: f64,
+    construction_fps: f64,
 }
 
 impl ActionCapture {
@@ -94,7 +98,12 @@ impl ActionCapture {
             frames: 0,
             missed_frames: 0,
             previous_frame: None,
+            frame_intervals_ms: Vec::new(),
         });
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub fn observe(
@@ -108,14 +117,21 @@ impl ActionCapture {
             return;
         };
         pending.frames += 1;
-        if pending
-            .previous_frame
-            .replace(now)
-            .is_some_and(|previous| now.saturating_duration_since(previous).as_secs_f64() > 0.0175)
-        {
-            pending.missed_frames += 1;
+        if let Some(previous) = pending.previous_frame.replace(now) {
+            let interval_ms = now.saturating_duration_since(previous).as_secs_f64() * 1_000.0;
+            pending.frame_intervals_ms.push(interval_ms);
+            if interval_ms > 17.5 {
+                pending.missed_frames += 1;
+            }
         }
-        if !settled {
+        // The snapshot read while constructing a frame cannot include that
+        // frame's eventual presentation. Keep requesting frames long enough to
+        // observe at least one compositor round trip before closing even an
+        // otherwise instant focus action.
+        if !settled
+            || pending.frames < 2
+            || now.saturating_duration_since(pending.started) < Duration::from_millis(34)
+        {
             return;
         }
         let pending = self.pending.take().unwrap();
@@ -130,15 +146,20 @@ impl ActionCapture {
         let _ = present.subtract(&pending.frame_baseline.present_interval_histogram);
         let _ = input.subtract(&pending.input_baseline.latency_histogram);
         let milliseconds = |nanoseconds: u64| nanoseconds as f64 / 1_000_000.0;
+        let present_p95_ms = milliseconds(present.value_at_quantile(0.95));
+        let construction_p95_ms = percentile_slice(&pending.frame_intervals_ms, 0.95);
         let record = ActionRecord {
             action: pending.name,
             elapsed_ms: now.saturating_duration_since(pending.started).as_secs_f64() * 1_000.0,
             draw_p95_ms: milliseconds(draw.value_at_quantile(0.95)),
-            present_p95_ms: milliseconds(present.value_at_quantile(0.95)),
+            present_p95_ms,
+            presented_fps: fps(present_p95_ms),
             input_p95_ms: milliseconds(input.value_at_quantile(0.95)),
             presented_frame_count: present.len(),
             frame_count: pending.frames,
             missed_frames: pending.missed_frames,
+            construction_p95_ms,
+            construction_fps: fps(construction_p95_ms),
         };
         if let Ok(line) = serde_json::to_string(&record)
             && let Ok(mut file) = OpenOptions::new()
@@ -149,6 +170,23 @@ impl ActionCapture {
             let _ = writeln!(file, "{line}");
         }
     }
+}
+
+fn fps(interval_ms: f64) -> f64 {
+    if interval_ms > 0.0 {
+        1_000.0 / interval_ms
+    } else {
+        0.0
+    }
+}
+
+fn percentile_slice(samples: &[f64], percentile: f64) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    sorted[((sorted.len() - 1) as f64 * percentile).ceil() as usize]
 }
 
 #[derive(Default)]
@@ -361,6 +399,8 @@ mod tests {
         assert!(value["draw_p95_ms"].as_f64().unwrap() < 3.0);
         assert!(value["input_p95_ms"].as_f64().unwrap() < 6.0);
         assert_eq!(value["presented_frame_count"], 2);
+        assert_eq!(value["construction_p95_ms"], 24.0);
+        assert!(value["construction_fps"].as_f64().unwrap() > 41.0);
         let _ = std::fs::remove_file(path);
     }
 }

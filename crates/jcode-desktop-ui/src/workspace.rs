@@ -5687,7 +5687,11 @@ impl Render for Workspace {
                 root.child(self.render_folder_picker(cx))
             });
         let animation_active = self.animation_active();
-        if animation_active {
+        let action_capture_pending = self
+            .action_capture
+            .as_ref()
+            .is_some_and(ActionCapture::is_pending);
+        if animation_active || action_capture_pending {
             self.ensure_animation_tick(cx);
         }
         if let Some(profile) = self.performance.as_mut() {
