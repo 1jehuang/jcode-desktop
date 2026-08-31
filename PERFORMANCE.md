@@ -29,6 +29,14 @@ window's earlier history. The record also includes elapsed settling time,
 presented and constructed frame counts, and missed 17.5 ms construction
 budgets. Edge no-ops are intentionally excluded.
 
+Presentation fields are nullable. GPUI only adds presentation-interval samples
+when the compositor reports consecutive active animation presents. In isolated
+headless Sway acceptance this histogram can remain empty even though draw and
+input-to-frame samples prove that frames crossed the application/Wayland
+boundary. Such records use `null` for `present_p95_ms` and `presented_fps` and
+zero for `presented_frame_count`; they must not be interpreted as 0 FPS. Run on
+the target interactive compositor to obtain user-visible presentation cadence.
+
 ## Development-build runtime
 
 The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies

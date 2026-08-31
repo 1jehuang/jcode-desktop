@@ -63,8 +63,8 @@ struct ActionRecord {
     action: &'static str,
     elapsed_ms: f64,
     draw_p95_ms: f64,
-    present_p95_ms: f64,
-    presented_fps: f64,
+    present_p95_ms: Option<f64>,
+    presented_fps: Option<f64>,
     input_p95_ms: f64,
     presented_frame_count: u64,
     frame_count: usize,
@@ -146,14 +146,15 @@ impl ActionCapture {
         let _ = present.subtract(&pending.frame_baseline.present_interval_histogram);
         let _ = input.subtract(&pending.input_baseline.latency_histogram);
         let milliseconds = |nanoseconds: u64| nanoseconds as f64 / 1_000_000.0;
-        let present_p95_ms = milliseconds(present.value_at_quantile(0.95));
+        let present_p95_ms =
+            (!present.is_empty()).then(|| milliseconds(present.value_at_quantile(0.95)));
         let construction_p95_ms = percentile_slice(&pending.frame_intervals_ms, 0.95);
         let record = ActionRecord {
             action: pending.name,
             elapsed_ms: now.saturating_duration_since(pending.started).as_secs_f64() * 1_000.0,
             draw_p95_ms: milliseconds(draw.value_at_quantile(0.95)),
             present_p95_ms,
-            presented_fps: fps(present_p95_ms),
+            presented_fps: present_p95_ms.map(fps),
             input_p95_ms: milliseconds(input.value_at_quantile(0.95)),
             presented_frame_count: present.len(),
             frame_count: pending.frames,
@@ -399,8 +400,48 @@ mod tests {
         assert!(value["draw_p95_ms"].as_f64().unwrap() < 3.0);
         assert!(value["input_p95_ms"].as_f64().unwrap() < 6.0);
         assert_eq!(value["presented_frame_count"], 2);
+        assert!(value["present_p95_ms"].as_f64().unwrap() > 23.0);
+        assert!(value["presented_fps"].as_f64().unwrap() > 41.0);
         assert_eq!(value["construction_p95_ms"], 24.0);
         assert!(value["construction_fps"].as_f64().unwrap() > 41.0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn action_capture_marks_missing_presentation_samples_unavailable() {
+        let path = std::env::temp_dir().join(format!(
+            "jcode-action-no-present-{}-{}.jsonl",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let frame = FrameDurationSnapshot {
+            draw_duration_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
+            present_interval_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
+        };
+        let input = InputLatencySnapshot {
+            latency_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
+            events_per_frame_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
+            mid_draw_events_dropped: 0,
+        };
+        let mut capture = ActionCapture {
+            path: path.clone(),
+            pending: None,
+        };
+        let start = Instant::now();
+        capture.begin("focus_right", start, frame.clone(), input.clone());
+        capture.observe(
+            start + Duration::from_millis(16),
+            false,
+            frame.clone(),
+            input.clone(),
+        );
+        capture.observe(start + Duration::from_millis(40), true, frame, input);
+
+        let value: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+        assert_eq!(value["presented_frame_count"], 0);
+        assert!(value["present_p95_ms"].is_null());
+        assert!(value["presented_fps"].is_null());
         let _ = std::fs::remove_file(path);
     }
 }
