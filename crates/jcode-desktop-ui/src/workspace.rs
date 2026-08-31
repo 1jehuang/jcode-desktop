@@ -20,7 +20,10 @@ use crate::harness::{self, Bridge, Command, Update};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::learning;
 use crate::panel::{Panel, PanelSnapshot};
-use crate::performance::{Health as PerformanceHealth, Profile as PerformanceProfile};
+use crate::performance::{
+    ActionCapture, GpuiSnapshot as GpuiPerformanceSnapshot, Health as PerformanceHealth,
+    Profile as PerformanceProfile,
+};
 use crate::theme::Theme;
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
@@ -396,15 +399,6 @@ impl WorkspaceSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct GpuiPerformanceSnapshot {
-    draw_p95_ms: f64,
-    present_p95_ms: f64,
-    input_to_frame_p95_ms: f64,
-    input_events_per_frame_p95: u64,
-    mid_draw_inputs: u64,
-}
-
 pub struct Workspace {
     bridge: Bridge,
     host: HostHandle,
@@ -473,6 +467,7 @@ pub struct Workspace {
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
     gpui_performance: GpuiPerformanceSnapshot,
+    action_capture: Option<ActionCapture>,
     animation_tick_task: Option<gpui::Task<()>>,
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
@@ -628,6 +623,7 @@ impl Workspace {
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
             gpui_performance: GpuiPerformanceSnapshot::default(),
+            action_capture: ActionCapture::from_env(),
             animation_tick_task: None,
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
@@ -694,6 +690,7 @@ impl Workspace {
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
             gpui_performance: GpuiPerformanceSnapshot::default(),
+            action_capture: None,
             animation_tick_task: None,
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
@@ -1541,6 +1538,7 @@ impl Workspace {
             && position > 0
         {
             self.set_active(indices[position - 1], cx);
+            self.begin_action_capture("focus_left", window);
             self.focus_active(window, cx);
             // Credit only when the key did something: pressing into the edge of
             // a strip is a no-op and proves nothing either way.
@@ -1556,6 +1554,7 @@ impl Workspace {
             && position + 1 < indices.len()
         {
             self.set_active(indices[position + 1], cx);
+            self.begin_action_capture("focus_right", window);
             self.focus_active(window, cx);
             self.learned("focus_left_right", cx);
             cx.notify();
@@ -1610,7 +1609,9 @@ impl Workspace {
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
         self.showcase_motion("K", false, "Focus strip above", cx);
         if self.active_row > 0 {
-            self.change_row(self.active_row - 1, window, cx);
+            if self.change_row(self.active_row - 1, window, cx) {
+                self.begin_action_capture("focus_up", window);
+            }
         } else {
             // Pressing into the top edge cannot navigate, but the chord was
             // still produced by hand, so the tutorial lesson must not linger.
@@ -1622,7 +1623,9 @@ impl Workspace {
     fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
         self.showcase_motion("J", false, "Focus strip below", cx);
         if self.active_row + 1 < STRIP_COUNT {
-            self.change_row(self.active_row + 1, window, cx);
+            if self.change_row(self.active_row + 1, window, cx) {
+                self.begin_action_capture("focus_down", window);
+            }
         } else {
             self.coach.used_shortcut_without_effect("focus_up_down");
             self.after_coach_update(cx);
@@ -1636,7 +1639,7 @@ impl Workspace {
     /// practice, though: the tutorial asked for the chord and the user
     /// produced it, so the lesson must clear rather than linger forever on a
     /// workspace whose other strips happen to be empty.
-    fn change_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn change_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let meaningful = self.switch_row_animated(row, window, cx);
         if meaningful {
             self.learned("focus_up_down", cx);
@@ -1645,6 +1648,18 @@ impl Workspace {
             self.after_coach_update(cx);
         }
         cx.notify();
+        meaningful
+    }
+
+    fn begin_action_capture(&mut self, name: &'static str, window: &Window) {
+        if let Some(capture) = self.action_capture.as_mut() {
+            capture.begin(
+                name,
+                Instant::now(),
+                window.frame_duration_snapshot(),
+                window.input_latency_snapshot(),
+            );
+        }
     }
 
     /// Switch strips with the row transition animation. Returns whether the
@@ -5516,6 +5531,17 @@ impl Render for Workspace {
                     .value_at_quantile(0.95),
                 mid_draw_inputs: input.mid_draw_events_dropped,
             };
+        }
+        let action_settled = !self.row_progress.is_animating()
+            && !self.camera_dirty[self.active_row]
+            && self.camera_started[self.active_row].is_none();
+        if let Some(capture) = self.action_capture.as_mut() {
+            capture.observe(
+                Instant::now(),
+                action_settled,
+                window.frame_duration_snapshot(),
+                window.input_latency_snapshot(),
+            );
         }
         let gpui_performance = self.gpui_performance;
         let performance = self.performance.as_ref().map(|profile| {

@@ -20,6 +20,15 @@ compositor-driven acceptance runs can inspect them without screen scraping.
 Recorded presentation packets remain an independent end-to-end check of the
 application, Wayland, Vulkan, and compositor boundary.
 
+For action-scoped measurements against the exact restored workspace, set
+`JCODE_DESKTOP_PERF_ACTIONS=/path/to/actions.jsonl`. Each meaningful focus-left,
+focus-right, focus-up, or focus-down action appends one JSON record after its
+animation settles. Draw, presentation, and input p95 values are computed from
+the GPUI histogram samples added during that action, rather than from the
+window's earlier history. The record also includes elapsed settling time,
+presented and constructed frame counts, and missed 17.5 ms construction
+budgets. Edge no-ops are intentionally excluded.
+
 ## Development-build runtime
 
 The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies

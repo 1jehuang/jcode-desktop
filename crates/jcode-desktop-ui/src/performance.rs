@@ -1,7 +1,13 @@
 //! Lightweight, self-development-only UI latency telemetry.
 
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+use gpui::profiler::{FrameDurationSnapshot, InputLatencySnapshot};
+use serde::Serialize;
 
 const SAMPLE_LIMIT: usize = 240;
 const WAKE_WARN_MS: f64 = 12.0;
@@ -23,6 +29,126 @@ pub struct Snapshot {
     pub animation_fps: f64,
     pub missed_animation_frames: usize,
     pub health: Health,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuiSnapshot {
+    pub draw_p95_ms: f64,
+    pub present_p95_ms: f64,
+    pub input_to_frame_p95_ms: f64,
+    pub input_events_per_frame_p95: u64,
+    pub mid_draw_inputs: u64,
+}
+
+struct PendingAction {
+    name: &'static str,
+    started: Instant,
+    frame_baseline: FrameDurationSnapshot,
+    input_baseline: InputLatencySnapshot,
+    frames: usize,
+    missed_frames: usize,
+    previous_frame: Option<Instant>,
+}
+
+/// A deliberately small, synchronous recorder used only when explicitly opted
+/// in. One short line is written after an action, never on each animation frame.
+pub struct ActionCapture {
+    path: PathBuf,
+    pending: Option<PendingAction>,
+}
+
+#[derive(Serialize)]
+struct ActionRecord {
+    action: &'static str,
+    elapsed_ms: f64,
+    draw_p95_ms: f64,
+    present_p95_ms: f64,
+    input_p95_ms: f64,
+    presented_frame_count: u64,
+    frame_count: usize,
+    missed_frames: usize,
+}
+
+impl ActionCapture {
+    pub fn from_env() -> Option<Self> {
+        std::env::var_os("JCODE_DESKTOP_PERF_ACTIONS")
+            .filter(|path| !path.is_empty())
+            .map(|path| Self {
+                path: path.into(),
+                pending: None,
+            })
+    }
+
+    pub fn begin(
+        &mut self,
+        name: &'static str,
+        now: Instant,
+        frame_baseline: FrameDurationSnapshot,
+        input_baseline: InputLatencySnapshot,
+    ) {
+        self.pending = Some(PendingAction {
+            name,
+            started: now,
+            frame_baseline,
+            input_baseline,
+            frames: 0,
+            missed_frames: 0,
+            previous_frame: None,
+        });
+    }
+
+    pub fn observe(
+        &mut self,
+        now: Instant,
+        settled: bool,
+        current_frame: FrameDurationSnapshot,
+        current_input: InputLatencySnapshot,
+    ) {
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        pending.frames += 1;
+        if pending
+            .previous_frame
+            .replace(now)
+            .is_some_and(|previous| now.saturating_duration_since(previous).as_secs_f64() > 0.0175)
+        {
+            pending.missed_frames += 1;
+        }
+        if !settled {
+            return;
+        }
+        let pending = self.pending.take().unwrap();
+        let mut draw = current_frame.draw_duration_histogram;
+        let mut present = current_frame.present_interval_histogram;
+        let mut input = current_input.latency_histogram;
+        // GPUI exposes cumulative window histograms. Subtract the snapshots
+        // taken at action dispatch so unrelated history cannot skew this
+        // action's distribution. Subtracting cumulative percentiles would be
+        // mathematically invalid.
+        let _ = draw.subtract(&pending.frame_baseline.draw_duration_histogram);
+        let _ = present.subtract(&pending.frame_baseline.present_interval_histogram);
+        let _ = input.subtract(&pending.input_baseline.latency_histogram);
+        let milliseconds = |nanoseconds: u64| nanoseconds as f64 / 1_000_000.0;
+        let record = ActionRecord {
+            action: pending.name,
+            elapsed_ms: now.saturating_duration_since(pending.started).as_secs_f64() * 1_000.0,
+            draw_p95_ms: milliseconds(draw.value_at_quantile(0.95)),
+            present_p95_ms: milliseconds(present.value_at_quantile(0.95)),
+            input_p95_ms: milliseconds(input.value_at_quantile(0.95)),
+            presented_frame_count: present.len(),
+            frame_count: pending.frames,
+            missed_frames: pending.missed_frames,
+        };
+        if let Ok(line) = serde_json::to_string(&record)
+            && let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
 }
 
 #[derive(Default)]
@@ -96,8 +222,9 @@ impl Profile {
 }
 
 pub fn enabled(_arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) -> bool {
-    std::env::var("JCODE_DESKTOP_PERF")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
+    std::env::var_os("JCODE_DESKTOP_PERF_ACTIONS").is_some()
+        || std::env::var("JCODE_DESKTOP_PERF")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
 }
 
 fn push(samples: &mut VecDeque<f64>, value: f64) {
@@ -164,5 +291,76 @@ mod tests {
     fn profile_requires_an_explicit_opt_in() {
         assert!(!enabled(["jcode-desktop", "--hot-reload"]));
         assert!(!enabled(["jcode-desktop"]));
+    }
+
+    #[test]
+    fn action_capture_appends_one_record_when_settled() {
+        let path = std::env::temp_dir().join(format!(
+            "jcode-action-perf-{}-{}.jsonl",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let mut capture = ActionCapture {
+            path: path.clone(),
+            pending: None,
+        };
+        let start = Instant::now();
+        let mut historical_draw = hdrhistogram::Histogram::<u64>::new(3).unwrap();
+        historical_draw.record(100_000_000).unwrap();
+        let mut historical_present = hdrhistogram::Histogram::<u64>::new(3).unwrap();
+        historical_present.record(100_000_000).unwrap();
+        let frame_baseline = FrameDurationSnapshot {
+            draw_duration_histogram: historical_draw,
+            present_interval_histogram: historical_present,
+        };
+        let mut historical_input = hdrhistogram::Histogram::<u64>::new(3).unwrap();
+        historical_input.record(100_000_000).unwrap();
+        let input_baseline = InputLatencySnapshot {
+            latency_histogram: historical_input,
+            events_per_frame_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
+            mid_draw_events_dropped: 0,
+        };
+        capture.begin(
+            "focus_left",
+            start,
+            frame_baseline.clone(),
+            input_baseline.clone(),
+        );
+        capture.observe(
+            start + Duration::from_millis(16),
+            false,
+            frame_baseline.clone(),
+            input_baseline.clone(),
+        );
+        let mut current_frame = frame_baseline;
+        current_frame
+            .draw_duration_histogram
+            .record(2_500_000)
+            .unwrap();
+        current_frame
+            .present_interval_histogram
+            .record(16_000_000)
+            .unwrap();
+        current_frame
+            .present_interval_histogram
+            .record(24_000_000)
+            .unwrap();
+        let mut current_input = input_baseline;
+        current_input.latency_histogram.record(5_000_000).unwrap();
+        capture.observe(
+            start + Duration::from_millis(40),
+            true,
+            current_frame,
+            current_input,
+        );
+        let line = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["action"], "focus_left");
+        assert_eq!(value["frame_count"], 2);
+        assert_eq!(value["missed_frames"], 1);
+        assert!(value["draw_p95_ms"].as_f64().unwrap() < 3.0);
+        assert!(value["input_p95_ms"].as_f64().unwrap() < 6.0);
+        assert_eq!(value["presented_frame_count"], 2);
+        let _ = std::fs::remove_file(path);
     }
 }

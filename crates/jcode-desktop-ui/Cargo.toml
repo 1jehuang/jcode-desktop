@@ -38,3 +38,4 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+hdrhistogram = "7.6"
