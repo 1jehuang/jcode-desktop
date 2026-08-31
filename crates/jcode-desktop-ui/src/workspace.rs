@@ -2581,7 +2581,12 @@ impl Workspace {
                 .await;
             let _ = this.update(cx, |workspace, cx| {
                 workspace.animation_tick_task = None;
-                if workspace.animation_active() {
+                if workspace.animation_active()
+                    || workspace
+                        .action_capture
+                        .as_ref()
+                        .is_some_and(ActionCapture::is_pending)
+                {
                     cx.notify();
                 }
             });
