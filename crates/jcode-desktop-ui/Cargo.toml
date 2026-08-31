@@ -12,6 +12,7 @@ crate-type = ["rlib", "cdylib"]
 gpui.workspace = true
 gpui_platform.workspace = true
 jcode-desktop-api.workspace = true
+jcode-desktop-motion.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-base = { path = "../../../jcode/crates/jcode-base" }

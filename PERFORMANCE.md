@@ -43,6 +43,10 @@ The hot-reload workflow keeps Jcode Desktop's own crates and most dependencies
 at `opt-level = 0`, but builds a profile-selected list of runtime-hot
 dependencies (taffy layout, GPUI, text shaping, the Wayland/Calloop event loop,
 and the renderer) at `opt-level = 2`.
+The UI-independent animation registry and per-frame interpolation primitives live
+in `jcode-desktop-motion`, which is also built at `opt-level = 2`. The frequently
+edited GPUI composition remains in the unoptimized, dynamically reloadable UI
+crate, while the small UI adapter applies the current reduced-motion setting.
 GPUI, Calloop, Wayland dispatch, text shaping, and rendering dominate idle and
 paint-time CPU. Leaving those dependencies unoptimized caused the development
 host to consume 16–40% of one CPU core while idle on the test machine. A

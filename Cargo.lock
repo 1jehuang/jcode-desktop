@@ -4479,6 +4479,10 @@ name = "jcode-desktop-api"
 version = "0.1.0"
 
 [[package]]
+name = "jcode-desktop-motion"
+version = "0.1.0"
+
+[[package]]
 name = "jcode-desktop-ui"
 version = "0.1.0"
 dependencies = [
@@ -4493,6 +4497,7 @@ dependencies = [
  "jcode-base",
  "jcode-core",
  "jcode-desktop-api",
+ "jcode-desktop-motion",
  "jcode-sdk",
  "mermaid-rs-renderer",
  "ratex-layout",

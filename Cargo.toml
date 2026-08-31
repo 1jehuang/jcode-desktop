@@ -1,5 +1,10 @@
 [workspace]
-members = [".", "crates/jcode-desktop-api", "crates/jcode-desktop-ui"]
+members = [
+    ".",
+    "crates/jcode-desktop-api",
+    "crates/jcode-desktop-motion",
+    "crates/jcode-desktop-ui",
+]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +15,7 @@ license = "MIT"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
+jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
 [package]
 name = "jcode-desktop"
@@ -69,6 +75,8 @@ opt-level = 2
 [profile.dev.package.gpui_util]
 opt-level = 2
 [profile.dev.package.gpui_shared_string]
+opt-level = 2
+[profile.dev.package.jcode-desktop-motion]
 opt-level = 2
 [profile.dev.package.sum_tree]
 opt-level = 2
