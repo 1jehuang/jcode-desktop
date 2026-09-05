@@ -28,10 +28,19 @@ python3 -m unittest discover -s scripts -p 'test_screenshot*.py'
 
 These screenshots run the real application and platform input path with offline session fixtures. They validate folder styling and focus behavior, not live SDK latency or sidebar hover performance. The two screenshot isolation tests pass.
 
-### Non-fixture SDK/runtime attempt
+### Non-fixture SDK/runtime acceptance
 
-A further acceptance run attempted to start a real Jcode daemon and harness API in an isolated `JCODE_HOME` and `JCODE_RUNTIME_DIR`, then create three sessions through the desktop's normal keyboard commands and transfer focus through native X11 clicks. The daemon exited before opening its socket with **`No credentials configured. Run 'jcode login' or set ANTHROPIC_API_KEY to authenticate.`** Thus the non-fixture SDK/session boundary is **acceptance-blocked**, not passed. Native folder rendering and focus are verified by the earlier app run, but that does not substitute for this blocked backend path.
+**Passed.** `scripts/accept-folder-panels.py` starts an actual Jcode daemon, harness API bridge, and desktop on private Xvfb/Openbox. Screenshot mode is disabled. Native keyboard commands create three real SDK-backed sessions, resize them, and focus the middle one. Native pointer clicks then focus the left and right folders, followed by overview hover and selection of the left folder. The driver verifies three distinct runtime-created session IDs and captures the rendered frames.
 
-No user credentials were copied, no login was attempted, no model request was sent, and no sessions were created in the user's running daemon. All processes belonging to the isolated attempt were cleaned up and absence of remaining sandbox processes was checked. Local diagnostic artifacts are under `target/folder-real-1/`, including `daemon.log` and the attempted driver. This constraint is left explicit rather than weakening isolation to manufacture a passing result.
+For all four resulting strip frames, pixel assertions verify the differently colored active surface, its 8px raised top, 16px of visible canvas above and below, a common bottom edge, and touching surfaces without outline pixels. The overview hover changes the card surface to `#292521`, and selecting it returns to `focus=0` with the same folder geometry. The full run passed in 10.6 seconds, followed by all five screenshot tests passing. Artifacts are in `target/folder-real-5/`.
 
-The final integrated UI suite reports **296 passed, 3 failed, 6 ignored**. Remaining failures also occurred before this styling work: `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`. The suite is not claimed to be green.
+```sh
+cargo build -p jcode-desktop
+python3 scripts/accept-folder-panels.py target/folder-acceptance
+```
+
+Use a new output directory for each run. Dependencies are the installed `jcode` binary, Xvfb, Openbox, xdotool, ImageMagick, Mesa lavapipe, and Python Pillow. The script launches only isolated processes, disables telemetry, and terminates its process groups on success or failure.
+
+The initial attempt using automatic provider selection stopped at `No credentials configured`. This was resolved without credentials by the supported `--provider jcode` startup mode, which initializes the provider lazily. Session lifecycle and focus do not require an inference request. No credentials were copied, no login was attempted, no model request was sent, and no sessions were created in the user's daemon. This validates the real SDK/session boundary for folder behavior, not provider inference, live-user sidebar latency, or Wayland-specific behavior.
+
+The integrated UI suite run during initial styling verification reported **296 passed, 3 failed, 6 ignored**. Those failures also occurred before the styling work: `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`. The suite is not claimed to be green.
