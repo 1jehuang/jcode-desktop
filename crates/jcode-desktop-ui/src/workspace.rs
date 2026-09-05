@@ -24,7 +24,7 @@ use crate::performance::{
     ActionCapture, GpuiSnapshot as GpuiPerformanceSnapshot, Health as PerformanceHealth,
     Profile as PerformanceProfile,
 };
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
 
@@ -56,6 +56,7 @@ actions!(
         ToggleHints,
         ToggleShowcase,
         ToggleSidebar,
+        CycleTheme,
         NewHelpSession,
         CycleWidth,
         MaximizeWidth,
@@ -107,6 +108,7 @@ The jcode-desktop shortcuts are:
 - Super+O: open the overview
 - Super+/ or F1: toggle the hints overlay
 - Super+Shift+S: toggle showcase mode for on-screen workspace motions
+- Super+Shift+T: cycle the desktop theme
 - Super+Shift+/: open this documentation-aware help session
 
 Composer shortcuts ported from the TUI:
@@ -480,6 +482,7 @@ pub struct Workspace {
     gpui_performance: GpuiPerformanceSnapshot,
     action_capture: Option<ActionCapture>,
     animation_tick_task: Option<gpui::Task<()>>,
+    theme_picker: bool,
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _performance_task: gpui::Task<()>,
@@ -643,6 +646,7 @@ impl Workspace {
             gpui_performance: GpuiPerformanceSnapshot::default(),
             action_capture: ActionCapture::from_env(),
             animation_tick_task: None,
+            theme_picker: false,
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _performance_task: performance_task,
@@ -738,6 +742,7 @@ impl Workspace {
             gpui_performance: GpuiPerformanceSnapshot::default(),
             action_capture: None,
             animation_tick_task: None,
+            theme_picker: false,
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _performance_task: cx.spawn(async move |_, _| {}),
@@ -2420,6 +2425,24 @@ impl Workspace {
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         self.show_sidebar = !self.show_sidebar;
         cx.notify();
+    }
+
+    fn select_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
+        if preset == Theme::active_preset() {
+            self.theme_picker = false;
+            cx.notify();
+            return;
+        }
+        Theme::select(preset);
+        self.theme_picker = false;
+        if let Err(error) = crate::config::persist_theme(preset.id()) {
+            eprintln!("failed to persist desktop theme: {error}");
+        }
+        cx.notify();
+    }
+
+    fn cycle_theme(&mut self, _: &CycleTheme, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_theme(Theme::active_preset().next(), cx);
     }
 
     fn new_help_session(&mut self, _: &NewHelpSession, _: &mut Window, cx: &mut Context<Self>) {
@@ -4391,6 +4414,73 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn render_theme_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let active = Theme::active_preset();
+        let button = div()
+            .id("theme-picker-button")
+            .debug_selector(|| "theme-picker-button".into())
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .cursor_pointer()
+            .bg(Theme::global().HEADER_BG)
+            .text_color(Theme::global().TEXT_DIM)
+            .hover(|el| {
+                el.text_color(Theme::global().TEXT)
+                    .bg(Theme::global().TOOL_BG)
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.theme_picker = !this.theme_picker;
+                    cx.notify();
+                }),
+            )
+            .child(format!("Theme · {}", active.label()));
+        let mut picker = div()
+            .absolute()
+            .top(px(10.0))
+            .right(px(12.0))
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap_1()
+            .child(button);
+        if self.theme_picker {
+            let mut menu = div()
+                .w(px(176.0))
+                .p_1()
+                .rounded_md()
+                .border_1()
+                .border_color(Theme::global().PANEL_BORDER)
+                .bg(Theme::global().PANEL_BG);
+            for (index, preset) in ThemePreset::ALL.into_iter().enumerate() {
+                menu = menu.child(
+                    div()
+                        .id(("theme-preset", index))
+                        .px_3()
+                        .py_2()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_color(if preset == active {
+                            Theme::global().ACCENT
+                        } else {
+                            Theme::global().TEXT
+                        })
+                        .when(preset == active, |el| el.bg(Theme::global().ACCENT_DIM))
+                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| this.select_theme(preset, cx)),
+                        )
+                        .child(preset.label()),
+                );
+            }
+            picker = picker.child(menu);
+        }
+        picker.into_any_element()
+    }
+
     /// The minimap: a rounded card in the top right that draws every strip to
     /// scale. Panels are proportional rectangles, the focused panel is lit, a
     /// lens shows where the camera is looking, clicking a panel jumps to it,
@@ -5740,7 +5830,11 @@ impl Render for Workspace {
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
             || self.row_progress.is_animating()
+            || Theme::is_transitioning()
         {
+            if Theme::is_transitioning() {
+                cx.refresh_windows();
+            }
             window.request_animation_frame();
         }
 
@@ -5862,13 +5956,7 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_row()
-            // A slight warm lift across the black canvas suggests matte paper
-            // while preserving every workspace interaction above it.
-            .bg(gpui::linear_gradient(
-                138.0,
-                gpui::linear_color_stop(gpui::rgb(0x080808), 0.0),
-                gpui::linear_color_stop(gpui::rgb(0x141311), 1.0),
-            ))
+            .bg(Theme::global().BG)
             .font_family(Theme::global().FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
@@ -5902,6 +5990,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_hints))
             .on_action(cx.listener(Self::toggle_showcase))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
@@ -5921,6 +6010,7 @@ impl Render for Workspace {
                     .pt(px(content_top_inset))
                     .child(content)
                     .child(self.render_workspace_bar(cx))
+                    .child(self.render_theme_picker(cx))
                     .when(
                         self.show_minimap && !self.slots.is_empty() && overview_progress <= 0.0,
                         |el| el.child(self.render_minimap(viewport_w, viewport_h, cx)),
