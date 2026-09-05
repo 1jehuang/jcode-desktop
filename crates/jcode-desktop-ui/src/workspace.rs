@@ -714,7 +714,8 @@ impl Workspace {
         } else if harness::screenshot_mode() {
             let session = jcode_sdk::SessionInfo {
                 session_id: "screenshot-fixture".into(),
-                title: Some("Review markdown rendering".into()),
+                // Keep this longer than the sidebar to exercise single-line ellipsis.
+                title: Some("Review markdown rendering with a very long session title".into()),
                 working_dir: Some("/workspace/example".into()),
                 status: "idle".into(),
                 transcript_bytes: None,
