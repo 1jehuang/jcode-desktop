@@ -349,6 +349,8 @@ enum FocusSnapshot {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WorkspaceSnapshot {
     format_version: u32,
+    #[serde(default)]
+    recent_accounts: Vec<String>,
     slots: Vec<SlotSnapshot>,
     active: usize,
     active_row: usize,
@@ -445,6 +447,9 @@ pub struct Workspace {
     sessions: Vec<jcode_sdk::SessionInfo>,
     /// Configured logins and API keys, refreshed in the background.
     accounts: Vec<accounts::Account>,
+    recent_accounts: Vec<String>,
+    accounts_scroll: ScrollHandle,
+    accounts_layout_pending: bool,
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
@@ -527,6 +532,7 @@ impl Workspace {
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     if workspace.accounts != accounts {
                         workspace.accounts = accounts;
+                        workspace.accounts_layout_pending = true;
                         cx.notify();
                     }
                 });
@@ -609,6 +615,9 @@ impl Workspace {
             pending_help_session: false,
             sessions: Vec::new(),
             accounts: Vec::new(),
+            recent_accounts: Vec::new(),
+            accounts_scroll: ScrollHandle::new(),
+            accounts_layout_pending: true,
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle(),
@@ -693,6 +702,9 @@ impl Workspace {
             pending_help_session: false,
             sessions: Vec::new(),
             accounts: Vec::new(),
+            recent_accounts: Vec::new(),
+            accounts_scroll: ScrollHandle::new(),
+            accounts_layout_pending: true,
             status: "test".into(),
             connected: true,
             focus_handle: cx.focus_handle(),
@@ -743,6 +755,7 @@ impl Workspace {
             .map(|search| search.read(cx).snapshot());
         Ok(WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            recent_accounts: self.recent_accounts.clone(),
             slots: self
                 .slots
                 .iter()
@@ -769,6 +782,7 @@ impl Workspace {
     }
 
     fn apply_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
+        self.recent_accounts = snapshot.recent_accounts;
         self.slots.clear();
         for saved in snapshot.slots {
             let panel_state = saved.panel;
@@ -1154,6 +1168,15 @@ impl Workspace {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| panel.apply(&event, cx));
+                        if matches!(event, jcode_sdk::ApiEvent::TurnDone { .. }) {
+                            let panel = slot.panel.read(cx);
+                            if let Some(provider) = panel.provider.as_deref() {
+                                accounts::record_use(
+                                    &mut self.recent_accounts,
+                                    accounts::credential_id(provider, panel.auth_method.as_deref()),
+                                );
+                            }
+                        }
                         break;
                     }
                 }
@@ -3756,7 +3779,7 @@ impl Workspace {
                         "sidebar-scrollbar",
                     )),
             )
-            .when_some(self.render_accounts(), |el, accounts| el.child(accounts))
+            .when_some(self.render_accounts(cx), |el, accounts| el.child(accounts))
             .into_any_element()
     }
 
@@ -3877,12 +3900,13 @@ impl Workspace {
 
     /// The connected-accounts strip stays compact by keeping quota details to
     /// one row and avoiding a second line when usage data is unavailable.
-    fn render_accounts(&self) -> Option<gpui::AnyElement> {
+    fn render_accounts(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
         if self.accounts.is_empty() {
             return None;
         }
 
-        let mut section = div()
+        let section = div()
+            .debug_selector(|| "accounts-section".into())
             .flex_none()
             .flex()
             .flex_col()
@@ -3898,7 +3922,26 @@ impl Workspace {
                     .child("accounts"),
             );
 
-        for (index, account) in self.accounts.iter().enumerate() {
+        let active = self.slots.get(self.active).and_then(|slot| {
+            let panel = slot.panel.read(cx);
+            panel
+                .provider
+                .as_deref()
+                .map(|provider| accounts::credential_id(provider, panel.auth_method.as_deref()))
+        });
+        let mut list = div()
+            .id("accounts-list")
+            .debug_selector(|| "accounts-list".into())
+            .max_h(px(132.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.accounts_scroll)
+            .flex()
+            .flex_col();
+        for (index, account) in
+            accounts::ordered(&self.accounts, active.as_deref(), &self.recent_accounts)
+                .into_iter()
+                .enumerate()
+        {
             let available = account.available();
             let ink = if available {
                 Theme::global().TEXT
@@ -4020,8 +4063,9 @@ impl Workspace {
                 details = details.child(limits);
             }
 
-            section = section.child(
+            list = list.child(
                 div()
+                    .flex_none()
                     .id(("account", index))
                     .debug_selector(|| format!("account-{}", account.id))
                     .mx_2()
@@ -4048,7 +4092,20 @@ impl Workspace {
             );
         }
 
-        Some(section.into_any_element())
+        Some(
+            section
+                .child(
+                    div()
+                        .relative()
+                        .pr(px(crate::scrollbar::GUTTER))
+                        .child(list)
+                        .child(crate::scrollbar::vertical_with_track(
+                            &self.accounts_scroll,
+                            "accounts-scrollbar",
+                        )),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Compact workspace switcher modeled after the user's Waybar module.
@@ -5439,6 +5496,15 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.accounts_layout_pending && !self.accounts.is_empty() {
+            self.accounts_layout_pending = false;
+            // Overlay geometry becomes available after layout. Request just one
+            // follow-up frame per account snapshot, not a scrollbar polling loop.
+            let workspace = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = workspace.update(cx, |_, cx| cx.notify());
+            });
+        }
         let render_started = Instant::now();
         self.dump_state();
         if self.focus_pending && !self.slots.is_empty() {
@@ -6558,6 +6624,7 @@ mod tests {
         };
         let snapshot = WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            recent_accounts: Vec::new(),
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
                     session_id: "terminal".into(),
@@ -6696,6 +6763,7 @@ mod tests {
             workspace.apply_snapshot(
                 WorkspaceSnapshot {
                     format_version: SNAPSHOT_FORMAT_VERSION,
+                    recent_accounts: Vec::new(),
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             session_id: "session_fox_1234567890000_deadbeef".into(),
@@ -7319,6 +7387,75 @@ mod tests {
             assert_eq!(
                 active, "session_owl_1234567890_deadbeef",
                 "clicking the row must activate the session it displays"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn accounts_scroll_independently_and_prioritize_active(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("active", cx);
+            workspace.slots[0].panel.update(cx, |panel, _| {
+                panel.provider = Some("provider-9".into());
+            });
+            workspace.accounts = (0..12)
+                .map(|index| accounts::Account {
+                    id: format!("provider-{index}"),
+                    display_name: format!("Provider {index}"),
+                    status: "available".into(),
+                    auth_kind: "OAuth".into(),
+                    method: "OAuth".into(),
+                    limits: Vec::new(),
+                })
+                .collect();
+            workspace.recent_accounts = vec!["provider-7".into(), "provider-4".into()];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        let list = vcx.debug_bounds("accounts-list").unwrap();
+        assert!(list.size.height <= px(132.0));
+        assert!(vcx.debug_bounds("accounts-section").unwrap().size.height <= px(160.0));
+        assert!(
+            vcx.debug_bounds("account-provider-9").unwrap().top()
+                < vcx.debug_bounds("account-provider-7").unwrap().top()
+        );
+        assert!(
+            vcx.debug_bounds("account-provider-7").unwrap().top()
+                < vcx.debug_bounds("account-provider-4").unwrap().top()
+        );
+        let scrollbar = vcx
+            .debug_bounds("accounts-scrollbar")
+            .expect("overflow needs a scrollbar");
+        assert!(list.right() + px(4.0) <= scrollbar.left());
+        let sidebar_before = workspace.read_with(vcx, |w, _| w.sidebar_scroll.offset());
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: list.center(),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -4.0)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            assert!(w.accounts_scroll.offset().y < px(0.0));
+            assert_eq!(w.sidebar_scroll.offset(), sidebar_before);
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Event {
+                    session_id: "active".into(),
+                    event: jcode_sdk::ApiEvent::TurnDone {
+                        session_id: "active".into(),
+                    },
+                },
+                cx,
+            );
+            assert_eq!(
+                workspace.recent_accounts,
+                ["provider-9", "provider-7", "provider-4"]
             );
         });
     }

@@ -39,6 +39,49 @@ impl Account {
     }
 }
 
+/// Resolve the credential, not the model family (Claude can use OpenRouter).
+pub fn credential_id(provider: &str, auth: Option<&str>) -> String {
+    let api_key = auth == Some("api key");
+    match provider {
+        "anthropic" if api_key => "anthropic-api",
+        "anthropic" | "claude-cli" => "claude",
+        "openai" if api_key => "openai-api",
+        "gemini" if api_key => "gemini-api",
+        other => other,
+    }
+    .to_owned()
+}
+
+/// Bounded MRU, updated only on completed turns, never on tokens or quota polls.
+pub fn record_use(recent: &mut Vec<String>, id: String) {
+    if recent.first() == Some(&id) {
+        return;
+    }
+    recent.retain(|previous| previous != &id);
+    recent.insert(0, id);
+    recent.truncate(3);
+}
+
+pub fn ordered<'a>(
+    accounts: &'a [Account],
+    active: Option<&str>,
+    recent: &[String],
+) -> Vec<&'a Account> {
+    let mut rows: Vec<_> = accounts.iter().collect();
+    rows.sort_by_key(|account| {
+        if active == Some(account.id.as_str()) {
+            0
+        } else if let Some(index) = recent.iter().position(|id| id == &account.id) {
+            index + 1
+        } else if account.available() {
+            4
+        } else {
+            5
+        }
+    });
+    rows
+}
+
 /// Background feed of account snapshots. The UI polls `latest()`.
 #[derive(Clone)]
 pub struct Feed {
@@ -62,6 +105,29 @@ impl Feed {
 pub fn spawn() -> Feed {
     let (tx, rx) = channel();
     if crate::harness::screenshot_mode() {
+        let accounts = [
+            ("openai", "OpenAI"),
+            ("claude", "Claude"),
+            ("jcode", "Jcode"),
+            ("gemini", "Gemini"),
+            ("openrouter", "OpenRouter"),
+            ("copilot", "Copilot"),
+        ]
+        .into_iter()
+        .map(|(id, name)| Account {
+            id: id.into(),
+            display_name: name.into(),
+            status: "available".into(),
+            auth_kind: "OAuth".into(),
+            method: "Offline fixture".into(),
+            limits: vec![UsageLimit {
+                name: "5 hour".into(),
+                usage_percent: 25.0,
+                reset_in: Some("2h".into()),
+            }],
+        })
+        .collect();
+        let _ = tx.send(accounts);
         return Feed {
             updates: Arc::new(Mutex::new(rx)),
         };
@@ -244,6 +310,62 @@ pub fn lettermark(display_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_accounts_are_bounded_unique_and_stable() {
+        let mut recent = Vec::new();
+        for id in [
+            "claude",
+            "openai",
+            "gemini",
+            "openrouter",
+            "gemini",
+            "gemini",
+        ] {
+            record_use(&mut recent, id.into());
+        }
+        assert_eq!(recent, ["gemini", "openrouter", "openai"]);
+    }
+
+    #[test]
+    fn credential_identity_distinguishes_oauth_from_api_keys() {
+        assert_eq!(credential_id("anthropic", Some("oauth")), "claude");
+        assert_eq!(credential_id("anthropic", Some("api key")), "anthropic-api");
+        assert_eq!(credential_id("openai", Some("api key")), "openai-api");
+        assert_eq!(credential_id("openai", Some("oauth")), "openai");
+        assert_eq!(credential_id("openrouter", None), "openrouter");
+    }
+
+    #[test]
+    fn active_then_recent_then_available_and_expired() {
+        let rows: Vec<_> = ["other", "expired", "recent", "active", "other2"]
+            .into_iter()
+            .map(|id| Account {
+                id: id.into(),
+                display_name: id.into(),
+                status: if id == "expired" {
+                    "expired"
+                } else {
+                    "available"
+                }
+                .into(),
+                auth_kind: String::new(),
+                method: String::new(),
+                limits: Vec::new(),
+            })
+            .collect();
+        let recent = vec!["recent".into(), "active".into()];
+        let ids: Vec<_> = ordered(&rows, Some("active"), &recent)
+            .into_iter()
+            .map(|a| a.id.as_str())
+            .collect();
+        assert_eq!(ids, ["active", "recent", "other", "other2", "expired"]);
+        let ids: Vec<_> = ordered(&rows, Some("unknown"), &[])
+            .into_iter()
+            .map(|a| a.id.as_str())
+            .collect();
+        assert_eq!(ids, ["other", "recent", "active", "other2", "expired"]);
+    }
 
     const SAMPLE: &str = r#"{
         "any_available": true,
