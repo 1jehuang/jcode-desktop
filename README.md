@@ -7,6 +7,9 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 ## Configuration
 
 The sidebar's **Theme** tab selects a palette and saves it automatically.
+Choose from Warm neutral, Warm studio, Neutral dark, Neutral light, Midnight
+(ink blue), Ocean (teal), Forest (sage), Plum (mauve), Rose dawn (blush paper),
+and Parchment (cream and sepia). Code, input, and status colors follow the palette.
 The separate **Settings** tab toggles the workspace minimap and pressed-shortcut
 display for the current window. Scroll the sidebar tab strip to reach more tabs.
 Theme cycling also remains available with Super+Shift+T (Cmd+Shift+T on macOS).

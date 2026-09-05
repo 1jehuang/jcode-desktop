@@ -11119,13 +11119,26 @@ mod tests {
         click_sidebar_navigation(vcx, "sidebar-theme-tab");
         assert!(vcx.debug_bounds("theme-settings").is_some());
         assert!(vcx.debug_bounds("sidebar-session-list").is_none());
-        for selector in [
+        let selectors = [
             "theme-preset-0",
             "theme-preset-1",
             "theme-preset-2",
             "theme-preset-3",
-        ] {
-            assert!(vcx.debug_bounds(selector).is_some());
+            "theme-preset-4",
+            "theme-preset-5",
+            "theme-preset-6",
+            "theme-preset-7",
+            "theme-preset-8",
+            "theme-preset-9",
+        ];
+        assert_eq!(selectors.len(), ThemePreset::ALL.len());
+        for (selector, preset) in selectors.into_iter().zip(ThemePreset::ALL) {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .expect("every preset has a picker row");
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(Theme::active_preset(), preset);
         }
         let light = vcx
             .debug_bounds("theme-preset-3")
@@ -11140,7 +11153,7 @@ mod tests {
         // action must bubble out of that focused composer rather than typing.
         vcx.simulate_keystrokes("super-shift-t");
         vcx.run_until_parked();
-        assert_eq!(Theme::active_preset(), ThemePreset::WarmNeutral);
+        assert_eq!(Theme::active_preset(), ThemePreset::NeutralLight.next());
         Theme::select(original);
     }
 

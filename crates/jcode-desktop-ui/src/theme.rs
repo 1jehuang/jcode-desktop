@@ -1,5 +1,7 @@
 //! Runtime-configurable semantic theme for Jcode Desktop.
 
+mod palettes;
+
 use gpui::{Hsla, Rgba, rgb, rgba};
 use std::sync::{
     Mutex, OnceLock,
@@ -242,14 +244,26 @@ pub enum ThemePreset {
     WarmStudio,
     NeutralDark,
     NeutralLight,
+    Midnight,
+    Ocean,
+    Forest,
+    Plum,
+    RoseDawn,
+    Parchment,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 10] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
         Self::NeutralLight,
+        Self::Midnight,
+        Self::Ocean,
+        Self::Forest,
+        Self::Plum,
+        Self::RoseDawn,
+        Self::Parchment,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -257,6 +271,12 @@ impl ThemePreset {
             Self::WarmStudio => "warm-studio",
             Self::NeutralDark => "neutral-dark",
             Self::NeutralLight => "neutral-light",
+            Self::Midnight => "midnight",
+            Self::Ocean => "ocean",
+            Self::Forest => "forest",
+            Self::Plum => "plum",
+            Self::RoseDawn => "rose-dawn",
+            Self::Parchment => "parchment",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -265,6 +285,12 @@ impl ThemePreset {
             Self::WarmStudio => "Warm studio",
             Self::NeutralDark => "Neutral dark",
             Self::NeutralLight => "Neutral light",
+            Self::Midnight => "Midnight",
+            Self::Ocean => "Ocean",
+            Self::Forest => "Forest",
+            Self::Plum => "Plum",
+            Self::RoseDawn => "Rose dawn",
+            Self::Parchment => "Parchment",
         }
     }
     const fn index(self) -> usize {
@@ -273,6 +299,12 @@ impl ThemePreset {
             Self::WarmStudio => 1,
             Self::NeutralDark => 2,
             Self::NeutralLight => 3,
+            Self::Midnight => 4,
+            Self::Ocean => 5,
+            Self::Forest => 6,
+            Self::Plum => 7,
+            Self::RoseDawn => 8,
+            Self::Parchment => 9,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -384,8 +416,8 @@ fn interpolate(from: &Theme, to: &Theme, amount: f32) -> Theme {
     result
 }
 
-fn themes() -> &'static [Theme; 4] {
-    static THEMES: OnceLock<[Theme; 4]> = OnceLock::new();
+fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
+    static THEMES: OnceLock<[Theme; ThemePreset::ALL.len()]> = OnceLock::new();
     THEMES.get_or_init(|| {
         let warm = Theme::defaults();
         let mut studio = warm.clone();
@@ -455,6 +487,12 @@ fn themes() -> &'static [Theme; 4] {
             configured(studio),
             configured(dark),
             configured(light),
+            configured(palettes::MIDNIGHT.theme()),
+            configured(palettes::OCEAN.theme()),
+            configured(palettes::FOREST.theme()),
+            configured(palettes::PLUM.theme()),
+            configured(palettes::ROSE_DAWN.theme()),
+            configured(palettes::PARCHMENT.theme()),
         ];
         ACTIVE_THEME.store(
             ThemePreset::from_id(&crate::config::get().appearance.theme).index(),
@@ -539,6 +577,65 @@ mod tests {
             (luminance(b), luminance(a))
         };
         (bright + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn preset_ids_indices_and_cycle_cover_every_palette() {
+        let mut visited = std::collections::HashSet::new();
+        let mut current = ThemePreset::ALL[0];
+        for (index, preset) in ThemePreset::ALL.into_iter().enumerate() {
+            assert_eq!(preset.index(), index);
+            assert_eq!(ThemePreset::from_id(preset.id()), preset);
+            assert_eq!(current, preset);
+            assert!(visited.insert(preset.id()));
+            current = current.next();
+        }
+        assert_eq!(current, ThemePreset::WarmNeutral);
+        assert_eq!(ThemePreset::from_id("unknown"), ThemePreset::WarmNeutral);
+    }
+
+    #[test]
+    fn new_palettes_keep_syntax_and_status_colors_legible() {
+        for preset in &ThemePreset::ALL[4..] {
+            let theme = &themes()[preset.index()];
+            for (background, foregrounds) in [
+                (
+                    theme.CODE_BG,
+                    vec![
+                        theme.CODE_KEYWORD,
+                        theme.CODE_STRING,
+                        theme.CODE_COMMENT,
+                        theme.CODE_NUMBER,
+                        theme.CODE_TYPE,
+                        theme.CODE_PUNCT,
+                    ],
+                ),
+                (
+                    theme.PANEL_BG,
+                    vec![
+                        theme.TEXT_FAINT,
+                        theme.LINK,
+                        theme.ACCENT,
+                        theme.AI_ACCENT,
+                        theme.ERROR,
+                        theme.OK,
+                        theme.WARN,
+                    ],
+                ),
+                (theme.TOOL_BG, vec![theme.TOOL_TEXT]),
+                (theme.HEADER_BG, vec![theme.TEXT_DIM]),
+                (theme.INLINE_CODE_BG, vec![theme.CODE_TEXT]),
+            ] {
+                for foreground in foregrounds {
+                    assert!(
+                        contrast(foreground, background) >= 4.5,
+                        "{} contrast was {} for {foreground:?}",
+                        preset.id(),
+                        contrast(foreground, background)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -43,6 +43,10 @@ def main():
     parser.add_argument("--focus-panel", type=int,
                         help="click this zero-based panel through X11 before capture")
     parser.add_argument("--layout-mode", choices=("normal", "folder_tabs"), default="folder_tabs")
+    parser.add_argument("--theme", default="warm-neutral", choices=(
+        "warm-neutral", "warm-studio", "neutral-dark", "neutral-light",
+        "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
+    ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
     if args.focus_panel is not None and not 0 <= args.focus_panel < args.panels:
         parser.error("focus-panel must identify one of the displayed panels")
@@ -74,7 +78,7 @@ def main():
         root = Path(temporary)
         env = isolated_env(root)
         config = root / "desktop.toml"
-        config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\n')
+        config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n')
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)

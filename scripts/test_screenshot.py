@@ -52,6 +52,9 @@ class ScreenshotArgumentTests(unittest.TestCase):
             with self.subTest(count=count):
                 self.assert_rejected(["--panels", str(count)], "invalid choice")
 
+    def test_unknown_theme_is_rejected_before_launch(self):
+        self.assert_rejected(["--theme", "unknown"], "invalid choice")
+
     def test_focus_must_identify_a_displayed_panel(self):
         for index in (-1, 3):
             with self.subTest(index=index):
