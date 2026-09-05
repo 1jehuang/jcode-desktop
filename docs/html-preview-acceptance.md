@@ -72,3 +72,47 @@ user's current live conversation. Choosing a pairing intentionally does not
 apply settings or send a message. Unsupported-platform and missing-dependency
 error cards, IME, browser accessibility, video and continuous animation are not
 covered by this acceptance run.
+
+## Final whole-result rerun after mapping
+
+All mapped checks were rerun together on 2026-09-05, finishing at 22:46:13 UTC,
+after the requirement mapping and expanded controls tests were committed.
+No mapped suite was skipped, aborted, or terminated. This is the HTML-preview
+acceptance matrix, not a claim that unrelated palette or complete desktop test
+suites passed.
+
+- Explicit completed-fence handling, UTF-8/source-size rejection, position-specific
+  identities, and wide/narrow viewport input scaling all passed again.
+- All Markdown regression cases passed again, including the new opt-in behavior.
+- Browser button/typing color changes, actual frame resizing, blue scroll footer,
+  explicit data-image blue pixels, sandbox denial with zero loopback requests,
+  envelope escaping, and the font sampler all passed again. Sans/serif/mono
+  glyph widths remained 739/710/873 physical pixels.
+- Copy again returned the exact document through the isolated clipboard.
+- Delivered HTML identity was rechecked against the saved assistant answer:
+  the same 3002-byte artifact and SHA-256 above matched.
+- The main desktop instance socket was listening, and its live executable
+  contained the renderer. Observed RSS was 181928 KiB. No extra restart occurred.
+
+Fresh native observations, generated from `target/html-preview-final-matrix*.png`:
+
+| Output/check | Fresh observed value |
+| --- | --- |
+| inline_surface_size | [1117, 420] |
+| choose_status_changed_pixels | 2493 |
+| slider_text_changed_pixels | 17843 |
+| keyboard_text_changed_pixels | 17316 |
+| reset_vs_original_text_changed_pixels | 0 |
+| expanded_height | 700 |
+| collapsed_height | 420 |
+| paused_input_changed_pixels | 0 |
+| retry_text_changed_pixels | 18420 |
+| scroll_text_changed_pixels | 15415 |
+| escape_then_wheel_changed_pixels | 0 |
+| source_view_has_browser_surface | False |
+
+The positive slider/keyboard/scroll changes and zero Reset/Pause/Escape changes
+confirm both the intended interaction and preservation behavior. The generated
+JSON measurements are in `target/html-preview-final-matrix.json`; the live
+identity observations are in `target/html-preview-final-live-identity.json`.
+The limitations in the preceding section remain unchanged.
