@@ -81,3 +81,19 @@ This reproduces approximately 31 Hz construction cadence in the private fixture,
 Release packaging and changes to the live compositor were not exercised: neither is changed by this telemetry patch, and private X11 timing must not be presented as a live Wayland acceptance result. Earlier statements that this work added only a test/report are superseded by this follow-up's opt-in telemetry fix.
 
 Final hot reload: successfully activated UI generation 12 from `target/debug/libjcode_desktop_ui.so` after the final public workflow passed.
+
+## Final whole-result verification
+
+Reran checks on committed telemetry fix `fea4971`:
+
+- Empty-strip/boundary regression: 1/1 passed.
+- Performance histogram/capture tests: 6/6 passed.
+- Loaded 32-panel first frame: passed, p95 3.636 ms in this run.
+- Transcript repaint profiler: passed, p95 3.987 / 4.262 / 5.253 ms for 100 / 1,000 / 10,000 messages.
+- Host integration suite: 13/13 passed, including same-window successful reload, failed-activation rollback, private and stale instance sockets, second-instance forwarding, terminal startup/resizing, and resource survival across generation handoff.
+- Screenshot isolation tests: 2/2 passed.
+- Full UI suite: 282 passed, 6 failed, 5 ignored. The five previously listed failures persisted. `vertical_keys_cover_both_animation_directions` additionally failed because its transient outgoing-animation bounds had disappeared; the fully qualified single-test rerun passed (1/1). This suggests timing sensitivity but does not prove its cause or make the full suite green.
+
+**Observed improvement is limited to diagnostic correctness:** the same ten real key events in the private public-binary workflow produced zero records before the fix, five after the first partial fix, and all ten after the final fix. This is concrete before/after evidence for the changed JSONL output. It is not evidence that the live app became smoother.
+
+**Live smoothness acceptance remains blocked by an uncaptured reproduction.** The active process was sampled without manipulating its window. The user's specific laggy interaction was not identified or captured with action-local live Wayland presentation telemetry. Private Xvfb fixtures cannot replace that acceptance path. No controlled live before/after frame-delivery comparison exists, and the task must not be summarized as a verified fix to perceived lag. Changing the compositor, forcing user interactions, or restarting the user's active session to obtain that comparison was intentionally avoided. Packaging formats were unchanged; a fresh debug executable and the actual running plugin reload were validated, but no release-package certification is claimed.
