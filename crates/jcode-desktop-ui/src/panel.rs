@@ -175,6 +175,7 @@ pub struct Panel {
     streaming_text: String,
     streaming_reasoning: String,
     activity_spinner: Entity<activity::Spinner>,
+    tab_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
@@ -441,6 +442,10 @@ async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<Gmai
 }
 
 impl Panel {
+    pub(crate) fn tab_activity(&self) -> Option<gpui::AnyView> {
+        self.activity_active().then(|| self.tab_spinner.clone().into())
+    }
+
     pub(crate) fn sidebar_runtime_status(&self) -> &str {
         &self.status
     }
@@ -526,6 +531,7 @@ impl Panel {
             },
             streaming_reasoning: String::new(),
             activity_spinner: cx.new(activity::Spinner::new),
+            tab_spinner: cx.new(activity::Spinner::new),
             input,
             focus_handle: cx.focus_handle(),
             transcript_list,
@@ -2575,7 +2581,10 @@ impl Panel {
     fn activity_active(&self) -> bool {
         match self.minimap_state() {
             MinimapSessionState::Streaming => true,
-            MinimapSessionState::Working => self.status != "connected",
+            MinimapSessionState::Working => matches!(
+                self.status.to_ascii_lowercase().as_str(),
+                "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools"
+            ),
             _ => false,
         }
     }
@@ -3449,7 +3458,6 @@ impl Render for Panel {
 
         let show_jump_chip = !self.stick_to_bottom;
         let model_picker = self.model_picker_open.then(|| self.render_model_picker(cx));
-        let session_title = folder_session_title(&self.session_id, self.title.as_ref());
 
         div()
             .flex()
@@ -3458,44 +3466,6 @@ impl Render for Panel {
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            .child({
-                div()
-                    .debug_selector(|| "panel-session-title".into())
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(Theme::global().TEXT_DIM)
-                    .when(active, |el| {
-                        el.bg(active_tint).child(self.activity_spinner.clone())
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(session_title),
-                    )
-                    .when(active, |el| {
-                        el.child(
-                            div()
-                                .debug_selector(|| "panel-activity-label".into())
-                                .flex_none()
-                                .text_size(px(10.0))
-                                .text_color(theme.ACCENT)
-                                .child(status_line.clone()),
-                        )
-                    })
-            })
             .children(pinned_todo.map(|payload| {
                 div()
                     .debug_selector(|| "pinned-todo-card".into())
@@ -3638,7 +3608,13 @@ impl Render for Panel {
                             .items_center()
                             .gap_1p5()
                             .overflow_hidden()
-                            .when(active, |el| el.text_color(theme.ACCENT))
+                            .when(active, |el| {
+                                el.text_color(theme.ACCENT).child(
+                                    div()
+                                        .debug_selector(|| "panel-status-spinner".into())
+                                        .child(self.activity_spinner.clone()),
+                                )
+                            })
                             .child(status_line),
                     ),
             )

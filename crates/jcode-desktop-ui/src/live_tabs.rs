@@ -1,6 +1,6 @@
 //! Labeled live-session folder tabs, independent of the sidebar's navigation.
 use super::*;
-use crate::panel::{MinimapSessionState, folder_session_title};
+use crate::panel::folder_session_title;
 
 // Share the available row equally, including gaps. Never impose a minimum
 // width that would push another live session off-screen.
@@ -90,13 +90,7 @@ impl Workspace {
                 let focused = row == self.active_row && index == self.active;
                 let panel = self.slots[index].panel.read(cx);
                 let title = folder_session_title(&panel.session_id, panel.title.as_ref());
-                let (state, color) = match panel.minimap_state() {
-                    MinimapSessionState::Idle => ("idle", Theme::global().TEXT_FAINT),
-                    MinimapSessionState::Working => ("working", Theme::global().WARN),
-                    MinimapSessionState::Streaming => ("streaming", Theme::global().ACCENT),
-                    MinimapSessionState::Complete => ("complete", Theme::global().OK),
-                    MinimapSessionState::Error => ("error", Theme::global().ERROR),
-                };
+                let activity = (width >= 32.0).then(|| panel.tab_activity()).flatten();
                 tabs = tabs.child(
                     div()
                         .id(("workspace-session", index))
@@ -159,20 +153,19 @@ impl Workspace {
                                 )
                             },
                         )
-                        .when(width >= 32.0, |el| {
+                        .when_some(activity, |el, spinner| {
                             el.child(
                                 div()
                                     .debug_selector(move || {
-                                        format!("live-session-tab-{index}-{state}")
+                                        format!("live-session-tab-{index}-spinner")
                                     })
                                     .flex_none()
-                                    .size(px(5.0))
-                                    .rounded_full()
-                                    .bg(color),
+                                    .child(spinner),
                             )
                         })
                         .child(
                             div()
+                                .debug_selector(move || format!("live-session-tab-{index}-title"))
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
@@ -203,6 +196,67 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn live_tabs_show_only_a_working_spinner(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.show_sidebar = false;
+            workspace.push_test_panel("activity-tab", cx);
+            workspace.push_test_panel("quiet-tab", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let idle_title_left = vcx.debug_bounds("live-session-tab-0-title").unwrap().left();
+        for (status, active) in [
+            ("running", true),
+            ("thinking", true),
+            ("generating", true),
+            ("streaming", true),
+            ("running_tools", true),
+            ("busy", true),
+            ("idle", false),
+            ("attached", false),
+            ("connected", false),
+            ("lost: disconnected", false),
+            ("error", false),
+            ("crashed", false),
+        ] {
+            workspace.update(vcx, |workspace, cx| {
+                workspace.apply(
+                    Update::Event {
+                        session_id: "activity-tab".into(),
+                        event: jcode_sdk::ApiEvent::SessionStatus {
+                            session_id: "activity-tab".into(),
+                            status: status.into(),
+                        },
+                    },
+                    cx,
+                );
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert_eq!(
+                vcx.debug_bounds("live-session-tab-0-spinner").is_some(),
+                active,
+                "status {status}",
+            );
+            assert!(vcx.debug_bounds("live-session-tab-1-spinner").is_none());
+            assert!(vcx.debug_bounds("panel-session-title").is_none());
+            assert!(vcx.debug_bounds("panel-activity-label").is_none());
+            let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
+            if active {
+                let spinner = vcx.debug_bounds("live-session-tab-0-spinner").unwrap();
+                assert!(spinner.right() <= title.left());
+                assert!(title.left() > idle_title_left);
+            } else {
+                assert_eq!(
+                    title.left(), idle_title_left,
+                    "idle tabs reserve no icon space"
+                );
+            }
+        }
+    }
 
     #[test]
     fn live_tabs_sizing_always_fits_without_a_minimum_width() {

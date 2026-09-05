@@ -153,7 +153,12 @@ mod tests {
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("panel-activity-spinner").is_some());
-            assert!(vcx.debug_bounds("panel-activity-label").is_some());
+            assert!(vcx.debug_bounds("panel-session-title").is_none());
+            assert!(vcx.debug_bounds("panel-activity-label").is_none());
+            let spinner = vcx.debug_bounds("panel-status-spinner").unwrap();
+            let footer = vcx.debug_bounds("panel-status").unwrap();
+            assert!(spinner.top() >= footer.top());
+            assert!(spinner.bottom() <= footer.bottom());
         }
         panel.update(vcx, |panel, cx| {
             panel.apply(
@@ -184,9 +189,12 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("panel-activity-spinner").is_none());
+        assert!(vcx.debug_bounds("panel-status-spinner").is_none());
         assert!(vcx.debug_bounds("panel-activity-label").is_none());
         panel.update(vcx, |panel, _| {
-            for status in ["connected", "error", "crashed"] {
+            for status in [
+                "attached", "connected", "connecting", "lost: disconnected", "error", "crashed",
+            ] {
                 panel.status = status.into();
                 assert!(!panel.activity_active(), "{status} should not animate");
             }
