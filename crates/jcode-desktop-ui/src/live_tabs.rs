@@ -125,6 +125,7 @@ impl Workspace {
                         .when(populated_rows > 1 && row_position == 0, |el| {
                             el.child(
                                 div()
+                                    .debug_selector(move || format!("live-session-row-label-{row}"))
                                     .text_size(px(10.0))
                                     .text_color(Theme::global().TEXT_FAINT)
                                     .child(format!("{}", row + 1)),
@@ -187,6 +188,8 @@ mod tests {
         assert_eq!(first.size.height - other.size.height, px(4.0));
         assert_eq!(first.bottom(), vcx.debug_bounds("panel-0").unwrap().top());
         assert!(vcx.debug_bounds("workspace-bar").is_none());
+        assert!(vcx.debug_bounds("live-session-row-label-0").is_some());
+        assert!(vcx.debug_bounds("live-session-row-label-1").is_some());
         vcx.simulate_click(other.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, _| {
