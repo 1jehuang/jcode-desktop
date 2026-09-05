@@ -238,11 +238,20 @@ def main():
                 subprocess.run(['import', '-window', 'root',
                                 str(root / f'compact-tabs-before-g{generation}.png')],
                                env=env, check=True, timeout=15)
-                # Public native hit-testing, not fixture data or injected app
-                # actions. Twelve targets share the 512px row between the
-                # sidebar/gutter and right margin. No wheel events are sent.
-                for position in [*range(panel_count), 0]:
-                    x = round(276 + (position + .5) * 512 / panel_count)
+                # Click the exposed edge on the appropriate side of the
+                # expanded selection. Native hit-testing must not reach a tab
+                # hidden underneath another folder.
+                active_width = 208.0
+                step = (512.0 - active_width) / (panel_count - 1)
+                positions = [*range(panel_count), *range(panel_count - 2, -1, -1), panel_count - 1, panel_count // 2, 0]
+                for position in positions:
+                    current = navigation_state(state_path)['focused_slot']
+                    if position < current:
+                        x = round(276 + (position + .5) * step)
+                    elif position > current:
+                        x = round(276 + active_width + (position - .5) * step)
+                    else:
+                        x = round(276 + position * step + active_width / 2)
                     subprocess.run(['xdotool', 'mousemove', str(x), '40'],
                                    env=env, check=True, timeout=10)
                     time.sleep(.1)

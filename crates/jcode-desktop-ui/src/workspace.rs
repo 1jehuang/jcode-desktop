@@ -513,6 +513,7 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_navigation_scroll: ScrollHandle,
+    live_tabs: live_tabs::TabMotion,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
@@ -689,6 +690,7 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
+            live_tabs: live_tabs::TabMotion::default(),
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -828,6 +830,7 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
+            live_tabs: live_tabs::TabMotion::default(),
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -2748,6 +2751,7 @@ impl Workspace {
 
     fn animation_active(&self) -> bool {
         self.row_progress.is_animating()
+            || self.live_tabs.is_animating()
             || self.overview_progress.is_animating()
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
