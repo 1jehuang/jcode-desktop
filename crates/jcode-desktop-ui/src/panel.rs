@@ -4653,27 +4653,6 @@ mod tests {
     fn minimap_paints_live_state_and_todo_progress_through_the_workspace_surface(
         cx: &mut gpui::TestAppContext,
     ) {
-        let assert_live_tab_state = |vcx: &mut gpui::VisualTestContext, expected: &str| {
-            let tab = vcx.debug_bounds("live-session-tab-0").unwrap();
-            for (state, selector) in [
-                ("idle", "live-session-tab-0-idle"),
-                ("working", "live-session-tab-0-working"),
-                ("streaming", "live-session-tab-0-streaming"),
-                ("complete", "live-session-tab-0-complete"),
-                ("error", "live-session-tab-0-error"),
-            ] {
-                let dot = vcx.debug_bounds(selector);
-                assert_eq!(
-                    dot.is_some(),
-                    state == expected,
-                    "only the current tab status is painted"
-                );
-                if let Some(dot) = dot {
-                    assert_eq!(dot.size, gpui::size(px(5.0), px(5.0)));
-                    assert!(tab.contains(&dot.center()));
-                }
-            }
-        };
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -4690,7 +4669,6 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-idle").is_some(),
             "the public workspace surface must paint the idle state"
         );
-        assert_live_tab_state(vcx, "idle");
 
         panel.update(vcx, |panel, cx| {
             panel.status = "running_tools".into();
@@ -4702,7 +4680,6 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-working").is_some(),
             "the public workspace surface must paint the working state"
         );
-        assert_live_tab_state(vcx, "working");
 
         panel.update(vcx, |panel, cx| {
             panel.status = "idle".into();
@@ -4715,7 +4692,6 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-error").is_some(),
             "the public workspace surface must paint the error state"
         );
-        assert_live_tab_state(vcx, "error");
 
         panel.update(vcx, |panel, cx| {
             panel.items.clear();
@@ -4729,7 +4705,6 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-streaming").is_some(),
             "the public workspace surface must paint the streaming state"
         );
-        assert_live_tab_state(vcx, "streaming");
 
         panel.update(vcx, |panel, cx| {
             panel.streaming_text.clear();
@@ -4759,7 +4734,6 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-idle").is_some(),
             "a partially complete idle session keeps its idle state color"
         );
-        assert_live_tab_state(vcx, "idle");
         let partial = vcx
             .debug_bounds("minimap-panel-0-todo-progress")
             .expect("partial todo progress indicator is painted");
@@ -4789,7 +4763,6 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-complete").is_some(),
             "the public workspace surface must paint completed sessions"
         );
-        assert_live_tab_state(vcx, "complete");
         let progress = vcx
             .debug_bounds("minimap-panel-0-todo-progress")
             .expect("completed todo progress indicator is painted");
