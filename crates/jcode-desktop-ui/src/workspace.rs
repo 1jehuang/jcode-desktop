@@ -119,6 +119,8 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
+const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
+const ACCOUNT_VISIBLE_ROWS: usize = 3;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
@@ -451,6 +453,7 @@ pub struct Workspace {
     accounts: Vec<accounts::Account>,
     recent_accounts: Vec<String>,
     accounts_scroll: ScrollHandle,
+    accounts_scroll_remainder: f32,
     accounts_layout_pending: bool,
     status: String,
     connected: bool,
@@ -621,6 +624,7 @@ impl Workspace {
             accounts: Vec::new(),
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
+            accounts_scroll_remainder: 0.0,
             accounts_layout_pending: true,
             status: "starting...".into(),
             connected: false,
@@ -715,6 +719,7 @@ impl Workspace {
             accounts: Vec::new(),
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
+            accounts_scroll_remainder: 0.0,
             accounts_layout_pending: true,
             status: "test".into(),
             connected: true,
@@ -4047,9 +4052,9 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The connected-accounts strip stays compact by keeping quota details to
-    /// one row and avoiding a second line when usage data is unavailable.
-    fn render_accounts(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
+    /// Fixed-height account rows keep both viewport edges on row boundaries,
+    /// regardless of which credentials provide quota details.
+    fn render_accounts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.accounts.is_empty() {
             return None;
         }
@@ -4081,9 +4086,29 @@ impl Workspace {
         let mut list = div()
             .id("accounts-list")
             .debug_selector(|| "accounts-list".into())
-            .max_h(px(132.0))
-            .overflow_y_scroll()
+            .h(px(
+                ACCOUNT_ROW_HEIGHT * self.accounts.len().min(ACCOUNT_VISIBLE_ROWS) as f32
+            ))
+            .overflow_hidden()
             .track_scroll(&self.accounts_scroll)
+            .on_scroll_wheel(
+                cx.listener(|this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    let max = f32::from(this.accounts_scroll.max_offset().y).max(0.0);
+                    let dy = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                    this.accounts_scroll_remainder += dy;
+                    let rows = (this.accounts_scroll_remainder / ACCOUNT_ROW_HEIGHT).trunc();
+                    if rows != 0.0 {
+                        this.accounts_scroll_remainder -= rows * ACCOUNT_ROW_HEIGHT;
+                        let old = f32::from(this.accounts_scroll.offset().y);
+                        let next = (old + rows * ACCOUNT_ROW_HEIGHT).clamp(-max, 0.0);
+                        this.accounts_scroll
+                            .set_offset(gpui::point(px(0.0), px(next)));
+                        cx.notify();
+                    }
+                    // Keep native pixel scrolling from stopping halfway through a row.
+                    cx.stop_propagation();
+                }),
+            )
             .flex()
             .flex_col();
         for (index, account) in
@@ -4123,6 +4148,8 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
+                    .h(px(16.0))
+                    .line_height(px(16.0))
                     .gap_2()
                     .child(
                         div()
@@ -4180,6 +4207,8 @@ impl Workspace {
                                 .child(
                                     div()
                                         .overflow_hidden()
+                                        .h(px(12.0))
+                                        .line_height(px(12.0))
                                         .text_size(px(8.0))
                                         .text_color(Theme::global().TEXT_DIM)
                                         .child(label),
@@ -4219,7 +4248,9 @@ impl Workspace {
                     .debug_selector(|| format!("account-{}", account.id))
                     .mx_2()
                     .px_2()
+                    .h(px(ACCOUNT_ROW_HEIGHT))
                     .py_1()
+                    .overflow_hidden()
                     .rounded_md()
                     .flex()
                     .items_center()
@@ -7605,6 +7636,71 @@ mod tests {
                 "clicking the row must activate the session it displays"
             );
         });
+    }
+
+    #[gpui::test]
+    fn accounts_keep_whole_rows_with_mixed_quota_details(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        for count in [1, 2, 3, 4, 7, 12] {
+            workspace.update(vcx, |w, cx| {
+                w.accounts_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+                w.accounts_scroll_remainder = 0.0;
+                w.set_test_accounts(
+                    (0..count)
+                        .map(|index| accounts::Account {
+                            id: format!("mixed-{index}"),
+                            display_name: format!("Account {index}"),
+                            status: "available".into(),
+                            auth_kind: "OAuth".into(),
+                            method: "OAuth".into(),
+                            limits: if index % 2 == 0 {
+                                vec![accounts::UsageLimit {
+                                    name: "credits".into(),
+                                    usage_percent: 25.0,
+                                    reset_in: Some("2h".into()),
+                                }]
+                            } else {
+                                Vec::new()
+                            },
+                        })
+                        .collect(),
+                );
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            for delta in [0.0, -17.0, -31.0, -10000.0, 10000.0] {
+                let list = vcx.debug_bounds("accounts-list").unwrap();
+                vcx.simulate_event(gpui::ScrollWheelEvent {
+                    position: list.center(),
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(delta))),
+                    modifiers: gpui::Modifiers::default(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                });
+                vcx.run_until_parked();
+                let list = vcx.debug_bounds("accounts-list").unwrap();
+                assert_eq!(
+                    list.size.height,
+                    px(ACCOUNT_ROW_HEIGHT * count.min(ACCOUNT_VISIBLE_ROWS) as f32)
+                );
+                let offset =
+                    workspace.read_with(vcx, |w, _| f32::from(w.accounts_scroll.offset().y));
+                assert_eq!(offset % ACCOUNT_ROW_HEIGHT, 0.0);
+                let mut visible = 0;
+                for index in 0..count {
+                    let row = vcx.debug_bounds(Box::leak(format!("account-mixed-{index}").into_boxed_str())).unwrap();
+                    assert_eq!(row.size.height, px(ACCOUNT_ROW_HEIGHT));
+                    if row.bottom() > list.top() && row.top() < list.bottom() {
+                        assert!(
+                            row.top() >= list.top() && row.bottom() <= list.bottom(),
+                            "account {index} clipped with {count} accounts"
+                        );
+                        visible += 1;
+                    }
+                }
+                assert_eq!(visible, count.min(ACCOUNT_VISIBLE_ROWS));
+            }
+        }
     }
 
     #[gpui::test]

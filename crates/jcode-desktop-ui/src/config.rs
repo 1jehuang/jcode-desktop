@@ -14,6 +14,8 @@ pub struct DesktopConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
+    /// Built-in color theme. Unknown names fall back to warm-neutral.
+    pub theme: String,
     /// UI font family. The platform-specific built-in remains the default.
     pub ui_font: Option<String>,
     /// Monospace font used by code and terminal panels.
@@ -54,6 +56,7 @@ impl Default for DesktopConfig {
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
+            theme: "warm-neutral".into(),
             ui_font: None,
             mono_font: None,
             text_scale: 1.0,
@@ -120,6 +123,64 @@ pub fn path() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".jcode/config.toml")
 }
 
+/// Persist one appearance value without reserializing the rest of the shared
+/// Jcode config (and thereby losing its comments or settings unknown to us).
+pub fn persist_theme(theme: &str) -> std::io::Result<()> {
+    let path = path();
+    let standalone = std::env::var_os("JCODE_DESKTOP_CONFIG").is_some();
+    persist_theme_at(&path, standalone, theme)
+}
+
+fn persist_theme_at(path: &std::path::Path, standalone: bool, theme: &str) -> std::io::Result<()> {
+    let section = if standalone {
+        "[appearance]"
+    } else {
+        "[desktop.appearance]"
+    };
+    let mut text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let section_index = lines.iter().position(|line| {
+        line.split('#')
+            .next()
+            .is_some_and(|value| value.trim() == section)
+    });
+    if let Some(start) = section_index {
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| line.trim_start().starts_with('['))
+            .map_or(lines.len(), |offset| start + 1 + offset);
+        if let Some(index) = (start + 1..end).find(|&index| {
+            lines[index]
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "theme")
+        }) {
+            lines[index] = format!("theme = {theme:?}");
+        } else {
+            lines.insert(start + 1, format!("theme = {theme:?}"));
+        }
+    } else {
+        if !text.is_empty() && !text.ends_with('\n') {
+            lines.push(String::new());
+        }
+        lines.push(section.into());
+        lines.push(format!("theme = {theme:?}"));
+    }
+    text = lines.join("\n");
+    text.push('\n');
+    parse(&text, standalone)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("toml.tmp");
+    fs::write(&temporary, text)?;
+    fs::rename(temporary, path)
+}
+
 fn load() -> DesktopConfig {
     let path = path();
     match fs::read_to_string(&path) {
@@ -164,6 +225,7 @@ mod tests {
         let config: DesktopConfig = toml::from_str(
             r##"
             [appearance]
+            theme = "neutral-dark"
             text_scale = 9.0
             [appearance.colors]
             accent = "#ff00aa"
@@ -177,6 +239,7 @@ mod tests {
         .unwrap();
         let config = config.normalize();
         assert_eq!(config.appearance.text_scale, 1.0);
+        assert_eq!(config.appearance.theme, "neutral-dark");
         assert_eq!(config.appearance.colors["accent"], "#ff00aa");
         assert!(!config.workspace.sidebar);
         assert_eq!(config.workspace.session_refresh_seconds, 5);
@@ -196,5 +259,29 @@ mod tests {
         .unwrap();
         assert!(!config.workspace.sidebar);
         assert_eq!(config.appearance.text_scale, 1.0);
+    }
+
+    #[test]
+    fn persisting_theme_preserves_shared_settings_and_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "# keep me\nmodel = \"openai:gpt-5\"\n[desktop.appearance] # ui\ntext_scale = 1.25\n",
+        )
+        .unwrap();
+        persist_theme_at(&path, false, "neutral-light").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("model = \"openai:gpt-5\""));
+        assert!(text.contains("text_scale = 1.25"));
+        assert_eq!(
+            parse(&text, false).unwrap().appearance.theme,
+            "neutral-light"
+        );
+        persist_theme_at(&path, false, "warm-studio").unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert_eq!(text.matches("theme =").count(), 1);
+        assert_eq!(parse(&text, false).unwrap().appearance.theme, "warm-studio");
     }
 }

@@ -1,8 +1,12 @@
 //! Runtime-configurable semantic theme for Jcode Desktop.
 
 use gpui::{Hsla, Rgba, rgb, rgba};
-use std::sync::OnceLock;
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
+#[derive(Clone)]
 #[allow(non_snake_case)]
 pub struct Theme {
     pub BG: Rgba,
@@ -63,24 +67,54 @@ pub struct Theme {
 
 impl Theme {
     pub fn global() -> &'static Self {
-        static THEME: OnceLock<Theme> = OnceLock::new();
-        THEME.get_or_init(|| {
-            let config = crate::config::get();
-            let mut theme = Self::defaults();
-            if let Some(font) = config.appearance.ui_font.as_deref() {
-                theme.FONT_UI = Box::leak(font.to_owned().into_boxed_str());
+        let target = ACTIVE_THEME.load(Ordering::Relaxed);
+        let mut transition = transition_state().lock().unwrap();
+        if let Some((from, started)) = *transition {
+            let progress = started.elapsed().as_secs_f32() / 0.18;
+            if progress < 1.0 {
+                let step = (progress * 16.0).round().clamp(0.0, 16.0) as usize;
+                return &transition_frames()[from][target][step];
             }
-            if let Some(font) = config.appearance.mono_font.as_deref() {
-                theme.FONT_MONO = Box::leak(font.to_owned().into_boxed_str());
+            *transition = None;
+        }
+        &themes()[target]
+    }
+
+    pub fn active_preset() -> ThemePreset {
+        let _ = themes();
+        ThemePreset::ALL[ACTIVE_THEME.load(Ordering::Relaxed)]
+    }
+
+    pub fn select(preset: ThemePreset) {
+        let _ = themes();
+        let from = ACTIVE_THEME.load(Ordering::Relaxed);
+        ACTIVE_THEME.store(preset.index(), Ordering::Relaxed);
+        *transition_state().lock().unwrap() = if crate::config::get().appearance.reduce_motion {
+            None
+        } else {
+            Some((from, std::time::Instant::now()))
+        };
+    }
+
+    pub fn is_transitioning() -> bool {
+        transition_state().lock().unwrap().is_some()
+    }
+
+    fn configured(mut theme: Self) -> Self {
+        let config = crate::config::get();
+        if let Some(font) = config.appearance.ui_font.as_deref() {
+            theme.FONT_UI = Box::leak(font.to_owned().into_boxed_str());
+        }
+        if let Some(font) = config.appearance.mono_font.as_deref() {
+            theme.FONT_MONO = Box::leak(font.to_owned().into_boxed_str());
+        }
+        for (role, value) in &config.appearance.colors {
+            match parse_color(value) {
+                Some(color) => theme.set_color(role, color),
+                None => eprintln!("ignoring invalid desktop color {role}={value:?}"),
             }
-            for (role, value) in &config.appearance.colors {
-                match parse_color(value) {
-                    Some(color) => theme.set_color(role, color),
-                    None => eprintln!("ignoring invalid desktop color {role}={value:?}"),
-                }
-            }
-            theme
-        })
+        }
+        theme
     }
 
     // Warm neutral: charcoal and stone surfaces, ivory type, restrained sandstone focus.
@@ -202,6 +236,234 @@ impl Theme {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemePreset {
+    WarmNeutral,
+    WarmStudio,
+    NeutralDark,
+    NeutralLight,
+}
+
+impl ThemePreset {
+    pub const ALL: [Self; 4] = [
+        Self::WarmNeutral,
+        Self::WarmStudio,
+        Self::NeutralDark,
+        Self::NeutralLight,
+    ];
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::WarmNeutral => "warm-neutral",
+            Self::WarmStudio => "warm-studio",
+            Self::NeutralDark => "neutral-dark",
+            Self::NeutralLight => "neutral-light",
+        }
+    }
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WarmNeutral => "Warm neutral",
+            Self::WarmStudio => "Warm studio",
+            Self::NeutralDark => "Neutral dark",
+            Self::NeutralLight => "Neutral light",
+        }
+    }
+    const fn index(self) -> usize {
+        match self {
+            Self::WarmNeutral => 0,
+            Self::WarmStudio => 1,
+            Self::NeutralDark => 2,
+            Self::NeutralLight => 3,
+        }
+    }
+    pub fn from_id(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|preset| preset.id() == value)
+            .unwrap_or(Self::WarmNeutral)
+    }
+    pub fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+}
+
+static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(0);
+
+fn transition_state() -> &'static Mutex<Option<(usize, std::time::Instant)>> {
+    static STATE: OnceLock<Mutex<Option<(usize, std::time::Instant)>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn transition_frames() -> &'static Vec<Vec<Vec<Theme>>> {
+    static FRAMES: OnceLock<Vec<Vec<Vec<Theme>>>> = OnceLock::new();
+    FRAMES.get_or_init(|| {
+        themes()
+            .iter()
+            .map(|from| {
+                themes()
+                    .iter()
+                    .map(|to| {
+                        (0..=16)
+                            .map(|step| interpolate(from, to, step as f32 / 16.0))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect()
+    })
+}
+
+fn interpolate(from: &Theme, to: &Theme, amount: f32) -> Theme {
+    if amount <= 0.0 {
+        return from.clone();
+    }
+    if amount >= 1.0 {
+        return to.clone();
+    }
+    let mut result = from.clone();
+    let mix = |a: Rgba, b: Rgba| Rgba {
+        r: a.r + (b.r - a.r) * amount,
+        g: a.g + (b.g - a.g) * amount,
+        b: a.b + (b.b - a.b) * amount,
+        a: a.a + (b.a - a.a) * amount,
+    };
+    macro_rules! colors { ($($field:ident),+ $(,)?) => { $(result.$field = mix(from.$field, to.$field);)+ }; }
+    colors!(
+        BG,
+        CANVAS_DOT,
+        PANEL_BG,
+        PANEL_BORDER,
+        PANEL_BORDER_FOCUS,
+        PANEL_BORDER_IDLE,
+        HEADER_BG,
+        TEXT,
+        TEXT_DIM,
+        TEXT_USER,
+        ACCENT,
+        ACCENT_DIM,
+        USER_ACCENT,
+        AI_ACCENT,
+        USER_BG,
+        TOOL_BG,
+        TOOL_TEXT,
+        REASONING,
+        REASONING_BG,
+        TEXT_FAINT,
+        TOOL_BORDER,
+        ERROR_BG,
+        CODE_BG,
+        CODE_TEXT,
+        INLINE_CODE_BG,
+        CODE_BORDER,
+        CODE_HEADER_BG,
+        CODE_GUTTER,
+        CODE_KEYWORD,
+        CODE_STRING,
+        CODE_COMMENT,
+        CODE_NUMBER,
+        CODE_TYPE,
+        CODE_PUNCT,
+        ACCENT_MUTED,
+        QUOTE_BG,
+        TABLE_STRIPE,
+        INPUT_BG,
+        INPUT_BORDER,
+        CURSOR,
+        SELECTION,
+        ERROR,
+        OK,
+        WARN,
+        HEADING,
+        LINK,
+        MINIMAP_TRACK,
+        MINIMAP_TRACK_ACTIVE,
+        MINIMAP_VIEWPORT,
+        MINIMAP_PANEL,
+        MINIMAP_PANEL_BUSY,
+        MINIMAP_BG
+    );
+    result
+}
+
+fn themes() -> &'static [Theme; 4] {
+    static THEMES: OnceLock<[Theme; 4]> = OnceLock::new();
+    THEMES.get_or_init(|| {
+        let warm = Theme::defaults();
+        let mut studio = warm.clone();
+        studio.BG = rgb_c(0x211914);
+        studio.PANEL_BG = rgb_c(0x2d231d);
+        studio.HEADER_BG = rgb_c(0x392b23);
+        studio.ACCENT = rgb_c(0xd29a6a);
+        studio.ACCENT_DIM = rgba_c(0xd29a6a24);
+        studio.USER_ACCENT = rgb_c(0xe0ad7f);
+        studio.PANEL_BORDER_FOCUS = rgb_c(0xa87550);
+        studio.LINK = rgb_c(0xe0ad7f);
+        studio.SELECTION = rgba_c(0xb66f4380);
+        let mut dark = warm.clone();
+        dark.BG = rgb_c(0x151719);
+        dark.PANEL_BG = rgb_c(0x1d2023);
+        dark.HEADER_BG = rgb_c(0x262a2e);
+        dark.PANEL_BORDER = rgb_c(0x353a40);
+        dark.PANEL_BORDER_FOCUS = rgb_c(0x76818c);
+        dark.TEXT = rgb_c(0xe2e5e9);
+        dark.TEXT_DIM = rgb_c(0x9ba3ac);
+        dark.ACCENT = rgb_c(0x9aa8b6);
+        dark.ACCENT_DIM = rgba_c(0x9aa8b620);
+        dark.INPUT_BG = rgb_c(0x191c1f);
+        dark.CODE_BG = rgb_c(0x151719);
+        dark.USER_BG = rgb_c(0x262a2e);
+        let mut light = warm.clone();
+        light.BG = rgb_c(0xebe9e5);
+        light.CANVAS_DOT = rgba_c(0x27252212);
+        light.PANEL_BG = rgb_c(0xf8f7f4);
+        light.PANEL_BORDER = rgb_c(0xd2cec7);
+        light.PANEL_BORDER_FOCUS = rgb_c(0x7b746a);
+        light.HEADER_BG = rgb_c(0xe2dfda);
+        light.TEXT = rgb_c(0x292724);
+        light.TEXT_USER = rgb_c(0x201e1b);
+        light.TEXT_DIM = rgb_c(0x67625b);
+        light.TEXT_FAINT = rgb_c(0x777169);
+        light.ACCENT = rgb_c(0x665f57);
+        light.ACCENT_DIM = rgba_c(0x665f5718);
+        light.USER_ACCENT = rgb_c(0x725d4c);
+        light.AI_ACCENT = rgb_c(0x53675b);
+        light.USER_BG = rgb_c(0xe8e4de);
+        light.TOOL_BG = rgb_c(0xefede8);
+        light.TOOL_BORDER = rgb_c(0xd2cec7);
+        light.TOOL_TEXT = rgb_c(0x67625b);
+        light.CODE_BG = rgb_c(0xf0efec);
+        light.CODE_TEXT = rgb_c(0x292724);
+        light.INLINE_CODE_BG = rgb_c(0xe4e1dc);
+        light.CODE_BORDER = rgb_c(0xd2cec7);
+        light.CODE_HEADER_BG = rgb_c(0xe8e5df);
+        light.CODE_GUTTER = rgb_c(0x746e66);
+        light.CODE_KEYWORD = rgb_c(0x6f3f62);
+        light.CODE_STRING = rgb_c(0x3f6848);
+        light.CODE_COMMENT = rgb_c(0x68635c);
+        light.CODE_NUMBER = rgb_c(0x7a542b);
+        light.CODE_TYPE = rgb_c(0x4d587b);
+        light.CODE_PUNCT = rgb_c(0x4e4a45);
+        light.INPUT_BG = rgb_c(0xffffff);
+        light.INPUT_BORDER = rgb_c(0xbdb7ae);
+        light.CURSOR = rgb_c(0x292724);
+        light.HEADING = rgb_c(0x292724);
+        light.LINK = rgb_c(0x655346);
+        light.MINIMAP_BG = rgba_c(0xf8f7f4e6);
+        light.MINIMAP_PANEL = rgb_c(0xaaa39a);
+        let configured = Theme::configured;
+        let result = [
+            configured(warm),
+            configured(studio),
+            configured(dark),
+            configured(light),
+        ];
+        ACTIVE_THEME.store(
+            ThemePreset::from_id(&crate::config::get().appearance.theme).index(),
+            Ordering::Relaxed,
+        );
+        result
+    })
+}
+
 #[cfg(target_os = "macos")]
 const fn platform_font() -> &'static str {
     "Menlo"
@@ -257,5 +519,57 @@ mod tests {
         assert_eq!(parse_color("#ff0080").unwrap().a, 1.0);
         assert!((parse_color("10203040").unwrap().a - 64.0 / 255.0).abs() < 0.001);
         assert!(parse_color("purple").is_none());
+    }
+
+    fn luminance(color: Rgba) -> f32 {
+        let channel = |value: f32| {
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+    }
+
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let (bright, dark) = if luminance(a) > luminance(b) {
+            (luminance(a), luminance(b))
+        } else {
+            (luminance(b), luminance(a))
+        };
+        (bright + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn every_preset_keeps_semantic_text_legible() {
+        let themes = themes();
+        for (preset, theme) in ThemePreset::ALL.into_iter().zip(themes) {
+            for (foreground, background, role) in [
+                (theme.TEXT, theme.PANEL_BG, "panel text"),
+                (theme.TEXT_DIM, theme.PANEL_BG, "secondary text"),
+                (theme.CODE_TEXT, theme.CODE_BG, "code text"),
+                (theme.TEXT_USER, theme.USER_BG, "user text"),
+            ] {
+                assert!(
+                    contrast(foreground, background) >= 4.5,
+                    "{} {role} contrast was {}",
+                    preset.id(),
+                    contrast(foreground, background)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transition_frames_begin_and_end_at_the_selected_palettes() {
+        let frames = transition_frames();
+        for from in 0..ThemePreset::ALL.len() {
+            for to in 0..ThemePreset::ALL.len() {
+                assert_eq!(frames[from][to][0].BG, themes()[from].BG);
+                assert_eq!(frames[from][to][16].BG, themes()[to].BG);
+                assert_eq!(frames[from][to].len(), 17);
+            }
+        }
     }
 }
