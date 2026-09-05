@@ -121,7 +121,8 @@ every mapped check, with changing-input and failed-check evidence preserved.
 
 ## Limits and rollout gate
 
-The broader serial suite reported 313 passed, 3 failed and 6 ignored. The failing
+The earlier broader serial suite reported 313 passed, 3 failed and 6 ignored;
+the latest whole-result run reported 312 passed, 3 failed and 6 ignored. The failing
 checks concern email inbox scrolling, restored transcript scrolling and the
 swipe reticle. The baseline comparison was not completed, so they are not
 claimed to be pre-existing failures. None is hidden by the targeted test run.
@@ -132,3 +133,27 @@ not: `--reload-ui` reached the live host, which reported
 because unsaved drafts could be lost. Live-window delivery remains explicitly
 blocked on permission to restart. No claim is made that the user's current
 window already shows the redesign.
+
+### Delivery follow-through, 22:28 UTC
+
+The original request is an experiment with folder-style live-session tabs, not
+proof of a subjective aesthetic improvement. The measured removal and native
+selection checks support the requested behavior, but user preference is still
+unconfirmed. The three wider failures have an unestablished cause, not a proven
+absence of relation to these changes.
+
+Rechecked the live host and supported recovery paths without disturbing it:
+
+- PID 3080233 still runs without `--hot-reload`.
+- The instance protocol in `src/host/instance.rs` exposes only Show and Reload,
+  not snapshot export, enabling reload, or a state-preserving process restart.
+- `ReloadManager::reload` rejects a missing plugin source before snapshotting.
+- Suspend/resume retains snapshots in host memory and reactivates the same
+  generation. Closing and reopening the surface cannot install the new build.
+- Drafts, attachments and terminal resources survive in-process handoff, but
+  this does not establish that they survive terminating this host.
+
+Live activation therefore remains an outstanding blocked task, not a cancelled
+requirement or a successful delivery. Repeating the rejected reload or replacing
+the process without establishing state preservation would not close that gap.
+No runtime changes or additional build were needed for this evidence correction.
