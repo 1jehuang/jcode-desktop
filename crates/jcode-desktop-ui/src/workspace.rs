@@ -456,6 +456,7 @@ pub struct Workspace {
     connected: bool,
     focus_handle: FocusHandle,
     sidebar_scroll: ScrollHandle,
+    sidebar_navigation_scroll: ScrollHandle,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
@@ -625,6 +626,7 @@ impl Workspace {
             connected: false,
             focus_handle: cx.focus_handle(),
             sidebar_scroll: ScrollHandle::new(),
+            sidebar_navigation_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -718,6 +720,7 @@ impl Workspace {
             connected: true,
             focus_handle: cx.focus_handle(),
             sidebar_scroll: ScrollHandle::new(),
+            sidebar_navigation_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -3303,6 +3306,75 @@ impl Workspace {
         rows
     }
 
+    fn scroll_sidebar_navigation_to(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = &self.sidebar_navigation_scroll;
+        let bounds = handle.bounds();
+        let width = f32::from(bounds.size.width).max(1.0);
+        let max = f32::from(handle.max_offset().x).max(0.0);
+        let thumb = (width * width / (width + max)).max(28.0).min(width);
+        let travel = (width - thumb).max(1.0);
+        let progress =
+            ((f32::from(position.x - bounds.left()) - thumb / 2.0) / travel).clamp(0.0, 1.0);
+        handle.set_offset(gpui::point(px(-max * progress), px(0.0)));
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn render_sidebar_navigation_scrollbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let handle = &self.sidebar_navigation_scroll;
+        let width = f32::from(handle.bounds().size.width).max(1.0);
+        let max = f32::from(handle.max_offset().x).max(0.0);
+        let thumb = (width * width / (width + max)).max(28.0).min(width);
+        let progress = if max > 0.0 {
+            (-f32::from(handle.offset().x) / max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        div()
+            .id("sidebar-navigation-scrollbar")
+            .debug_selector(|| "sidebar-navigation-scrollbar".into())
+            .relative()
+            .w_full()
+            .h(px(10.0))
+            .flex_none()
+            .cursor_pointer()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.scroll_sidebar_navigation_to(event.position, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if event.dragging() {
+                    this.scroll_sidebar_navigation_to(event.position, cx);
+                }
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(3.0))
+                    .w_full()
+                    .h(px(4.0))
+                    .rounded_full()
+                    .bg(Theme::global().PANEL_BORDER),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(3.0))
+                    .left(relative((width - thumb) * progress / width))
+                    .w(relative(thumb / width))
+                    .h(px(4.0))
+                    .rounded_full()
+                    .bg(Theme::global().TEXT_FAINT),
+            )
+            .into_any_element()
+    }
+
     fn render_files_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let root = self.file_browser_root(cx);
         div()
@@ -3595,180 +3667,228 @@ impl Workspace {
                     .border_color(Theme::global().PANEL_BORDER)
                     .child(
                         div()
-                            .id("sidebar-navigation-tabs")
-                            .debug_selector(|| "sidebar-navigation-tabs".into())
                             .flex_1()
                             .min_w_0()
                             .flex()
-                            .items_center()
-                            .gap_1()
-                            .overflow_x_scroll()
-                            .restrict_scroll_to_axis()
+                            .flex_col()
+                            .gap(px(2.0))
                             .child(
                                 div()
-                                    .id("sidebar-sessions-tab")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(if self.sidebar_view == SidebarView::Sessions {
-                                        Theme::global().TEXT
-                                    } else {
-                                        Theme::global().TEXT_DIM
-                                    })
-                                    .hover(|el| el.bg(Theme::global().HEADER_BG))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.sidebar_view = SidebarView::Sessions;
+                                    .id("sidebar-navigation-tabs")
+                                    .debug_selector(|| "sidebar-navigation-tabs".into())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .overflow_x_scroll()
+                                    .track_scroll(&self.sidebar_navigation_scroll)
+                                    .on_scroll_wheel(cx.listener(
+                                        |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                            let delta =
+                                                event.delta.pixel_delta(window.line_height());
+                                            let dx =
+                                                if delta.x != px(0.0) { delta.x } else { delta.y };
+                                            let handle = &this.sidebar_navigation_scroll;
+                                            let x = (handle.offset().x + dx)
+                                                .clamp(-handle.max_offset().x, px(0.0));
+                                            handle.set_offset(gpui::point(x, px(0.0)));
+                                            cx.stop_propagation();
                                             cx.notify();
-                                        }),
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .id("sidebar-sessions-tab")
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(
+                                                if self.sidebar_view == SidebarView::Sessions {
+                                                    Theme::global().TEXT
+                                                } else {
+                                                    Theme::global().TEXT_DIM
+                                                },
+                                            )
+                                            .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.sidebar_view = SidebarView::Sessions;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child("chat"),
                                     )
-                                    .child("chat"),
+                                    .child(
+                                        div()
+                                            .id("sidebar-files-tab")
+                                            .debug_selector(|| "sidebar-files-tab".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(
+                                                if self.sidebar_view == SidebarView::Files {
+                                                    Theme::global().TEXT
+                                                } else {
+                                                    Theme::global().TEXT_DIM
+                                                },
+                                            )
+                                            .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.sidebar_view = SidebarView::Files;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child("files"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("sidebar-unfinished-work")
+                                            .debug_selector(|| "sidebar-unfinished-work".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _event, window, cx| {
+                                                    this.new_unfinished_work(
+                                                        &NewUnfinishedWork,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                            )
+                                            .child("todos"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("open-todoist")
+                                            .debug_selector(|| "open-todoist".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.open_todoist(&OpenTodoist, window, cx)
+                                                }),
+                                            )
+                                            .child("todoist"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("open-gmail")
+                                            .debug_selector(|| "open-gmail".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.open_gmail(&OpenGmail, window, cx)
+                                                }),
+                                            )
+                                            .child("email"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("sidebar-open-folder")
+                                            .debug_selector(|| "sidebar-open-folder".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _event, window, cx| {
+                                                    this.open_folder(&OpenFolder, window, cx);
+                                                }),
+                                            )
+                                            .child("folder"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("sidebar-new-session")
+                                            // Tagged so a render test can click the real button
+                                            // and confirm it counts as a slow path, not as
+                                            // knowledge of super-n.
+                                            .debug_selector(|| "sidebar-new-session".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(16.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _event, _window, cx| {
+                                                    this.missed("new_panel", cx);
+                                                    this.open_new_session(cx);
+                                                }),
+                                            )
+                                            .child("+"),
+                                    ),
                             )
-                            .child(
-                                div()
-                                    .id("sidebar-files-tab")
-                                    .debug_selector(|| "sidebar-files-tab".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(if self.sidebar_view == SidebarView::Files {
-                                        Theme::global().TEXT
-                                    } else {
-                                        Theme::global().TEXT_DIM
-                                    })
-                                    .hover(|el| el.bg(Theme::global().HEADER_BG))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.sidebar_view = SidebarView::Files;
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child("files"),
-                            )
-                            .child(
-                                div()
-                                    .id("sidebar-unfinished-work")
-                                    .debug_selector(|| "sidebar-unfinished-work".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .hover(|el| {
-                                        el.bg(Theme::global().HEADER_BG)
-                                            .text_color(Theme::global().TEXT)
-                                    })
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _event, window, cx| {
-                                            this.new_unfinished_work(
-                                                &NewUnfinishedWork,
-                                                window,
-                                                cx,
-                                            );
-                                        }),
-                                    )
-                                    .child("todos"),
-                            )
-                            .child(
-                                div()
-                                    .id("open-todoist")
-                                    .debug_selector(|| "open-todoist".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .hover(|el| {
-                                        el.bg(Theme::global().HEADER_BG)
-                                            .text_color(Theme::global().TEXT)
-                                    })
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.open_todoist(&OpenTodoist, window, cx)
-                                        }),
-                                    )
-                                    .child("todoist"),
-                            )
-                            .child(
-                                div()
-                                    .id("open-gmail")
-                                    .debug_selector(|| "open-gmail".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .hover(|el| {
-                                        el.bg(Theme::global().HEADER_BG)
-                                            .text_color(Theme::global().TEXT)
-                                    })
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.open_gmail(&OpenGmail, window, cx)
-                                        }),
-                                    )
-                                    .child("email"),
-                            )
-                            .child(
-                                div()
-                                    .id("sidebar-open-folder")
-                                    .debug_selector(|| "sidebar-open-folder".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .hover(|el| {
-                                        el.bg(Theme::global().HEADER_BG)
-                                            .text_color(Theme::global().TEXT)
-                                    })
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _event, window, cx| {
-                                            this.open_folder(&OpenFolder, window, cx);
-                                        }),
-                                    )
-                                    .child("folder"),
-                            )
-                            .child(
-                                div()
-                                    .id("sidebar-new-session")
-                                    // Tagged so a render test can click the real button
-                                    // and confirm it counts as a slow path, not as
-                                    // knowledge of super-n.
-                                    .debug_selector(|| "sidebar-new-session".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_size(px(16.0))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .hover(|el| {
-                                        el.bg(Theme::global().HEADER_BG)
-                                            .text_color(Theme::global().TEXT)
-                                    })
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.missed("new_panel", cx);
-                                            this.open_new_session(cx);
-                                        }),
-                                    )
-                                    .child("+"),
-                            ),
+                            .child(self.render_sidebar_navigation_scrollbar(cx)),
                     ),
             )
             .child(
@@ -5510,6 +5630,12 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.show_sidebar && self.sidebar_navigation_scroll.bounds().size.width == px(0.0) {
+            let workspace = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = workspace.update(cx, |_, cx| cx.notify());
+            });
+        }
         if self.accounts_layout_pending && !self.accounts.is_empty() {
             self.accounts_layout_pending = false;
             // Overlay geometry becomes available after layout. Request just one
@@ -8785,6 +8911,50 @@ mod tests {
     }
 
     #[gpui::test]
+    fn sidebar_navigation_scrolls_with_wheel_and_track(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
+        assert!(tabs.bottom() <= track.top());
+        let max = workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.max_offset().x);
+        assert!(max > px(0.0), "tabs must retain their widths and overflow");
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: tabs.center(),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -2.0)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        assert!(workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset().x) < px(0.0));
+        vcx.simulate_click(
+            gpui::point(track.right() - px(1.0), track.center().y),
+            gpui::Modifiers::default(),
+        );
+        vcx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset().x),
+            -max
+        );
+        let last = vcx.debug_bounds("sidebar-new-session").unwrap();
+        assert!(
+            last.right() <= tabs.right() + px(1.0),
+            "last tab must be reachable"
+        );
+        vcx.simulate_event(gpui::MouseMoveEvent {
+            position: gpui::point(track.left() + px(1.0), track.center().y),
+            pressed_button: Some(gpui::MouseButton::Left),
+            modifiers: gpui::Modifiers::default(),
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset().x),
+            px(0.0)
+        );
+    }
+
+    #[gpui::test]
     fn inbox_button_lives_in_the_sidebar_and_opens_gmail(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
@@ -8792,6 +8962,13 @@ mod tests {
             workspace.push_test_panel("one", cx);
             workspace
         });
+        vcx.run_until_parked();
+
+        let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
+        vcx.simulate_click(
+            gpui::point(track.right() - px(1.0), track.center().y),
+            gpui::Modifiers::default(),
+        );
         vcx.run_until_parked();
 
         let button = vcx
