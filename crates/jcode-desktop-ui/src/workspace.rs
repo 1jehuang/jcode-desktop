@@ -7585,7 +7585,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(cx: &mut gpui::TestAppContext) {
+    fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let project = tempfile::tempdir().unwrap();
         for index in 0..80 {
             std::fs::write(project.path().join(format!("file-{index}.rs")), "").unwrap();
@@ -7623,15 +7625,26 @@ mod tests {
                     cx.notify();
                 });
                 vcx.run_until_parked();
-                let tabs_before = workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
+                let tabs_before =
+                    workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
                 let offset = |w: &Workspace| match view {
-                    SidebarView::Sessions => w.sidebar_sessions_list.scroll_px_offset_for_scrollbar().y,
+                    SidebarView::Sessions => {
+                        w.sidebar_sessions_list.scroll_px_offset_for_scrollbar().y
+                    }
                     _ => w.sidebar_scroll.offset().y,
                 };
                 for (delta, expected) in [(-37.0, -37.0), (12.0, -25.0), (10000.0, 0.0)] {
-                    let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
+                    let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+                    let position = gpui::point(
+                        if view == SidebarView::Sessions {
+                            body.left() + px(6.0)
+                        } else {
+                            body.right() - px(6.0)
+                        },
+                        body.center().y,
+                    );
                     vcx.simulate_event(gpui::ScrollWheelEvent {
-                        position: gutter.center(),
+                        position,
                         delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(delta))),
                         modifiers: gpui::Modifiers::default(),
                         touch_phase: gpui::TouchPhase::Moved,
@@ -7646,10 +7659,18 @@ mod tests {
                         assert_eq!(w.sidebar_navigation_scroll.offset(), tabs_before);
                     });
                 }
-                let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
+                let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+                let position = gpui::point(
+                    if view == SidebarView::Sessions {
+                        body.left() + px(6.0)
+                    } else {
+                        body.right() - px(6.0)
+                    },
+                    body.center().y,
+                );
                 for lines in [-4.0, 10000.0] {
                     vcx.simulate_event(gpui::ScrollWheelEvent {
-                        position: gutter.center(),
+                        position,
                         delta: gpui::ScrollDelta::Lines(gpui::point(0.0, lines)),
                         modifiers: gpui::Modifiers::default(),
                         touch_phase: gpui::TouchPhase::Moved,
