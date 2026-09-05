@@ -2551,17 +2551,19 @@ impl Panel {
         cx.notify();
     }
 
-    /// A one-line footer describing what the session is doing, when that is
-    /// not simply "idle". Provider phase wins over the coarse status because
-    /// it is what tells the user progress is still happening.
-    fn status_line(&self) -> Option<String> {
-        if !self.connection_phase.is_empty() {
-            return Some(self.connection_phase.clone());
+    /// Prefer meaningful activity over transport bookkeeping.
+    fn status_line(&self) -> String {
+        let phase = self.connection_phase.trim();
+        if !phase.is_empty() && phase != "connected" {
+            return phase.replace('_', " ");
         }
-        if self.status != "idle" {
-            return Some(self.status.replace('_', " "));
+        match self.status.as_str() {
+            "idle" | "connected" => "Ready".into(),
+            "busy" | "running" => "Working".into(),
+            "streaming" => "Responding".into(),
+            "running_tools" => "Running tools".into(),
+            status => status.replace('_', " "),
         }
-        None
     }
 
     fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
@@ -3489,8 +3491,7 @@ impl Render for Panel {
             self.reasoning_effort.as_deref(),
             self.token_usage,
         )
-        .map(|text| format!("{text}  ·  {}", crate::build_info::label()))
-        .unwrap_or_else(crate::build_info::label);
+        .unwrap_or_default();
 
         let show_jump_chip = !self.stick_to_bottom;
         let model_picker = self.model_picker_open.then(|| self.render_model_picker(cx));
@@ -3619,46 +3620,48 @@ impl Render for Panel {
                         )
                     }),
             )
-            .children(status_line.map(|text| {
-                // Session events repaint this footer when its state changes. A
-                // repeating GPUI animation here forces the complete transcript
-                // to lay out and paint at display rate for the entire request.
-                let dot = div()
-                    .debug_selector(|| "panel-status-pulse".into())
-                    .size(px(5.0))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(Theme::global().ACCENT);
+            // Keep identity, build information, and connection/activity status
+            // on one row. Equal flexible sides keep the build label centered.
+            .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .gap_1p5()
-                    .items_center()
-                    .px_3()
-                    .py_1()
-                    .text_size(px(10.5))
-                    .font_family(Theme::global().FONT_MONO)
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(dot)
-                    .child(text)
-            }))
-            // Session identity: where it runs, what serves it, and how full
-            // the context is. Always present, so the user never has to ask
-            // "which model is this?" mid-conversation.
-            .child({
-                div()
-                    // Tagged so a render test can prove the footer painted,
-                    // not just that meta_line() produced a string.
                     .debug_selector(|| "panel-meta".into())
                     .px_3()
                     .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(10.0))
                     .font_family(Theme::global().FONT_MONO)
                     .text_color(Theme::global().TEXT_FAINT)
-                    .child(meta_line)
-            })
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-identity".into())
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(meta_line),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-build".into())
+                            .flex_none()
+                            .child(crate::build_info::label()),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-status".into())
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .justify_end()
+                            .items_center()
+                            .gap_1p5()
+                            .overflow_hidden()
+                            .child(status_line),
+                    ),
+            )
             // Input
             .child(div().px_2().py_2().child(self.input.clone()))
             .on_mouse_down(
@@ -5809,6 +5812,17 @@ mod tests {
         workspace.update(vcx, |workspace, cx| {
             let panel = workspace.test_panel(0).expect("panel exists");
             panel.update(cx, |panel, cx| {
+                panel.status = "connected".into();
+                assert_eq!(panel.status_line(), "Ready");
+                panel.status = "running_tools".into();
+                assert_eq!(panel.status_line(), "Running tools");
+                panel.connection_phase = "connected".into();
+                assert_eq!(panel.status_line(), "Running tools");
+                panel.connection_phase = "Retrying request".into();
+                assert_eq!(panel.status_line(), "Retrying request");
+                panel.connection_phase.clear();
+                panel.status = "idle".into();
+                assert_eq!(panel.status_line(), "Ready");
                 panel.apply(
                     &ApiEvent::RuntimeInfo {
                         session_id: "session-a".into(),
@@ -5878,6 +5892,15 @@ mod tests {
             bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
             "the footer must occupy real space, got {bounds:?}"
         );
+        let build = vcx.debug_bounds("panel-build").expect("build label paints");
+        let identity = vcx.debug_bounds("panel-identity").expect("identity paints");
+        let status = vcx.debug_bounds("panel-status").expect("status paints");
+        assert!((f32::from(build.center().x - bounds.center().x)).abs() < 1.0);
+        assert_eq!(identity.origin.y, build.origin.y);
+        assert_eq!(status.origin.y, build.origin.y);
+        assert!(identity.right() <= build.left());
+        assert!(build.right() <= status.left());
+        assert!(vcx.debug_bounds("panel-status-pulse").is_none());
     }
 
     #[gpui::test]
