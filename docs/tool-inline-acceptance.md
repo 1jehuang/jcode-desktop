@@ -86,11 +86,52 @@ show-window command returned successfully, but a subsequent capture showed an
 unrelated browser/login workflow rather than a usable Desktop transcript. No
 clicks or keystrokes were sent into those unrelated windows. Concurrent desktop
 activity prevented a safely targeted live-session disclosure check. Accordingly,
-**real-session end-user acceptance remains unverified**. Private screenshots of
+**real-session end-user acceptance was unverified at that point**. Private screenshots of
 the live desktop are kept only in scratch, not committed.
 
 Disk availability had recovered to approximately 9 GiB during this later check.
 The earlier disk-full build failure is historical, not a claim that the disk is
 still full. This follow-up did not rerun the fresh relink. Objective fixture
-measurements and current-source test results still stand, while user preference,
-the inferred target surface, and live-session acceptance are not asserted.
+measurements and current-source test results still stand. The next check closes
+the live-session gap, without asserting user preference or confirmation of the
+inferred target surface.
+
+## Real-runtime end-to-end acceptance, 23:36–23:41 UTC
+
+A private Xvfb display ran the actual Desktop application without screenshot
+fixture mode, connected to the real shared runtime. Native typing and Return in
+the composer requested a harmless bash `printf 'inline-tool-live-check\n'` and
+an assistant completion marker. No transcript events, model replies, or tool
+outputs were injected or mocked. The private display isolated input from the
+user's active windows, not the runtime/model/tool integration.
+
+The model first supplied a null boolean and received a validation error, then
+retried successfully. Both failed and successful calls appeared in the live
+transcript. The public API sequence `hello`, `attach_session`, `get_history`,
+`detach_session` confirmed the actual tool output `inline-tool-live-check\n`
+and final assistant reply `LIVE_TOOL_CHECK_COMPLETE`.
+
+| Requirement / integration boundary | Observed live result |
+| --- | --- |
+| Composer to model to real tool to transcript | Native prompt submission produced the real bash output and final assistant marker, confirmed by the attached session's public history API. |
+| Tool rows have no contrasting card surface | 10,800 sampled surface pixels across the failed and successful live rows matched the transcript background. |
+| Status, intent, and errors remain visible | Both rows displayed `bash inline acceptance probe`, distinct failure/success indicators, and the validation error text. |
+| Details remain accessible without card framing | Native click on the successful row revealed the actual command arguments and `Output` containing `inline-tool-live-check`. Expansion changed 143,162 transcript pixels. |
+| Collapse restores the conversation | A second native click restored the checked transcript region exactly, with zero changed pixels. |
+
+The original automated observer timed out because it polled `peek_session`,
+which returned a stored history tail that did not reflect the completed live
+turn. That runner's exit remains a **failure**, not a passing automated test.
+The corrected attached-history query and native click/pixel checks on the same
+still-running session passed before its private process cleanup. The screenshots
+also show the completed assistant response. This separates an observer failure
+from actual application behavior and does not hide the model's initial tool
+validation failure.
+
+Private evidence is retained in scratch: `real-result.json`, `real-before.png`,
+`real-expanded.png`, and `real-collapsed.png` under `tool-live-7tk_q6li`, plus
+`tool-inline/real-history.json`. Screenshots and history contain other session
+metadata and are not committed. The current-source tests and fixture checks in
+the mapping above cover edit/patch previews, running status, formatting, overflow,
+and unchanged dedicated cards beyond this real bash turn. No fresh relink is
+claimed by this check, which used the available successful application build.
