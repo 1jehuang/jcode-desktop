@@ -88,36 +88,13 @@ const INACTIVE_PANEL_INSET: f32 = 8.0;
 #[path = "panel_surface_tests.rs"]
 mod panel_surface_tests;
 
-/// Tutorial controls occupy a separate layout region, never the transcript.
-/// Use the same grid metrics to reserve canvas space and lay out the controls,
-/// including wrapped rows on narrow windows. Animation stays inside each cell.
-const TUTORIAL_CELL_WIDTH: f32 = 144.0;
-const TUTORIAL_CELL_HEIGHT: f32 = 32.0;
-const TUTORIAL_GAP: f32 = 6.0;
-const TUTORIAL_PADDING: f32 = 12.0;
-const TUTORIAL_HEADING_HEIGHT: f32 = 16.0;
+#[path = "tutorial.rs"]
+mod tutorial;
 
 #[cfg(test)]
 #[path = "tutorial_geometry_tests.rs"]
 mod tutorial_geometry_tests;
 
-fn tutorial_dock_height(stage: usize, viewport_width: f32) -> f32 {
-    let count: usize = match stage {
-        1 => 6,
-        2 => 5,
-        _ => 2,
-    };
-    let columns = ((viewport_width - TUTORIAL_PADDING * 2.0 + TUTORIAL_GAP)
-        / (TUTORIAL_CELL_WIDTH + TUTORIAL_GAP))
-        .floor()
-        .max(1.0) as usize;
-    let rows = count.div_ceil(columns);
-    TUTORIAL_PADDING * 2.0
-        + TUTORIAL_HEADING_HEIGHT
-        + TUTORIAL_GAP
-        + rows as f32 * (TUTORIAL_CELL_HEIGHT + TUTORIAL_GAP)
-        - TUTORIAL_GAP
-}
 const STRIP_COUNT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,10 +169,11 @@ fn sidebar_header_left_padding(fullscreen: bool) -> f32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 enum SidebarView {
     #[default]
     Sessions,
+    Learn,
     Files,
     Accounts,
     Theme,
@@ -254,9 +232,8 @@ const COACH_TOAST_WIDTH: f32 = 288.0;
 /// of rebuilding every transcript at display refresh rate for the full lifetime.
 const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(10);
 const SHOWCASE_DURATION: Duration = Duration::from_millis(1800);
-/// The small, hands-on curriculum shown to a new user. Once every item has
-/// been practiced, onboarding gets out of the way permanently because the
-/// learning model is persisted across launches.
+/// The hands-on curriculum in the opt-in Learn tab. Practiced skills persist
+/// across launches, and the completed tutorial remains a shortcut reference.
 const ONBOARDING_SKILLS: &[&str] = &[
     "focus_left_right",
     "focus_up_down",
@@ -431,6 +408,10 @@ pub struct WorkspaceSnapshot {
     format_version: u32,
     #[serde(default)]
     recent_accounts: Vec<String>,
+    #[serde(default)]
+    sidebar_view: SidebarView,
+    #[serde(default)]
+    tutorial_page: usize,
     slots: Vec<SlotSnapshot>,
     active: usize,
     active_row: usize,
@@ -488,6 +469,7 @@ pub struct Workspace {
     // Temporarily hidden. Keep the renderer available for re-enabling later.
     show_minimap: bool,
     sidebar_view: SidebarView,
+    tutorial_page: usize,
     expanded_directories: HashSet<PathBuf>,
     slots: Vec<Slot>,
     active: usize,
@@ -671,6 +653,7 @@ impl Workspace {
                 crate::config::get().workspace.sidebar,
             ),
             sidebar_view: SidebarView::Sessions,
+            tutorial_page: 0,
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -770,6 +753,14 @@ impl Workspace {
                 workspace.active = panel_count / 2;
             }
             workspace.focus_pending = true;
+            if let Some(stage) = std::env::var("JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|stage| (1..=3).contains(stage))
+            {
+                workspace.sidebar_view = SidebarView::Learn;
+                workspace.tutorial_page = stage - 1;
+            }
         }
         workspace
     }
@@ -790,6 +781,7 @@ impl Workspace {
             show_sidebar: true,
             show_minimap: false,
             sidebar_view: SidebarView::Sessions,
+            tutorial_page: 0,
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -879,6 +871,8 @@ impl Workspace {
         Ok(WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
             recent_accounts: self.recent_accounts.clone(),
+            sidebar_view: self.sidebar_view,
+            tutorial_page: self.tutorial_page,
             slots: self
                 .slots
                 .iter()
@@ -906,6 +900,8 @@ impl Workspace {
 
     fn apply_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
         self.recent_accounts = snapshot.recent_accounts;
+        self.sidebar_view = snapshot.sidebar_view;
+        self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
         for saved in snapshot.slots {
             let panel_state = saved.panel;
@@ -1625,8 +1621,7 @@ impl Workspace {
 
     /// Onboarding is complete after the user has successfully exercised every
     /// control it presents. `practiced` intentionally accepts prompted use: the
-    /// full coach can continue building recall later without keeping the
-    /// onboarding chrome on screen.
+    /// full coach can continue building recall after the tutorial is complete.
     fn onboarding_complete(&self) -> bool {
         ONBOARDING_SKILLS
             .iter()
@@ -3995,6 +3990,7 @@ impl Workspace {
                                             )
                                             .child("chat"),
                                     )
+                                    .child(self.render_tutorial_tab(cx))
                                     .child(
                                         div()
                                             .id("sidebar-files-tab")
@@ -4246,6 +4242,7 @@ impl Workspace {
                     })
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
+                        SidebarView::Learn => self.render_tutorial_guides(cx),
                         SidebarView::Files => self.render_files_sidebar(cx),
                         SidebarView::Theme => self.render_theme_settings(cx),
                         SidebarView::Settings => self.render_settings(cx),
@@ -5484,267 +5481,6 @@ impl Workspace {
             )
             .into_any_element()
     }
-
-    fn tutorial_stage(&self) -> usize {
-        let learned = |skill: &str| self.coach.trace(skill).practiced();
-        if ![
-            "focus_left_right",
-            "focus_up_down",
-            "new_panel",
-            "close_panel",
-        ]
-        .into_iter()
-        .all(learned)
-        {
-            1
-        } else if !["move_panel", "move_panel_strip", "width_presets"]
-            .into_iter()
-            .all(learned)
-        {
-            2
-        } else {
-            3
-        }
-    }
-
-    /// A reserved dock, not an overlay. Every lesson participates in the same
-    /// wrapping layout, so neither panel text nor another lesson can be covered.
-    fn render_tutorial_guides(&self, height: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let modifier = if cfg!(target_os = "macos") {
-            "⌘"
-        } else {
-            "Super"
-        };
-        let stage = self.tutorial_stage();
-        type Action = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
-        type Lesson = (
-            &'static str,
-            &'static str,
-            &'static str,
-            &'static str,
-            &'static str,
-            Option<Action>,
-        );
-        let lessons: Vec<Lesson> = match stage {
-            1 => vec![
-                (
-                    "tutorial-nav-left",
-                    "←",
-                    "H",
-                    "focus_left_right",
-                    "navigate",
-                    Some(|this, w, cx| this.focus_left(&FocusLeft, w, cx)),
-                ),
-                (
-                    "tutorial-nav-down",
-                    "↓",
-                    "J",
-                    "focus_up_down",
-                    "navigate",
-                    Some(|this, w, cx| this.focus_down(&FocusDown, w, cx)),
-                ),
-                (
-                    "tutorial-nav-up",
-                    "↑",
-                    "K",
-                    "focus_up_down",
-                    "navigate",
-                    Some(|this, w, cx| this.focus_up(&FocusUp, w, cx)),
-                ),
-                (
-                    "tutorial-nav-right",
-                    "→",
-                    "L",
-                    "focus_left_right",
-                    "navigate",
-                    Some(|this, w, cx| this.focus_right(&FocusRight, w, cx)),
-                ),
-                (
-                    "tutorial-new",
-                    "＋",
-                    "N",
-                    "new_panel",
-                    "new",
-                    Some(|this, w, cx| this.new_panel(&NewPanel, w, cx)),
-                ),
-                (
-                    "tutorial-close",
-                    "×",
-                    "Q",
-                    "close_panel",
-                    "close",
-                    Some(|this, w, cx| this.close_panel(&ClosePanel, w, cx)),
-                ),
-            ],
-            2 => vec![
-                (
-                    "tutorial-nav-left",
-                    "←",
-                    "Shift H",
-                    "move_panel",
-                    "move",
-                    Some(|this, w, cx| this.move_panel_left(&MovePanelLeft, w, cx)),
-                ),
-                (
-                    "tutorial-nav-down",
-                    "↓",
-                    "Shift J",
-                    "move_panel_strip",
-                    "move",
-                    Some(|this, w, cx| this.move_panel_down(&MovePanelDown, w, cx)),
-                ),
-                (
-                    "tutorial-nav-up",
-                    "↑",
-                    "Shift K",
-                    "move_panel_strip",
-                    "move",
-                    Some(|this, w, cx| this.move_panel_up(&MovePanelUp, w, cx)),
-                ),
-                (
-                    "tutorial-nav-right",
-                    "→",
-                    "Shift L",
-                    "move_panel",
-                    "move",
-                    Some(|this, w, cx| this.move_panel_right(&MovePanelRight, w, cx)),
-                ),
-                (
-                    "tutorial-width-presets",
-                    "↔",
-                    "1 2 3 4",
-                    "width_presets",
-                    "resize",
-                    None,
-                ),
-            ],
-            _ => vec![
-                (
-                    "tutorial-resize",
-                    "↔",
-                    "R",
-                    "cycle_width",
-                    "resize",
-                    Some(|this, w, cx| this.cycle_width(&CycleWidth, w, cx)),
-                ),
-                (
-                    "tutorial-overview",
-                    "▦",
-                    "O",
-                    "overview",
-                    "overview",
-                    Some(|this, w, cx| this.toggle_overview(&ToggleOverview, w, cx)),
-                ),
-            ],
-        };
-        let controls = lessons
-            .into_iter()
-            .map(|(id, glyph, key, skill, group, action)| {
-                let learned = self.coach.trace(skill).practiced();
-                let pressed = self.showcase_cue.as_ref().is_some_and(|cue| {
-                    cue.tutorial_group == group && cue.shortcut.ends_with(&format!(" + {key}"))
-                });
-                let animation_id = format!(
-                    "{id}-{}",
-                    self.showcase_cue
-                        .as_ref()
-                        .map(|cue| cue.shortcut.as_str())
-                        .unwrap_or("idle")
-                );
-                div()
-                    .id(id)
-                    .debug_selector(move || id.into())
-                    .w(px(TUTORIAL_CELL_WIDTH))
-                    .h(px(TUTORIAL_CELL_HEIGHT))
-                    .flex_none()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(5.0))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(if learned {
-                        Theme::global().OK
-                    } else if pressed {
-                        Theme::global().ACCENT
-                    } else {
-                        Theme::global().PANEL_BORDER
-                    })
-                    .bg(if pressed {
-                        Theme::global().ACCENT_DIM
-                    } else {
-                        Theme::global().HEADER_BG
-                    })
-                    .text_color(if learned {
-                        Theme::global().OK
-                    } else {
-                        Theme::global().TEXT
-                    })
-                    .text_size(px(11.0))
-                    .line_height(px(18.0))
-                    .overflow_hidden()
-                    .occlude()
-                    .when_some(action, |el, action| {
-                        el.cursor_pointer()
-                            .hover(|el| el.border_color(Theme::global().ACCENT))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| action(this, window, cx)),
-                            )
-                    })
-                    .child(div().text_size(px(17.0)).child(glyph).with_animation(
-                        animation_id,
-                        Animation::new(Duration::from_millis(220)),
-                        move |el, delta| {
-                            el.mt(px(if pressed {
-                                (std::f32::consts::PI * delta).sin() * 4.0
-                            } else {
-                                0.0
-                            }))
-                        },
-                    ))
-                    .child(format!("{modifier} {key}"))
-                    .when(learned, |el| {
-                        el.child(
-                            div()
-                                .debug_selector(move || format!("tutorial-learned-{skill}").into())
-                                .child("✓"),
-                        )
-                    })
-            });
-        div()
-            .id("tutorial-guides")
-            .debug_selector(|| "tutorial-guides".into())
-            .w_full()
-            .h(px(height))
-            .flex_none()
-            .p(px(TUTORIAL_PADDING))
-            .flex()
-            .flex_col()
-            .gap(px(TUTORIAL_GAP))
-            .bg(Theme::global().BG)
-            .font_family(Theme::global().FONT_MONO)
-            .child(
-                div()
-                    .id("tutorial-stage")
-                    .debug_selector(|| "tutorial-stage".into())
-                    .h(px(TUTORIAL_HEADING_HEIGHT))
-                    .flex_none()
-                    .text_size(px(10.0))
-                    .line_height(px(TUTORIAL_HEADING_HEIGHT))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(format!("onboarding · step {stage} of 3")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(TUTORIAL_GAP))
-                    .children(controls),
-            )
-            .into_any_element()
-    }
 }
 
 impl Workspace {
@@ -6017,15 +5753,7 @@ impl Render for Workspace {
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
         let content_top_inset = content_top_inset(self.show_sidebar, fullscreen);
-        let show_tutorial =
-            self.showcase_mode && (!self.onboarding_complete() || self.showcase_cue.is_some());
-        let tutorial_height = if show_tutorial {
-            tutorial_dock_height(self.tutorial_stage(), viewport_w)
-        } else {
-            0.0
-        };
-        let viewport_h =
-            (f32::from(viewport.height) - content_top_inset - tutorial_height).max(0.0);
+        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
 
         let now = Instant::now();
         let overview_progress = self.overview_progress.sample(now);
@@ -6232,9 +5960,6 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .pt(px(content_top_inset))
-                    .when(show_tutorial, |el| {
-                        el.child(self.render_tutorial_guides(tutorial_height, cx))
-                    })
                     .child(
                         div()
                             .debug_selector(|| "workspace-canvas".into())
@@ -7225,6 +6950,8 @@ mod tests {
         let snapshot = WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
             recent_accounts: Vec::new(),
+            sidebar_view: SidebarView::Sessions,
+            tutorial_page: 0,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
                     session_id: "terminal".into(),
@@ -7364,6 +7091,8 @@ mod tests {
                 WorkspaceSnapshot {
                     format_version: SNAPSHOT_FORMAT_VERSION,
                     recent_accounts: Vec::new(),
+                    sidebar_view: SidebarView::Sessions,
+                    tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             session_id: "session_fox_1234567890000_deadbeef".into(),
@@ -10133,6 +9862,7 @@ mod tests {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("only", cx);
+            workspace.sidebar_view = SidebarView::Learn;
             let _ = window;
             workspace
         });
@@ -10873,140 +10603,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tutorial_layout_keeps_every_lesson_outside_panel_content(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = focused_workspace(cx);
-        workspace.update(vcx, |workspace, cx| {
-            workspace.push_test_panel("A long previous prompt and panel title", cx);
-            workspace.slots[0].width_fraction = 1.0;
-            workspace.slots[0].animated_width =
-                AnimatedValue::new(1.0, transition::policy(Transition::PanelWidth).duration);
-            workspace.slots[0].panel.update(cx, |panel, cx| {
-                panel.items = vec![
-                    crate::panel::Item::User("The previous prompt must remain readable alongside onboarding and a pinned task list".into()),
-                    crate::panel::Item::Tool {
-                        call_id: "layout-todo".into(), name: "todo".into(), input: "{}".into(),
-                        output: r#"[{"id":"layout","content":"Keep tutorial hints clear of this panel","status":"in_progress","priority":"high"}]"#.into(),
-                        done: true, error: None,
-                    },
-                ];
-                cx.notify();
-            });
-            cx.notify();
-        });
-        let handle = vcx.update(|window, _| window.window_handle());
-        // Exercise both sides of wrap thresholds, a small laptop window, and
-        // the minimum screenshot size, with and without the sidebar.
-        for (width, height) in [
-            (640., 480.),
-            (800., 600.),
-            (917., 700.),
-            (918., 700.),
-            (1440., 1000.),
-        ] {
-            vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
-            for sidebar in [false, true] {
-                for stage in 1..=3 {
-                    workspace.update(vcx, |workspace, cx| {
-                        workspace.show_sidebar = sidebar;
-                        workspace.coach = learning::Coach::new();
-                        for skill in ONBOARDING_SKILLS.iter().take(match stage {
-                            1 => 0,
-                            2 => 4,
-                            _ => 7,
-                        }) {
-                            workspace.coach.used_shortcut(skill, learning::now());
-                        }
-                        workspace.showcase_motion("L", stage == 2, "Focus right", cx);
-                        cx.notify();
-                    });
-                    vcx.run_until_parked();
-                    let dock = vcx.debug_bounds("tutorial-guides").unwrap();
-                    let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-                    let panel = vcx.debug_bounds("panel-0").unwrap();
-                    assert_no_visual_overlap("tutorial dock", dock, "canvas", canvas);
-                    assert_no_visual_overlap("tutorial dock", dock, "panel", panel);
-                    for id in [
-                        "panel-session-title",
-                        "pinned-latest-prompt",
-                        "pinned-todo-card",
-                        "transcript",
-                        "panel-meta",
-                    ] {
-                        let bounds = vcx
-                            .debug_bounds(id)
-                            .unwrap_or_else(|| panic!("missing {id}"));
-                        assert_no_visual_overlap("tutorial dock", dock, id, bounds);
-                    }
-                    assert!(panel.bottom() <= px(height), "composer must stay on screen");
-                    assert!(
-                        canvas.size.height > px(200.0),
-                        "tutorial must leave usable panel space"
-                    );
-                    let mut regions = vec![(
-                        "tutorial-stage",
-                        vcx.debug_bounds("tutorial-stage").unwrap(),
-                    )];
-                    for id in [
-                        "tutorial-nav-left",
-                        "tutorial-nav-down",
-                        "tutorial-nav-up",
-                        "tutorial-nav-right",
-                        "tutorial-new",
-                        "tutorial-close",
-                        "tutorial-width-presets",
-                        "tutorial-resize",
-                        "tutorial-overview",
-                    ] {
-                        if let Some(bounds) = vcx.debug_bounds(id) {
-                            assert!(bounds.size.width > px(0.0) && bounds.size.height > px(0.0));
-                            assert!(
-                                dock.contains(&bounds.origin)
-                                    && dock.contains(&bounds.bottom_right()),
-                                "{id} {bounds:?} must fit inside dock {dock:?} at {width}x{height}, sidebar={sidebar}, stage={stage}"
-                            );
-                            regions.push((id, bounds));
-                        }
-                    }
-                    assert_eq!(
-                        regions.len(),
-                        match stage {
-                            1 => 7,
-                            2 => 6,
-                            _ => 3,
-                        }
-                    );
-                    for (i, (name, bounds)) in regions.iter().enumerate() {
-                        for (other_name, other) in &regions[i + 1..] {
-                            assert_no_visual_overlap(name, *bounds, other_name, *other);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[gpui::test]
-    fn tutorial_completion_returns_reserved_space_to_panels(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = focused_workspace(cx);
-        vcx.run_until_parked();
-        let before = vcx.debug_bounds("workspace-canvas").unwrap();
-        let dock_height = vcx.debug_bounds("tutorial-guides").unwrap().size.height;
-        workspace.update(vcx, |workspace, cx| {
-            for skill in ONBOARDING_SKILLS {
-                workspace.coach.used_shortcut(skill, learning::now());
-            }
-            workspace.showcase_cue = None;
-            cx.notify();
-        });
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("tutorial-guides").is_none());
-        let after = vcx.debug_bounds("workspace-canvas").unwrap();
-        assert_eq!(after.size.height, before.size.height + dock_height);
-    }
-
-    #[gpui::test]
     fn contextual_tutorial_controls_drive_the_actions_they_depict(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
+        workspace.update(cx, |workspace, cx| {
+            workspace.sidebar_view = SidebarView::Learn;
+            cx.notify();
+        });
         cx.run_until_parked();
 
         let new_session = cx.debug_bounds("tutorial-new").expect("new session guide");
@@ -11016,7 +10618,7 @@ mod tests {
         assert_no_visual_overlap("new session", new_session, "right guide", right_guide);
         let dock = cx.debug_bounds("tutorial-guides").unwrap();
         let canvas = cx.debug_bounds("workspace-canvas").unwrap();
-        assert_no_visual_overlap("tutorial dock", dock, "workspace canvas", canvas);
+        assert_no_visual_overlap("Learn panel", dock, "workspace canvas", canvas);
 
         cx.simulate_click(new_session.center(), gpui::Modifiers::default());
         cx.run_until_parked();
@@ -11051,7 +10653,7 @@ mod tests {
         workspace.update(cx, |workspace, _| {
             assert!(
                 workspace.camera_x[0] > camera_before,
-                "the tutorial dock must leave canvas touchpad gestures working"
+                "the Learn panel must leave canvas touchpad gestures working"
             );
         });
 
@@ -11116,6 +10718,10 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, cx) = focused_workspace(cx);
+        workspace.update(cx, |workspace, cx| {
+            workspace.sidebar_view = SidebarView::Learn;
+            cx.notify();
+        });
         cx.run_until_parked();
 
         assert!(cx.debug_bounds("tutorial-new").is_some());
@@ -11145,6 +10751,9 @@ mod tests {
         });
         cx.run_until_parked();
 
+        let next = cx.debug_bounds("tutorial-next").unwrap();
+        cx.simulate_click(next.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
         assert!(cx.debug_bounds("tutorial-new").is_none());
         assert!(cx.debug_bounds("tutorial-close").is_none());
         assert!(cx.debug_bounds("tutorial-width-presets").is_some());
@@ -11153,32 +10762,31 @@ mod tests {
     }
 
     #[gpui::test]
-    fn onboarding_disappears_after_every_presented_skill_is_practiced(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn onboarding_is_not_painted_over_the_workspace(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
         cx.run_until_parked();
-        assert!(cx.debug_bounds("tutorial-guides").is_some());
-
-        let now = learning::now();
+        assert!(cx.debug_bounds("tutorial-guides").is_none());
         workspace.update(cx, |workspace, cx| {
             for skill in ONBOARDING_SKILLS {
-                workspace.test_coach_mut().used_shortcut(skill, now);
+                workspace.coach.used_shortcut(skill, learning::now());
             }
-            assert!(workspace.onboarding_complete());
+            workspace.sidebar_view = SidebarView::Learn;
             cx.notify();
         });
         cx.run_until_parked();
-
         assert!(
-            cx.debug_bounds("tutorial-guides").is_none(),
-            "completed first-run onboarding should no longer cover the workspace"
+            cx.debug_bounds("tutorial-guides").is_some(),
+            "Learn remains available as a reference"
         );
     }
 
     #[gpui::test]
     fn showcase_is_on_by_default_and_only_paints_workspace_motions(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
+        workspace.update(cx, |workspace, cx| {
+            workspace.sidebar_view = SidebarView::Learn;
+            cx.notify();
+        });
         cx.run_until_parked();
         workspace.update(cx, |workspace, _| assert!(workspace.showcase_mode));
 

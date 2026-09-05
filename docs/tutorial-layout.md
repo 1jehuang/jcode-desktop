@@ -1,73 +1,56 @@
-# Tutorial layout safety
+# Learn panel
 
-Onboarding is a reserved region above `workspace-canvas`, not a transparent
-full-window overlay. All lesson controls share a wrapping grid. The grid's
-cell, gap, heading, and padding metrics also determine the height removed from
-the canvas viewport before sizing panels, row transitions, and the minimap.
-Completing onboarding returns that space to the panels.
+The tutorial lives in the **learn** tab immediately after **chat** in the
+upper-left sidebar. It is opt-in: normal sessions show no onboarding banner,
+floating shortcut controls, or extra reserved space above the canvas.
 
-When adding a lesson:
+The panel shows one of three short stages, using text rows and small key labels:
 
-- Keep it in `render_tutorial_guides` and in normal layout flow. Do not position
-  it absolutely over a session, its title, pinned prompt, transcript, or composer.
-- Update the stage's control count in `tutorial_dock_height` and the expected
-  lesson count in the layout regression. Keep press animations inside the cell.
-- Extend the rendered-boundary regression if introducing another protected
-  region or control. `assert_no_visual_overlap` checks actual GPUI rectangles,
-  not assumed coordinates. Intentionally overlapping modal dialogs should be
-  tested separately, rather than exempting tutorial content from these checks.
+1. Find your way: navigate strips and panels, create and close sessions.
+2. Make it yours: move panels and select width presets.
+3. Take a step back: cycle width and toggle overview.
+
+**Next** and **Back** change stages without requiring every shortcut to be
+practiced. **Done** returns to Chat. Reopening Learn preserves the stage, and
+both the selected tab and stage survive workspace reload. Old snapshots without
+these fields default to Chat and the first stage. Practiced shortcuts retain
+subtle checkmarks, and clicking a lesson invokes the same workspace action as
+the advertised shortcut. Learn remains available after completion as a reference.
+
+## Layout contract
+
+- Render tutorial content only inside `SidebarView::Learn`, never over a panel.
+- Changing tabs or stages must not change the session canvas size or position.
+- Keep stage navigation outside the scrollable lesson content so it stays
+  reachable in short windows.
+- Keep Learn early in the tab strip so it is visible without horizontal scrolling.
+- Do not reintroduce a global dock or automatic onboarding chrome.
 
 ## Verification
 
 ```sh
-cargo test -p jcode-desktop-ui tutorial
-cargo test -p jcode-desktop-ui workspace::tests:: -- --test-threads=1
-python3 scripts/screenshot.py target/ui-review-onboarding.png
-python3 scripts/screenshot.py target/ui-review-onboarding-small.png --no-build --size 640x480
+cargo test -p jcode-desktop-ui tutorial -- --test-threads=1
+cargo test -p jcode-desktop-ui onboarding -- --nocapture --test-threads=1
+python3 scripts/screenshot.py target/learn-stage1.png --learn-stage 1
+python3 scripts/screenshot.py target/learn-stage2.png --no-build --learn-stage 2
+python3 scripts/screenshot.py target/learn-small.png --no-build --learn-stage 1 --size 640x480
 ```
 
-Use fresh screenshot filenames because the harness refuses to overwrite files.
-The layout test renders all three stages at five window sizes, with and without
-the sidebar, using a real pinned prompt and task card. It checks pairwise lesson
-separation, containment inside the dock, separation from the panel and its text
-regions, and continued room for the composer. Separate tests cover clickable
-controls, touchpad navigation, stage progression, and space reclamation.
+Use fresh screenshot names. The isolated harness never opens a window on the
+user's desktop. Geometry tests render all stages at five window sizes, verify
+separation from panels and pinned prompts, and check that hiding the sidebar
+hides the tutorial. Interaction tests click Learn, Next, Back, Done, and lesson
+controls, compare canvas bounds before and after, and round-trip snapshot state.
 
-## Measured before/after acceptance (2026-09-05)
+### Verified result (2026-09-05)
 
-The exact same `tutorial_geometry_tests.rs` was compiled against the pre-fix
-project (`9352c5e`) in an isolated source archive and against the fixed project
-(`f569cfe` plus the acceptance test). The test renders the actual Workspace and
-Panel components through GPUI. It does not depend on the new dock's geometry or
-assume where the controls should be. Both runs cover 30 layouts and 160 rendered
-guide instances, including the step labels, with a pinned previous prompt.
-
-| Observed metric | Before | After |
-| --- | ---: | ---: |
-| Guide intersections with session panels | 160 | 0 |
-| Guide intersections with the pinned previous prompt | 20 | 0 |
-| Summed panel intersection area across cases (px²) | 481,380 | 0 |
-| Guide-to-guide intersections | 0 | 0 |
-| Guides outside the window | 0 | 0 |
-
-The pre-fix run fails the acceptance assertion because all 160 guide instances
-cover panel content. The fixed run passes with zero intersections, including
-zero intersections with the previous prompt. This establishes an observed
-improvement, not just a visual inspection or a test of the sizing formula.
-The area is summed over guide instances and test cases, not a unique screen area.
-
-Re-run the measurable acceptance check with:
-
-```sh
-cargo test -p jcode-desktop-ui onboarding_geometry_acceptance -- --nocapture --test-threads=1
-```
-
-It prints an `ONBOARDING_GEOMETRY` summary before asserting zero collisions.
-
-The fixed full UI suite also ran serially: 295 passed, 3 failed, 6 ignored.
-All three residual failures were reproduced on the pre-fix project with the
-same assertions: `email_inbox_moves_when_the_user_scrolls`,
-`restored_scroll_is_not_replaced_when_history_reattaches`, and
-`a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`. They are not
-introduced by the reserved tutorial layout. The onboarding acceptance check,
-interaction tests, and space-reclamation tests pass on the fixed implementation.
+- Tutorial tests: 7 passed. Onboarding tests: 2 passed (one overlaps the tutorial filter).
+- Rendered geometry: 15 stage/window combinations, 95 control regions, zero
+  panel, pinned-prompt, or control collisions, and zero reserved top pixels.
+- Real-app screenshots inspected for all three stages at 1440×1000 and the
+  first stage at 640×480. Reduced row spacing after the compact screenshot
+  exposed clipping, then confirmed all six rows and Next were visible.
+- Screenshot helper tests: 5 passed. Final full UI suite: 300 passed, 6 ignored,
+  with the same three pre-existing failures in email inbox scrolling, restored
+  history scroll position, and touchpad reticle rendering.
+- Live desktop rebuild/reload confirmed by UI generation activation in the log.

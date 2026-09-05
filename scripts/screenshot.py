@@ -36,6 +36,8 @@ def main():
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--size", default="1440x1000")
+    parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
+                        help="show the staged tutorial in the top-left Learn tab")
     parser.add_argument("--panels", type=int, choices=range(1, 7), default=1,
                         help="show a connected folder group with its middle panel focused")
     parser.add_argument("--focus-panel", type=int,
@@ -68,6 +70,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.learn_stage is not None:
+            env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
         env["VK_DRIVER_FILES"] = str(drivers[0])
         wm_config = root / "openbox.xml"
