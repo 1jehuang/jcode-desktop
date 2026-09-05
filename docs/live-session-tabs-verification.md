@@ -71,6 +71,54 @@ python3 scripts/accept-folder-panels.py target/live-tabs-acceptance-new
 python3 scripts/screenshot.py target/live-tabs-review-new.png
 ```
 
+## Whole-result rerun after establishing the map
+
+A fresh run on 2026-09-05, starting at 22:13 UTC, exercised the full UI test suite,
+rebuilt Desktop, ran the complete native workflow, rendered the current app,
+and repeated the raster/OCR measurements. Artifacts are under
+`target/live-tabs-whole-result/` and `target/live-tabs-whole-native/`.
+
+All eight mapped tests ran and passed **inside the full suite**, not merely in
+a cached executable replay:
+
+| Mapped requirement/output | Fresh observed outcome |
+| --- | --- |
+| Unnamed/reconnecting identity | `folder_header_keeps_an_identity_before_a_session_is_named`: PASS |
+| Five live-state dots and removal of stale dots | `minimap_paints_live_state_and_todo_progress_through_the_workspace_surface`: PASS |
+| Empty workspace identity and return to a live session | `empty_workspace_does_not_mark_another_rows_session_as_focused`: PASS |
+| Normal-layout panel clearance and minimap clearance | `live_tabs_reserve_space_in_normal_mode_and_beside_minimap`: PASS |
+| Long-title overflow and keyboard reveal in an 800px window | `live_tabs_reveal_keyboard_selection_in_a_narrow_window`: PASS |
+| Folder baseline, active-tab height and cross-row selection | `live_tabs_switch_rows_and_keep_the_folder_baseline`: PASS |
+| Resize, sidebar visibility and equal panel baselines | `folder_panels_share_a_level_body_without_individual_tabs`: PASS |
+| Switching between independent normal cards and folder sheet | `normal_mode_uses_separate_equal_height_panels_without_the_folder_surface`: PASS |
+| Real tab selection | Native click changed slot 2 → 0 and keyboard panel → 0, kept the same three real session IDs and closed overview |
+| Sidebar separation at every focus position | Native raster checks passed at focus 0, 1 and 2, after the tab click, after overview and after layout restoration |
+| Existing surrounding workflows | Native panel clicks, overview hover/selection, sidebar scrolling, Settings navigation, Normal/Folder switching and persistence all passed |
+| Old rounded marker removed | Fresh raster: 0 non-backing pixels in the old marker bounds, versus 326 before |
+| Wide top shoulder removed | Fresh raster: 0 sheet pixels in the sampled shoulder, versus 15,000 before |
+| Sidebar no longer forced to connect | Fresh raster flood fill did not reach the selected sidebar row; all 968 gutter pixels use the backing color |
+| Readable live-session label | Fresh OCR reads `Review markdown renderin..` in the tab. Full panel-header OCR reads `Review markdown rendering with a very long session title` |
+| Build and current native rendering | Both succeeded |
+| Applying to the user's existing window | Still blocked by the live host's explicit hot-reload-disabled response; no restart performed |
+
+The exact-title OCR assertion initially failed because a concurrent change
+lengthened the screenshot fixture title. The new output correctly uses an
+ellipsis, rather than hiding the identity or overflowing the tab. Both the
+original failed exact-match check (`measurements.json`) and the corrected
+prefix/full-header observations (`title-check-corrected.json`) are retained.
+
+The full suite's overall result was **312 passed, 3 failed, 6 ignored**. Its three
+failures remain the email inbox scroll, restored transcript scroll and swipe
+reticle checks described below. Separate redundant targeted retries encountered
+in-progress HTML-preview compilation errors, then SIGTERM during compilation.
+Those retries are not counted as passes; the eight PASS results above are from
+`full-suite.log` in this new run.
+
+Source fingerprints before/after are retained. Nine files changed concurrently,
+including the screenshot fixture and unrelated preview/activity work, so this is
+not presented as a frozen release certification. It is a whole-result rerun of
+every mapped check, with changing-input and failed-check evidence preserved.
+
 ## Limits and rollout gate
 
 The broader serial suite reported 313 passed, 3 failed and 6 ignored. The failing
