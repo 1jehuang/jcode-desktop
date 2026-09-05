@@ -71,3 +71,26 @@ expanded/collapsed companions. Earlier successful build and live activation
 remain valid historical evidence, but the latest fresh relink is explicitly
 unverified until disk capacity is available. No unrelated files were deleted to
 force that check through.
+
+## Evidence boundary and live-session attempt
+
+The Xvfb runs use the real application and native input, but **their transcript
+content is synthetic fixture data**. They prove the measured rendering and
+disclosure behavior for that fixture. They do not prove that the user's live
+session, current server connection, and real tool events satisfy the same path.
+The earlier description of these runs as full end-user acceptance was too broad.
+
+At 23:34–23:35 UTC, a read-only capture of the actual desktop showed terminal
+sessions, not the Jcode Desktop transcript. The installed application's ordinary
+show-window command returned successfully, but a subsequent capture showed an
+unrelated browser/login workflow rather than a usable Desktop transcript. No
+clicks or keystrokes were sent into those unrelated windows. Concurrent desktop
+activity prevented a safely targeted live-session disclosure check. Accordingly,
+**real-session end-user acceptance remains unverified**. Private screenshots of
+the live desktop are kept only in scratch, not committed.
+
+Disk availability had recovered to approximately 9 GiB during this later check.
+The earlier disk-full build failure is historical, not a claim that the disk is
+still full. This follow-up did not rerun the fresh relink. Objective fixture
+measurements and current-source test results still stand, while user preference,
+the inferred target surface, and live-session acceptance are not asserted.
