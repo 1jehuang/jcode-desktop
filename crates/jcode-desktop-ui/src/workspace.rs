@@ -1671,9 +1671,10 @@ impl Workspace {
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
         self.showcase_motion("K", false, "Focus strip above", cx);
         if self.active_row > 0 {
-            if self.change_row(self.active_row - 1, window, cx) {
-                self.begin_action_capture("focus_up", window);
-            }
+            self.change_row(self.active_row - 1, window, cx);
+            // Empty strips still animate. Learning credit must not decide
+            // whether an actual navigation is included in latency telemetry.
+            self.begin_action_capture("focus_up", window);
         } else {
             // Pressing into the top edge cannot navigate, but the chord was
             // still produced by hand, so the tutorial lesson must not linger.
@@ -1685,9 +1686,8 @@ impl Workspace {
     fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
         self.showcase_motion("J", false, "Focus strip below", cx);
         if self.active_row + 1 < STRIP_COUNT {
-            if self.change_row(self.active_row + 1, window, cx) {
-                self.begin_action_capture("focus_down", window);
-            }
+            self.change_row(self.active_row + 1, window, cx);
+            self.begin_action_capture("focus_down", window);
         } else {
             self.coach.used_shortcut_without_effect("focus_up_down");
             self.after_coach_update(cx);
@@ -5903,9 +5903,12 @@ impl Render for Workspace {
                 mid_draw_inputs: input.mid_draw_events_dropped,
             };
         }
-        let action_settled = !self.row_progress.is_animating()
-            && !self.camera_dirty[self.active_row]
-            && self.camera_started[self.active_row].is_none();
+        // Empty strips have no panel layout to clear camera_dirty. Their
+        // navigation is settled once the row transition finishes.
+        let camera_settled = self.row_indices(self.active_row).next().is_none()
+            || (!self.camera_dirty[self.active_row]
+                && self.camera_started[self.active_row].is_none());
+        let action_settled = !self.row_progress.is_animating() && camera_settled;
         if let Some(capture) = self.action_capture.as_mut() {
             capture.observe(
                 Instant::now(),
@@ -6847,6 +6850,26 @@ mod tests {
                 p99 as f64 / 1_000.0,
                 transition::policy(transition).duration.as_millis(),
             );
+        }
+    }
+
+    #[gpui::test]
+    fn empty_strip_navigation_is_captured_but_boundary_noops_are_not(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let directory = tempfile::tempdir().unwrap();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            Workspace::for_test(learning::Coach::new(), cx)
+        });
+        vcx.update(|window, cx| window.focus(&workspace.read(cx).focus_handle.clone(), cx));
+        for (key, row, expected) in [("super-j", 1, true), ("super-k", 0, true), ("super-k", 0, false)] {
+            workspace.update(vcx, |workspace, _| {
+                workspace.action_capture = Some(ActionCapture::new(directory.path().join("actions.jsonl")));
+            });
+            vcx.simulate_keystrokes(key);
+            workspace.read_with(vcx, |workspace, _| {
+                assert_eq!(workspace.active_row, row);
+                assert_eq!(workspace.action_capture.as_ref().unwrap().is_pending(), expected);
+            });
         }
     }
 

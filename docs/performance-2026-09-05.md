@@ -42,3 +42,42 @@ Only an opt-in test and this report were added. No runtime behavior was changed,
 ## Validation
 
 Both focused profilers passed. The full UI suite reported 281 passed, 5 failed, and 5 ignored. Failures were `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`, `right_edge_is_a_full_height_click_target_for_a_new_session`, and `showcase_is_on_by_default_and_only_paints_workspace_motions`. The new test is ignored in that suite and changes no runtime code. These failures were not repaired as part of profiling, and the full suite must not be reported as green.
+
+## Public-binary follow-up
+
+Built the actual debug executable and drove keyboard navigation through the private Xvfb/Openbox screenshot workflow. The initial standard screenshot command correctly refused to overwrite an existing `target/ui-review.png`; subsequent captures used unique names. Inspected `target/perf/xvfb-actions.png`, `hardware-actions.png`, and `settled-actions.png`: the fixture transcript, math, code block, accounts, and composer painted after navigation. The performance overlay and shortcut showcase overlap some top chrome, so these images are evidence of rendering, not a claim of flawless visual layout.
+
+An initial software-rendered run showed 30.8 ms draw p95 and 104.5 ms input-to-frame p95. A follow-up requesting the Intel Vulkan ICD showed 10.0 ms draw and 32.1 ms input-to-frame, but a matched software run also showed 10.0 ms draw. This does **not** establish a GPU-driver cause. The private X11 rendering/presentation path differs from the live Wayland session.
+
+Public testing uncovered two real instrumentation defects:
+
+1. Focus action recording was gated by whether navigation earned learning credit. Empty-strip transitions animated but generated no records.
+2. Recording those transitions then exposed a completion bug: empty strips never clear panel-camera layout dirtiness, so their captures did not finish. The first patched run emitted only five `focus_up` records instead of ten up/down records.
+
+Fixed both: every actual strip change begins capture, boundary no-ops do not, and empty-strip capture completion depends on the row animation rather than nonexistent panel layout. This changes opt-in telemetry, not animation speed.
+
+The final public workflow sent five `super+j` / `super+k` pairs with 650 ms between keys. It asserted exactly ten JSONL records with both action names and returned to `strip=0 focus=0 widths=1.00`. Observed ranges of **per-action p95s**, not one pooled percentile:
+
+| Metric | Minimum | Maximum |
+| --- | --- | --- |
+| Draw | 5.44 ms | 20.99 ms |
+| Presentation interval | 27.66 ms | 38.08 ms |
+| Input-to-frame | 16.97 ms | 33.91 ms |
+| Construction interval | 31.51 ms | 32.57 ms |
+
+This reproduces approximately 31 Hz construction cadence in the private fixture, despite relatively small view-construction cost. It narrows the investigation toward frame scheduling/presentation rather than transcript-length scaling, but cannot establish the cause of lag on the user's active Wayland window. No smoothness improvement is claimed.
+
+### Requirement-to-evidence mapping
+
+- Profile the running app: live perf captures and process/system counters above.
+- Distinguish transcript CPU work from actual frame delivery: headless 32-panel and 100/1,000/10,000-message profilers plus real public-binary presentation/input histograms.
+- Capture real empty-strip navigation: new `empty_strip_navigation_is_captured_but_boundary_noops_are_not` regression passed, and public JSONL workflow produced ten of ten expected records after the completion fix.
+- Preserve boundary no-op semantics: regression checks the top-edge `super+k` does not start a capture.
+- Preserve telemetry calculations: all six `performance::tests` passed after the changes.
+- Check UI integration: debug app built successfully and real screenshots were inspected. No network, email, payment, or daemon actions were sent by the inert fixture.
+- Investigate existing suite failures: rerunning the test binary serially with isolated HOME/XDG configuration still produced the same five failures (282 passed, 5 failed, 5 ignored in that concurrently updated checkout). User configuration alone does not explain them. They remain outside this telemetry patch.
+- Deployment boundary: rebuild-and-reload used the instance socket's Ctrl+R-equivalent action. An interrupted rebuild reported SIGTERM, and an explicit retry successfully activated generation 11. Final activation evidence is recorded below.
+
+Release packaging and changes to the live compositor were not exercised: neither is changed by this telemetry patch, and private X11 timing must not be presented as a live Wayland acceptance result. Earlier statements that this work added only a test/report are superseded by this follow-up's opt-in telemetry fix.
+
+Final hot reload: successfully activated UI generation 12 from `target/debug/libjcode_desktop_ui.so` after the final public workflow passed.

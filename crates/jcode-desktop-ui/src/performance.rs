@@ -74,13 +74,14 @@ struct ActionRecord {
 }
 
 impl ActionCapture {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self { path, pending: None }
+    }
+
     pub fn from_env() -> Option<Self> {
         std::env::var_os("JCODE_DESKTOP_PERF_ACTIONS")
             .filter(|path| !path.is_empty())
-            .map(|path| Self {
-                path: path.into(),
-                pending: None,
-            })
+            .map(|path| Self::new(path.into()))
     }
 
     pub fn begin(
