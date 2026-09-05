@@ -90,6 +90,10 @@ const TUTORIAL_GAP: f32 = 6.0;
 const TUTORIAL_PADDING: f32 = 12.0;
 const TUTORIAL_HEADING_HEIGHT: f32 = 16.0;
 
+#[cfg(test)]
+#[path = "tutorial_geometry_tests.rs"]
+mod tutorial_geometry_tests;
+
 fn tutorial_dock_height(stage: usize, viewport_width: f32) -> f32 {
     let count: usize = match stage {
         1 => 6,
