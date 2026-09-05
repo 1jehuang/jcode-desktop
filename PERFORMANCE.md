@@ -1,5 +1,39 @@
 # Interaction latency profile
 
+## Sidebar hover, 2026-09-05
+
+Session rows previously lived in one eagerly built scrollable div. GPUI's hover
+style invalidated the workspace, rebuilding and measuring every history row,
+including title shaping for rows outside the viewport. The sidebar now uses a
+variable-height virtual list with 100 px overscan and initial height estimates.
+Only visible rows are constructed. Layout-affecting changes invalidate cached
+row heights without resetting scroll position. The file browser retains its
+separate scroll handle, and the session scrollbar uses the virtual list state.
+
+The debug-build `sidebar_hover_frame_profile` alternates actual GPUI mouse-move
+events between two rows and includes the next constructed frame. With 10 warmups
+and 50 measured samples, the before/after p95 results were:
+
+| Sessions | Eager rows | Virtual rows |
+| --- | ---: | ---: |
+| 10 | 1.96 ms | 2.62 ms |
+| 100 | 10.68 ms | 6.07 ms |
+| 500 | 53.45 ms | 5.31 ms |
+
+These are single-run headless CPU measurements, not physical input-to-photon or
+live compositor latency. The test excludes transcript workload and machine load
+can affect the timings. Run with:
+
+```sh
+cargo test -p jcode-desktop-ui sidebar_hover_frame_profile -- --ignored --nocapture
+```
+
+Non-timing regressions additionally assert that a 500-session hover measures
+fewer than 50 titles, end-of-history remains reachable, title updates and added
+history preserve the visible row, and metadata changes update row heights.
+Existing UI tests cover wheel scrolling, clicking sessions, section ordering,
+saved dividers, equal title heights, and the outer-gutter scrollbar placement.
+
 ## Live self-development profile
 
 Self-development launches (`--hot-reload`) show a compact live performance

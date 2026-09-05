@@ -497,6 +497,8 @@ pub struct Workspace {
     connected: bool,
     focus_handle: FocusHandle,
     sidebar_scroll: ScrollHandle,
+    sidebar_sessions_list: gpui::ListState,
+    sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_navigation_scroll: ScrollHandle,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
@@ -669,6 +671,8 @@ impl Workspace {
             connected: false,
             focus_handle: cx.focus_handle(),
             sidebar_scroll: ScrollHandle::new(),
+            sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
+            sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
@@ -765,6 +769,8 @@ impl Workspace {
             connected: true,
             focus_handle: cx.focus_handle(),
             sidebar_scroll: ScrollHandle::new(),
+            sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
+            sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             focus_pending: false,
             gesture_last: None,
@@ -3470,12 +3476,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_sidebar(
-        &self,
-        fullscreen: bool,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_id = self
             .slots
             .get(self.active)
@@ -3499,16 +3500,6 @@ impl Workspace {
                 (panel.session_id.clone(), panel.title.to_string())
             })
             .collect::<HashMap<_, _>>();
-        let mut list = div()
-            .id("sidebar-session-list")
-            .debug_selector(|| "sidebar-session-list".into())
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .restrict_scroll_to_axis()
-            .track_scroll(&self.sidebar_scroll)
-            .py_2();
-
         // A session which already has a panel is navigation. Everything else
         // is an invitation to open another panel, so keep those two actions in
         // visibly separate sections. Preserve the TUI saved/recency ordering
@@ -3537,208 +3528,266 @@ impl Workspace {
             .map(|session| (true, session))
             .chain(other_sessions.into_iter().map(|session| (false, session)))
             .collect::<Vec<_>>();
-        let mut previous_section = None;
-        let mut previous_saved = None;
-        for (sidebar_index, (is_open, session)) in ordered_sessions.into_iter().enumerate() {
-            if previous_section != Some(is_open) {
-                previous_section = Some(is_open);
-                previous_saved = None;
-                let (id, label, count) = if is_open {
-                    (
-                        "sidebar-open-panels-heading",
-                        "Active sessions",
-                        open_session_count,
-                    )
-                } else {
-                    (
-                        "sidebar-other-sessions-heading",
-                        "Session history",
-                        other_session_count,
-                    )
-                };
-                list = list.child(
-                    div()
-                        .id(id)
-                        .debug_selector(move || id.into())
-                        .mx_2()
-                        .mt(if is_open { px(4.0) } else { px(12.0) })
-                        .mb_2()
-                        .px_2()
-                        .pt(if is_open { px(4.0) } else { px(10.0) })
-                        .when(!is_open, |heading| {
-                            heading
-                                .border_t_1()
-                                .border_color(Theme::global().PANEL_BORDER)
-                        })
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_size(px(10.0))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(
-                            div()
-                                .flex_1()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .min_w(px(18.0))
-                                .px_1()
-                                .rounded_full()
-                                .bg(Theme::global().HEADER_BG)
-                                .text_center()
-                                .text_size(px(9.0))
-                                .child(count.to_string()),
-                        ),
-                );
-            }
-            if previous_saved == Some(true) && !session.saved {
-                list = list.child(
-                    div()
-                        .id("sidebar-session-divider")
-                        .debug_selector(|| "sidebar-session-divider".into())
-                        .mx_4()
-                        .my_2()
-                        .border_t_1()
-                        .border_color(Theme::global().PANEL_BORDER),
-                );
-            }
-            previous_saved = Some(session.saved);
-            let selected = active_id.as_deref() == Some(session.session_id.as_str());
-            let (icon, mut title) = sidebar_session_title(&session);
-            if session
-                .title
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(str::is_empty)
-                && let Some(open_title) = open_titles.get(&session.session_id)
-                && custom_sidebar_title(&session.session_id, open_title)
-            {
-                title.clone_from(open_title);
-            }
-            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-            let title_size = sidebar_title_font_size(&title, window);
-            let directory = sidebar_session_directory(&session);
-            let meta = sidebar_session_meta(&session);
-            let details = match (directory, meta) {
-                (Some(directory), Some(meta)) => Some(format!("{directory} · {meta}")),
-                (Some(directory), None) => Some(directory),
-                (None, Some(meta)) => Some(meta),
-                (None, None) => None,
-            };
-            let (status_icon, _status_label, status_kind) = sidebar_session_status(
-                &session.status,
-                open_statuses.get(&session.session_id).map(String::as_str),
-            );
-            let status_color = match status_kind {
-                SidebarStatusKind::Good => Theme::global().AI_ACCENT,
-                SidebarStatusKind::Busy => Theme::global().WARN,
-                SidebarStatusKind::Bad => Theme::global().ERROR,
-                SidebarStatusKind::Dim => Theme::global().TEXT_DIM,
-            };
-
+        // Keep only visible rows (plus a small overscan) in GPUI's layout and
+        // text-shaping work. Hover invalidates this view, so eagerly building
+        // all history rows here makes pointer latency scale with history size.
+        let layout = ordered_sessions
+            .iter()
+            .map(|(is_open, session)| SidebarSessionLayout {
+                session_id: session.session_id.clone(),
+                open: *is_open,
+                selected: active_id.as_deref() == Some(session.session_id.as_str()),
+                saved: session.saved,
+                details: session
+                    .working_dir
+                    .as_deref()
+                    .is_some_and(|dir| !dir.trim().is_empty())
+                    || sidebar_session_created_ms(&session.session_id).is_some()
+                    || session.transcript_bytes.is_some_and(|bytes| bytes > 0),
+            })
+            .collect::<Vec<_>>();
+        sync_sidebar_session_layout(
+            &self.sidebar_sessions_list,
+            &mut self.sidebar_session_layout,
+            layout,
+        );
+        let workspace = cx.entity();
+        let mut list = div()
+            .id("sidebar-session-list")
+            .debug_selector(|| "sidebar-session-list".into())
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden();
+        if !ordered_sessions.is_empty() {
             list = list.child(
-                div()
-                    .id(("sidebar-session", sidebar_index))
-                    .debug_selector(move || format!("sidebar-session-{sidebar_index}").into())
-                    .ml_2()
-                    .when(!selected, |el| el.mr(px(1.0)))
-                    .mb_1()
-                    .relative()
-                    .when(selected, |el| el.mb(px(FOLDER_TAB_RADIUS + 4.0)))
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .rounded_l_lg()
-                    .cursor_pointer()
-                    .when(selected, |el| {
-                        el.child(
-                            div()
-                                .absolute()
-                                .left(px(-1.0))
-                                .top(px(-1.0))
-                                .bottom(px(-1.0))
-                                .right(px(FOLDER_TAB_RADIUS))
-                                .rounded_l_lg()
-                                .border_l_1()
-                                .border_t_1()
-                                .border_b_1()
-                                .border_color(Theme::global().PANEL_BORDER),
-                        )
-                        .child(folder_tab_corner(true))
-                        .child(folder_tab_corner(false))
-                    })
-                    // The selected folder tab opens directly onto the canvas.
-                    .bg(if selected {
-                        Theme::global().PANEL_BG
-                    } else {
-                        Theme::global().HEADER_BG
-                    })
-                    .border_l_1()
-                    .border_t_1()
-                    .border_b_1()
-                    .border_color(gpui::rgba(0x00000000))
-                    .pr(px(crate::scrollbar::GUTTER + 8.0))
-                    .hover(move |el| {
-                        el.bg(if selected {
-                            Theme::global().PANEL_BG
-                        } else {
-                            Theme::global().TOOL_BG
+                gpui::list(
+                    self.sidebar_sessions_list.clone(),
+                    move |sidebar_index, window, cx| {
+                        let (is_open, session) = &ordered_sessions[sidebar_index];
+                        let is_open = *is_open;
+                        let previous = sidebar_index
+                            .checked_sub(1)
+                            .map(|index| &ordered_sessions[index]);
+                        let previous_section = previous.map(|(open, _)| *open);
+                        let previous_saved = previous.map(|(_, session)| session.saved);
+                        workspace.update(cx, |_, cx| {
+                            let mut list = div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .when(sidebar_index == 0, |el| el.pt_2())
+                                .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
+                            if previous_section != Some(is_open) {
+                                let (id, label, count) = if is_open {
+                                    (
+                                        "sidebar-open-panels-heading",
+                                        "Active sessions",
+                                        open_session_count,
+                                    )
+                                } else {
+                                    (
+                                        "sidebar-other-sessions-heading",
+                                        "Session history",
+                                        other_session_count,
+                                    )
+                                };
+                                list = list.child(
+                                    div()
+                                        .id(id)
+                                        .debug_selector(move || id.into())
+                                        .mx_2()
+                                        .mt(if is_open { px(4.0) } else { px(12.0) })
+                                        .mb_2()
+                                        .px_2()
+                                        .pt(if is_open { px(4.0) } else { px(10.0) })
+                                        .when(!is_open, |heading| {
+                                            heading
+                                                .border_t_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .text_size(px(10.0))
+                                        .text_color(Theme::global().TEXT_DIM)
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .child(label),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w(px(18.0))
+                                                .px_1()
+                                                .rounded_full()
+                                                .bg(Theme::global().HEADER_BG)
+                                                .text_center()
+                                                .text_size(px(9.0))
+                                                .child(count.to_string()),
+                                        ),
+                                );
+                            }
+                            if previous_section == Some(is_open)
+                                && previous_saved == Some(true)
+                                && !session.saved
+                            {
+                                list = list.child(
+                                    div()
+                                        .id("sidebar-session-divider")
+                                        .debug_selector(|| "sidebar-session-divider".into())
+                                        .mx_4()
+                                        .my_2()
+                                        .border_t_1()
+                                        .border_color(Theme::global().PANEL_BORDER),
+                                );
+                            }
+                            let selected =
+                                active_id.as_deref() == Some(session.session_id.as_str());
+                            let (icon, mut title) = sidebar_session_title(session);
+                            if session
+                                .title
+                                .as_deref()
+                                .map(str::trim)
+                                .is_none_or(str::is_empty)
+                                && let Some(open_title) = open_titles.get(&session.session_id)
+                                && custom_sidebar_title(&session.session_id, open_title)
+                            {
+                                title.clone_from(open_title);
+                            }
+                            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+                            let title_size = sidebar_title_font_size(&title, window);
+                            let directory = sidebar_session_directory(session);
+                            let meta = sidebar_session_meta(session);
+                            let details = match (directory, meta) {
+                                (Some(directory), Some(meta)) => {
+                                    Some(format!("{directory} · {meta}"))
+                                }
+                                (Some(directory), None) => Some(directory),
+                                (None, Some(meta)) => Some(meta),
+                                (None, None) => None,
+                            };
+                            let (status_icon, _status_label, status_kind) = sidebar_session_status(
+                                &session.status,
+                                open_statuses.get(&session.session_id).map(String::as_str),
+                            );
+                            let status_color = match status_kind {
+                                SidebarStatusKind::Good => Theme::global().AI_ACCENT,
+                                SidebarStatusKind::Busy => Theme::global().WARN,
+                                SidebarStatusKind::Bad => Theme::global().ERROR,
+                                SidebarStatusKind::Dim => Theme::global().TEXT_DIM,
+                            };
+
+                            let session = session.clone();
+                            list = list.child(
+                                div()
+                                    .id(("sidebar-session", sidebar_index))
+                                    .debug_selector(move || {
+                                        format!("sidebar-session-{sidebar_index}").into()
+                                    })
+                                    .ml_2()
+                                    .when(!selected, |el| el.mr(px(1.0)))
+                                    .mb_1()
+                                    .relative()
+                                    .when(selected, |el| el.mb(px(FOLDER_TAB_RADIUS + 4.0)))
+                                    .px_2()
+                                    .py_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.0))
+                                    .rounded_l_lg()
+                                    .cursor_pointer()
+                                    .when(selected, |el| {
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(-1.0))
+                                                .top(px(-1.0))
+                                                .bottom(px(-1.0))
+                                                .right(px(FOLDER_TAB_RADIUS))
+                                                .rounded_l_lg()
+                                                .border_l_1()
+                                                .border_t_1()
+                                                .border_b_1()
+                                                .border_color(Theme::global().PANEL_BORDER),
+                                        )
+                                        .child(folder_tab_corner(true))
+                                        .child(folder_tab_corner(false))
+                                    })
+                                    // The selected folder tab opens directly onto the canvas.
+                                    .bg(if selected {
+                                        Theme::global().PANEL_BG
+                                    } else {
+                                        Theme::global().HEADER_BG
+                                    })
+                                    .border_l_1()
+                                    .border_t_1()
+                                    .border_b_1()
+                                    .border_color(gpui::rgba(0x00000000))
+                                    .pr(px(crate::scrollbar::GUTTER + 8.0))
+                                    .hover(move |el| {
+                                        el.bg(if selected {
+                                            Theme::global().PANEL_BG
+                                        } else {
+                                            Theme::global().TOOL_BG
+                                        })
+                                    })
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _event, window, cx| {
+                                            this.activate_session(session.clone(), window, cx);
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .h(px(18.0))
+                                            .child(
+                                                div()
+                                                    .w(px(16.0))
+                                                    .flex_none()
+                                                    .text_size(px(12.0))
+                                                    .child(icon),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .max_h(px(18.0))
+                                                    .overflow_hidden()
+                                                    .text_size(px(title_size))
+                                                    .line_height(relative(1.5))
+                                                    .line_clamp(2)
+                                                    .text_ellipsis()
+                                                    .child(title),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .w(px(12.0))
+                                                    .text_size(px(10.0))
+                                                    .text_color(status_color)
+                                                    .child(status_icon),
+                                            ),
+                                    )
+                                    .when_some(details, |row, details| {
+                                        row.child(
+                                            div()
+                                                .pl(px(20.0))
+                                                .truncate()
+                                                .text_size(px(9.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .child(details),
+                                        )
+                                    }),
+                            );
+                            list.into_any_element()
                         })
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _event, window, cx| {
-                            this.activate_session(session.clone(), window, cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .h(px(18.0))
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .flex_none()
-                                    .text_size(px(12.0))
-                                    .child(icon),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .max_h(px(18.0))
-                                    .overflow_hidden()
-                                    .text_size(px(title_size))
-                                    .line_height(relative(1.5))
-                                    .line_clamp(2)
-                                    .text_ellipsis()
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(12.0))
-                                    .text_size(px(10.0))
-                                    .text_color(status_color)
-                                    .child(status_icon),
-                            ),
-                    )
-                    .when_some(details, |row, details| {
-                        row.child(
-                            div()
-                                .pl(px(20.0))
-                                .truncate()
-                                .text_size(px(9.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child(details),
-                        )
-                    }),
+                    },
+                )
+                .size_full(),
             );
         }
 
@@ -4142,8 +4191,8 @@ impl Workspace {
                                 .top_0()
                                 .bottom_0()
                                 .w(px(crate::scrollbar::GUTTER))
-                                .child(crate::scrollbar::vertical(
-                                    &self.sidebar_scroll,
+                                .child(crate::scrollbar::vertical_list(
+                                    &self.sidebar_sessions_list,
                                     "sidebar-scrollbar",
                                 )),
                         )
@@ -6193,7 +6242,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
             .when(self.show_sidebar, |root| {
-                root.child(self.render_sidebar(fullscreen, window, cx))
+                root.child(self.render_sidebar(fullscreen, cx))
             })
             .child(
                 div()
@@ -6415,7 +6464,46 @@ fn ranked_folder_matches_for_sessions(
         .collect()
 }
 
+/// Inputs that can change a virtual row's height, including its section header
+/// and saved divider. Titles stay in a fixed-height box and do not belong here.
+#[derive(PartialEq, Eq)]
+struct SidebarSessionLayout {
+    session_id: String,
+    open: bool,
+    selected: bool,
+    saved: bool,
+    details: bool,
+}
+
+fn sync_sidebar_session_layout(
+    state: &gpui::ListState,
+    previous: &mut Vec<SidebarSessionLayout>,
+    next: Vec<SidebarSessionLayout>,
+) {
+    if *previous == next {
+        return;
+    }
+    let old_len = previous.len();
+    let new_len = next.len();
+    if old_len != new_len {
+        let shared = old_len.min(new_len);
+        state.splice(shared..old_len, new_len - shared);
+    }
+    // A changed row can also add/remove the next row's heading or divider.
+    // Appending/removing history also moves the final row's bottom padding.
+    let changed = previous.iter().zip(&next).position(|(old, new)| old != new);
+    let boundary = (old_len != new_len).then(|| old_len.min(new_len).saturating_sub(1));
+    if let Some(first) = changed.into_iter().chain(boundary).min() {
+        state.remeasure_items(first..new_len);
+    }
+    // Hints give the scrollbar a useful initial size without measuring history.
+    state.clone().with_uniform_item_height(px(46.0));
+    *previous = next;
+}
+
 fn sidebar_title_font_size(title: &str, window: &Window) -> f32 {
+    #[cfg(test)]
+    tests::SIDEBAR_TITLE_MEASUREMENTS.with(|count| count.set(count.get() + 1));
     // Sidebar border, row margins/padding/borders, gaps, and fixed icon widths.
     let available_width = SIDEBAR_WIDTH - 1.0 - 16.0 - 18.0 - 8.0 - 16.0 - 12.0;
     let run = gpui::TextRun {
@@ -6853,6 +6941,10 @@ fn panel_at_viewport_center(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        pub(super) static SIDEBAR_TITLE_MEASUREMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     #[test]
     fn sidebar_never_adds_a_workspace_top_inset() {
@@ -7553,6 +7645,145 @@ mod tests {
         }
     }
 
+    /// Includes GPUI's next frame, not just mouse event dispatch. The test
+    /// platform excludes compositor presentation and physical input latency.
+    #[gpui::test]
+    #[ignore = "manual sidebar hover profiler"]
+    fn sidebar_hover_frame_profile(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        for count in [10, 100, 500] {
+            workspace.update(vcx, |workspace, cx| {
+                workspace.sessions = (0..count)
+                    .map(|index| {
+                        session_info(
+                            &format!("session_fox_{index}"),
+                            Some(&format!(
+                                "Investigate sidebar responsiveness in session {index}"
+                            )),
+                        )
+                    })
+                    .collect();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let positions = [
+                vcx.debug_bounds("sidebar-session-0").unwrap().center(),
+                vcx.debug_bounds("sidebar-session-1").unwrap().center(),
+            ];
+            let mut samples = Vec::new();
+            for iteration in 0..60 {
+                let started = Instant::now();
+                vcx.update(|window, cx| {
+                    window.simulate_mouse_move(positions[iteration % 2], cx);
+                });
+                vcx.run_until_parked();
+                if iteration >= 10 {
+                    samples.push(started.elapsed().as_micros());
+                }
+            }
+            samples.sort_unstable();
+            println!(
+                "SIDEBAR_HOVER sessions={count} p50={}us p95={}us",
+                samples[24], samples[47]
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn sidebar_hover_only_measures_visible_history(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sessions = (0..500)
+                .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
+                .collect();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let position = vcx.debug_bounds("sidebar-session-1").unwrap().center();
+        SIDEBAR_TITLE_MEASUREMENTS.with(|count| count.set(0));
+        vcx.update(|window, cx| window.simulate_mouse_move(position, cx));
+        vcx.run_until_parked();
+        let measured = SIDEBAR_TITLE_MEASUREMENTS.with(|count| count.get());
+        assert!(measured > 0, "hover must actually produce a frame");
+        assert!(measured < 50, "hover measured {measured} of 500 rows");
+        assert!(vcx.debug_bounds("sidebar-session-499").is_none());
+
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_sessions_list.scroll_to_end();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-session-499").is_some(),
+            "virtualized history remains reachable"
+        );
+        let last = vcx.debug_bounds("sidebar-session-499").unwrap();
+        vcx.simulate_click(last.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "session_fox_499",
+                "a newly visible row must retain its own click target"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn sidebar_virtual_history_keeps_scroll_across_updates(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sessions = (0..100)
+                .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
+                .collect();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_sessions_list.scroll_to(gpui::ListOffset {
+                item_ix: 50,
+                offset_in_item: px(0.0),
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let before = vcx.debug_bounds("sidebar-session-50").unwrap();
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sessions[50].title = Some("Renamed without changing row height".into());
+            workspace
+                .sessions
+                .push(session_info("session_fox_100", Some("New history")));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(vcx.debug_bounds("sidebar-session-50").unwrap(), before);
+        // Metadata can add a line to an already measured, off-screen row.
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sessions[0].working_dir = Some("/project".into());
+            workspace.sidebar_sessions_list.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.0),
+            });
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-0").unwrap().size.height > before.size.height);
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sessions.clear();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-0").is_none());
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.sidebar_sessions_list.item_count()),
+            0
+        );
+    }
+
     #[gpui::test]
     fn sidebar_divides_saved_sessions_from_other_sessions(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -7633,7 +7864,12 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let before = workspace.read_with(vcx, |workspace, _| workspace.sidebar_scroll.offset().y);
+        let before = workspace.read_with(vcx, |workspace, _| {
+            workspace
+                .sidebar_sessions_list
+                .scroll_px_offset_for_scrollbar()
+                .y
+        });
         let list = vcx
             .debug_bounds("sidebar-session-list")
             .expect("session list should paint");
@@ -7645,7 +7881,12 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let after = workspace.read_with(vcx, |workspace, _| workspace.sidebar_scroll.offset().y);
+        let after = workspace.read_with(vcx, |workspace, _| {
+            workspace
+                .sidebar_sessions_list
+                .scroll_px_offset_for_scrollbar()
+                .y
+        });
         assert_ne!(after, before, "wheel input must move the session history");
         let scrollbar = vcx
             .debug_bounds("sidebar-scrollbar")
