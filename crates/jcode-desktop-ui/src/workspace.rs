@@ -80,6 +80,33 @@ const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
 const STRUT: f32 = 0.58;
 const STRIP_PADDING_Y: f32 = STRUT;
+
+/// Tutorial controls occupy a separate layout region, never the transcript.
+/// Use the same grid metrics to reserve canvas space and lay out the controls,
+/// including wrapped rows on narrow windows. Animation stays inside each cell.
+const TUTORIAL_CELL_WIDTH: f32 = 144.0;
+const TUTORIAL_CELL_HEIGHT: f32 = 32.0;
+const TUTORIAL_GAP: f32 = 6.0;
+const TUTORIAL_PADDING: f32 = 12.0;
+const TUTORIAL_HEADING_HEIGHT: f32 = 16.0;
+
+fn tutorial_dock_height(stage: usize, viewport_width: f32) -> f32 {
+    let count: usize = match stage {
+        1 => 6,
+        2 => 5,
+        _ => 2,
+    };
+    let columns = ((viewport_width - TUTORIAL_PADDING * 2.0 + TUTORIAL_GAP)
+        / (TUTORIAL_CELL_WIDTH + TUTORIAL_GAP))
+        .floor()
+        .max(1.0) as usize;
+    let rows = count.div_ceil(columns);
+    TUTORIAL_PADDING * 2.0
+        + TUTORIAL_HEADING_HEIGHT
+        + TUTORIAL_GAP
+        + rows as f32 * (TUTORIAL_CELL_HEIGHT + TUTORIAL_GAP)
+        - TUTORIAL_GAP
+}
 const STRIP_COUNT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5310,468 +5337,264 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Contextual, clickable tutorial controls. Rather than collecting abstract
-    /// English descriptions in a footer, each lesson lives beside the part of
-    /// the canvas it affects and depicts the resulting motion directly.
-    fn render_tutorial_guides(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let modifier = if cfg!(target_os = "macos") {
-            "⌘"
-        } else {
-            "Super"
-        };
-        let active = self.showcase_cue.as_ref().map(|cue| cue.tutorial_group);
-        let cue_animation = self
-            .showcase_cue
-            .as_ref()
-            .map(|cue| format!("tutorial-trigger-{}", cue.shortcut));
-        // A tutorial control turns green once it has been practiced. The
-        // learning model still treats prompted use as weaker than unaided
-        // recall, but leaving prompted navigation unmarked made the tutorial
-        // appear to ignore successful use.
+    fn tutorial_stage(&self) -> usize {
         let learned = |skill: &str| self.coach.trace(skill).practiced();
-        let stage_one_complete = [
+        if ![
             "focus_left_right",
             "focus_up_down",
             "new_panel",
             "close_panel",
         ]
         .into_iter()
-        .all(learned);
-        let stage_two_complete = ["move_panel", "move_panel_strip", "width_presets"]
-            .into_iter()
-            .all(learned);
-        let tutorial_stage = if !stage_one_complete {
+        .all(learned)
+        {
             1
-        } else if !stage_two_complete {
+        } else if !["move_panel", "move_panel_strip", "width_presets"]
+            .into_iter()
+            .all(learned)
+        {
             2
         } else {
             3
-        };
+        }
+    }
 
-        let arrow = |id: &'static str,
-                     glyph: &'static str,
-                     key: &'static str,
-                     skill: &'static str,
-                     group: &'static str,
-                     action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-            let is_learned = learned(skill);
-            let is_pressed = self.showcase_cue.as_ref().is_some_and(|cue| {
-                cue.tutorial_group == group && cue.shortcut.ends_with(&format!(" + {key}"))
-            });
-            let animation_id = format!(
-                "{id}-{}",
-                cue_animation.as_deref().unwrap_or("tutorial-idle")
-            );
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .px_2()
-                .py_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(5.0))
-                .rounded_md()
-                .border_1()
-                .border_color(if is_learned {
-                    Theme::global().OK
-                } else if active == Some(group) {
-                    Theme::global().ACCENT
-                } else {
-                    Theme::global().PANEL_BORDER
-                })
-                .bg(if is_learned {
-                    gpui::rgba(0x64c86424)
-                } else if active == Some(group) {
-                    Theme::global().ACCENT_DIM
-                } else {
-                    Theme::global().HEADER_BG
-                })
-                .text_size(px(11.0))
-                .text_color(if is_learned {
-                    Theme::global().OK
-                } else {
-                    Theme::global().TEXT
-                })
-                .cursor_pointer()
-                .occlude()
-                .hover(|el| {
-                    el.border_color(Theme::global().ACCENT)
-                        .text_color(Theme::global().ACCENT)
-                })
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| action(this, window, cx)),
-                )
-                .child(div().text_size(px(17.0)).child(glyph).with_animation(
-                    animation_id,
-                    Animation::new(Duration::from_millis(220)),
-                    move |el, delta| {
-                        let press = if is_pressed {
-                            (std::f32::consts::PI * delta).sin() * 4.0
-                        } else {
-                            0.0
-                        };
-                        el.mt(px(press))
-                    },
-                ))
-                .child(format!("{modifier} {key}"))
-                .when(is_learned, |el| {
-                    el.child(
-                        div()
-                            .debug_selector(move || format!("tutorial-learned-{skill}").into())
-                            .child("✓"),
-                    )
-                })
+    /// A reserved dock, not an overlay. Every lesson participates in the same
+    /// wrapping layout, so neither panel text nor another lesson can be covered.
+    fn render_tutorial_guides(&self, height: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let modifier = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "Super"
         };
-        let navigation = div()
-            // This is only a positioning layer. Giving the full-window layer
-            // an id creates a hitbox above the strip's capture-phase gesture
-            // router, which makes touchpad swipes disappear while tutorial
-            // mode is enabled. The individual controls remain interactive.
-            .absolute()
-            .inset_0()
-            .child(
-                arrow(
-                    "tutorial-nav-up",
-                    "↑",
-                    if tutorial_stage == 2 { "Shift K" } else { "K" },
-                    if tutorial_stage == 2 {
-                        "move_panel_strip"
-                    } else {
-                        "focus_up_down"
-                    },
-                    if tutorial_stage == 2 {
-                        "move"
-                    } else {
-                        "navigate"
-                    },
-                    if tutorial_stage == 2 {
-                        |this, window, cx| this.move_panel_up(&MovePanelUp, window, cx)
-                    } else {
-                        |this, window, cx| this.focus_up(&FocusUp, window, cx)
-                    },
-                )
-                .absolute()
-                .top(px(12.0))
-                .left(relative(0.5)),
-            )
-            .child(
-                arrow(
+        let stage = self.tutorial_stage();
+        type Action = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
+        type Lesson = (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            Option<Action>,
+        );
+        let lessons: Vec<Lesson> = match stage {
+            1 => vec![
+                (
                     "tutorial-nav-left",
                     "←",
-                    if tutorial_stage == 2 { "Shift H" } else { "H" },
-                    if tutorial_stage == 2 {
-                        "move_panel"
-                    } else {
-                        "focus_left_right"
-                    },
-                    if tutorial_stage == 2 {
-                        "move"
-                    } else {
-                        "navigate"
-                    },
-                    if tutorial_stage == 2 {
-                        |this, window, cx| this.move_panel_left(&MovePanelLeft, window, cx)
-                    } else {
-                        |this, window, cx| this.focus_left(&FocusLeft, window, cx)
-                    },
-                )
-                .absolute()
-                .left(px(12.0))
-                .top(relative(0.5)),
-            )
-            .child(
-                arrow(
-                    "tutorial-nav-right",
-                    "→",
-                    if tutorial_stage == 2 { "Shift L" } else { "L" },
-                    if tutorial_stage == 2 {
-                        "move_panel"
-                    } else {
-                        "focus_left_right"
-                    },
-                    if tutorial_stage == 2 {
-                        "move"
-                    } else {
-                        "navigate"
-                    },
-                    if tutorial_stage == 2 {
-                        |this, window, cx| this.move_panel_right(&MovePanelRight, window, cx)
-                    } else {
-                        |this, window, cx| this.focus_right(&FocusRight, window, cx)
-                    },
-                )
-                .absolute()
-                .right(px(12.0))
-                .top(relative(0.5)),
-            )
-            .child(
-                arrow(
+                    "H",
+                    "focus_left_right",
+                    "navigate",
+                    Some(|this, w, cx| this.focus_left(&FocusLeft, w, cx)),
+                ),
+                (
                     "tutorial-nav-down",
                     "↓",
-                    if tutorial_stage == 2 { "Shift J" } else { "J" },
-                    if tutorial_stage == 2 {
-                        "move_panel_strip"
-                    } else {
-                        "focus_up_down"
-                    },
-                    if tutorial_stage == 2 {
-                        "move"
-                    } else {
-                        "navigate"
-                    },
-                    if tutorial_stage == 2 {
-                        |this, window, cx| this.move_panel_down(&MovePanelDown, window, cx)
-                    } else {
-                        |this, window, cx| this.focus_down(&FocusDown, window, cx)
-                    },
-                )
-                .absolute()
-                // Keep the down lesson clear of the prompt composer, which is
-                // anchored to the bottom of every session panel.
-                .bottom(px(104.0))
-                .left(relative(0.5)),
-            );
-
-        let layout = div()
-            .id("tutorial-layout")
-            .debug_selector(|| "tutorial-layout".into())
-            .absolute()
-            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 8.0))
-            .right(px(MINIMAP_RIGHT))
-            .flex()
-            .gap(px(5.0))
-            .child(
-                div()
-                    .id("tutorial-resize")
-                    .debug_selector(|| "tutorial-resize".into())
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(if active == Some("resize") {
-                        Theme::global().ACCENT_DIM
-                    } else {
-                        Theme::global().HEADER_BG
-                    })
-                    .border_1()
-                    .border_color(if active == Some("resize") {
-                        Theme::global().ACCENT
-                    } else {
-                        Theme::global().PANEL_BORDER
-                    })
-                    .hover(|el| el.border_color(Theme::global().ACCENT))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.cycle_width(&CycleWidth, window, cx)
-                        }),
-                    )
-                    .child(format!("↔  {modifier} R"))
-                    .with_animation(
-                        format!(
-                            "tutorial-resize-{}",
-                            cue_animation.as_deref().unwrap_or("idle")
-                        ),
-                        Animation::new(Duration::from_millis(220)),
-                        move |el, delta| {
-                            el.mt(px(if active == Some("resize") {
-                                (std::f32::consts::PI * delta).sin() * 4.0
-                            } else {
-                                0.0
-                            }))
-                        },
-                    ),
-            )
-            .child(
-                div()
-                    .id("tutorial-overview")
-                    .debug_selector(|| "tutorial-overview".into())
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(if active == Some("overview") {
-                        Theme::global().ACCENT_DIM
-                    } else {
-                        Theme::global().HEADER_BG
-                    })
-                    .border_1()
-                    .border_color(if active == Some("overview") {
-                        Theme::global().ACCENT
-                    } else {
-                        Theme::global().PANEL_BORDER
-                    })
-                    .hover(|el| el.border_color(Theme::global().ACCENT))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.toggle_overview(&ToggleOverview, window, cx)
-                        }),
-                    )
-                    .child(format!("▦  {modifier} O"))
-                    .with_animation(
-                        format!(
-                            "tutorial-overview-{}",
-                            cue_animation.as_deref().unwrap_or("idle")
-                        ),
-                        Animation::new(Duration::from_millis(220)),
-                        move |el, delta| {
-                            el.mt(px(if active == Some("overview") {
-                                (std::f32::consts::PI * delta).sin() * 4.0
-                            } else {
-                                0.0
-                            }))
-                        },
-                    ),
-            );
-
-        let new_session = div()
-            .id("tutorial-new")
-            .debug_selector(|| "tutorial-new".into())
-            .absolute()
-            .right(px(10.0))
-            // The right navigation lesson also lives at mid-height. Keep the
-            // creation lesson in the upper tool cluster instead of stacking it
-            // over Super+L.
-            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 42.0))
-            .px_2()
-            .py_1()
-            .rounded_lg()
-            .cursor_pointer()
-            .bg(if learned("new_panel") {
-                gpui::rgba(0x64c86424)
-            } else if active == Some("new") {
-                Theme::global().ACCENT_DIM
-            } else {
-                Theme::global().HEADER_BG
-            })
-            .border_1()
-            .border_color(if learned("new_panel") {
-                Theme::global().OK
-            } else if active == Some("new") {
-                Theme::global().ACCENT
-            } else {
-                Theme::global().PANEL_BORDER
-            })
-            .text_color(if learned("new_panel") {
-                Theme::global().OK
-            } else {
-                Theme::global().TEXT
-            })
-            .hover(|el| el.border_color(Theme::global().ACCENT))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.new_panel(&NewPanel, window, cx)),
-            )
-            .child(format!("＋  {modifier} N"))
-            .when(learned("new_panel"), |el| {
-                el.child(
-                    div()
-                        .debug_selector(|| "tutorial-learned-new_panel".into())
-                        .child("✓"),
-                )
-            })
-            .with_animation(
-                format!(
-                    "tutorial-new-{}",
-                    cue_animation.as_deref().unwrap_or("idle")
+                    "J",
+                    "focus_up_down",
+                    "navigate",
+                    Some(|this, w, cx| this.focus_down(&FocusDown, w, cx)),
                 ),
-                Animation::new(Duration::from_millis(220)),
-                move |el, delta| {
-                    el.mt(px(if active == Some("new") {
-                        (std::f32::consts::PI * delta).sin() * 4.0
+                (
+                    "tutorial-nav-up",
+                    "↑",
+                    "K",
+                    "focus_up_down",
+                    "navigate",
+                    Some(|this, w, cx| this.focus_up(&FocusUp, w, cx)),
+                ),
+                (
+                    "tutorial-nav-right",
+                    "→",
+                    "L",
+                    "focus_left_right",
+                    "navigate",
+                    Some(|this, w, cx| this.focus_right(&FocusRight, w, cx)),
+                ),
+                (
+                    "tutorial-new",
+                    "＋",
+                    "N",
+                    "new_panel",
+                    "new",
+                    Some(|this, w, cx| this.new_panel(&NewPanel, w, cx)),
+                ),
+                (
+                    "tutorial-close",
+                    "×",
+                    "Q",
+                    "close_panel",
+                    "close",
+                    Some(|this, w, cx| this.close_panel(&ClosePanel, w, cx)),
+                ),
+            ],
+            2 => vec![
+                (
+                    "tutorial-nav-left",
+                    "←",
+                    "Shift H",
+                    "move_panel",
+                    "move",
+                    Some(|this, w, cx| this.move_panel_left(&MovePanelLeft, w, cx)),
+                ),
+                (
+                    "tutorial-nav-down",
+                    "↓",
+                    "Shift J",
+                    "move_panel_strip",
+                    "move",
+                    Some(|this, w, cx| this.move_panel_down(&MovePanelDown, w, cx)),
+                ),
+                (
+                    "tutorial-nav-up",
+                    "↑",
+                    "Shift K",
+                    "move_panel_strip",
+                    "move",
+                    Some(|this, w, cx| this.move_panel_up(&MovePanelUp, w, cx)),
+                ),
+                (
+                    "tutorial-nav-right",
+                    "→",
+                    "Shift L",
+                    "move_panel",
+                    "move",
+                    Some(|this, w, cx| this.move_panel_right(&MovePanelRight, w, cx)),
+                ),
+                (
+                    "tutorial-width-presets",
+                    "↔",
+                    "1 2 3 4",
+                    "width_presets",
+                    "resize",
+                    None,
+                ),
+            ],
+            _ => vec![
+                (
+                    "tutorial-resize",
+                    "↔",
+                    "R",
+                    "cycle_width",
+                    "resize",
+                    Some(|this, w, cx| this.cycle_width(&CycleWidth, w, cx)),
+                ),
+                (
+                    "tutorial-overview",
+                    "▦",
+                    "O",
+                    "overview",
+                    "overview",
+                    Some(|this, w, cx| this.toggle_overview(&ToggleOverview, w, cx)),
+                ),
+            ],
+        };
+        let controls = lessons
+            .into_iter()
+            .map(|(id, glyph, key, skill, group, action)| {
+                let learned = self.coach.trace(skill).practiced();
+                let pressed = self.showcase_cue.as_ref().is_some_and(|cue| {
+                    cue.tutorial_group == group && cue.shortcut.ends_with(&format!(" + {key}"))
+                });
+                let animation_id = format!(
+                    "{id}-{}",
+                    self.showcase_cue
+                        .as_ref()
+                        .map(|cue| cue.shortcut.as_str())
+                        .unwrap_or("idle")
+                );
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .w(px(TUTORIAL_CELL_WIDTH))
+                    .h(px(TUTORIAL_CELL_HEIGHT))
+                    .flex_none()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(5.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if learned {
+                        Theme::global().OK
+                    } else if pressed {
+                        Theme::global().ACCENT
                     } else {
-                        0.0
-                    }))
-                },
-            );
-
-        let close_session = div()
-            .id("tutorial-close")
-            .debug_selector(|| "tutorial-close".into())
-            .absolute()
-            .left(px(10.0))
-            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 42.0))
-            .px_2()
-            .py_1()
-            .rounded_lg()
-            .cursor_pointer()
-            .bg(if learned("close_panel") {
-                gpui::rgba(0x64c86424)
-            } else {
-                Theme::global().HEADER_BG
-            })
-            .border_1()
-            .border_color(if learned("close_panel") {
-                Theme::global().OK
-            } else {
-                Theme::global().PANEL_BORDER
-            })
-            .text_color(if learned("close_panel") {
-                Theme::global().OK
-            } else {
-                Theme::global().TEXT
-            })
-            .hover(|el| el.border_color(Theme::global().ACCENT))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.close_panel(&ClosePanel, window, cx)),
-            )
-            .child(format!("×  {modifier} Q"));
-
-        let width_presets = div()
-            .id("tutorial-width-presets")
-            .debug_selector(|| "tutorial-width-presets".into())
-            .absolute()
-            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + 8.0))
-            .right(px(MINIMAP_RIGHT))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(if learned("width_presets") {
-                Theme::global().OK
-            } else {
-                Theme::global().PANEL_BORDER
-            })
-            .bg(if learned("width_presets") {
-                gpui::rgba(0x64c86424)
-            } else {
-                Theme::global().HEADER_BG
-            })
-            .text_color(if learned("width_presets") {
-                Theme::global().OK
-            } else {
-                Theme::global().TEXT
-            })
-            .child(format!("↔  {modifier} 1 2 3 4"));
-
-        let stage_label = div()
-            .id("tutorial-stage")
-            .debug_selector(|| "tutorial-stage".into())
-            .absolute()
-            .top(px(12.0))
-            .left(px(12.0))
-            .text_size(px(10.0))
-            .text_color(Theme::global().TEXT_DIM)
-            .child(format!("onboarding · step {tutorial_stage} of 3"));
-
+                        Theme::global().PANEL_BORDER
+                    })
+                    .bg(if pressed {
+                        Theme::global().ACCENT_DIM
+                    } else {
+                        Theme::global().HEADER_BG
+                    })
+                    .text_color(if learned {
+                        Theme::global().OK
+                    } else {
+                        Theme::global().TEXT
+                    })
+                    .text_size(px(11.0))
+                    .line_height(px(18.0))
+                    .overflow_hidden()
+                    .occlude()
+                    .when_some(action, |el, action| {
+                        el.cursor_pointer()
+                            .hover(|el| el.border_color(Theme::global().ACCENT))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| action(this, window, cx)),
+                            )
+                    })
+                    .child(div().text_size(px(17.0)).child(glyph).with_animation(
+                        animation_id,
+                        Animation::new(Duration::from_millis(220)),
+                        move |el, delta| {
+                            el.mt(px(if pressed {
+                                (std::f32::consts::PI * delta).sin() * 4.0
+                            } else {
+                                0.0
+                            }))
+                        },
+                    ))
+                    .child(format!("{modifier} {key}"))
+                    .when(learned, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(move || format!("tutorial-learned-{skill}").into())
+                                .child("✓"),
+                        )
+                    })
+            });
         div()
             .id("tutorial-guides")
             .debug_selector(|| "tutorial-guides".into())
-            .absolute()
-            .inset_0()
-            .text_size(px(10.0))
+            .w_full()
+            .h(px(height))
+            .flex_none()
+            .p(px(TUTORIAL_PADDING))
+            .flex()
+            .flex_col()
+            .gap(px(TUTORIAL_GAP))
+            .bg(Theme::global().BG)
             .font_family(Theme::global().FONT_MONO)
-            .child(stage_label)
-            .when(tutorial_stage <= 2, |el| el.child(navigation))
-            .when(tutorial_stage == 1, |el| {
-                el.child(new_session).child(close_session)
-            })
-            .when(tutorial_stage == 2, |el| el.child(width_presets))
-            .when(tutorial_stage == 3, |el| el.child(layout))
+            .child(
+                div()
+                    .id("tutorial-stage")
+                    .debug_selector(|| "tutorial-stage".into())
+                    .h(px(TUTORIAL_HEADING_HEIGHT))
+                    .flex_none()
+                    .text_size(px(10.0))
+                    .line_height(px(TUTORIAL_HEADING_HEIGHT))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(format!("onboarding · step {stage} of 3")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(TUTORIAL_GAP))
+                    .children(controls),
+            )
             .into_any_element()
     }
 }
@@ -6046,7 +5869,15 @@ impl Render for Workspace {
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
         let content_top_inset = content_top_inset(self.show_sidebar, fullscreen);
-        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(240.0);
+        let show_tutorial =
+            self.showcase_mode && (!self.onboarding_complete() || self.showcase_cue.is_some());
+        let tutorial_height = if show_tutorial {
+            tutorial_dock_height(self.tutorial_stage(), viewport_w)
+        } else {
+            0.0
+        };
+        let viewport_h =
+            (f32::from(viewport.height) - content_top_inset - tutorial_height).max(0.0);
 
         let now = Instant::now();
         let overview_progress = self.overview_progress.sample(now);
@@ -6250,44 +6081,48 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
+                    .flex()
+                    .flex_col()
                     .pt(px(content_top_inset))
-                    .child(content)
-                    .child(self.render_workspace_bar(cx))
-                    .child(self.render_theme_picker(cx))
-                    .when(
-                        self.show_minimap && !self.slots.is_empty() && overview_progress <= 0.0,
-                        |el| el.child(self.render_minimap(viewport_w, viewport_h, cx)),
-                    )
-                    .when_some(coach_hint.filter(|_| coach_progress > 0.0), |el, hint| {
-                        el.child(self.render_coach_toast(&hint, coach_progress, cx))
+                    .when(show_tutorial, |el| {
+                        el.child(self.render_tutorial_guides(tutorial_height, cx))
                     })
-                    .when(overview_progress <= 0.0, |el| {
-                        el.child(self.render_edge_new_session(cx))
-                    })
-                    // Showcase feedback for tutorial actions lives on the
-                    // corresponding lesson itself. Keep the standalone card
-                    // only for mode/help feedback that has no tutorial icon.
-                    // The tutorial is first-run onboarding, not a permanent
-                    // workspace mode. Persisted practice makes it disappear as
-                    // soon as the final lesson is learned and keeps it gone on
-                    // future launches.
-                    .when(
-                        self.showcase_mode
-                            && (!self.onboarding_complete() || self.showcase_cue.is_some()),
-                        |el| el.child(self.render_tutorial_guides(cx)),
-                    )
-                    // Paint non-tutorial feedback last so it remains above the
-                    // canvas without covering an animated tutorial control.
-                    .when_some(
-                        self.showcase_cue
-                            .as_ref()
-                            .filter(|cue| matches!(cue.tutorial_group, "" | "help")),
-                        |el, cue| el.child(self.render_showcase_cue(cue)),
-                    )
-                    // Update status stays visible in every mode, including
-                    // overview: a user whose build cannot render text still
-                    // needs to see that a fix is on its way.
-                    .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
+                    .child(
+                        div()
+                            .debug_selector(|| "workspace-canvas".into())
+                            .relative()
+                            .w_full()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(content)
+                            .child(self.render_workspace_bar(cx))
+                            .child(self.render_theme_picker(cx))
+                            .when(
+                                self.show_minimap
+                                    && !self.slots.is_empty()
+                                    && overview_progress <= 0.0,
+                                |el| el.child(self.render_minimap(viewport_w, viewport_h, cx)),
+                            )
+                            .when_some(coach_hint.filter(|_| coach_progress > 0.0), |el, hint| {
+                                el.child(self.render_coach_toast(&hint, coach_progress, cx))
+                            })
+                            .when(overview_progress <= 0.0, |el| {
+                                el.child(self.render_edge_new_session(cx))
+                            })
+                            // Paint non-tutorial feedback last so it remains above the
+                            // canvas without covering an animated tutorial control.
+                            .when_some(
+                                self.showcase_cue
+                                    .as_ref()
+                                    .filter(|cue| matches!(cue.tutorial_group, "" | "help")),
+                                |el, cue| el.child(self.render_showcase_cue(cue)),
+                            )
+                            // Update status stays visible in every mode, including
+                            // overview: a user whose build cannot render text still
+                            // needs to see that a fix is on its way.
+                            .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
+                    ),
             )
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
@@ -10711,9 +10546,12 @@ mod tests {
                 && f32::from(map.origin.x) > window_width / 2.0,
             "the minimap should sit in the top right"
         );
+        let canvas = cx
+            .debug_bounds("workspace-canvas")
+            .expect("workspace canvas");
         assert!(
-            f32::from(map.origin.y) < 40.0,
-            "the minimap should hug the top edge"
+            map.top() >= canvas.top() && map.top() - canvas.top() < px(40.0),
+            "the minimap should hug the canvas top edge, below onboarding"
         );
         let initial_pin = cx
             .debug_bounds("minimap-you-pin")
@@ -10878,6 +10716,155 @@ mod tests {
         });
     }
 
+    /// Reusable rendered-geometry guard. Checks the actual GPUI layout rather
+    /// than duplicating positioning formulas or comparing source constants.
+    fn assert_no_visual_overlap(
+        a_name: &str,
+        a: gpui::Bounds<gpui::Pixels>,
+        b_name: &str,
+        b: gpui::Bounds<gpui::Pixels>,
+    ) {
+        assert!(
+            a.right() <= b.left()
+                || b.right() <= a.left()
+                || a.bottom() <= b.top()
+                || b.bottom() <= a.top(),
+            "{a_name} {a:?} overlaps {b_name} {b:?}",
+        );
+    }
+
+    #[gpui::test]
+    fn tutorial_layout_keeps_every_lesson_outside_panel_content(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = focused_workspace(cx);
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("A long previous prompt and panel title", cx);
+            workspace.slots[0].width_fraction = 1.0;
+            workspace.slots[0].animated_width =
+                AnimatedValue::new(1.0, transition::policy(Transition::PanelWidth).duration);
+            workspace.slots[0].panel.update(cx, |panel, cx| {
+                panel.items = vec![
+                    crate::panel::Item::User("The previous prompt must remain readable alongside onboarding and a pinned task list".into()),
+                    crate::panel::Item::Tool {
+                        call_id: "layout-todo".into(), name: "todo".into(), input: "{}".into(),
+                        output: r#"[{"id":"layout","content":"Keep tutorial hints clear of this panel","status":"in_progress","priority":"high"}]"#.into(),
+                        done: true, error: None,
+                    },
+                ];
+                cx.notify();
+            });
+            cx.notify();
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        // Exercise both sides of wrap thresholds, a small laptop window, and
+        // the minimum screenshot size, with and without the sidebar.
+        for (width, height) in [
+            (640., 480.),
+            (800., 600.),
+            (917., 700.),
+            (918., 700.),
+            (1440., 1000.),
+        ] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
+            for sidebar in [false, true] {
+                for stage in 1..=3 {
+                    workspace.update(vcx, |workspace, cx| {
+                        workspace.show_sidebar = sidebar;
+                        workspace.coach = learning::Coach::new();
+                        for skill in ONBOARDING_SKILLS.iter().take(match stage {
+                            1 => 0,
+                            2 => 4,
+                            _ => 7,
+                        }) {
+                            workspace.coach.used_shortcut(skill, learning::now());
+                        }
+                        workspace.showcase_motion("L", stage == 2, "Focus right", cx);
+                        cx.notify();
+                    });
+                    vcx.run_until_parked();
+                    let dock = vcx.debug_bounds("tutorial-guides").unwrap();
+                    let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+                    let panel = vcx.debug_bounds("panel-0").unwrap();
+                    assert_no_visual_overlap("tutorial dock", dock, "canvas", canvas);
+                    assert_no_visual_overlap("tutorial dock", dock, "panel", panel);
+                    for id in [
+                        "panel-session-title",
+                        "pinned-latest-prompt",
+                        "pinned-todo-card",
+                        "transcript",
+                        "panel-meta",
+                    ] {
+                        let bounds = vcx
+                            .debug_bounds(id)
+                            .unwrap_or_else(|| panic!("missing {id}"));
+                        assert_no_visual_overlap("tutorial dock", dock, id, bounds);
+                    }
+                    assert!(panel.bottom() <= px(height), "composer must stay on screen");
+                    assert!(
+                        canvas.size.height > px(200.0),
+                        "tutorial must leave usable panel space"
+                    );
+                    let mut regions = vec![(
+                        "tutorial-stage",
+                        vcx.debug_bounds("tutorial-stage").unwrap(),
+                    )];
+                    for id in [
+                        "tutorial-nav-left",
+                        "tutorial-nav-down",
+                        "tutorial-nav-up",
+                        "tutorial-nav-right",
+                        "tutorial-new",
+                        "tutorial-close",
+                        "tutorial-width-presets",
+                        "tutorial-resize",
+                        "tutorial-overview",
+                    ] {
+                        if let Some(bounds) = vcx.debug_bounds(id) {
+                            assert!(bounds.size.width > px(0.0) && bounds.size.height > px(0.0));
+                            assert!(
+                                dock.contains(&bounds.origin)
+                                    && dock.contains(&bounds.bottom_right()),
+                                "{id} {bounds:?} must fit inside dock {dock:?} at {width}x{height}, sidebar={sidebar}, stage={stage}"
+                            );
+                            regions.push((id, bounds));
+                        }
+                    }
+                    assert_eq!(
+                        regions.len(),
+                        match stage {
+                            1 => 7,
+                            2 => 6,
+                            _ => 3,
+                        }
+                    );
+                    for (i, (name, bounds)) in regions.iter().enumerate() {
+                        for (other_name, other) in &regions[i + 1..] {
+                            assert_no_visual_overlap(name, *bounds, other_name, *other);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn tutorial_completion_returns_reserved_space_to_panels(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = focused_workspace(cx);
+        vcx.run_until_parked();
+        let before = vcx.debug_bounds("workspace-canvas").unwrap();
+        let dock_height = vcx.debug_bounds("tutorial-guides").unwrap().size.height;
+        workspace.update(vcx, |workspace, cx| {
+            for skill in ONBOARDING_SKILLS {
+                workspace.coach.used_shortcut(skill, learning::now());
+            }
+            workspace.showcase_cue = None;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tutorial-guides").is_none());
+        let after = vcx.debug_bounds("workspace-canvas").unwrap();
+        assert_eq!(after.size.height, before.size.height + dock_height);
+    }
+
     #[gpui::test]
     fn contextual_tutorial_controls_drive_the_actions_they_depict(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
@@ -10887,23 +10874,10 @@ mod tests {
         let right_guide = cx
             .debug_bounds("tutorial-nav-right")
             .expect("right navigation guide");
-        assert!(
-            new_session.origin.y + new_session.size.height <= right_guide.origin.y
-                || right_guide.origin.y + right_guide.size.height <= new_session.origin.y,
-            "the Super+N and Super+L lessons must not overlap"
-        );
-
-        let down_guide = cx
-            .debug_bounds("tutorial-nav-down")
-            .expect("down navigation guide");
-        let tutorial = cx
-            .debug_bounds("tutorial-guides")
-            .expect("tutorial guide canvas");
-        assert!(
-            down_guide.origin.y + down_guide.size.height
-                <= tutorial.origin.y + tutorial.size.height - px(96.0),
-            "the Super+J lesson must leave the bottom input area unobstructed"
-        );
+        assert_no_visual_overlap("new session", new_session, "right guide", right_guide);
+        let dock = cx.debug_bounds("tutorial-guides").unwrap();
+        let canvas = cx.debug_bounds("workspace-canvas").unwrap();
+        assert_no_visual_overlap("tutorial dock", dock, "workspace canvas", canvas);
 
         cx.simulate_click(new_session.center(), gpui::Modifiers::default());
         cx.run_until_parked();
@@ -10925,12 +10899,12 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let tutorial = cx
-            .debug_bounds("tutorial-guides")
-            .expect("tutorial guide canvas");
+        let canvas = cx
+            .debug_bounds("workspace-canvas")
+            .expect("workspace canvas");
         let camera_before = workspace.update(cx, |workspace, _| workspace.camera_x[0]);
         cx.simulate_event(gpui::ScrollWheelEvent {
-            position: tutorial.center(),
+            position: canvas.center(),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(-100.0), px(0.0))),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
@@ -10938,7 +10912,7 @@ mod tests {
         workspace.update(cx, |workspace, _| {
             assert!(
                 workspace.camera_x[0] > camera_before,
-                "the tutorial positioning layer must not block touchpad gestures"
+                "the tutorial dock must leave canvas touchpad gestures working"
             );
         });
 
@@ -11104,33 +11078,9 @@ mod tests {
             "the first stage should show only navigation and basic session controls"
         );
         assert!(
-            cx.debug_bounds("showcase-key").is_some(),
-            "the overlay should show the complete keybinding"
-        );
-        assert!(
-            cx.debug_bounds("showcase-action").is_some(),
-            "the overlay should explain what the shortcut did"
-        );
-
-        // The user reads the action first, then the keybinding: the action
-        // text must paint above the keybinding pill.
-        let action = cx.debug_bounds("showcase-action").expect("action bounds");
-        let key = cx.debug_bounds("showcase-key").expect("keybinding bounds");
-        let card = cx
-            .debug_bounds("showcase-card")
-            .expect("showcase card bounds");
-        assert!(
-            card.size.width < px(320.0) && card.size.height <= px(80.0),
-            "the showcase card should shrink-wrap its content, got {:?}",
-            card.size
-        );
-        assert!(
-            action.origin.x - card.origin.x <= px(13.0) && key.origin.x - card.origin.x <= px(13.0),
-            "the card border should closely fit the content"
-        );
-        assert!(
-            action.origin.y < key.origin.y,
-            "the action should be displayed above the keybinding"
+            cx.debug_bounds("showcase-key").is_none()
+                && cx.debug_bounds("showcase-action").is_none(),
+            "tutorial feedback must stay in its lesson, not add a second overlay"
         );
 
         cx.simulate_keystrokes(&format!("{MOD}-b"));
