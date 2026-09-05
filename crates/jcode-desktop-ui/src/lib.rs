@@ -7,6 +7,7 @@ mod clipboard_image;
 mod commands;
 mod config;
 mod harness;
+mod html_preview;
 mod input;
 mod learning;
 mod markdown;

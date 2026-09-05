@@ -6707,6 +6707,14 @@ fn demo_items() -> Vec<Item> {
         return Vec::new();
     }
     if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("html")
+    {
+        return vec![
+            Item::User("Show me different fonts directly in this chat.".into()),
+            Item::Assistant(format!("Here are live font pairings. Click inside to interact.\n\n```html-preview\n{}\n```", include_str!("../../../assets/previews/font-pairings.html"))),
+        ];
+    }
+    if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("streaming")
     {
         return vec![

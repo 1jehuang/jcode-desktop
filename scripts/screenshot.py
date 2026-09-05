@@ -35,7 +35,9 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
-    parser.add_argument("--transcript", choices=("all", "reasoning", "streaming"), default="all",
+    parser.add_argument("--html-interact", action="store_true",
+                        help="exercise native input and controls on the HTML fixture")
+    parser.add_argument("--transcript", choices=("all", "reasoning", "streaming", "html"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
@@ -50,6 +52,10 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.html_interact and (args.transcript != "html" or args.size != "1440x1000" or args.theme != "warm-neutral" or args.panels != 1):
+        parser.error("html-interact requires the html transcript, default size/theme, and one panel")
+    if args.html_interact and not shutil.which("xdotool"):
+        parser.error("html-interact requires xdotool")
     if args.focus_panel is not None and not 0 <= args.focus_panel < args.panels:
         parser.error("focus-panel must identify one of the displayed panels")
     if args.focus_panel is not None and not shutil.which("xdotool"):
@@ -148,6 +154,15 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.html_interact:
+                    from html_preview_acceptance import verify
+                    try:
+                        verify(output, env, root)
+                    except Exception:
+                        diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"
+                        if diagnostics.exists():
+                            print(diagnostics.read_text())
+                        raise
         finally:
             os.close(read_fd)
             if write_fd is not None:

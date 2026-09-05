@@ -64,6 +64,18 @@ the supported keys are `canvas_dot`, `panel_border`, `panel_border_focus`,
 Unknown or malformed color values are ignored with a diagnostic rather than
 preventing the app from starting.
 
+## Inline HTML previews (Linux)
+
+Completed `html-preview` fenced blocks render interactive HTML/CSS/JavaScript
+inside chat. Use them for font comparisons and self-contained UI demonstrations.
+Ordinary `html` blocks remain source code. Preview cards include source, copy,
+expand, and pause controls. Generated content has no network, file, or app access.
+
+This optional backend requires Python GI, Cairo, WebKitGTK 4.1, and Xvfb. See
+[HTML previews](docs/html-previews.md) for syntax, isolation, limits, and the
+bundled interactive font sampler. Choosing a font in a preview does not change
+chat settings.
+
 ## Headless screenshots (Linux)
 
 Capture the real GPUI application without using the active desktop:

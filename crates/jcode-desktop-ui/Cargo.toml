@@ -17,6 +17,7 @@ jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-base = { path = "../../../jcode/crates/jcode-base" }
 anyhow = "1"
+libc = "0.2"
 arboard = "3"
 async-channel = "2"
 base64 = "0.22"

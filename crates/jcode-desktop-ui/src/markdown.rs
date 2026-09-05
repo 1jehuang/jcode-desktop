@@ -35,6 +35,7 @@ enum Block {
         body: String,
     },
     Mermaid(String),
+    HtmlPreview(String),
     Table {
         header: Vec<String>,
         rows: Vec<Vec<String>>,
@@ -102,9 +103,12 @@ fn parse(source: &str) -> Vec<Block> {
             flush(&mut paragraph, &mut blocks);
             let lang = rest.trim().to_string();
             let mut body = String::new();
+            let marker = trimmed.chars().next().unwrap_or('`');
+            let mut closed = false;
             for code_line in lines.by_ref() {
-                let t = code_line.trim_start();
-                if t.starts_with("```") || t.starts_with("~~~") {
+                let t = code_line.trim();
+                if t.len() >= 3 && t.chars().all(|c| c == marker) {
+                    closed = true;
                     break;
                 }
                 body.push_str(code_line);
@@ -113,7 +117,9 @@ fn parse(source: &str) -> Vec<Block> {
             while body.ends_with('\n') {
                 body.pop();
             }
-            if lang.eq_ignore_ascii_case("mermaid") || lang.eq_ignore_ascii_case("mmd") {
+            if lang.eq_ignore_ascii_case("html-preview") && closed {
+                blocks.push(Block::HtmlPreview(body));
+            } else if lang.eq_ignore_ascii_case("mermaid") || lang.eq_ignore_ascii_case("mmd") {
                 blocks.push(Block::Mermaid(body));
             } else {
                 blocks.push(Block::Code { lang, body });
@@ -1136,7 +1142,7 @@ fn highlight_code(
     (body.to_string(), highlights)
 }
 
-fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement {
+pub(crate) fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement {
     let (plain, highlights) = highlight_code(body, lang);
     let line_count = plain.lines().count().max(1);
     let gutter = (1..=line_count)
@@ -1599,6 +1605,10 @@ fn render_with_style(
                 )
                 .into_any_element(),
             Block::Code { lang, body } => code_block(&lang, &body, window),
+            Block::HtmlPreview(body) if !reasoning => {
+                crate::html_preview::HtmlPreview::new(body, row, block_index).into_any_element()
+            }
+            Block::HtmlPreview(body) => code_block("html-preview", &body, window),
             Block::Mermaid(body) => mermaid_diagram(&body),
             Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
             Block::Math(source) => math_block(&source, selection, text_key(), window, cx),
@@ -1803,6 +1813,38 @@ mod tests {
             mermaid_display_line("A[Start] --> B[Done]").as_deref(),
             Some("AStart → BDone")
         );
+    }
+
+    #[test]
+    fn html_previews_require_an_explicit_complete_fence() {
+        assert_eq!(
+            parse("```html-preview\n<h1>Hi</h1>\n```"),
+            vec![Block::HtmlPreview("<h1>Hi</h1>".into())]
+        );
+        assert!(matches!(
+            &parse("```html\n<h1>Hi</h1>\n```")[0],
+            Block::Code { .. }
+        ));
+        assert!(matches!(
+            &parse("```html-preview\n<h1>Streaming")[0],
+            Block::Code { .. }
+        ));
+        assert!(matches!(
+            &parse("```html-preview\n<h1>Hi</h1>\n~~~")[0],
+            Block::Code { .. }
+        ));
+        assert!(matches!(
+            &parse("```html-preview\n<h1>Hi</h1>\n```not-a-close")[0],
+            Block::Code { .. }
+        ));
+        assert_eq!(
+            parse("~~~html-preview\nhello\n~~~"),
+            vec![Block::HtmlPreview("hello".into())]
+        );
+        assert!(matches!(
+            &parse("<div>ordinary HTML</div>")[0],
+            Block::Paragraph(_)
+        ));
     }
 
     #[test]

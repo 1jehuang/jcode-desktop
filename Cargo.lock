@@ -4499,6 +4499,7 @@ dependencies = [
  "jcode-desktop-api",
  "jcode-desktop-motion",
  "jcode-sdk",
+ "libc",
  "mermaid-rs-renderer",
  "ratex-layout",
  "ratex-parser",
