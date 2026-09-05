@@ -81,6 +81,33 @@ requirement-level observations above.
 
 ## Live delivery boundary
 
+### Post-mapping whole-result rerun
+
+All mapped checks were repeated after the mapping was written, on 2026-09-05
+at approximately 22:50–22:54 UTC. Freshly built UI-test and desktop executables
+were copied before execution so concurrent builds could not replace them during
+the checks. Local logs, screenshots, and `final-results.json` are preserved in
+`/home/jeremy/.jcode/scratch/history-mapped-checks-1788648616`.
+
+| Check repeated against the complete result | Actual observation |
+| --- | --- |
+| Scrolled row identity, keyboard focus, and composer input in both layouts | Regression test passed for all four selected row indices in both layouts |
+| Native folder-tab history click, active-session switch, and switch back | Exit 0. History 06 is selected, `focused_slot=1`, `keyboard_panel=1`, and only two panels are open |
+| Native normal-layout history click and active-session switches | Exit 0 with the same session identity, keyboard focus, and panel count |
+| Native text delivery and opt-in history population | Inspected both new PNGs. Each visibly shows `history click typing works` in History 06's composer, two active sessions, and 79 remaining historical sessions |
+| Default fixture without history interaction | Exit 0. Inspected `default.png`: one active session, no historical rows, and an empty focused composer. Navigation confirms one panel with keyboard focus 0 |
+| Existing sidebar behavior | 41 passed, one ignored manual benchmark, including wheel/track scrolling, grouping, navigation, and preserved history scroll |
+| All five incompatible CLI combinations | Each exits 2 with its constraint error |
+| Missing native input driver | Mocked missing `xdotool` produces the actionable error before launching anything |
+| Commit scope and remote availability | Reinspected the three-file fix commit. Both `8a63caa` and mapping commit `d4b171d` are ancestors of `origin/main`; unrelated working changes remain uncommitted by this task |
+| Full UI suite | 332 passed, three failed, six ignored. The same three scrolling/gesture tests listed above fail. History-click regression passes |
+| Live activation | Retried the instance socket reload. It acknowledged the request, rebuilt, then logged `remote UI reload failed after rebuild: hot reload is disabled; launch with --hot-reload` |
+
+The repeated native checks and inspected screenshots confirm the built fix
+improves click-to-type behavior. Live delivery remains blocked, and the full UI
+suite still has the explicitly recorded failures. Neither limitation is treated
+as a passing check.
+
 The application was rebuilt. Its instance socket accepted the Ctrl+R-equivalent
 rebuild/reload command, but the running host rejected activation with:
 `hot reload is disabled; launch with --hot-reload`.
