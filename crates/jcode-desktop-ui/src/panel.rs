@@ -464,6 +464,32 @@ impl Panel {
             || !self.streaming_reasoning.is_empty()
     }
 
+    pub const STARTUP_SESSION_ID: &str = "startup://draft";
+
+    pub fn is_startup_draft(&self) -> bool {
+        self.session_id == Self::STARTUP_SESSION_ID
+    }
+
+    /// Promote in place so focus, selection, undo history, and pasted images
+    /// all survive the asynchronous runtime connection.
+    pub fn attach_startup_session(
+        &mut self,
+        session: jcode_sdk::SessionInfo,
+        cx: &mut Context<Self>,
+    ) {
+        self.session_id = session.session_id;
+        self.title = session
+            .title
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| short_id(&self.session_id))
+            .into();
+        self.working_dir = session.working_dir;
+        self.status = "idle".into();
+        self.input
+            .update(cx, |input, cx| input.set_submission_enabled(true, cx));
+        cx.notify();
+    }
+
     pub fn new(
         session_id: String,
         title: Option<String>,
@@ -1159,8 +1185,10 @@ impl Panel {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, _, _| {
-                            this.bridge
-                                .send(Command::CreateSession { working_dir: None });
+                            this.bridge.send(Command::CreateSession {
+                                working_dir: None,
+                                request_id: None,
+                            });
                         }),
                     )
                     .child("Chat with email"),
@@ -1611,7 +1639,10 @@ impl Panel {
     }
 
     pub(crate) fn can_fork(&self) -> bool {
-        self.terminal.is_none() && self.code_file.is_none() && self.session_id != "unfinished-work"
+        self.terminal.is_none()
+            && self.code_file.is_none()
+            && self.session_id != "unfinished-work"
+            && !self.is_startup_draft()
     }
 
     pub fn new_unfinished_work(
@@ -1678,7 +1709,6 @@ impl Panel {
         let weak = panel.downgrade();
         panel.update(cx, |this, cx| {
             let bridge = this.bridge.clone();
-            let session_id = this.session_id.clone();
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
             this.input = cx.new(|cx| {
@@ -1693,7 +1723,7 @@ impl Panel {
                                     return;
                                 }
                                 bridge.send(Command::Send {
-                                    session_id: session_id.clone(),
+                                    session_id: this.session_id.clone(),
                                     content: content.clone(),
                                     images,
                                 });
@@ -1722,7 +1752,7 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
-                            if content == "/model" {
+                            if content == "/model" && !this.is_startup_draft() {
                                 this.open_model_picker(cx);
                             } else if this.model_picker_open && !content.starts_with("/model ") {
                                 this.close_model_picker(cx);
@@ -1754,6 +1784,11 @@ impl Panel {
                     handled
                 })
             });
+            if this.is_startup_draft() {
+                this.status = "Starting session · you can type now".into();
+                this.input
+                    .update(cx, |input, cx| input.set_submission_enabled(false, cx));
+            }
         });
     }
 

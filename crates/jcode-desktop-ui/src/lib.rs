@@ -208,7 +208,8 @@ unsafe extern "C-unwind" fn activate(
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
         });
-        app.activate(true);
+        // The host activates explicit launches/reopens. A background startup
+        // rebuild must not steal OS focus if the user switched applications.
     }));
     if activated.is_ok() {
         ACTIVATE_OK

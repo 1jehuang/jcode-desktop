@@ -31,6 +31,8 @@ pub enum Update {
     /// A session was created (in reply to `Command::CreateSession`).
     SessionCreated {
         session: SessionInfo,
+        /// Correlates the startup draft without consuming another creation.
+        request_id: Option<String>,
     },
     /// A session was forked from an existing panel.
     SessionForked {
@@ -81,6 +83,7 @@ pub enum Command {
     RefreshSessions,
     CreateSession {
         working_dir: Option<String>,
+        request_id: Option<String>,
     },
     /// Open a dedicated connection for this session (attach + stream).
     Watch {
@@ -113,6 +116,7 @@ pub enum Command {
     CreatedInternal {
         session: SessionInfo,
         client: JcodeClient,
+        request_id: Option<String>,
     },
 }
 
@@ -289,9 +293,8 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             }
         }
     }
-    // Paint the persisted metadata before announcing the connection. The
-    // runtime list request can stall behind a busy daemon (and has a 30 second
-    // timeout), while the local recency scan is bounded and immediately useful.
+    // Neither persisted history scanning nor a busy daemon's list request
+    // should delay creating the first interactive session.
     let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     refresh_sessions(updates.clone(), true, session_refresh_in_flight.clone());
     let _ = updates.send(Update::Connected);
@@ -304,39 +307,65 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             Command::RefreshSessions => {
                 refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
             }
-            Command::CreateSession { working_dir } => {
+            Command::CreateSession {
+                working_dir,
+                request_id,
+            } => {
                 // A fresh connection per creation: an existing connection
                 // returns its already-attached session instead of a new one.
                 let updates = updates.clone();
                 let internal = internal.clone();
                 std::thread::Builder::new()
                     .name("jcode-bridge-create".into())
-                    .spawn(move || match connect("create") {
-                        Ok(client) => match client.create_session(working_dir) {
-                            Ok(session) => {
-                                let _ = internal.send(Command::CreatedInternal { session, client });
+                    .spawn(move || {
+                        loop {
+                            let result = connect("create").and_then(|client| {
+                                let session = client.create_session(working_dir.clone())?;
+                                Ok((session, client))
+                            });
+                            match result {
+                                Ok((session, client)) => {
+                                    let _ = internal.send(Command::CreatedInternal {
+                                        session,
+                                        client,
+                                        request_id,
+                                    });
+                                    break;
+                                }
+                                Err(error) => {
+                                    if updates
+                                        .send(Update::Status(format!(
+                                            "create session failed: {error}"
+                                        )))
+                                        .is_err()
+                                        || request_id.is_none()
+                                    {
+                                        break;
+                                    }
+                                    // Keep the startup draft usable across a daemon
+                                    // restart without requiring a desktop restart.
+                                    std::thread::sleep(Duration::from_millis(500));
+                                }
                             }
-                            Err(error) => {
-                                let _ = updates.send(Update::Status(format!(
-                                    "create session failed: {error}"
-                                )));
-                            }
-                        },
-                        Err(error) => {
-                            let _ =
-                                updates.send(Update::Status(format!("connect failed: {error}")));
                         }
                     })
                     .expect("spawn create thread");
             }
-            Command::CreatedInternal { session, client } => {
+            Command::CreatedInternal {
+                session,
+                client,
+                request_id,
+            } => {
                 let session_id = session.session_id.clone();
                 eprintln!("jcode desktop: adopting created session {session_id}");
                 // The adopted worker can report SessionConnected immediately.
                 // Publish the panel first so readiness is not drained before the
                 // UI has somewhere to apply it. This loop still installs the
                 // worker before it can receive the UI's later Watch command.
-                let _ = updates.send(Update::SessionCreated { session });
+                let _ = updates.send(Update::SessionCreated {
+                    session,
+                    request_id,
+                });
                 let worker = spawn_attached_session_worker(session_id.clone(), client, &updates);
                 if let Some(old) = workers.insert(session_id, worker) {
                     let _ = old.send(SessionCommand::Stop);
@@ -398,17 +427,6 @@ fn refresh_sessions(
     in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let home = jcode_home();
-    if include_disk_snapshot {
-        let started = std::time::Instant::now();
-        let sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
-        eprintln!(
-            "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
-            started.elapsed().as_secs_f64() * 1_000.0,
-            sessions.len()
-        );
-        let _ = updates.send(Update::Sessions { sessions });
-    }
-
     // The workspace asks for this periodically so the sidebar follows sessions
     // created or changed by other Jcode processes. Coalesce requests while the
     // daemon is slow instead of accumulating 30-second list calls.
@@ -419,6 +437,16 @@ fn refresh_sessions(
     std::thread::Builder::new()
         .name("jcode-bridge-sessions".into())
         .spawn(move || {
+            if include_disk_snapshot {
+                let started = std::time::Instant::now();
+                let sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
+                eprintln!(
+                    "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
+                    started.elapsed().as_secs_f64() * 1_000.0,
+                    sessions.len()
+                );
+                let _ = updates.send(Update::Sessions { sessions });
+            }
             let started = std::time::Instant::now();
             let api_sessions =
                 match connect("sessions").and_then(|client| client.list_sessions_limited(100)) {
@@ -1575,7 +1603,10 @@ mod tests {
     #[ignore = "requires a configured model and makes a real model request"]
     fn live_prompt_round_trip() {
         let bridge = spawn();
-        bridge.send(Command::CreateSession { working_dir: None });
+        bridge.send(Command::CreateSession {
+            working_dir: None,
+            request_id: None,
+        });
 
         let deadline = Instant::now() + Duration::from_secs(120);
         let (session_id, mut attached) = loop {
@@ -1585,7 +1616,7 @@ mod tests {
             );
             let updates = bridge.drain();
             if let Some(session_id) = updates.iter().find_map(|update| match update {
-                Update::SessionCreated { session } => Some(session.session_id.clone()),
+                Update::SessionCreated { session, .. } => Some(session.session_id.clone()),
                 _ => None,
             }) {
                 let attached = updates.iter().any(|update| {

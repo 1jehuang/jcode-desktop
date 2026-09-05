@@ -765,8 +765,36 @@ impl Workspace {
                 workspace.sidebar_view = SidebarView::Learn;
                 workspace.tutorial_page = stage - 1;
             }
+        } else {
+            workspace.open_startup_draft(cx);
         }
         workspace
+    }
+
+    fn open_startup_draft(&mut self, cx: &mut Context<Self>) {
+        self.active = self.open_session(
+            jcode_sdk::SessionInfo {
+                session_id: Panel::STARTUP_SESSION_ID.into(),
+                title: Some("New session".into()),
+                working_dir: default_working_dir(),
+                status: "starting".into(),
+                transcript_bytes: None,
+                saved: false,
+                updated_at_ms: None,
+                last_active_at_ms: None,
+                archived: false,
+                archived_at_ms: None,
+            },
+            cx,
+        );
+        // The first frame is a full-sized editor, not a zero-width entrance
+        // animation that makes typing appear to go nowhere.
+        let slot = &mut self.slots[self.active];
+        slot.animated_width = AnimatedValue::new(
+            slot.width_fraction,
+            transition::policy(Transition::PanelOpen).duration,
+        );
+        self.focus_pending = true;
     }
 
     #[cfg(test)]
@@ -964,7 +992,9 @@ impl Workspace {
                         cx,
                     )
                 });
-                self.bridge.send(Command::Watch { session_id });
+                if session_id != Panel::STARTUP_SESSION_ID {
+                    self.bridge.send(Command::Watch { session_id });
+                }
                 panel
             };
             Panel::connect_input(&panel, cx);
@@ -1171,11 +1201,14 @@ impl Workspace {
             Update::Connected => {
                 self.connected = true;
                 self.status = "connected".into();
-                if self.slots.is_empty() {
-                    // Start with a fresh session immediately; recent sessions
-                    // arrive asynchronously and open as panels when listed.
+                if let Some(slot) = self
+                    .slots
+                    .iter()
+                    .find(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
+                {
                     self.bridge.send(Command::CreateSession {
-                        working_dir: default_working_dir(),
+                        working_dir: slot.panel.read(cx).working_dir.clone(),
+                        request_id: Some(Panel::STARTUP_SESSION_ID.into()),
                     });
                 }
             }
@@ -1214,7 +1247,27 @@ impl Workspace {
                     }
                 }
             }
-            Update::SessionCreated { session } => {
+            Update::SessionCreated {
+                session,
+                request_id,
+            } => {
+                if request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID) {
+                    if let Some(slot) = self
+                        .slots
+                        .iter()
+                        .find(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
+                    {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.attach_startup_session(session, cx));
+                    } else {
+                        // The user closed the draft during startup. Do not
+                        // reopen it or steal focus when creation finishes.
+                        self.bridge.send(Command::Unwatch {
+                            session_id: session.session_id,
+                        });
+                    }
+                    return true;
+                }
                 let session_id = session.session_id.clone();
                 // A brand-new panel is only a local draft until its first prompt.
                 // The persisted/runtime session refresh adds it after activity.
@@ -1380,7 +1433,9 @@ impl Workspace {
             )
         });
         Panel::connect_input(&panel, cx);
-        self.bridge.send(Command::Watch { session_id });
+        if session_id != Panel::STARTUP_SESSION_ID {
+            self.bridge.send(Command::Watch { session_id });
+        }
         let slot = Slot {
             panel,
             row: self.active_row,
@@ -2345,6 +2400,7 @@ impl Workspace {
         self.folder_search = None;
         self.bridge.send(Command::CreateSession {
             working_dir: Some(path.to_string_lossy().into_owned()),
+            request_id: None,
         });
         cx.notify();
     }
@@ -2361,6 +2417,7 @@ impl Workspace {
     fn open_new_session(&mut self, _cx: &mut Context<Self>) {
         self.bridge.send(Command::CreateSession {
             working_dir: default_working_dir(),
+            request_id: None,
         });
     }
 
@@ -2561,6 +2618,7 @@ impl Workspace {
         self.hints_progress.set(0.0, Instant::now());
         self.bridge.send(Command::CreateSession {
             working_dir: default_working_dir(),
+            request_id: None,
         });
         cx.notify();
     }
@@ -8540,7 +8598,7 @@ mod tests {
             .try_recv()
             .expect("folder selection should create a session")
         {
-            Command::CreateSession { working_dir } => {
+            Command::CreateSession { working_dir, .. } => {
                 assert_eq!(
                     working_dir.as_deref(),
                     Some(selected.to_string_lossy().as_ref())
@@ -8635,7 +8693,7 @@ mod tests {
             .try_recv()
             .expect("enter should open the search match")
         {
-            Command::CreateSession { working_dir } => {
+            Command::CreateSession { working_dir, .. } => {
                 assert_eq!(
                     working_dir.as_deref(),
                     Some(root.to_string_lossy().as_ref())
@@ -11374,3 +11432,7 @@ mod tests {
         assert!(vcx.debug_bounds("theme-picker-button").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "startup_tests.rs"]
+mod startup_tests;

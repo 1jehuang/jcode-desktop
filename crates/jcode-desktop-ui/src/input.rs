@@ -144,6 +144,7 @@ pub struct PromptInput {
     command_models: Vec<String>,
     command_selection: usize,
     show_command_palette: bool,
+    submission_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -371,12 +372,20 @@ impl PromptInput {
             command_models: Vec::new(),
             command_selection: 0,
             show_command_palette: true,
+            submission_enabled: true,
         }
     }
 
     pub fn with_on_change(mut self, on_change: impl Fn(&str, &mut App) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
+    }
+
+    /// Connection readiness gates sending, never editing or focus. In
+    /// particular, Enter must not consume a draft while startup is pending.
+    pub fn set_submission_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.submission_enabled = enabled;
+        cx.notify();
     }
 
     pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) -> bool + 'static) -> Self {
@@ -422,6 +431,9 @@ impl PromptInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.submission_enabled {
+            return;
+        }
         let raw_content = self.content.to_string();
         let mut content = raw_content.trim().to_string();
         if content.is_empty() && self.attachments.is_empty() {

@@ -33,14 +33,7 @@ actions!(
     [ReloadUi, RebuildAndReloadUi, RollbackUi]
 );
 
-fn rebuild_ui() -> anyhow::Result<()> {
-    // Give every explicit rebuild a unique input. Without this, Cargo can treat
-    // the command as a no-op and preserve the timestamp from an older cdylib.
-    let requested_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| anyhow::anyhow!("system clock is before the Unix epoch: {error}"))?
-        .as_millis()
-        .to_string();
+fn rebuild_ui(force: bool) -> anyhow::Result<()> {
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     // Unify dependency features with the host build. Building only the plugin
     // can give shared GPUI event types different Rust TypeIds, so native mouse
@@ -54,10 +47,18 @@ fn rebuild_ui() -> anyhow::Result<()> {
     if !cfg!(debug_assertions) {
         command.arg("--release");
     }
-    let output = command
-        .env("JCODE_DESKTOP_BUILD_EPOCH", requested_at)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()?;
+    // Explicit reloads need a unique input so Cargo does not preserve the
+    // timestamp of an older cdylib. Startup deliberately uses normal Cargo
+    // freshness and avoids needless compilation while the user begins typing.
+    if force {
+        let requested_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| anyhow::anyhow!("system clock is before the Unix epoch: {error}"))?
+            .as_millis()
+            .to_string();
+        command.env("JCODE_DESKTOP_BUILD_EPOCH", requested_at);
+    }
+    let output = command.current_dir(env!("CARGO_MANIFEST_DIR")).output()?;
     if output.status.success() {
         return Ok(());
     }
@@ -67,6 +68,51 @@ fn rebuild_ui() -> anyhow::Result<()> {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+#[derive(Default)]
+struct RebuildState {
+    in_progress: Cell<bool>,
+}
+
+impl RebuildState {
+    fn try_start(&self) -> bool {
+        !self.in_progress.replace(true)
+    }
+
+    fn finish(&self) {
+        self.in_progress.set(false);
+    }
+}
+
+fn rebuild_and_reload(
+    manager: Rc<RefCell<ReloadManager>>,
+    rebuild_state: Rc<RebuildState>,
+    force: bool,
+    source: &'static str,
+    cx: &mut App,
+) {
+    if !rebuild_state.try_start() {
+        eprintln!("UI rebuild already in progress; ignoring {source} request");
+        return;
+    }
+
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { rebuild_ui(force) })
+            .await;
+        rebuild_state.finish();
+        match result {
+            Ok(()) => {
+                if let Err(error) = cx.update(|cx| manager.borrow_mut().reload(cx)) {
+                    eprintln!("{source} UI reload failed after rebuild: {error:#}");
+                }
+            }
+            Err(error) => eprintln!("{source} UI rebuild failed: {error:#}"),
+        }
+    })
+    .detach();
 }
 
 struct HostFallback;
@@ -213,15 +259,6 @@ fn main() {
             Instance::Secondary => return,
         };
     let plugin_path = hot_reload_path();
-    // A development launcher must not show the UI that happened to be linked
-    // the last time the host executable was built. Rebuild the plugin before
-    // opening the window, then activate it as the initial live generation.
-    // This makes a fresh `--hot-reload` launch equivalent to pressing Ctrl+R.
-    if plugin_path.is_some()
-        && let Err(error) = rebuild_ui()
-    {
-        eprintln!("initial UI rebuild failed; using the linked UI: {error:#}");
-    }
     let app = application();
     // Clicking the Dock icon after the red button closed the last window must
     // bring the workspace back, exactly like a second `jcode-desktop` launch
@@ -274,6 +311,7 @@ fn main() {
         ));
 
         let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
+        let rebuild_state = Rc::new(RebuildState::default());
         *reopen_state.borrow_mut() = Some((manager.clone(), current_window.clone()));
         window
             .update(cx, {
@@ -295,6 +333,7 @@ fn main() {
         cx.spawn({
             let manager = manager.clone();
             let current_window = current_window.clone();
+            let rebuild_state = rebuild_state.clone();
             async move |cx| {
                 // The guard owns the socket pathname. It must live as long as
                 // the command loop, not merely until application setup returns.
@@ -312,15 +351,15 @@ fn main() {
                     let Ok(command) = command else { return };
 
                     if command == InstanceCommand::Reload {
-                        let result = cx.background_executor().spawn(async { rebuild_ui() }).await;
-                        match result {
-                            Ok(()) => {
-                                if let Err(error) = cx.update(|cx| manager.borrow_mut().reload(cx)) {
-                                    eprintln!("remote UI reload failed after rebuild: {error:#}");
-                                }
-                            }
-                            Err(error) => eprintln!("remote UI rebuild failed: {error:#}"),
-                        }
+                        cx.update(|cx| {
+                            rebuild_and_reload(
+                                manager.clone(),
+                                rebuild_state.clone(),
+                                true,
+                                "remote",
+                                cx,
+                            );
+                        });
                         continue;
                     }
 
@@ -346,34 +385,17 @@ fn main() {
                 });
             }
         });
-        let rebuild_in_progress = Rc::new(Cell::new(false));
         cx.on_action({
             let manager = manager.clone();
-            let rebuild_in_progress = rebuild_in_progress.clone();
+            let rebuild_state = rebuild_state.clone();
             move |_: &RebuildAndReloadUi, cx| {
-                if rebuild_in_progress.replace(true) {
-                    eprintln!("UI rebuild already in progress");
-                    return;
-                }
-
-                let manager = manager.clone();
-                let rebuild_in_progress = rebuild_in_progress.clone();
-                cx.spawn(async move |cx| {
-                    let result = cx
-                        .background_executor()
-                        .spawn(async { rebuild_ui() })
-                        .await;
-                    rebuild_in_progress.set(false);
-                    match result {
-                        Ok(()) => {
-                            if let Err(error) = cx.update(|cx| manager.borrow_mut().reload(cx)) {
-                                eprintln!("UI reload failed after rebuild: {error:#}");
-                            }
-                        }
-                        Err(error) => eprintln!("UI rebuild failed: {error:#}"),
-                    }
-                })
-                .detach();
+                rebuild_and_reload(
+                    manager.clone(),
+                    rebuild_state.clone(),
+                    true,
+                    "interactive",
+                    cx,
+                );
             }
         });
         cx.on_action({
@@ -393,14 +415,36 @@ fn main() {
             .activate_initial(cx)
             .expect("activate linked Jcode Desktop UI");
         if let Some(path) = plugin_path.as_ref() {
-            if let Err(error) = manager.borrow_mut().reload(cx) {
-                eprintln!("initial UI plugin activation failed; using the linked UI: {error:#}");
-            }
             eprintln!(
                 "Jcode Desktop hot reload enabled: Ctrl+R rebuilds and reloads the latest UI from {}; Ctrl+Shift+R does the same; F6 rolls back",
                 path.display()
             );
+            // Make the linked generation interactive immediately. The current
+            // checkout is built off the UI thread, then ReloadManager suspends
+            // and resumes that live workspace so drafts survive the swap.
+            rebuild_and_reload(
+                manager.clone(),
+                rebuild_state.clone(),
+                false,
+                "startup",
+                cx,
+            );
         }
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RebuildState;
+
+    #[test]
+    fn rebuild_state_allows_only_one_start_until_finished() {
+        let state = RebuildState::default();
+
+        assert!(state.try_start());
+        assert!(!state.try_start());
+        state.finish();
+        assert!(state.try_start());
+    }
 }
