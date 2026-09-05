@@ -47,3 +47,42 @@ does not interact with the user's desktop or account credentials.
 - The broader UI suite was also attempted, but did not pass: it reported other
   panel/gesture failures and aborted in a Gmail worker's test-scheduler teardown.
   The passing results above are targeted regression evidence, not a full-suite pass.
+
+## Interpretation and outcome audit
+
+The request identified the top-left folder tabs and asked for a curved roller.
+I interpreted that as a horizontal cylindrical carousel, not a vertical picker.
+I also chose browse-on-scroll and select-on-click, rather than automatic page
+selection while scrolling. Neither detail was explicitly specified by the user.
+The first investigation also read the separate live-session tab implementation,
+but no implementation was changed before identifying the sidebar navigation as
+the target. The roller's implementation changes remain confined to that target,
+its obsolete outline painter, and supporting tests. Normal navigation is retained.
+
+The requested change is demonstrated by measured output, not just source review:
+
+| Real screenshot measurement | Before | After |
+| --- | --- | --- |
+| Top edge of three inactive folders | y=22,22,22 (flat) | Four symmetric depth levels |
+| Left-to-right sampled top contour | y=18,22,22,22 | y=32,24,19,18,19,24,32 |
+| Center-to-outer depth | No progressive inactive depth | 14 pixels |
+
+Measurements use the first pixel differing from the header background by more
+than five RGB channel levels in y=17..49. Before samples are x=34,85,142,205 in
+`target/startup-ui-review.png`. After samples are x=26,43,71,132,192,220,237 in
+`target/ui-review-roller-final.png`. The exact after contour was reproduced in
+`target/roller-audit-final/01-initial-sessions.png` on a fresh native run.
+The comparison is deliberately restricted to the header because other agents
+also changed the conversation canvas during this task.
+
+The fresh `target/roller-audit-final` run passed all 14 native checkpoints again.
+A wheel step on both the backdrop and tab face brought Learn to the center,
+confirmed by clicking that position and observing the actual sidebar become
+Learn. Arrows reached Files, Accounts, and Theme; wrapping returned to Chat.
+Panel identity/count, focus, page, and native-window count remained unchanged
+while browsing. Numeric observations are saved in `target/roller-audit.json`.
+
+This establishes improvement on the requested flat-to-curved and roller-navigation
+criteria. It does not establish that the user prefers this interpretation to a
+vertical roller. Neighbors intentionally expose less label text than the old flat
+strip; the centered label and full-label tooltips preserve access to their names.
