@@ -26,6 +26,8 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 
 #[path = "panel_activity.rs"]
 mod activity;
+#[path = "panel_tab_emoji.rs"]
+mod tab_emoji;
 
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
@@ -175,7 +177,7 @@ pub struct Panel {
     streaming_text: String,
     streaming_reasoning: String,
     activity_spinner: Entity<activity::Spinner>,
-    tab_spinner: Entity<activity::Spinner>,
+    tab_emoji: Entity<tab_emoji::TabEmoji>,
     pub input: Entity<PromptInput>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
@@ -443,7 +445,7 @@ async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<Gmai
 
 impl Panel {
     pub(crate) fn tab_activity(&self) -> Option<gpui::AnyView> {
-        self.activity_active().then(|| self.tab_spinner.clone().into())
+        self.activity_active().then(|| self.tab_emoji.clone().into())
     }
 
     pub(crate) fn sidebar_runtime_status(&self) -> &str {
@@ -478,6 +480,10 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.session_id = session.session_id;
+        let emoji = jcode_core::id::extract_session_name(&self.session_id)
+            .map(jcode_core::id::session_icon)
+            .unwrap_or("💫");
+        self.tab_emoji = cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx));
         self.title = session
             .title
             .filter(|title| !title.is_empty())
@@ -538,6 +544,9 @@ impl Panel {
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("streaming");
+        let emoji = jcode_core::id::extract_session_name(&session_id)
+            .map(jcode_core::id::session_icon)
+            .unwrap_or("💫");
         Self {
             session_id,
             title: display_title.into(),
@@ -557,7 +566,7 @@ impl Panel {
             },
             streaming_reasoning: String::new(),
             activity_spinner: cx.new(activity::Spinner::new),
-            tab_spinner: cx.new(activity::Spinner::new),
+            tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
             input,
             focus_handle: cx.focus_handle(),
             transcript_list,

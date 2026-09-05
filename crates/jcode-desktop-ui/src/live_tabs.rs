@@ -252,7 +252,7 @@ impl Workspace {
                         jcode_core::id::extract_session_name(&panel.session_id)
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
-                        (visible >= 64.0).then(|| panel.tab_activity()).flatten(),
+                        panel.tab_activity(),
                     )
                 }
                 None => (format!("Workspace {}", row + 1).into(), "📁", None),
@@ -274,8 +274,21 @@ impl Workspace {
                             None => "live-session-empty-tab-emoji".into(),
                         })
                         .flex_none()
+                        .size(px((visible - 2.0 - 2.0 * padding).clamp(1.0, 20.0)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .text_size(px((visible - 2.0 - 2.0 * padding).clamp(1.0, 14.0)))
-                        .child(emoji),
+                        .child(match activity {
+                            Some(activity) => div()
+                                .debug_selector(move || {
+                                    format!("live-session-tab-{}-working-emoji", index.unwrap())
+                                })
+                                .size_full()
+                                .child(activity)
+                                .into_any_element(),
+                            None => div().child(emoji).into_any_element(),
+                        }),
                 )
                 .when(
                     visible >= 64.0 && populated_rows > 1 && row_position == 0,
@@ -288,16 +301,6 @@ impl Workspace {
                         )
                     },
                 )
-                .when_some(activity, |el, spinner| {
-                    el.child(
-                        div()
-                            .debug_selector(move || {
-                                format!("live-session-tab-{}-spinner", index.unwrap())
-                            })
-                            .flex_none()
-                            .child(spinner),
-                    )
-                })
                 .when(focused || visible >= 52.0, |el| {
                     el.child(
                         div()
@@ -387,7 +390,9 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn live_tabs_show_only_a_working_spinner(cx: &mut gpui::TestAppContext) {
+    fn live_tabs_animate_the_working_emoji_without_shifting_the_title(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.show_sidebar = false;
@@ -426,7 +431,8 @@ mod tests {
             });
             vcx.run_until_parked();
             assert_eq!(
-                vcx.debug_bounds("live-session-tab-0-spinner").is_some(),
+                vcx.debug_bounds("live-session-tab-0-working-emoji")
+                    .is_some(),
                 active,
                 "status {status}",
             );
@@ -434,16 +440,18 @@ mod tests {
             assert!(vcx.debug_bounds("panel-session-title").is_none());
             assert!(vcx.debug_bounds("panel-activity-label").is_none());
             let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
-            if active {
-                let spinner = vcx.debug_bounds("live-session-tab-0-spinner").unwrap();
-                assert!(spinner.right() <= title.left());
-                assert!(title.left() > idle_title_left);
-            } else {
-                assert_eq!(
-                    title.left(), idle_title_left,
-                    "idle tabs reserve no icon space"
-                );
-            }
+            assert!(vcx.debug_bounds("live-session-tab-0-spinner").is_none());
+            assert!(
+                vcx.debug_bounds("live-session-tab-1-working-emoji")
+                    .is_none()
+            );
+            let emoji = vcx.debug_bounds("live-session-tab-0-emoji").unwrap();
+            assert!(emoji.right() <= title.left());
+            assert_eq!(
+                title.left(),
+                idle_title_left,
+                "activity must not shift the title"
+            );
         }
     }
 
