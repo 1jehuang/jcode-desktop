@@ -28,6 +28,12 @@ use crate::theme::{Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
 
+#[path = "navigation_state.rs"]
+mod navigation_state;
+#[cfg(test)]
+#[path = "navigation_map_tests.rs"]
+mod navigation_map_tests;
+
 actions!(
     workspace,
     [
@@ -1678,6 +1684,7 @@ impl Workspace {
     }
 
     fn focus_left(&mut self, _: &FocusLeft, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("H", false, "Focus left", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
@@ -1694,6 +1701,7 @@ impl Workspace {
     }
 
     fn focus_right(&mut self, _: &FocusRight, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("L", false, "Focus right", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
@@ -1709,6 +1717,7 @@ impl Workspace {
 
     /// niri `focus-column-first`.
     fn focus_first(&mut self, _: &FocusFirst, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("Home", false, "Focus first panel", cx);
         let first = self.row_indices(self.active_row).next();
         if let Some(index) = first.filter(|index| *index != self.active) {
@@ -1721,6 +1730,7 @@ impl Workspace {
 
     /// niri `focus-column-last`.
     fn focus_last(&mut self, _: &FocusLast, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("End", false, "Focus last panel", cx);
         let last = self.row_indices(self.active_row).last();
         if let Some(index) = last.filter(|index| *index != self.active) {
@@ -1734,6 +1744,7 @@ impl Workspace {
     /// niri `focus-window-previous` (the user's Alt+Tab). Returns to the last
     /// focused panel wherever it now lives, including on another strip.
     fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("Tab", false, "Return to previous panel", cx);
         let Some(previous) = self.previous else {
             return;
@@ -1753,6 +1764,7 @@ impl Workspace {
     }
 
     fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("K", false, "Focus strip above", cx);
         if self.active_row > 0 {
             self.change_row(self.active_row - 1, window, cx);
@@ -1768,6 +1780,7 @@ impl Workspace {
     }
 
     fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         self.showcase_motion("J", false, "Focus strip below", cx);
         if self.active_row + 1 < STRIP_COUNT {
             self.change_row(self.active_row + 1, window, cx);
@@ -2673,7 +2686,7 @@ impl Workspace {
     /// A one-line snapshot of the strip layout. Written to the path in
     /// `JCODE_DESKTOP_STATE` on every render so an automated check can observe
     /// what the running window is actually doing.
-    fn dump_state(&self) {
+    fn dump_state(&self, window: &Window, cx: &App) {
         let Ok(path) = std::env::var("JCODE_DESKTOP_STATE") else {
             return;
         };
@@ -2714,7 +2727,11 @@ impl Workspace {
             .map(|line| format!("\n{line}"))
             .unwrap_or_default();
         let appearance = format!("layout={:?} sidebar={:?}", self.layout_mode, self.sidebar_view);
-        let _ = std::fs::write(path, format!("{line}\n{coach}\n{appearance}{suffix}\n"));
+        let navigation = self.navigation_state(window, cx);
+        let _ = std::fs::write(
+            path,
+            format!("{line}\n{coach}\n{appearance}{suffix}\nnavigation={navigation}\n"),
+        );
     }
 
     fn animation_active(&self) -> bool {
@@ -5002,7 +5019,7 @@ impl Workspace {
                 // wide on screen reads taller than wide here too.
                 let height = (viewport_h * scale).clamp(3.0, panel_track_h);
                 let top = MINIMAP_PANEL_INSET + (panel_track_h - height) / 2.0;
-                let focused = index == self.active;
+                let focused = active_row && index == self.active;
                 let (state, todo_progress) = {
                     let panel = self.slots[index].panel.read(cx);
                     let progress = panel.latest_todo_progress().and_then(|(done, total)| {
@@ -5025,6 +5042,12 @@ impl Workspace {
                     div()
                         .id(("minimap-panel", index))
                         .debug_selector(move || format!("minimap-panel-{index}"))
+                        .when(cfg!(test) && focused, |el| {
+                            el.child(
+                                div().absolute().size_full()
+                                    .debug_selector(move || format!("minimap-panel-{index}-focused")),
+                            )
+                        })
                         .absolute()
                         .left(px(left))
                         .top(px(top))
@@ -5740,7 +5763,6 @@ impl Render for Workspace {
             });
         }
         let render_started = Instant::now();
-        self.dump_state();
         if self.focus_pending && !self.slots.is_empty() {
             self.focus_pending = false;
             self.focus_active(window, cx);
@@ -5935,6 +5957,9 @@ impl Render for Workspace {
             // the active panel currently owns keyboard focus. Capture these at
             // the workspace boundary so a terminal, composer, picker, or other
             // focused child cannot consume the action before it reaches us.
+            // Each handler must stop propagation explicitly: capture listeners
+            // propagate by default, allowing older hot-reload key bindings to
+            // execute the same motion again for a single physical keypress.
             .capture_action(cx.listener(Self::focus_left))
             .capture_action(cx.listener(Self::focus_right))
             .capture_action(cx.listener(Self::focus_up))
@@ -6028,6 +6053,7 @@ impl Render for Workspace {
             .when(self.folder_picker_dir.is_some(), |root| {
                 root.child(self.render_folder_picker(cx))
             });
+        self.dump_state(window, cx);
         let animation_active = self.animation_active();
         let action_capture_pending = self
             .action_capture
@@ -9922,6 +9948,90 @@ mod tests {
             vcx.debug_bounds("tutorial-learned-focus_up_down").is_some(),
             "the J/K chips should render their green completion state"
         );
+    }
+
+    #[gpui::test]
+    fn navigation_keys_move_once_after_rebinding(cx: &mut gpui::TestAppContext) {
+        // Plugin activation installs the keymap again on every hot reload.
+        // GPUI tries older matching bindings if a handler leaves propagation on.
+        cx.update(|cx| {
+            for _ in 0..4 {
+                crate::bind_workspace_keys(cx);
+            }
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["one", "two", "three", "four", "five"] {
+                workspace.push_test_panel(name, cx);
+            }
+            workspace.set_active(2, cx);
+            workspace
+        });
+        let mut pairs = vec![
+            ("super-h", "super-l"),
+            ("super-left", "super-right"),
+            ("ctrl-shift-tab", "ctrl-tab"),
+            ("ctrl-pageup", "ctrl-pagedown"),
+        ];
+        #[cfg(not(target_os = "macos"))]
+        pairs.extend([("alt-h", "alt-l"), ("ctrl-alt-left", "ctrl-alt-right")]);
+        #[cfg(target_os = "macos")]
+        pairs.push(("cmd-left", "cmd-right"));
+        for (left, right) in pairs {
+            vcx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_active(2, cx);
+                    workspace.focus_active(window, cx);
+                })
+            });
+            vcx.run_until_parked();
+            // Test every destination, both boundaries, and rapid reversals from
+            // the real focused composer rather than invoking handlers directly.
+            for (chord, expected) in [
+                (right, 3),
+                (right, 4),
+                (right, 4),
+                (left, 3),
+                (left, 2),
+                (left, 1),
+                (left, 0),
+                (left, 0),
+                (right, 1),
+                (left, 0),
+            ] {
+                vcx.simulate_keystrokes(chord);
+                vcx.run_until_parked();
+                vcx.update(|window, cx| {
+                    let workspace = workspace.read(cx);
+                    assert_eq!(
+                        workspace.active, expected,
+                        "{chord} must move exactly one panel"
+                    );
+                    let state = workspace.navigation_state(window, cx);
+                    assert_eq!(state["focused_slot"], expected);
+                    assert_eq!(state["keyboard_panel"], expected);
+                });
+            }
+        }
+        // The same capture bug affected vertical navigation and could toggle
+        // FocusPrevious an even number of times, appearing to do nothing.
+        for (chord, row, position) in [
+            ("super-end", 0, Some(4)),
+            ("super-home", 0, Some(0)),
+            ("super-tab", 0, Some(4)),
+            ("super-tab", 0, Some(0)),
+            ("super-j", 1, None),
+            ("super-l", 1, None),
+            ("super-k", 0, Some(0)),
+            ("super-k", 0, Some(0)),
+        ] {
+            vcx.simulate_keystrokes(chord);
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, _| {
+                assert_eq!(workspace.active_row, row, "{chord}");
+                assert_eq!(workspace.test_focus_position(), position, "{chord}");
+            });
+        }
     }
 
     /// This is the public acceptance path for vertical navigation: real bound
