@@ -34,6 +34,26 @@ history preserve the visible row, and metadata changes update row heights.
 Existing UI tests cover wheel scrolling, clicking sessions, section ordering,
 saved dividers, equal title heights, and the outer-gutter scrollbar placement.
 
+### Live acceptance limitation
+
+After reload, a 30-second passive capture against the actual running desktop
+process on 2026-09-05 at 09:37 UTC returned **zero input-bearing frames**. The
+capture is stored locally at
+`target/live-profile/sidebar-acceptance-20260905/`. It confirms that the running
+window's diagnostic boundary is reachable, but it cannot validate hover latency
+or establish an improvement in the user's actual workspace. Other compilation
+jobs were also active, making this unsuitable as an idle performance baseline.
+No pointer input, focus changes, or compositor commands were injected into the
+user's desktop. Live hover acceptance remains unverified until a capture includes
+the affected interaction. The headless improvement above is not a substitute for
+that missing observation.
+
+The exact committed source passed the sidebar regressions. The broader suite
+had five failures in inbox scrolling, restored transcript scroll, gesture
+reticle rendering, the right-edge click target, and shortcut showcase text.
+The same five failures were reproduced on untouched pre-fix commit `24ce6e7`
+in an isolated source copy, distinguishing them from this sidebar change.
+
 ## Live self-development profile
 
 Self-development launches (`--hot-reload`) show a compact live performance
