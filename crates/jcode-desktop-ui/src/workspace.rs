@@ -99,6 +99,9 @@ mod folder_surface;
 #[path = "live_tabs.rs"]
 mod live_tabs;
 
+#[path = "sidebar_roller.rs"]
+mod sidebar_roller;
+
 #[cfg(test)]
 #[path = "panel_surface_tests.rs"]
 mod panel_surface_tests;
@@ -514,6 +517,7 @@ pub struct Workspace {
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
+    sidebar_roller: sidebar_roller::Roller,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
@@ -691,6 +695,7 @@ impl Workspace {
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
+            sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -859,6 +864,7 @@ impl Workspace {
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
+            sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -2810,6 +2816,9 @@ impl Workspace {
     fn animation_active(&self) -> bool {
         self.row_progress.is_animating()
             || self.live_tabs.is_animating()
+            || (self.show_sidebar
+                && self.layout_mode == crate::config::LayoutMode::FolderTabs
+                && self.sidebar_roller.is_animating())
             || self.overview_progress.is_animating()
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
@@ -2938,6 +2947,13 @@ impl Workspace {
             let focused = index == self.active;
             let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
+            if focused && row == self.active_row {
+                self.live_tabs.panel_bounds = Some((
+                    index,
+                    left - self.camera_x[row] + if folders { 0.0 } else { 6.0 },
+                    (width - if folders { 0.0 } else { 12.0 }).max(1.0),
+                ));
+            }
             let top = FOLDER_CONTENT_INSET.min(panel_h / 2.0);
             panel_left += width + GAP;
             let surface = div()
@@ -3157,7 +3173,11 @@ impl Workspace {
             .and_then(|index| self.slots.get(index))
             .filter(|slot| slot.row == row)
             .is_some_and(|slot| !slot.panel.read(cx).has_scrollable_conversation());
-        if empty_panel && dx == 0.0 && dy != 0.0 {
+        let horizontally_locked = self.gesture.axis == GestureAxis::Horizontal
+            && self
+                .gesture_seen
+                .is_some_and(|seen| seen.elapsed() <= GESTURE_RESET);
+        if empty_panel && !horizontally_locked && dx == 0.0 && dy != 0.0 {
             // With no conversation beneath the pointer, vertical scrolling is
             // workspace navigation. A wheel notch moves one row immediately;
             // precise touchpad deltas accumulate to the same deliberate
@@ -4004,7 +4024,9 @@ impl Workspace {
             .relative()
             .when(!folders, |el| el.bg(Theme::global().HEADER_BG))
             // Folder mode leaves this transparent: the native path owns its tab.
-            .child(
+            .child(if folders {
+                self.render_sidebar_roller(fullscreen, cx)
+            } else {
                 div()
                     .h(px(TITLEBAR_HEIGHT))
                     // The transparent macOS titlebar puts the traffic lights in
@@ -4343,8 +4365,9 @@ impl Workspace {
                                             .child("+"),
                                     ),
                             ),
-                    ),
-            )
+                    )
+                    .into_any_element()
+            })
             .child(
                 div()
                     .flex_1()
@@ -4377,9 +4400,6 @@ impl Workspace {
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
-            .when(folders, |el| el.child(folder_surface::navigation_scroll_outline(
-                self.sidebar_navigation_scroll.clone(),
-            )))
             .into_any_element()
     }
 
@@ -5767,7 +5787,10 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.show_sidebar && self.sidebar_navigation_scroll.bounds().size.width == px(0.0) {
+        if self.show_sidebar
+            && self.layout_mode == crate::config::LayoutMode::Normal
+            && self.sidebar_navigation_scroll.bounds().size.width == px(0.0)
+        {
             let workspace = cx.entity().downgrade();
             window.on_next_frame(move |_, cx| {
                 let _ = workspace.update(cx, |_, cx| cx.notify());
@@ -8159,6 +8182,11 @@ mod tests {
             vcx.simulate_click(tab.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(workspace.read_with(vcx, |w, _| w.sidebar_view), view);
+            workspace.update(vcx, |w, cx| {
+                w.sidebar_roller.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
             let selected = vcx.debug_bounds(selector).unwrap();
             let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
             assert_eq!(
@@ -8167,11 +8195,7 @@ mod tests {
                 "active tab must touch its sidebar page"
             );
             assert_eq!(selected.size.height, px(34.0));
-            let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
-            assert!(
-                track.bottom() <= selected.top() + px(10.0),
-                "outline scroll target stays above tab labels and page join"
-            );
+            assert!(vcx.debug_bounds("sidebar-roller-next").is_some());
         }
     }
 
@@ -9677,12 +9701,15 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
-        vcx.simulate_click(
-            gpui::point(track.right() - px(1.0), track.center().y),
-            gpui::Modifiers::default(),
-        );
-        vcx.run_until_parked();
+        for _ in 0..1 {
+            let previous = vcx.debug_bounds("sidebar-roller-previous").unwrap();
+            vcx.simulate_click(previous.center(), gpui::Modifiers::default());
+            workspace.update(vcx, |w, cx| {
+                w.sidebar_roller.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        }
 
         let button = vcx
             .debug_bounds("sidebar-new-session")
@@ -9708,7 +9735,11 @@ mod tests {
     #[gpui::test]
     fn sidebar_navigation_scrolls_with_wheel_and_track(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
-            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+            cx.add_window_view(|_, cx| {
+                let mut w = Workspace::for_test(learning::Coach::new(), cx);
+                w.layout_mode = crate::config::LayoutMode::Normal;
+                w
+            });
         vcx.run_until_parked();
         let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
         let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
@@ -9762,12 +9793,15 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
-        vcx.simulate_click(
-            gpui::point(track.right() - px(1.0), track.center().y),
-            gpui::Modifiers::default(),
-        );
-        vcx.run_until_parked();
+        for _ in 0..3 {
+            let previous = vcx.debug_bounds("sidebar-roller-previous").unwrap();
+            vcx.simulate_click(previous.center(), gpui::Modifiers::default());
+            workspace.update(vcx, |w, cx| {
+                w.sidebar_roller.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        }
 
         let button = vcx
             .debug_bounds("open-gmail")

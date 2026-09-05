@@ -111,64 +111,6 @@ pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
         )
 }
 
-/// The horizontal scroll thumb is a highlighted segment of the real tab outline,
-/// not another pill floating above it. Read post-layout bounds so scrolling,
-/// active-tab height, and text widths cannot drift from the rendered border.
-pub(super) fn navigation_scroll_outline(handle: gpui::ScrollHandle) -> impl IntoElement {
-    div()
-        .debug_selector(|| "sidebar-navigation-outline-thumb".into())
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .child(
-            canvas(
-                |_, _, _| {},
-                move |_, _, window, _| {
-                    let bounds = handle.bounds();
-                    let width = f32::from(bounds.size.width).max(1.0);
-                    let max = f32::from(handle.max_offset().x).max(0.0);
-                    if max == 0.0 {
-                        return;
-                    }
-                    let thumb = (width * width / (width + max)).max(28.0).min(width);
-                    let progress = (-f32::from(handle.offset().x) / max).clamp(0.0, 1.0);
-                    let left = bounds.left() + px((width - thumb) * progress);
-                    let mask = gpui::ContentMask {
-                        bounds: Bounds::new(
-                            point(left, bounds.top() - px(1.0)),
-                            gpui::size(px(thumb), px(14.0)),
-                        ),
-                    };
-                    window.with_content_mask(Some(mask), |window| {
-                        for index in 0..64 {
-                            let Some(mut tab) = handle.bounds_for_item(index) else {
-                                break;
-                            };
-                            tab.origin += handle.offset();
-                            if tab.right() < left || tab.left() > left + px(thumb) {
-                                continue;
-                            }
-                            let x = tab.left() + px(0.5);
-                            let right = tab.right() - px(0.5);
-                            let y = tab.top() + px(0.5);
-                            let r = px(6.0);
-                            let mut path = PathBuilder::stroke(px(1.5));
-                            path.move_to(point(x, y + r));
-                            path.curve_to(point(x + r, y), point(x, y));
-                            path.line_to(point(right - r, y));
-                            path.curve_to(point(right, y + r), point(right, y));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(path, Theme::global().TEXT_FAINT);
-                            }
-                        }
-                    });
-                },
-            )
-            .size_full(),
-        )
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Rect {
     left: f32,

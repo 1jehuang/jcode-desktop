@@ -10,6 +10,7 @@ struct TabLayout {
     active_width: f32,
     inactive_width: f32,
     step: f32,
+    right_step: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -41,15 +42,53 @@ impl TabLayout {
             active_width,
             inactive_width,
             step,
+            right_step: step,
         }
+    }
+
+    fn anchor(
+        mut self,
+        available: f32,
+        count: usize,
+        selected: usize,
+        left: f32,
+        width: f32,
+    ) -> Self {
+        let panel_left = left.clamp(0.0, available);
+        let panel_right = (left + width).clamp(panel_left, available);
+        let visible_width = panel_right - panel_left;
+        if visible_width <= 0.0 {
+            return self;
+        }
+        // Leave a sliver on both sides even when the panel is mostly clipped,
+        // so neighboring folders never collapse to a zero-width exposed edge.
+        self.active_width = self.active_width.min(visible_width * 0.9);
+        self.inactive_width = self.inactive_width.min(self.active_width * 0.7);
+        let active_left = ((panel_left + panel_right - self.active_width) / 2.0)
+            .clamp(0.0, (available - self.active_width).max(0.0));
+        self.step = if selected == 0 {
+            0.0
+        } else {
+            (active_left / selected as f32).min(self.inactive_width + 2.0)
+        };
+        let after = count.saturating_sub(selected + 1);
+        self.right_step = if after == 0 {
+            0.0
+        } else {
+            ((available - active_left - self.active_width) / after as f32)
+                .min(self.inactive_width + 2.0)
+        };
+        self.start = active_left - self.step * selected as f32;
+        self
     }
 
     fn geometry(self, position: usize, selected: usize) -> TabGeometry {
         TabGeometry {
             left: self.start
-                + self.step * position as f32
+                + self.step * position.min(selected) as f32
                 + if position > selected {
                     self.active_width - self.inactive_width
+                        + self.right_step * (position - selected) as f32
                 } else {
                     0.0
                 },
@@ -103,6 +142,8 @@ impl TabTween {
 pub(super) struct TabMotion {
     tabs: HashMap<u64, TabTween>,
     available: Option<f32>,
+    pub(super) panel_bounds: Option<(usize, f32, f32)>,
+    pub(super) hit_targets: Vec<(usize, f32)>,
 }
 
 impl TabMotion {
@@ -199,7 +240,14 @@ impl Workspace {
             })
             .unwrap_or(0);
         let available = (canvas_width - right).max(0.0);
-        let layout = TabLayout::new(available, entries.len());
+        let anchor = self
+            .live_tabs
+            .panel_bounds
+            .filter(|(index, _, _)| entries[selected].0 == Some(*index));
+        let mut layout = TabLayout::new(available, entries.len());
+        if let Some((_, left, width)) = anchor {
+            layout = layout.anchor(available, entries.len(), selected, left, width);
+        }
         let targets: Vec<_> = entries
             .iter()
             .enumerate()
@@ -210,12 +258,23 @@ impl Workspace {
                 (key, layout.geometry(position, selected))
             })
             .collect();
-        let geometry = self.live_tabs.sample(
+        let mut geometry = self.live_tabs.sample(
             &targets,
             available,
             transition::policy(Transition::Focus).duration,
             Instant::now(),
         );
+        if let Some((_, left, width)) = anchor {
+            // Panel motion is already animated by the strip camera. Do not
+            // tween its attachment a second time and let the folder lag behind.
+            layout.active_width = geometry[selected].width.min(layout.active_width);
+            layout = layout.anchor(available, entries.len(), selected, left, width);
+            for (position, tab) in geometry.iter_mut().enumerate() {
+                let attached = layout.geometry(position, selected);
+                tab.left = attached.left;
+                tab.width = attached.width;
+            }
+        }
         let mut tabs = div()
             .id("live-session-tabs")
             .debug_selector(|| "live-session-tabs".into())
@@ -227,6 +286,7 @@ impl Workspace {
         let populated_rows = (0..STRIP_COUNT)
             .filter(|row| self.row_indices(*row).next().is_some())
             .count();
+        self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
             let (index, row, row_position) = entries[position];
             let focused = position == selected;
@@ -243,8 +303,18 @@ impl Workspace {
                     .min(current.width)
                     .max(0.0)
             };
+            if let Some(index) = index {
+                let x = if focused {
+                    current.left + current.width / 2.0
+                } else if position < selected {
+                    current.left + visible / 2.0
+                } else {
+                    current.left + current.width - visible / 2.0
+                };
+                self.live_tabs.hit_targets.push((index, x));
+            }
             let padding = (visible / 12.0).min(6.0);
-            let (title, emoji, activity) = match index {
+            let (title, emoji, activity, state) = match index {
                 Some(index) => {
                     let panel = self.slots[index].panel.read(cx);
                     (
@@ -253,9 +323,10 @@ impl Workspace {
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
                         panel.tab_activity(),
+                        Some(panel.minimap_state()),
                     )
                 }
-                None => (format!("Workspace {}", row + 1).into(), "📁", None),
+                None => (format!("Workspace {}", row + 1).into(), "📁", None, None),
             };
             let text = div()
                 .flex_none()
@@ -334,9 +405,9 @@ impl Workspace {
                     .border_1()
                     .border_b_0()
                     .border_color(if focused {
-                        Theme::global().PANEL_BORDER_FOCUS
+                        Theme::global().PANEL_BORDER_FOCUS.opacity(0.50)
                     } else {
-                        Theme::global().PANEL_BORDER
+                        Theme::global().PANEL_BORDER.opacity(0.45)
                     })
                     .bg(if focused {
                         Theme::global().PANEL_BG
@@ -363,6 +434,37 @@ impl Workspace {
                         el.child(div().absolute().inset_0().debug_selector(move || {
                             format!("live-session-tab-{}-focused", index.unwrap())
                         }))
+                    })
+                    .when_some(index.zip(state), |el, (index, state)| {
+                        let (state_name, state_color) = match state {
+                            crate::panel::MinimapSessionState::Idle => {
+                                ("idle", Theme::global().TEXT_FAINT)
+                            }
+                            crate::panel::MinimapSessionState::Working => {
+                                ("working", Theme::global().WARN)
+                            }
+                            crate::panel::MinimapSessionState::Streaming => {
+                                ("streaming", Theme::global().ACCENT)
+                            }
+                            crate::panel::MinimapSessionState::Complete => {
+                                ("complete", Theme::global().OK)
+                            }
+                            crate::panel::MinimapSessionState::Error => {
+                                ("error", Theme::global().ERROR)
+                            }
+                        };
+                        el.child(
+                            div()
+                                .absolute()
+                                .right_1()
+                                .top_1()
+                                .size(px(5.0))
+                                .rounded_full()
+                                .bg(state_color)
+                                .debug_selector(move || {
+                                    format!("live-session-tab-{index}-{state_name}")
+                                }),
+                        )
                     })
                     .child(text)
                     .when_some(index, |el, index| {
@@ -483,6 +585,83 @@ mod tests {
         assert_eq!(crowded.inactive_width, 112.0);
         assert!(crowded.step < crowded.inactive_width);
         assert!(TabLayout::new(1152.0, 3).start > 0.0);
+    }
+
+    #[test]
+    fn live_tabs_anchor_inside_the_visible_panel_and_keep_every_edge() {
+        for available in [40.0, 192.0, 512.0, 1152.0] {
+            for count in [1, 3, 12, 200] {
+                for selected in [0, count / 2, count - 1] {
+                    for left in [-280.0, 0.0, 170.0, available - 20.0] {
+                        let right = (left + 320.0_f32).min(available);
+                        let visible_left = left.max(0.0);
+                        if right <= visible_left {
+                            continue;
+                        }
+                        let layout = TabLayout::new(available, count)
+                            .anchor(available, count, selected, left, 320.0);
+                        let active = layout.geometry(selected, selected);
+                        assert!(active.left >= visible_left - 0.001);
+                        assert!(active.left + active.width <= right + 0.001);
+                        assert!(layout.geometry(0, selected).left >= -0.001);
+                        let last = layout.geometry(count - 1, selected);
+                        assert!(last.left + last.width <= available + 0.001);
+                        if selected > 0 {
+                            assert!(layout.step > 0.0);
+                        }
+                        if selected + 1 < count {
+                            assert!(layout.right_step > 0.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn live_tabs_remain_attached_when_panel_camera_moves(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            for i in 0..3 {
+                w.push_test_panel(&format!("panel-{i}"), cx);
+            }
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1200.0), px(700.0)));
+        vcx.run_until_parked();
+        for selected in 0..3 {
+            for camera in [0.0, 80.0, 160.0] {
+                workspace.update(vcx, |w, cx| {
+                    w.active = selected;
+                    w.camera_x[0] = camera;
+                    w.camera_target[0] = camera;
+                    w.camera_started[0] = None;
+                    w.camera_dirty[0] = false;
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let panel = vcx
+                    .debug_bounds(Box::leak(format!("panel-{selected}").into_boxed_str()))
+                    .unwrap();
+                let tab = vcx
+                    .debug_bounds(Box::leak(
+                        format!("live-session-tab-{selected}").into_boxed_str(),
+                    ))
+                    .unwrap();
+                let track = vcx.debug_bounds("live-session-tabs").unwrap();
+                assert!(
+                    tab.left() >= panel.left().max(track.left()) - px(1.0),
+                    "{tab:?} {panel:?}"
+                );
+                assert!(
+                    tab.right() <= panel.right().min(track.right()) + px(1.0),
+                    "{tab:?} {panel:?}"
+                );
+                assert_eq!(tab.bottom(), panel.top());
+            }
+        }
     }
 
     #[test]
@@ -615,7 +794,7 @@ mod tests {
         });
         vcx.run_until_parked();
         let first = vcx.debug_bounds("live-session-tab-0").unwrap();
-        assert_eq!(first.left(), track.left());
+        assert!(first.left() >= track.left());
         vcx.update(|window, cx| window.simulate_mouse_move(first.center(), cx));
         vcx.run_until_parked();
         vcx.executor().advance_clock(Duration::from_secs(1));

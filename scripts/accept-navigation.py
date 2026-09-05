@@ -129,7 +129,8 @@ def main():
         deadline = time.monotonic() + timeout
         report_at = time.monotonic() + 20
         while True:
-            assert all(p.poll() is None for p in processes), 'Child process exited: ' + label
+            exited = [(p.pid, p.args, p.poll()) for p in processes if p.poll() is not None]
+            assert not exited, f'Child process exited during {label}: {exited}'
             if diagnostics.exists():
                 assert_reload_healthy(diagnostics.read_text())
             if predicate():
@@ -193,6 +194,9 @@ def main():
                + (['--no-hot-reload'] if args.linked_ui else ['--hot-reload']))
         wait_until(lambda: (s := navigation_state(state_path)) is not None and len(s['rows'][0]['panels']) == 1,
                    'first real session (including startup build)', args.build_timeout)
+        if not args.linked_ui:
+            wait_until(lambda: diagnostics.exists() and 'activated UI generation' in diagnostics.read_text(),
+                       'initial hot reload', args.build_timeout)
         time.sleep(1)
         key('super+1')
         for count in range(2, panel_count + 1):
@@ -241,17 +245,16 @@ def main():
                 # Click the exposed edge on the appropriate side of the
                 # expanded selection. Native hit-testing must not reach a tab
                 # hidden underneath another folder.
-                active_width = 208.0
-                step = (512.0 - active_width) / (panel_count - 1)
                 positions = [*range(panel_count), *range(panel_count - 2, -1, -1), panel_count - 1, panel_count // 2, 0]
                 for position in positions:
-                    current = navigation_state(state_path)['focused_slot']
-                    if position < current:
-                        x = round(276 + (position + .5) * step)
-                    elif position > current:
-                        x = round(276 + active_width + (position - .5) * step)
-                    else:
-                        x = round(276 + position * step + active_width / 2)
+                    wait_until(lambda: (s := navigation_state(state_path)) is not None
+                               and not s['tab_motion'] and not s['camera_motion'],
+                               'settled tab geometry', 10)
+                    # Read the actual rendered exposed-edge target rather than
+                    # duplicating layout math or assuming a fully expanded tab.
+                    targets = dict(navigation_state(state_path)['tab_targets'])
+                    assert len(targets) == panel_count
+                    x = round(276 + targets[position])
                     subprocess.run(['xdotool', 'mousemove', str(x), '40'],
                                    env=env, check=True, timeout=10)
                     time.sleep(.1)
@@ -279,6 +282,11 @@ def main():
                     process.wait()
         for log in logs:
             log.close()
+        # Each reload copy can be hundreds of MB. Keep evidence, not unloaded
+        # plugin binaries from this private test process.
+        for plugin_dir in (root / 'tmp').glob('jcode-desktop-ui-*'):
+            if plugin_dir.is_dir():
+                shutil.rmtree(plugin_dir)
 
 
 if __name__ == '__main__':
