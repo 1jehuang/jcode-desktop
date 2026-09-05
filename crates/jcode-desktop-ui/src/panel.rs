@@ -2942,19 +2942,15 @@ impl Panel {
                 let call_id = call_id.clone();
                 div()
                     .id(("tool", index))
-                    .debug_selector(|| "tool-card".into())
+                    .debug_selector(|| "tool-inline".into())
                     .flex()
                     .ml(px(offset))
                     .opacity(opacity)
                     // Transcript rows live in a fixed-height flex column. Once
                     // it overflows, flex items shrink by default, which can
-                    // squash tool cards instead of letting the column scroll.
+                    // squash tool rows instead of letting the column scroll.
                     .flex_none()
                     .flex_col()
-                    .rounded_md()
-                    .bg(Theme::global().TOOL_BG)
-                    .border_1()
-                    .border_color(Theme::global().TOOL_BORDER)
                     .overflow_hidden()
                     .when(has_detail, |el| {
                         el.cursor_pointer().on_mouse_down(
@@ -2974,7 +2970,7 @@ impl Panel {
                             .flex_row()
                             .gap_2()
                             .items_center()
-                            .px_2()
+                            .px_1()
                             .py_1()
                             .text_size(px(11.5))
                             .child(status)
@@ -2994,7 +2990,7 @@ impl Panel {
                                         .min_w_0()
                                         .overflow_hidden()
                                         .whitespace_nowrap()
-                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .font_weight(FontWeight::MEDIUM)
                                         .text_color(Theme::global().TOOL_TEXT)
                                         .child(summary),
                                 )
@@ -3037,10 +3033,10 @@ impl Panel {
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
-                                .border_t_1()
-                                .border_color(Theme::global().TOOL_BORDER)
-                                .bg(Theme::global().CODE_BG)
-                                .px_2p5()
+                                // Align details with the text after the status
+                                // glyph, without introducing another surface.
+                                .ml(px(24.0))
+                                .pr_1()
                                 .py_1p5()
                                 .font_family(Theme::global().FONT_MONO)
                                 .text_size(px(11.5))
@@ -3051,10 +3047,10 @@ impl Panel {
                     })
                     .children(error.clone().map(|message| {
                         div()
-                            .px_2()
+                            .debug_selector(|| "tool-error".into())
+                            .ml(px(24.0))
+                            .pr_1()
                             .py_1()
-                            .border_t_1()
-                            .border_color(Theme::global().TOOL_BORDER)
                             .text_size(px(11.5))
                             .font_family(Theme::global().FONT_MONO)
                             .text_color(Theme::global().ERROR)
@@ -4427,10 +4423,8 @@ fn render_code_edit_preview(preview: CodeEditPreview) -> gpui::AnyElement {
     }
     div()
         .debug_selector(|| "code-edit-preview".into())
-        .border_t_1()
-        .border_color(Theme::global().TOOL_BORDER)
-        .bg(Theme::global().CODE_BG)
-        .px_2p5()
+        .ml(px(24.0))
+        .pr_1()
         .py_1p5()
         .flex()
         .flex_col()
@@ -5838,6 +5832,66 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn inline_tool_rows_keep_status_errors_and_edit_previews(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        for (name, input, done, error, preview) in [
+            ("bash", r#"{"command":"cargo test"}"#, false, None, false),
+            (
+                "bash",
+                r#"{"command":"cargo test"}"#,
+                true,
+                Some("build failed"),
+                false,
+            ),
+            (
+                "edit",
+                r#"{"file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
+                true,
+                None,
+                true,
+            ),
+        ] {
+            panel.update(vcx, |panel, cx| {
+                panel.items = vec![Item::Tool {
+                    call_id: "inline-call".into(),
+                    name: name.into(),
+                    input: input.into(),
+                    output: String::new(),
+                    done,
+                    error: error.map(str::to_owned),
+                }];
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let row = vcx.debug_bounds("tool-inline").expect("inline row paints");
+            let header = vcx
+                .debug_bounds("tool-header")
+                .expect("status header paints");
+            assert!(row.size.height >= header.size.height);
+            assert!(vcx.debug_bounds("tool-card").is_none());
+            assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
+            assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
+            for selector in ["tool-error", "code-edit-preview"] {
+                if let Some(body) = vcx.debug_bounds(selector) {
+                    assert_eq!(body.origin.x, header.origin.x + px(24.0));
+                    assert!(body.origin.y >= header.bottom());
+                }
+            }
+        }
+    }
+
     /// Legacy harness input deltas have no call id. Exercise the real event and
     /// paint path so an intent cannot silently disappear between transport and
     /// the visible tool header again.
@@ -5885,10 +5939,10 @@ mod tests {
         assert!(rendered.size.width > px(0.) && rendered.size.height > px(0.));
     }
 
-    /// Tool cards must retain their intrinsic row height when enough of them
+    /// Inline tools must retain their intrinsic row height when enough of them
     /// are appended to make the transcript scroll. Without `flex_none`, the
     /// transcript's flex layout distributes the height deficit across every
-    /// card and visibly squashes their headers.
+    /// row and visibly squashes their headers.
     #[gpui::test]
     fn tool_rows_do_not_shrink_when_the_transcript_overflows(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -5916,8 +5970,8 @@ mod tests {
         });
         vcx.run_until_parked();
         let baseline_height = vcx
-            .debug_bounds("tool-card")
-            .expect("a tool card paints before the transcript overflows")
+            .debug_bounds("tool-inline")
+            .expect("an inline tool paints before the transcript overflows")
             .size
             .height;
 
@@ -5935,13 +5989,13 @@ mod tests {
         vcx.run_until_parked();
 
         let overflowing_height = vcx
-            .debug_bounds("tool-card")
-            .expect("an overflowing transcript still paints a tool card")
+            .debug_bounds("tool-inline")
+            .expect("an overflowing transcript still paints an inline tool")
             .size
             .height;
         assert_eq!(
             overflowing_height, baseline_height,
-            "overflow changed tool-card height from {baseline_height:?} to {overflowing_height:?}"
+            "overflow changed tool-row height from {baseline_height:?} to {overflowing_height:?}"
         );
     }
 
@@ -6669,7 +6723,7 @@ Goals: []"#,
         assert!(row_content.size.width > px(0.) && row_content.size.height > px(0.));
         assert!(prompt.bottom() <= bounds.top());
         assert!(pinned.bottom() <= transcript.top());
-        assert!(vcx.debug_bounds("tool-card").is_none());
+        assert!(vcx.debug_bounds("tool-inline").is_none());
     }
 }
 
