@@ -24,4 +24,10 @@ python3 -m unittest discover -s scripts -p 'test_screenshot*.py'
 
 These screenshots run the real application and platform input path with offline session fixtures. They validate folder styling and focus behavior, not live SDK latency or sidebar hover performance. The two screenshot isolation tests pass.
 
+### Non-fixture SDK/runtime attempt
+
+A further acceptance run attempted to start a real Jcode daemon and harness API in an isolated `JCODE_HOME` and `JCODE_RUNTIME_DIR`, then create three sessions through the desktop's normal keyboard commands and transfer focus through native X11 clicks. The daemon exited before opening its socket with **`No credentials configured. Run 'jcode login' or set ANTHROPIC_API_KEY to authenticate.`** Thus the non-fixture SDK/session boundary is **acceptance-blocked**, not passed. Native folder rendering and focus are verified by the earlier app run, but that does not substitute for this blocked backend path.
+
+No user credentials were copied, no login was attempted, no model request was sent, and no sessions were created in the user's running daemon. All processes belonging to the isolated attempt were cleaned up and absence of remaining sandbox processes was checked. Local diagnostic artifacts are under `target/folder-real-1/`, including `daemon.log` and the attempted driver. This constraint is left explicit rather than weakening isolation to manufacture a passing result.
+
 The final integrated UI suite reports **296 passed, 3 failed, 6 ignored**. Remaining failures also occurred before this styling work: `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`. The suite is not claimed to be green.
