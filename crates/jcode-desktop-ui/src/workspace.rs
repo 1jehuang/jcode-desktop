@@ -3844,11 +3844,9 @@ impl Workspace {
                                                     .flex_1()
                                                     .min_w_0()
                                                     .max_h(px(18.0))
-                                                    .overflow_hidden()
+                                                    .truncate()
                                                     .text_size(px(title_size))
                                                     .line_height(relative(1.5))
-                                                    .line_clamp(2)
-                                                    .text_ellipsis()
                                                     .child(title),
                                             )
                                             .child(
