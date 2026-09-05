@@ -125,10 +125,19 @@ pub fn path() -> PathBuf {
 
 /// Persist one appearance value without reserializing the rest of the shared
 /// Jcode config (and thereby losing its comments or settings unknown to us).
+#[cfg(not(test))]
 pub fn persist_theme(theme: &str) -> std::io::Result<()> {
     let path = path();
     let standalone = std::env::var_os("JCODE_DESKTOP_CONFIG").is_some();
     persist_theme_at(&path, standalone, theme)
+}
+
+#[cfg(test)]
+pub fn persist_theme(_theme: &str) -> std::io::Result<()> {
+    // UI tests exercise the production selection path without ever touching
+    // the developer's real ~/.jcode/config.toml. Disk behavior is covered by
+    // persist_theme_at against an isolated temporary directory below.
+    Ok(())
 }
 
 fn persist_theme_at(path: &std::path::Path, standalone: bool, theme: &str) -> std::io::Result<()> {

@@ -4458,6 +4458,7 @@ impl Workspace {
                 menu = menu.child(
                     div()
                         .id(("theme-preset", index))
+                        .debug_selector(move || format!("theme-preset-{index}"))
                         .px_3()
                         .py_2()
                         .rounded_sm()
@@ -7778,7 +7779,9 @@ mod tests {
                 assert_eq!(offset % ACCOUNT_ROW_HEIGHT, 0.0);
                 let mut visible = 0;
                 for index in 0..count {
-                    let row = vcx.debug_bounds(Box::leak(format!("account-mixed-{index}").into_boxed_str())).unwrap();
+                    let row = vcx
+                        .debug_bounds(Box::leak(format!("account-mixed-{index}").into_boxed_str()))
+                        .unwrap();
                     assert_eq!(row.size.height, px(ACCOUNT_ROW_HEIGHT));
                     if row.bottom() > list.top() && row.top() < list.bottom() {
                         assert!(
@@ -9148,6 +9151,13 @@ mod tests {
             let handle = workspace.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
         });
+        vcx.run_until_parked();
+
+        let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
+        vcx.simulate_click(
+            gpui::point(track.right() - px(1.0), track.center().y),
+            gpui::Modifiers::default(),
+        );
         vcx.run_until_parked();
 
         let button = vcx
@@ -10676,5 +10686,38 @@ mod tests {
         workspace.update(cx, |workspace, _| {
             assert_eq!(workspace.slots.len(), 1);
         });
+    }
+
+    #[gpui::test]
+    fn theme_picker_and_shortcut_work_with_the_composer_focused(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let original = Theme::active_preset();
+        Theme::select(ThemePreset::WarmNeutral);
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("theme-test", cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let button = vcx
+            .debug_bounds("theme-picker-button")
+            .expect("theme picker paints");
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let light = vcx
+            .debug_bounds("theme-preset-3")
+            .expect("all presets paint");
+        vcx.simulate_click(light.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(Theme::active_preset(), ThemePreset::NeutralLight);
+
+        // Workspace::new focuses the active panel's PromptInput. The global
+        // action must bubble out of that focused composer rather than typing.
+        vcx.simulate_keystrokes("super-shift-t");
+        vcx.run_until_parked();
+        assert_eq!(Theme::active_preset(), ThemePreset::WarmNeutral);
+        Theme::select(original);
     }
 }
