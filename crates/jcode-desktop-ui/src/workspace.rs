@@ -3700,7 +3700,7 @@ impl Workspace {
             list = list.child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
-                    move |sidebar_index, window, cx| {
+                    move |sidebar_index, _window, cx| {
                         let (is_open, session) = &ordered_sessions[sidebar_index];
                         let is_open = *is_open;
                         let previous = sidebar_index
@@ -3794,7 +3794,8 @@ impl Workspace {
                                 title.clone_from(open_title);
                             }
                             let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-                            let title_size = sidebar_title_font_size(&title, window);
+                            #[cfg(test)]
+                            tests::SIDEBAR_TITLE_RENDERS.with(|count| count.set(count.get() + 1));
                             let directory = sidebar_session_directory(session);
                             let meta = sidebar_session_meta(session);
                             let details = match (directory, meta) {
@@ -3873,7 +3874,13 @@ impl Workspace {
                                                     .min_w_0()
                                                     .max_h(px(18.0))
                                                     .truncate()
-                                                    .text_size(px(title_size))
+                                                    .debug_selector(move || {
+                                                        format!(
+                                                            "sidebar-session-title-{sidebar_index}"
+                                                        )
+                                                        .into()
+                                                    })
+                                                    .text_size(px(12.0))
                                                     .line_height(relative(1.5))
                                                     .child(title),
                                             )
@@ -6203,29 +6210,6 @@ fn sync_sidebar_session_layout(
     *previous = next;
 }
 
-fn sidebar_title_font_size(title: &str, window: &Window) -> f32 {
-    #[cfg(test)]
-    tests::SIDEBAR_TITLE_MEASUREMENTS.with(|count| count.set(count.get() + 1));
-    // Sidebar border, row margins/padding/borders, gaps, and fixed icon widths.
-    let available_width = SIDEBAR_WIDTH - 1.0 - 16.0 - 18.0 - 8.0 - 16.0 - 12.0;
-    let run = gpui::TextRun {
-        len: title.len(),
-        font: gpui::font(Theme::global().FONT_UI),
-        color: Theme::global().TEXT.into(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let line = window
-        .text_system()
-        .shape_line(title.to_owned().into(), px(12.0), &[run], None);
-    if line.width > px(available_width) {
-        6.0
-    } else {
-        12.0
-    }
-}
-
 fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, String) {
     let animal = jcode_core::id::extract_session_name(&session.session_id);
     let icon = animal.map(jcode_core::id::session_icon).unwrap_or("💫");
@@ -6645,7 +6629,7 @@ mod tests {
     use super::*;
 
     thread_local! {
-        pub(super) static SIDEBAR_TITLE_MEASUREMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static SIDEBAR_TITLE_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     #[test]
@@ -7327,18 +7311,14 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_title_lengths_keep_equal_row_heights(cx: &mut gpui::TestAppContext) {
+    fn sidebar_title_lengths_keep_normal_font_size_and_equal_row_heights(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| {
             crate::bind_workspace_keys(cx);
         });
-        let (workspace, vcx) = cx.add_window_view(|window, cx| {
-            assert_eq!(sidebar_title_font_size("Short", window), 12.0);
-            assert_eq!(
-                sidebar_title_font_size(&"Long title ".repeat(40), window),
-                6.0
-            );
-            Workspace::for_test(learning::Coach::new(), cx)
-        });
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
             workspace.apply(
                 Update::Sessions {
@@ -7353,6 +7333,16 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+        // At 12px with 1.5 line height, every title occupies 18px. Long
+        // titles must truncate at that size, never shrink to fit the row.
+        for selector in [
+            "sidebar-session-title-0",
+            "sidebar-session-title-1",
+            "sidebar-session-title-2",
+        ] {
+            let title = vcx.debug_bounds(selector).unwrap();
+            assert_eq!(title.size.height, px(18.0));
+        }
         let short = vcx.debug_bounds("sidebar-session-0").unwrap();
         for selector in ["sidebar-session-1", "sidebar-session-2"] {
             let bounds = vcx.debug_bounds(selector).unwrap();
@@ -7407,7 +7397,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_hover_only_measures_visible_history(cx: &mut gpui::TestAppContext) {
+    fn sidebar_hover_only_renders_visible_history(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -7418,12 +7408,12 @@ mod tests {
         });
         vcx.run_until_parked();
         let position = vcx.debug_bounds("sidebar-session-1").unwrap().center();
-        SIDEBAR_TITLE_MEASUREMENTS.with(|count| count.set(0));
+        SIDEBAR_TITLE_RENDERS.with(|count| count.set(0));
         vcx.update(|window, cx| window.simulate_mouse_move(position, cx));
         vcx.run_until_parked();
-        let measured = SIDEBAR_TITLE_MEASUREMENTS.with(|count| count.get());
-        assert!(measured > 0, "hover must actually produce a frame");
-        assert!(measured < 50, "hover measured {measured} of 500 rows");
+        let rendered = SIDEBAR_TITLE_RENDERS.with(|count| count.get());
+        assert!(rendered > 0, "hover must actually produce a frame");
+        assert!(rendered < 50, "hover rendered {rendered} of 500 rows");
         assert!(vcx.debug_bounds("sidebar-session-499").is_none());
 
         workspace.update(vcx, |workspace, cx| {
