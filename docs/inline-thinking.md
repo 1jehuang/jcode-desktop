@@ -33,5 +33,19 @@ python3 scripts/screenshot.py target/reasoning-inline-dark.png --transcript reas
 python3 scripts/screenshot.py target/reasoning-inline-light.png --transcript reasoning --theme neutral-light --no-build
 ```
 
+The real-app dark/light screenshots were inspected. The first light-theme
+capture revealed the inherited warm reasoning color was too faint (2.49:1).
+Neutral light/dark now use their own secondary-text color for reasoning.
+The corrected light color measures 5.64:1 against the panel background.
+`every_preset_keeps_semantic_text_legible` now also covers reasoning.
+
+Final build and visual verification succeeded with `CARGO_BUILD_JOBS=1`.
+Inspected artifacts: `target/reasoning-inline-light-final.png` and
+`target/reasoning-inline-dark-final.png`. They show complete
+Markdown content without thinking chrome, with dimmed text distinct from the
+answer. Selection itself is covered by the passing GPUI interaction test above.
+Two attempts to rerun the expanded tests after the palette-only change were
+externally terminated with SIGTERM during rustc. Those attempts are not passes.
+
 The running desktop was launched without hot reload. A restart requires user
 approval because unsent drafts and host-owned terminal state could be lost.

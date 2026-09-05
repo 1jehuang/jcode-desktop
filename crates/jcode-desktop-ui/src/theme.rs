@@ -438,6 +438,7 @@ fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
         dark.PANEL_BORDER_FOCUS = rgb_c(0x76818c);
         dark.TEXT = rgb_c(0xe2e5e9);
         dark.TEXT_DIM = rgb_c(0x9ba3ac);
+        dark.REASONING = dark.TEXT_DIM;
         dark.ACCENT = rgb_c(0x9aa8b6);
         dark.ACCENT_DIM = rgba_c(0x9aa8b620);
         dark.INPUT_BG = rgb_c(0x191c1f);
@@ -453,6 +454,7 @@ fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
         light.TEXT = rgb_c(0x292724);
         light.TEXT_USER = rgb_c(0x201e1b);
         light.TEXT_DIM = rgb_c(0x67625b);
+        light.REASONING = light.TEXT_DIM;
         light.TEXT_FAINT = rgb_c(0x777169);
         light.ACCENT = rgb_c(0x665f57);
         light.ACCENT_DIM = rgba_c(0x665f5718);
@@ -645,6 +647,7 @@ mod tests {
             for (foreground, background, role) in [
                 (theme.TEXT, theme.PANEL_BG, "panel text"),
                 (theme.TEXT_DIM, theme.PANEL_BG, "secondary text"),
+                (theme.REASONING, theme.PANEL_BG, "thinking text"),
                 (theme.CODE_TEXT, theme.CODE_BG, "code text"),
                 (theme.TEXT_USER, theme.USER_BG, "user text"),
             ] {
