@@ -28,3 +28,22 @@ The native acceptance runner requires the current desktop binary, Xvfb, Openbox,
 xdotool, ImageMagick, Pillow, Tesseract, and Mesa lavapipe. It uses an isolated HOME,
 configuration, runtime directory, and offline fixture on a private display. It
 does not interact with the user's desktop or account credentials.
+
+## Verified 2026-09-05
+
+- 42 sidebar-filtered GPUI/unit tests passed, including roller curvature, cyclic
+  wheel accumulation, clicking every page, session history, and Normal scrolling.
+- Five additional checks passed for settings toggles, theme/keyboard selection,
+  new-session coaching, opening a todo's chat, and Normal panel geometry.
+- Native acceptance passed in `target/roller-acceptance-11`: wheel input advances
+  over both the blank header and an occluding tab face. Center clicks activate
+  Learn, Files, Accounts, and Theme. Browsing and eleven-tab wraparound preserve
+  panel IDs/count, focus, active page, and native-window count.
+- Real offline screenshots were inspected at `target/ui-review-roller-final.png`
+  (1440×1000, warm-neutral) and `target/ui-review-roller-light.png` (800×600,
+  neutral-light). Side labels remain in their exposed faces.
+- The running desktop acknowledged the Ctrl+R-equivalent instance command and
+  logged successful activation of UI generation 8 after the final input fix.
+- The broader UI suite was also attempted, but did not pass: it reported other
+  panel/gesture failures and aborted in a Gmail worker's test-scheduler teardown.
+  The passing results above are targeted regression evidence, not a full-suite pass.
