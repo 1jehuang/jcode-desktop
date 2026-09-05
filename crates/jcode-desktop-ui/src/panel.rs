@@ -24,6 +24,9 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[path = "panel_activity.rs"]
+mod activity;
+
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
 fn command_unavailable_message(input: &str) -> String {
@@ -171,6 +174,7 @@ pub struct Panel {
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
     streaming_reasoning: String,
+    activity_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
@@ -500,6 +504,9 @@ impl Panel {
                 }
             });
         });
+        let streaming_fixture = crate::harness::screenshot_mode()
+            && session_id == "screenshot-fixture"
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("streaming");
         Self {
             session_id,
             title: display_title.into(),
@@ -512,8 +519,13 @@ impl Panel {
             reasoning_effort: None,
             token_usage: None,
             items: demo_items(),
-            streaming_text: String::new(),
+            streaming_text: if streaming_fixture {
+                "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
+            } else {
+                String::new()
+            },
             streaming_reasoning: String::new(),
+            activity_spinner: cx.new(activity::Spinner::new),
             input,
             focus_handle: cx.focus_handle(),
             transcript_list,
@@ -2543,12 +2555,28 @@ impl Panel {
         if !phase.is_empty() && phase != "connected" {
             return phase.replace('_', " ");
         }
+        if self.activity_active() {
+            if !self.streaming_reasoning.is_empty() {
+                return "Thinking".into();
+            }
+            if !self.streaming_text.is_empty() {
+                return "Responding".into();
+            }
+        }
         match self.status.as_str() {
             "idle" | "connected" => "Ready".into(),
             "busy" | "running" => "Working".into(),
             "streaming" => "Responding".into(),
             "running_tools" => "Running tools".into(),
             status => status.replace('_', " "),
+        }
+    }
+
+    fn activity_active(&self) -> bool {
+        match self.minimap_state() {
+            MinimapSessionState::Streaming => true,
+            MinimapSessionState::Working => self.status != "connected",
+            _ => false,
         }
     }
 
@@ -3406,6 +3434,9 @@ impl Render for Panel {
         };
 
         let status_line = self.status_line();
+        let active = self.activity_active();
+        let theme = Theme::global();
+        let active_tint = theme.PANEL_BG.blend(theme.ACCENT.opacity(0.08));
         let meta_line = meta_line(
             self.working_dir.as_deref(),
             self.model.as_deref(),
@@ -3431,6 +3462,9 @@ impl Render for Panel {
                 div()
                     .debug_selector(|| "panel-session-title".into())
                     .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .px_3()
                     .pt_2()
                     .pb_1()
@@ -3440,7 +3474,27 @@ impl Render for Panel {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(Theme::global().TEXT_DIM)
-                    .child(session_title)
+                    .when(active, |el| {
+                        el.bg(active_tint).child(self.activity_spinner.clone())
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(session_title),
+                    )
+                    .when(active, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "panel-activity-label".into())
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(theme.ACCENT)
+                                .child(status_line.clone()),
+                        )
+                    })
             })
             .children(pinned_todo.map(|payload| {
                 div()
@@ -3559,6 +3613,7 @@ impl Render for Panel {
                     .text_size(px(10.0))
                     .font_family(Theme::global().FONT_MONO)
                     .text_color(Theme::global().TEXT_FAINT)
+                    .when(active, |el| el.bg(active_tint))
                     .child(
                         div()
                             .debug_selector(|| "panel-identity".into())
@@ -3583,6 +3638,7 @@ impl Render for Panel {
                             .items_center()
                             .gap_1p5()
                             .overflow_hidden()
+                            .when(active, |el| el.text_color(theme.ACCENT))
                             .child(status_line),
                     ),
             )
@@ -6649,6 +6705,14 @@ fn demo_items() -> Vec<Item> {
         && std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1")
     {
         return Vec::new();
+    }
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("streaming")
+    {
+        return vec![
+            Item::User("Make it easier to see which panels are still working.".into()),
+            Item::Assistant("I'll add a small spinner and a subtle accent tint, while keeping the conversation easy to read.".into()),
+        ];
     }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("reasoning")

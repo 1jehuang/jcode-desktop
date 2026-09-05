@@ -35,7 +35,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
-    parser.add_argument("--transcript", choices=("all", "reasoning"), default="all",
+    parser.add_argument("--transcript", choices=("all", "reasoning", "streaming"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
