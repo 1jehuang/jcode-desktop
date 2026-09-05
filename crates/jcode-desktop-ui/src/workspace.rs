@@ -3548,6 +3548,42 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn render_sidebar_scrollbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let sessions = self.sidebar_view == SidebarView::Sessions;
+        div()
+            .id("sidebar-scroll-gutter")
+            .debug_selector(|| "sidebar-scroll-gutter".into())
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .when(sessions, |el| el.left_0())
+            .when(!sessions, |el| el.right_0())
+            .w(px(crate::scrollbar::GUTTER))
+            // The gutter is a sibling overlay, not part of the scrollable
+            // content. Handle its wheel input just like the folder-tab strip,
+            // and consume it so the list underneath cannot scroll twice.
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    let dy = event.delta.pixel_delta(window.line_height()).y;
+                    if sessions {
+                        this.sidebar_sessions_list.scroll_by(-dy);
+                    } else {
+                        let handle = &this.sidebar_scroll;
+                        let y = (handle.offset().y + dy).clamp(-handle.max_offset().y, px(0.0));
+                        handle.set_offset(gpui::point(px(0.0), y));
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .child(if sessions {
+                crate::scrollbar::vertical_list(&self.sidebar_sessions_list, "sidebar-scrollbar")
+            } else {
+                crate::scrollbar::vertical_with_track(&self.sidebar_scroll, "sidebar-scrollbar")
+            })
+            .into_any_element()
+    }
+
     fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_id = self
             .slots
@@ -4235,27 +4271,10 @@ impl Workspace {
                                 .into_any_element()
                         }),
                     })
-                    .when(self.sidebar_view == SidebarView::Files, |el| {
-                        el.child(crate::scrollbar::vertical_with_track(
-                            &self.sidebar_scroll,
-                            "sidebar-scrollbar",
-                        ))
-                    })
-                    .when(self.sidebar_view == SidebarView::Sessions, |el| {
-                        // Keep the scroll thumb off the page/tab junction.
-                        el.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .bottom_0()
-                                .w(px(crate::scrollbar::GUTTER))
-                                .child(crate::scrollbar::vertical_list(
-                                    &self.sidebar_sessions_list,
-                                    "sidebar-scrollbar",
-                                )),
-                        )
-                    }),
+                    .when(
+                        matches!(self.sidebar_view, SidebarView::Sessions | SidebarView::Files),
+                        |el| el.child(self.render_sidebar_scrollbar(cx)),
+                    ),
             )
             .when(folders, |el| el.child(folder_surface::navigation_scroll_outline(
                 self.sidebar_navigation_scroll.clone(),
@@ -7565,6 +7584,89 @@ mod tests {
             scrollbar.right() <= list.left() + px(8.0),
             "scrollbar stays in the outer gutter, away from the folder-tab join"
         );
+    }
+
+    #[gpui::test]
+    fn sidebar_gutter_scrolls_sessions_and_files_without_moving_tabs(cx: &mut gpui::TestAppContext) {
+        let project = tempfile::tempdir().unwrap();
+        for index in 0..80 {
+            std::fs::write(project.path().join(format!("file-{index}.rs")), "").unwrap();
+        }
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.push_test_panel("project", cx);
+            w.slots[0].panel.update(cx, |panel, _| {
+                panel.working_dir = Some(project.path().display().to_string());
+            });
+            w.apply(
+                Update::Sessions {
+                    sessions: (0..80)
+                        .map(|index| {
+                            session_info(
+                                &format!("session_fox_gutter_{index}"),
+                                Some("previous work"),
+                            )
+                        })
+                        .collect(),
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        for mode in [
+            crate::config::LayoutMode::FolderTabs,
+            crate::config::LayoutMode::Normal,
+        ] {
+            for view in [SidebarView::Sessions, SidebarView::Files] {
+                workspace.update(vcx, |w, cx| {
+                    w.layout_mode = mode;
+                    w.sidebar_view = view;
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let tabs_before = workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
+                let offset = |w: &Workspace| match view {
+                    SidebarView::Sessions => w.sidebar_sessions_list.scroll_px_offset_for_scrollbar().y,
+                    _ => w.sidebar_scroll.offset().y,
+                };
+                for (delta, expected) in [(-37.0, -37.0), (12.0, -25.0), (10000.0, 0.0)] {
+                    let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
+                    vcx.simulate_event(gpui::ScrollWheelEvent {
+                        position: gutter.center(),
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(delta))),
+                        modifiers: gpui::Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    });
+                    vcx.run_until_parked();
+                    workspace.read_with(vcx, |w, _| {
+                        assert_eq!(
+                            offset(w),
+                            px(expected),
+                            "gutter wheel must scroll exactly once"
+                        );
+                        assert_eq!(w.sidebar_navigation_scroll.offset(), tabs_before);
+                    });
+                }
+                let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
+                for lines in [-4.0, 10000.0] {
+                    vcx.simulate_event(gpui::ScrollWheelEvent {
+                        position: gutter.center(),
+                        delta: gpui::ScrollDelta::Lines(gpui::point(0.0, lines)),
+                        modifiers: gpui::Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    });
+                    vcx.run_until_parked();
+                    workspace.read_with(vcx, |w, _| {
+                        if lines < 0.0 {
+                            assert!(offset(w) < px(0.0));
+                        } else {
+                            assert_eq!(offset(w), px(0.0));
+                        }
+                    });
+                }
+            }
+        }
     }
 
     #[gpui::test]
