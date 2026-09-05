@@ -93,3 +93,29 @@ a HOME-dependent Cargo shim, build-lock timeouts, and the daemon's ordinary
 five-minute idle shutdown while startup was still compiling. The runner now uses
 an explicit Cargo proxy, a bounded configurable build timeout, and a temporary
 server owned by the runner. The successful run above exercised those fixes.
+
+### Outcome comparison, not just test counts
+
+The original bound-key regression observed **slot 2 → slot 4** for one right
+shortcut when the expected destination was slot 3, skipping one panel. After
+consuming the action, that same regression passes. The real native state trace
+also contains **slot 2 → slot 3** both before and after its Ctrl+R reload.
+
+A separate check recomputed every transition from the captured native state
+rather than trusting the runner's pass message (`target/navigation-outcome-check.json`):
+
+| Observed native result | Before reload | After reload |
+| --- | ---: | ---: |
+| Adjacent one-panel moves | 12 | 12 |
+| Correct boundary no-ops | 2 | 2 |
+| Skipped panels | **0** | **0** |
+| Keyboard/map focus mismatches | **0** | **0** |
+
+All 20 checkpoints in each generation matched their exact expected row and
+position. On empty strips, both keyboard-panel ownership and map focus were
+absent. Populated-strip panel order remained unchanged. These observations show
+the requested behavior improved, while the separate rendered-map tests cover the
+actual focus pin, click target, reorder and empty-row marker geometry.
+
+A fresh rebuild and rerun after this comparison passed the 68-step keyboard
+matrix again and all four rendered minimap checks (2026-09-05 21:20 UTC).
