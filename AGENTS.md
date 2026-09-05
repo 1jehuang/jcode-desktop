@@ -13,6 +13,11 @@
 
 ## Testing
 
+- For visual inspection, run `python3 scripts/screenshot.py target/ui-review.png`.
+  This renders the real app with offline fixture data on a private Xvfb display.
+  Use `--no-build` only when the binary is current. Read the resulting PNG with
+  the image tool. Do not ask the user for a screenshot before trying this path.
+
 - Do not use `niri` for testing or test verification.
 - Prefer headless tests that do not open windows, steal focus, move workspaces, or otherwise interfere with the user's active desktop session.
 - Use non-`niri` test methods, such as unit tests, integration tests, CLI checks, virtual displays, or isolated test harnesses.

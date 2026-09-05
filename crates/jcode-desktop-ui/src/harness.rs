@@ -174,6 +174,9 @@ impl UpdateSender {
 
 /// Spawn the bridge. Returns immediately; connection happens on the thread.
 pub fn spawn() -> Bridge {
+    if screenshot_mode() {
+        return spawn_inert();
+    }
     let (update_tx, update_rx) = async_channel::unbounded::<Update>();
     let (command_tx, command_rx) = channel::<Command>();
 
@@ -193,7 +196,6 @@ pub fn spawn() -> Bridge {
 
 /// A bridge with no runtime behind it. Commands are accepted and dropped, so a
 /// test can drive the UI without a jcode daemon.
-#[cfg(test)]
 pub fn spawn_inert() -> Bridge {
     let (_update_tx, update_rx) = async_channel::unbounded::<Update>();
     let (command_tx, _command_rx) = channel::<Command>();
@@ -205,6 +207,10 @@ pub fn spawn_inert() -> Bridge {
         commands: command_tx,
         updates: update_rx,
     }
+}
+
+pub fn screenshot_mode() -> bool {
+    std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
 }
 
 /// A runtime-free bridge whose commands can be asserted by UI acceptance tests.

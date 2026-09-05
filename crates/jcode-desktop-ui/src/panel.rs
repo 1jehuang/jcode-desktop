@@ -6403,7 +6403,9 @@ Goals: []"#,
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
-    if std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1") {
+    if !crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1")
+    {
         return Vec::new();
     }
     demo_item_fixtures()

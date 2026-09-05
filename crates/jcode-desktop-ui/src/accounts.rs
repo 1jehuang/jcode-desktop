@@ -61,6 +61,11 @@ impl Feed {
 /// rarely, so a slow poll keeps the surface honest without burning cycles.
 pub fn spawn() -> Feed {
     let (tx, rx) = channel();
+    if crate::harness::screenshot_mode() {
+        return Feed {
+            updates: Arc::new(Mutex::new(rx)),
+        };
+    }
     std::thread::Builder::new()
         .name("jcode-accounts".into())
         .spawn(move || {

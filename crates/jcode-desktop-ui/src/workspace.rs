@@ -631,6 +631,23 @@ impl Workspace {
         };
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
+        } else if harness::screenshot_mode() {
+            let session = jcode_sdk::SessionInfo {
+                session_id: "screenshot-fixture".into(),
+                title: Some("Review markdown rendering".into()),
+                working_dir: Some("/workspace/example".into()),
+                status: "idle".into(),
+                transcript_bytes: None,
+                saved: false,
+                updated_at_ms: None,
+                last_active_at_ms: None,
+                archived: false,
+                archived_at_ms: None,
+            };
+            workspace.connected = true;
+            workspace.sessions = vec![session.clone()];
+            workspace.active = workspace.open_session(session, cx);
+            workspace.focus_pending = true;
         }
         workspace
     }
@@ -4220,12 +4237,9 @@ impl Workspace {
                 .rounded(px(3.0))
                 .cursor_pointer()
                 .bg(if active_row {
-                    Theme::global().USER_BG
+                    Theme::global().MINIMAP_TRACK_ACTIVE
                 } else {
                     Theme::global().MINIMAP_TRACK
-                })
-                .when(active_row, |el| {
-                    el.border_1().border_color(Theme::global().USER_ACCENT)
                 })
                 .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
                 .on_mouse_down(
@@ -4276,15 +4290,21 @@ impl Workspace {
                         .h(px(height))
                         .rounded(px(2.0))
                         .cursor_pointer()
-                        .bg(state_color)
+                        .bg(if focused {
+                            Theme::global().MINIMAP_PANEL_BUSY
+                        } else {
+                            Theme::global().MINIMAP_PANEL
+                        })
                         .child(
                             div()
                                 .debug_selector(move || {
                                     format!("minimap-panel-{index}-{state_name}")
                                 })
                                 .absolute()
-                                .size_full()
-                                .rounded(px(2.0))
+                                .top_0()
+                                .left_0()
+                                .w_full()
+                                .h(px(2.0))
                                 .bg(state_color),
                         )
                         // The green footline is a literal completion meter for
@@ -4304,10 +4324,7 @@ impl Workspace {
                                     .bg(Theme::global().OK),
                             )
                         })
-                        .when(focused, |el| {
-                            el.border_2().border_color(Theme::global().USER_ACCENT)
-                        })
-                        .hover(|el| el.bg(Theme::global().USER_ACCENT))
+                        .hover(|el| el.bg(Theme::global().MINIMAP_PANEL_BUSY))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
@@ -4328,6 +4345,7 @@ impl Workspace {
                 let lens_width = (viewport_w * scale).min(track_w - lens_left).max(3.0);
                 track = track.child(
                     div()
+                        .debug_selector(|| "minimap-viewport".into())
                         .absolute()
                         .left(px(lens_left))
                         .top(px(0.0))
@@ -4335,8 +4353,7 @@ impl Workspace {
                         .h(px(MINIMAP_ROW_HEIGHT))
                         .rounded(px(3.0))
                         .border_1()
-                        .border_color(Theme::global().MINIMAP_VIEWPORT)
-                        .bg(gpui::rgba(0xffffff08)),
+                        .border_color(Theme::global().MINIMAP_VIEWPORT),
                 );
 
                 // A persistent pin marks the exact focused panel. Unlike the
@@ -4349,14 +4366,12 @@ impl Workspace {
                         div()
                             .debug_selector(|| "minimap-you-pin".into())
                             .absolute()
-                            .left(px(panel_left + panel_width / 2.0 - 3.0))
-                            .top(px(MINIMAP_ROW_HEIGHT / 2.0 - 3.0))
-                            .w(px(6.0))
-                            .h(px(6.0))
+                            .left(px(panel_left + panel_width / 2.0 - 2.0))
+                            .top(px(MINIMAP_ROW_HEIGHT / 2.0 - 2.0))
+                            .w(px(4.0))
+                            .h(px(4.0))
                             .rounded_full()
-                            .border_1()
-                            .border_color(Theme::global().TEXT)
-                            .bg(Theme::global().USER_ACCENT),
+                            .bg(Theme::global().TEXT),
                     );
                 }
 

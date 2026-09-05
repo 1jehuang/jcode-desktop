@@ -56,6 +56,28 @@ the supported keys are `canvas_dot`, `panel_border`, `panel_border_focus`,
 Unknown or malformed color values are ignored with a diagnostic rather than
 preventing the app from starting.
 
+## Headless screenshots (Linux)
+
+Capture the real GPUI application without using the active desktop:
+
+```sh
+python3 scripts/screenshot.py target/ui-review.png
+# Reuse an already-built binary:
+python3 scripts/screenshot.py target/ui-review-wide.png --no-build --size 1920x1080
+```
+
+Requires `Xvfb`, Openbox, ImageMagick's `import`, and Mesa lavapipe (`vulkan-swrast`
+on Arch, `mesa-vulkan-drivers` on Debian/Ubuntu). Rendering explicitly uses
+CPU Vulkan rather than the desktop GPU. The script builds the app,
+allocates a private X11 display, waits for a rendered workspace, captures a PNG,
+and terminates its own processes. Existing output files are not overwritten.
+It uses an allowlisted environment, temporary HOME/XDG/Jcode directories, no
+desktop D-Bus connection, and an offline sample transcript. It does not access
+Niri, the active display, live sessions, account credentials, or user settings.
+The fixture renders production UI, but is not a capture of the live window or
+evidence of live compositor performance. `JCODE_DESKTOP_SCREENSHOT=1` selects
+the offline fixture internally. Prefer the script, which also supplies isolation.
+
 ## Native UI hot reload
 
 The executable is a small, stable GPUI host. The application UI lives in the
