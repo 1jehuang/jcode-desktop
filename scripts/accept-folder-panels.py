@@ -34,12 +34,13 @@ def check_strip(image, focused, count=3):
         assert image.getpixel((x, 983)) == color, 'Folders must share their bottom edge'
         assert all(image.getpixel((x, y)) == idle for y in range(984, 1000))
         targets.append((x, 300))
-    # The selected page must have a visible tab above its shoulder, not blend
-    # into the window as the rejected full-page background did.
+    # Only the sidebar is a tab. The folder body has one level top edge
+    # across every panel, independent of focus.
     for index in range(count):
         x = round(276 + panel_width * (index + 0.5))
         assert image.getpixel((x, 8)) == idle, 'Keep background above the folder'
-        assert image.getpixel((x, 24)) == (active if index == focused else idle), 'Only the focused tab rises above the shoulder'
+        assert image.getpixel((x, 24)) == active, 'The folder body must stay level across every panel'
+    assert image.getpixel((260, 8)) == image.getpixel((270, 8)) == idle, 'Top-left curve must have one backing tone on both sides'
     assert image.getpixel((image.width - 6, 500)) == idle, 'Keep the outer right edge visible'
     assert image.getpixel((270, 40)) == active, 'Native shoulder must connect the selected tab to the panel'
     assert all(image.getpixel((x, 300)) in (active, idle) for x in range(276, 1417))
@@ -202,7 +203,7 @@ def main():
         unnamed = capture('unnamed-folders', strip=False)
         for index in range(count):
             left = round(276 + (1800 - 288) * fraction * index)
-            top = 16 if index == count - 1 else 48
+            top = 48
             ink = sum(
                 unnamed.getpixel((x, y)) not in ((37, 34, 31), (48, 43, 39))
                 for x in range(left + 12, left + 160)

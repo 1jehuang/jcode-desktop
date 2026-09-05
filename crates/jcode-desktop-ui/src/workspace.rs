@@ -81,13 +81,12 @@ const GAP: f32 = 0.0;
 const STRUT: f32 = 0.58;
 /// Leave the canvas visible around the joined folder surfaces.
 const STRIP_PADDING_Y: f32 = 16.0;
-/// The active folder rises above the others without adding a focus ring.
-const INACTIVE_PANEL_INSET: f32 = 32.0;
+/// Panels sit below the shared folder body edge, never on individual tabs.
+const FOLDER_CONTENT_INSET: f32 = 32.0;
 /// The selected sidebar tab reaches any focused panel through this page gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
-/// Keep the selected sheet distinct from the window background. Its body starts
-/// below the raised active tab, but above the inactive folder shoulders.
-const FOLDER_PAGE_TOP: f32 = 32.0;
+/// One level top edge for the folder body, regardless of the focused panel.
+const FOLDER_PAGE_TOP: f32 = STRIP_PADDING_Y;
 const FOLDER_RIGHT_MARGIN: f32 = 12.0;
 
 #[path = "folder_surface.rs"]
@@ -2844,10 +2843,10 @@ impl Workspace {
             let slot = &self.slots[index];
             let focused = index == self.active;
             let left = panel_left + order_offset;
-            let top = if focused || !folders {
-                0.0
+            let top = if folders {
+                FOLDER_CONTENT_INSET.min(panel_h / 2.0)
             } else {
-                INACTIVE_PANEL_INSET.min(panel_h / 2.0)
+                0.0
             };
             panel_left += width + GAP;
             let surface = div()
@@ -3861,7 +3860,9 @@ impl Workspace {
                     .items_end()
                     .justify_start()
                     .relative()
-                    .bg(Theme::global().PANEL_BG)
+                    // Keep one backing tone around the folder's top-left curve.
+                    // A dark navigation rectangle here pinches that curve into a notch.
+                    .bg(if folders { Theme::global().HEADER_BG } else { Theme::global().PANEL_BG })
                     .child(
                         div()
                             .absolute()

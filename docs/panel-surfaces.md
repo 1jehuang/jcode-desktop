@@ -9,7 +9,7 @@ The selected sidebar session and focused panel are **one filled GPUI vector path
 - The selected page uses `PANEL_BG` (`#25221f` in Warm neutral).
 - The sidebar and inactive panels share the root backing color, `HEADER_BG` (`#302b27`). Inactive panels do not paint separate rectangles.
 - The connector rises from the selected session to the top shoulder and focused panel. It does not extend as an unrelated rail below the selected session.
-- The active tab starts 16px below the canvas top, the shoulder starts at 32px, and inactive content starts at 48px. A 12px outer right margin and 16px bottom margin retain the page silhouette without a focus ring.
+- Only the sidebar session is a tab. The folder body has one level top edge 16px below the canvas top, and every panel starts inside that body at 48px regardless of focus. A 12px outer right margin and 16px bottom margin retain the page silhouette without a focus ring.
 - Empty/reconnecting conversations retain a compact session label. Content, inputs, status indicators, and code keep their semantic colors.
 - Overview is a separate card canvas, rather than inheriting the connected folder backing.
 
@@ -44,7 +44,7 @@ The same process then exercises keyboard focus, pointer focus, overview selectio
 | Requirement | Check |
 | --- | --- |
 | One native piece | Contour union/area test, one `paint_path` site, no child background/corner masks, native raster flood-fill from selected sidebar tab to focused panel |
-| Two connected structural tones, no folder focus ring | Real two- and three-panel focus captures check backing/page colors, connected components, margins, and raised silhouette |
+| Two connected structural tones, no folder focus ring | Real two- and three-panel focus captures check backing/page colors, connected components, margins, and level body edge |
 | Independent Normal mode | Native Settings click and raster samples verify separate same-height cards and actual background gaps |
 | Saved mode and reload compatibility | Real Settings writes checked on disk, isolated config round trips, snapshot round trip and legacy default, Settings snapshot restoration test |
 | Empty panels remain identifiable | Title regression and raster ink check before real sessions receive custom names |
@@ -56,6 +56,12 @@ These checks verify construction and observed behavior, not subjective approval 
 ## Observed verification (2026-09-05)
 
 - Real daemon/SDK/native-input runs passed for both two and three sessions in `target/native-modes-pass-2` and `target/native-modes-pass-3`. Each passed all focus positions, overview hover/selection, Settings → Normal → Folder tabs, persisted TOML values, and return to chat without replacing session IDs.
-- Raster checks passed for the continuous selected sidebar/page component, continuous inactive backing, two structural tones, no folder ring, raised silhouette, and Normal card gaps. Final native folder and Normal screenshots were opened and visually inspected, alongside populated transcript fixture captures during iteration.
+- Raster checks passed for the continuous selected sidebar/page component, continuous inactive backing, two structural tones, no folder ring, body silhouette, and Normal card gaps. Final native folder and Normal screenshots were opened and visually inspected, alongside populated transcript fixture captures during iteration.
 - Eight focused folder/config/geometry tests passed. Snapshot and native Settings tests passed separately. Screenshot CLI isolation/argument tests passed.
 - The supplementary full UI suite reported 302 passed, 5 failed, and 6 ignored. Its failures were the same scroll-state/gesture and timing-sensitive vertical animation tests seen before this native-mode implementation. Both vertical animation tests passed when rerun alone serially. This is not a claim that the entire suite is green.
+
+### Follow-up: panels belong to the body, not individual tabs
+
+The user clarified that only the sidebar session should be a tab. Removed the focus-dependent panel offset: all panel content now starts at 48px inside the same body whose top edge is at 16px. Focus still changes the page color, never its content height. The navigation backing now matches the surrounding folder backing, removing the pinched upper-left color junction.
+
+The screenshot loop compared `folder-body-flat.png`, `folder-body-left-join.png`, and the final `folder-body-smooth-v2.png` with its 4× `folder-body-smooth-v2-join.png` crop. An intermediate 16px-deep body connection was visually obstructed by the navigation indicator and failed raster connectivity. The final 32px-deep connection remains uninterrupted beneath it. Eight focused tests passed, including equal panel tops at every focus position, both sidebar visibility states, and two viewport sizes. Real two- and three-session runs in `body-flat-v2-2` and `body-flat-v2-3` passed level-body raster samples, matching backing colors across the upper-left join, sidebar/page connectivity, native focus/overview, and Normal/Folder tabs Settings round trips. Live rebuild/reload activated generation 21.

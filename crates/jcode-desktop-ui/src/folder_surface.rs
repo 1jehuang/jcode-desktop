@@ -2,7 +2,7 @@
 //! only report their laid-out bounds and never paint pieces of the sheet.
 use std::{cell::RefCell, rc::Rc};
 
-use super::{FOLDER_CONNECTOR_WIDTH, FOLDER_PAGE_TOP, INACTIVE_PANEL_INSET, STRIP_PADDING_Y};
+use super::{FOLDER_CONNECTOR_WIDTH, FOLDER_CONTENT_INSET, FOLDER_PAGE_TOP, STRIP_PADDING_Y};
 use crate::theme::Theme;
 use gpui::{Bounds, PathBuilder, Pixels, canvas, div, point, prelude::*, px};
 
@@ -69,7 +69,7 @@ pub(super) fn background(frame: SharedFrame, sidebar_width: f32) -> impl IntoEle
                         };
                     let top = f32::from(canvas.top()) + FOLDER_PAGE_TOP;
                     let shoulder_bottom =
-                        f32::from(canvas.top()) + STRIP_PADDING_Y + INACTIVE_PANEL_INSET;
+                        f32::from(canvas.top()) + STRIP_PADDING_Y + FOLDER_CONTENT_INSET;
                     let bottom = f32::from(canvas.bottom()) - STRIP_PADDING_Y;
                     let right = f32::from(frame.panel_right.min(canvas.right()));
                     let mut regions = if has_panels {
@@ -247,15 +247,15 @@ mod tests {
         let regions = [
             Rect {
                 left: 264.,
-                top: 32.,
+                top: 16.,
                 right: 1400.,
                 bottom: 48.,
             },
             Rect {
                 left: 264.,
-                top: 32.,
+                top: 16.,
                 right: 276.,
-                bottom: 984.,
+                bottom: 184.,
             },
             Rect {
                 left: 8.,
@@ -265,14 +265,19 @@ mod tests {
             },
             Rect {
                 left: 650.,
-                top: 16.,
+                top: 48.,
                 right: 1000.,
                 bottom: 984.,
             },
         ];
         let shape = outline(&regions);
         assert!(shape.contains(&(8., 140.)));
-        assert!(shape.contains(&(650., 16.)));
+        assert!(
+            !shape.contains(&(650., 16.)),
+            "panel must not add a top tab"
+        );
+        assert!(shape.contains(&(264., 16.)));
+        assert!(shape.contains(&(1400., 16.)));
         assert!(shape.contains(&(1000., 984.)));
         let area: f32 = shape
             .iter()
@@ -282,7 +287,7 @@ mod tests {
             .sum::<f32>()
             .abs()
             / 2.;
-        let expected = 1136. * 16. + 12. * (952. - 16.) + 256. * 44. + 350. * (968. - 16.);
+        let expected = 1136. * 32. + 12. * (184. - 48.) + 256. * 44. + 350. * (984. - 48.);
         assert_eq!(
             area, expected,
             "one contour contains the entire union without internal seams"

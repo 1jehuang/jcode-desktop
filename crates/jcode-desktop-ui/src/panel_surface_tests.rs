@@ -1,8 +1,8 @@
-//! Folder surfaces remain joined while focus changes their top edge, not width.
+//! Panels remain level inside the shared folder body as focus changes.
 use super::*;
 
 #[gpui::test]
-fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::TestAppContext) {
+fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -54,12 +54,8 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                     .into_iter()
                     .map(|id| vcx.debug_bounds(id).unwrap())
                     .collect::<Vec<_>>();
-                for (index, panel) in panels.iter().enumerate() {
-                    let inset = if index == focused {
-                        0.
-                    } else {
-                        INACTIVE_PANEL_INSET
-                    };
+                for panel in &panels {
+                    let inset = FOLDER_CONTENT_INSET;
                     assert!(
                         (f32::from(panel.top() - canvas.top()) - STRIP_PADDING_Y - inset).abs()
                             < 1.
@@ -81,17 +77,13 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                         "folders share one baseline"
                     );
                 }
-                assert!(
-                    panels[focused].top() < shoulder,
-                    "active tab must visibly rise above the sheet"
-                );
-                for (index, panel) in panels.iter().enumerate() {
-                    if index != focused {
-                        assert!(
-                            panel.top() > shoulder,
-                            "leave a visible connecting shoulder above inactive folders"
-                        );
-                    }
+                for panel in &panels {
+                    assert_eq!(
+                        panel.top(),
+                        panels[0].top(),
+                        "focus must not raise a panel tab"
+                    );
+                    assert_eq!(panel.top(), shoulder + px(FOLDER_CONTENT_INSET));
                 }
             }
         }
@@ -127,5 +119,5 @@ fn normal_mode_uses_separate_equal_height_panels_without_the_folder_surface(
     let a = vcx.debug_bounds("panel-0").unwrap();
     let b = vcx.debug_bounds("panel-1").unwrap();
     assert_eq!(b.left(), a.right());
-    assert_ne!(a.top(), b.top());
+    assert_eq!(a.top(), b.top());
 }
