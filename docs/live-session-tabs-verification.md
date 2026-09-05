@@ -157,3 +157,32 @@ Live activation therefore remains an outstanding blocked task, not a cancelled
 requirement or a successful delivery. Repeating the rejected reload or replacing
 the process without establishing state preservation would not close that gap.
 No runtime changes or additional build were needed for this evidence correction.
+
+## Compact, always-fitting tabs (2026-09-05)
+
+The live-session strip no longer scrolls horizontally or imposes a 100px minimum
+per tab. Tabs share the available width with a 144px cap, 11px labels, reduced
+padding and gaps, and full-title hover tooltips. Decorative status dots and row
+numbers yield space at very narrow widths. The active folder's height and join
+with its panel are unchanged. Sizing uses the actual canvas width, including
+sidebar, margins, and minimap reservation. Flex distributes fractional pixels
+instead of rounding each fixed-width tab and accumulating overflow.
+
+Verification:
+- `cargo test -p jcode-desktop-ui live_tabs --lib`: 5 passed. Coverage includes
+  first/last keyboard navigation, mouse selection, full-title tooltip appearance,
+  all 12 tabs visible through 480/640/800/1000/1440px window resizes, 24 tabs beside
+  the minimap in normal mode, empty-strip selection, and the folder baseline.
+- Sizing arithmetic checked with 1–200 tabs across six available widths.
+- Real-app private-Xvfb captures inspected at `target/ui-review-compact-tabs.png`
+  (1000×700) and `target/ui-review-compact-tabs-final.png` (800×700), each with six
+  tabs. All tabs remain within the strip with ellipsized labels.
+- Full UI suite, serial: 331 passed, 3 failed, 6 ignored. The failures are the
+  previously documented email-inbox scroll, restored-history scroll, and touchpad
+  reticle tests (see `theme-settings-verification.md`). A parallel run also hit
+  the timing-sensitive vertical-key animation assertion. The suite is not green.
+- The desktop executable and UI plugin rebuilt successfully. The live instance
+  acknowledged the Ctrl+R-equivalent command, but activation was rejected with
+  `hot reload is disabled; launch with --hot-reload`. Its active sessions were
+  preserved rather than force-restarting the process. Applying this build to that
+  window remains blocked until a safe restart.

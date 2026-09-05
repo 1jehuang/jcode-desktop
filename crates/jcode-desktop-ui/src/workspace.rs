@@ -513,8 +513,6 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_navigation_scroll: ScrollHandle,
-    live_tabs_scroll: ScrollHandle,
-    live_tabs_selection: Option<(usize, usize)>,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
@@ -691,8 +689,6 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
-            live_tabs_scroll: ScrollHandle::new(),
-            live_tabs_selection: None,
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -824,8 +820,6 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
-            live_tabs_scroll: ScrollHandle::new(),
-            live_tabs_selection: None,
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -5731,11 +5725,12 @@ impl Render for Workspace {
             0.0
         };
         let right_margin = if folders { FOLDER_RIGHT_MARGIN } else { 0. };
-        let viewport_w = (f32::from(viewport.width)
+        let canvas_w = (f32::from(viewport.width)
             - sidebar_width
             - connector_width
             - right_margin)
-            .max(320.0);
+            .max(0.0);
+        let viewport_w = canvas_w.max(320.0);
         // On macOS the sidebar header covers the transparent titlebar strip.
         // Without the sidebar, leave room for the traffic lights. Other platforms
         // do not draw through a system titlebar, so an inset would be a visible gap.
@@ -5970,7 +5965,7 @@ impl Render for Workspace {
                                 self.folder_frame.clone(), folder_surface::Region::Canvas,
                             )))
                             .child(content)
-                            .child(self.render_workspace_bar(cx))
+                            .child(self.render_workspace_bar(canvas_w, cx))
                             .when(
                                 self.show_minimap
                                     && !self.slots.is_empty()
