@@ -3364,19 +3364,17 @@ impl Workspace {
             if previous_section != Some(is_open) {
                 previous_section = Some(is_open);
                 previous_saved = None;
-                let (id, label, count, accent) = if is_open {
+                let (id, label, count) = if is_open {
                     (
                         "sidebar-open-panels-heading",
-                        "Live panels",
+                        "Active sessions",
                         open_session_count,
-                        Theme::global().AI_ACCENT,
                     )
                 } else {
                     (
                         "sidebar-other-sessions-heading",
                         "Session history",
                         other_session_count,
-                        Theme::global().TEXT_DIM,
                     )
                 };
                 list = list.child(
@@ -3398,7 +3396,6 @@ impl Workspace {
                         .gap_2()
                         .text_size(px(10.0))
                         .text_color(Theme::global().TEXT_DIM)
-                        .child(div().size(px(6.0)).rounded_full().bg(accent))
                         .child(
                             div()
                                 .flex_1()
