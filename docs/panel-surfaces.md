@@ -45,4 +45,16 @@ The supported `--provider jcode` startup initializes lazily, so these lifecycle 
 
 The complete non-fixture run passed in 31.2 seconds. Its six screenshots and state files are in `target/two-tone-real-4/`. The full-width page connectivity was checked on actual rendered pixels, not inferred from source inspection or replaced with synthetic session data. These checks do not claim to measure user-workspace hover latency or Wayland-specific behavior.
 
+## Measured improvement over the previous design
+
+Compared actual 1800×1000 native app captures from `target/folder-real-5/middle-focused.png` (before) and `target/two-tone-real-4/middle-focused.png` (after). Both came from real SDK-backed session runs, not UI fixtures.
+
+| Observable property | Before | After |
+| --- | --- | --- |
+| Distinct tones sampled across sidebar, page, focused panel, inactive panel, and footer | 3 | 2 |
+| Sidebar backing pixels connected to the inactive panel beyond the focused panel | No | Yes |
+| Focused-panel pixels connected to the left page connector | No | Yes |
+
+These are pixel-value and flood-fill results, not subjective visual ratings. The former third tone `#1c1a18` was replaced by page tone `#25221f` above/alongside the panels and backing tone `#302b27` at the bottom connection. Machine-readable results are saved in `target/two-tone-before-after.json`.
+
 The subsequent full UI regression run reported **301 passed, 3 pre-existing failures, 6 ignored**. The remaining failures are `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`, all observed before this styling change. All two-tone, sidebar geometry, and tutorial geometry checks pass. The full suite is not claimed to be green.
