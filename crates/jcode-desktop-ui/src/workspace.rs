@@ -158,6 +158,7 @@ enum SidebarView {
     #[default]
     Sessions,
     Files,
+    Accounts,
 }
 
 // Minimap: a compact card in the top right that maps every strip to
@@ -2747,6 +2748,7 @@ impl Workspace {
             .flex_row()
             .gap(px(GAP));
 
+        let mut panel_left = -self.camera_x[row];
         for (((index, width), order_offset), close_progress) in indices
             .into_iter()
             .zip(animated_widths)
@@ -2755,6 +2757,8 @@ impl Workspace {
         {
             let slot = &self.slots[index];
             let focused = index == self.active;
+            let joins_sidebar = self.show_sidebar && (panel_left + order_offset).abs() < 1.0;
+            panel_left += width + GAP;
             strip = strip.child(
                 div()
                     .id(("panel", index))
@@ -2775,6 +2779,9 @@ impl Workspace {
                         Theme::global().PANEL_BORDER_IDLE
                     })
                     .rounded(px(CORNER_RADIUS))
+                    // The sidebar owns this page edge, including the opening
+                    // around its selected folder tab. Do not draw it twice.
+                    .when(joins_sidebar, |el| el.border_l_0().rounded_l_none())
                     .overflow_hidden()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -3600,29 +3607,37 @@ impl Workspace {
                 div()
                     .id(("sidebar-session", sidebar_index))
                     .debug_selector(move || format!("sidebar-session-{sidebar_index}").into())
-                    .mx_2()
+                    .ml_2()
+                    .when(!selected, |el| el.mr(px(1.0)))
                     .mb_1()
                     .px_2()
                     .py_1()
                     .flex()
                     .flex_col()
                     .gap(px(1.0))
-                    .rounded_lg()
+                    .rounded_l_lg()
                     .cursor_pointer()
+                    // The selected folder tab opens directly onto the canvas.
                     .bg(if selected {
-                        Theme::global().ACCENT_DIM
+                        Theme::global().PANEL_BG
                     } else {
-                        Theme::global().BG
+                        Theme::global().HEADER_BG
                     })
-                    .border_1()
+                    .border_l_1()
+                    .border_t_1()
+                    .border_b_1()
                     .border_color(if selected {
-                        Theme::global().PANEL_BORDER_FOCUS
+                        Theme::global().PANEL_BORDER
                     } else {
-                        Theme::global().PANEL_BORDER_IDLE
+                        gpui::rgba(0x00000000)
                     })
-                    .hover(|el| {
-                        el.bg(Theme::global().HEADER_BG)
-                            .border_color(Theme::global().PANEL_BORDER)
+                    .pr(px(crate::scrollbar::GUTTER + 8.0))
+                    .hover(move |el| {
+                        el.bg(if selected {
+                            Theme::global().PANEL_BG
+                        } else {
+                            Theme::global().TOOL_BG
+                        })
                     })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -3697,9 +3712,19 @@ impl Workspace {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(Theme::global().BG)
-            .border_r_1()
-            .border_color(Theme::global().PANEL_BORDER)
+            .debug_selector(|| "sidebar".into())
+            .relative()
+            .bg(Theme::global().HEADER_BG)
+            // Paint the page edge behind the tabs so the active tab interrupts it.
+            .child(
+                div()
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(1.0))
+                    .bg(Theme::global().PANEL_BORDER),
+            )
             .child(
                 div()
                     .h(px(TITLEBAR_HEIGHT))
@@ -3748,6 +3773,7 @@ impl Workspace {
                                     .child(
                                         div()
                                             .id("sidebar-sessions-tab")
+                                            .debug_selector(|| "sidebar-sessions-tab".into())
                                             .flex_none()
                                             .border_1()
                                             .border_color(Theme::global().PANEL_BORDER)
@@ -3801,6 +3827,35 @@ impl Workspace {
                                                 }),
                                             )
                                             .child("files"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("sidebar-accounts-tab")
+                                            .debug_selector(|| "sidebar-accounts-tab".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(
+                                                if self.sidebar_view == SidebarView::Accounts {
+                                                    Theme::global().TEXT
+                                                } else {
+                                                    Theme::global().TEXT_DIM
+                                                },
+                                            )
+                                            .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.sidebar_view = SidebarView::Accounts;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child("accounts"),
                                     )
                                     .child(
                                         div()
@@ -3946,17 +4001,29 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .relative()
-                    .pr(px(crate::scrollbar::GUTTER))
+                    .when(self.sidebar_view == SidebarView::Files, |el| {
+                        el.pr(px(crate::scrollbar::GUTTER))
+                    })
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Files => self.render_files_sidebar(cx),
+                        SidebarView::Accounts => self.render_accounts(cx).unwrap_or_else(|| {
+                            div()
+                                .debug_selector(|| "accounts-empty".into())
+                                .p_4()
+                                .text_size(px(11.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child("No connected accounts")
+                                .into_any_element()
+                        }),
                     })
-                    .child(crate::scrollbar::vertical_with_track(
-                        &self.sidebar_scroll,
-                        "sidebar-scrollbar",
-                    )),
+                    .when(self.sidebar_view != SidebarView::Accounts, |el| {
+                        el.child(crate::scrollbar::vertical_with_track(
+                            &self.sidebar_scroll,
+                            "sidebar-scrollbar",
+                        ))
+                    }),
             )
-            .when_some(self.render_accounts(cx), |el, accounts| el.child(accounts))
             .into_any_element()
     }
 
@@ -4087,8 +4154,6 @@ impl Workspace {
             .flex_none()
             .flex()
             .flex_col()
-            .border_t_1()
-            .border_color(Theme::global().PANEL_BORDER)
             .py_1()
             .child(
                 div()
@@ -6854,21 +6919,30 @@ mod tests {
     }
 
     #[gpui::test]
-    fn empty_strip_navigation_is_captured_but_boundary_noops_are_not(cx: &mut gpui::TestAppContext) {
+    fn empty_strip_navigation_is_captured_but_boundary_noops_are_not(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let directory = tempfile::tempdir().unwrap();
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            Workspace::for_test(learning::Coach::new(), cx)
-        });
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         vcx.update(|window, cx| window.focus(&workspace.read(cx).focus_handle.clone(), cx));
-        for (key, row, expected) in [("super-j", 1, true), ("super-k", 0, true), ("super-k", 0, false)] {
+        for (key, row, expected) in [
+            ("super-j", 1, true),
+            ("super-k", 0, true),
+            ("super-k", 0, false),
+        ] {
             workspace.update(vcx, |workspace, _| {
-                workspace.action_capture = Some(ActionCapture::new(directory.path().join("actions.jsonl")));
+                workspace.action_capture =
+                    Some(ActionCapture::new(directory.path().join("actions.jsonl")));
             });
             vcx.simulate_keystrokes(key);
             workspace.read_with(vcx, |workspace, _| {
                 assert_eq!(workspace.active_row, row);
-                assert_eq!(workspace.action_capture.as_ref().unwrap().is_pending(), expected);
+                assert_eq!(
+                    workspace.action_capture.as_ref().unwrap().is_pending(),
+                    expected
+                );
             });
         }
     }
@@ -7452,8 +7526,8 @@ mod tests {
             .debug_bounds("sidebar-scrollbar")
             .expect("overflowing session history should paint a scrollbar");
         assert!(
-            list.right() + px(4.0) <= scrollbar.left(),
-            "session content must leave a gap before the scrollbar track"
+            scrollbar.right() <= list.right(),
+            "scrollbar overlays the reserved right padding of folder tabs"
         );
     }
 
@@ -7753,11 +7827,80 @@ mod tests {
     }
 
     #[gpui::test]
+    fn sidebar_accounts_tab_replaces_sessions_and_has_an_empty_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("accounts-section").is_none());
+        assert!(vcx.debug_bounds("accounts-empty").is_none());
+        let tab = vcx.debug_bounds("sidebar-accounts-tab").unwrap();
+        vcx.simulate_click(tab.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.sidebar_view),
+            SidebarView::Accounts
+        );
+        assert!(vcx.debug_bounds("accounts-empty").is_some());
+        assert!(vcx.debug_bounds("sidebar-session-list").is_none());
+        assert!(vcx.debug_bounds("sidebar-scrollbar").is_none());
+        workspace.update(vcx, |w, cx| {
+            w.set_test_accounts(vec![accounts::Account {
+                id: "openai".into(),
+                display_name: "OpenAI".into(),
+                status: "available".into(),
+                auth_kind: "OAuth".into(),
+                method: "OAuth".into(),
+                limits: Vec::new(),
+            }]);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("accounts-section").is_some());
+        assert!(vcx.debug_bounds("accounts-empty").is_none());
+        let tab = vcx.debug_bounds("sidebar-sessions-tab").unwrap();
+        vcx.simulate_click(tab.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("accounts-section").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-list").is_some());
+    }
+
+    #[gpui::test]
+    fn sidebar_folder_tab_reaches_the_canvas_edge(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.push_test_panel("session_fox_active", cx);
+            w.apply(
+                Update::Sessions {
+                    sessions: vec![session_info("session_fox_active", Some("active work"))],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let sidebar = vcx.debug_bounds("sidebar").unwrap();
+        let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
+        assert_eq!(
+            tab.right(),
+            sidebar.right(),
+            "no gutter may split the tab from the page"
+        );
+        assert!(
+            tab.left() > sidebar.left(),
+            "tab retains its rounded left inset"
+        );
+    }
+
+    #[gpui::test]
     fn accounts_keep_whole_rows_with_mixed_quota_details(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         for count in [1, 2, 3, 4, 7, 12] {
             workspace.update(vcx, |w, cx| {
+                w.sidebar_view = SidebarView::Accounts;
                 w.accounts_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
                 w.accounts_scroll_remainder = 0.0;
                 w.set_test_accounts(
@@ -7828,6 +7971,7 @@ mod tests {
             workspace.slots[0].panel.update(cx, |panel, _| {
                 panel.provider = Some("provider-9".into());
             });
+            workspace.sidebar_view = SidebarView::Accounts;
             workspace.accounts = (0..12)
                 .map(|index| accounts::Account {
                     id: format!("provider-{index}"),
@@ -7896,6 +8040,7 @@ mod tests {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (_workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_view = SidebarView::Accounts;
             workspace.set_test_accounts(vec![
                 accounts::Account {
                     id: "openai".into(),
