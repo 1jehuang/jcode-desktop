@@ -36,10 +36,20 @@ def main():
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--size", default="1440x1000")
+    parser.add_argument("--panels", type=int, choices=range(1, 7), default=1,
+                        help="show a connected folder group with its middle panel focused")
+    parser.add_argument("--focus-panel", type=int,
+                        help="click this zero-based panel through X11 before capture")
     args = parser.parse_args()
+    if args.focus_panel is not None and not 0 <= args.focus_panel < args.panels:
+        parser.error("focus-panel must identify one of the displayed panels")
+    if args.focus_panel is not None and not shutil.which("xdotool"):
+        parser.error("native focus verification requires xdotool")
     width, height = (int(n) for n in args.size.split("x"))
     if not (640 <= width <= 7680 and 480 <= height <= 4320):
         parser.error("size must be between 640x480 and 7680x4320")
+    if args.focus_panel is not None and (width - 264) / args.panels < 320:
+        parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     for tool in ("Xvfb", "import", "openbox"):
         if not shutil.which(tool):
             parser.error(f"missing {tool}: install Xvfb, ImageMagick, and Openbox")
@@ -58,6 +68,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
         env["VK_DRIVER_FILES"] = str(drivers[0])
         wm_config = root / "openbox.xml"
         wm_config.write_text('''<openbox_config xmlns="http://openbox.org/3.4/rc">
@@ -92,7 +103,8 @@ def main():
                 processes.append(app)
                 deadline = time.monotonic() + 45
                 state = root / "state"
-                while not state.exists() or "widths=1.00" not in state.read_text():
+                expected_widths = "widths=" + ",".join([f"{1 / args.panels:.2f}"] * args.panels)
+                while not state.exists() or expected_widths not in state.read_text():
                     if app.poll() is not None or time.monotonic() > deadline:
                         app_log.seek(0)
                         diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"
@@ -101,6 +113,19 @@ def main():
                     time.sleep(0.1)
                 # Allow opening animation and font rasterization to settle.
                 time.sleep(2)
+                if args.focus_panel is not None:
+                    # The fixture always shows the 264px sidebar. Native X11
+                    # input crosses the same platform -> GPUI -> workspace path
+                    # as a user click, on this private display only.
+                    x = round(264 + (width - 264) * (args.focus_panel + 0.5) / args.panels)
+                    subprocess.run(["xdotool", "mousemove", str(x), str(height // 2), "click", "1"],
+                                   env=env, cwd=root, check=True, timeout=10)
+                    deadline = time.monotonic() + 10
+                    while f"focus={args.focus_panel} " not in state.read_text():
+                        if app.poll() is not None or time.monotonic() > deadline:
+                            raise RuntimeError("Native panel click did not update public focus state: " + state.read_text())
+                        time.sleep(0.05)
+                    time.sleep(0.5)
                 if app.poll() is not None:
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)

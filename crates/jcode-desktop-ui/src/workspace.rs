@@ -79,7 +79,14 @@ const TOUCH_PAN_DURATION: Duration = Duration::from_millis(42);
 const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
 const STRUT: f32 = 0.58;
-const STRIP_PADDING_Y: f32 = STRUT;
+/// Leave the canvas visible around the joined folder surfaces.
+const STRIP_PADDING_Y: f32 = 16.0;
+/// The active folder rises above the others without adding a focus ring.
+const INACTIVE_PANEL_INSET: f32 = 8.0;
+
+#[cfg(test)]
+#[path = "panel_surface_tests.rs"]
+mod panel_surface_tests;
 
 /// Tutorial controls occupy a separate layout region, never the transcript.
 /// Use the same grid metrics to reserve canvas space and lay out the controls,
@@ -740,6 +747,28 @@ impl Workspace {
             workspace.connected = true;
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
+            let panel_count = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANELS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(1)
+                .clamp(1, 6);
+            for index in 1..panel_count {
+                let mut session = workspace.sessions[0].clone();
+                session.session_id = format!("screenshot-fixture-{index}");
+                session.title = Some(format!("Review folder {}", index + 1));
+                workspace.sessions.push(session.clone());
+                workspace.active = workspace.open_session(session, cx);
+            }
+            if panel_count > 1 {
+                for slot in &mut workspace.slots {
+                    slot.width_fraction = 1.0 / panel_count as f32;
+                    slot.animated_width = AnimatedValue::new(
+                        slot.width_fraction,
+                        transition::policy(Transition::PanelWidth).duration,
+                    );
+                }
+                workspace.active = panel_count / 2;
+            }
             workspace.focus_pending = true;
         }
         workspace
@@ -2787,7 +2816,7 @@ impl Workspace {
             None => self.camera_x[row] = self.camera_target[row],
         }
 
-        let panel_h = viewport_h - STRIP_PADDING_Y * 2.0;
+        let panel_h = (viewport_h - STRIP_PADDING_Y * 2.0).max(1.0);
         let indices = self.row_indices(row).collect::<Vec<_>>();
         let mut animated_widths = Vec::with_capacity(indices.len());
         let mut order_offsets = Vec::with_capacity(indices.len());
@@ -2816,11 +2845,15 @@ impl Workspace {
             .absolute()
             .top(px(STRIP_PADDING_Y))
             .left(px(-self.camera_x[row]))
-            .flex()
-            .flex_row()
-            .gap(px(GAP));
+            .w(px(
+                animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
+            ))
+            .h(px(panel_h));
 
-        let mut panel_left = -self.camera_x[row];
+        let first = indices.first().copied();
+        let last = indices.last().copied();
+        let mut panel_left = 0.0;
+        let mut active_surface = None;
         for (((index, width), order_offset), close_progress) in indices
             .into_iter()
             .zip(animated_widths)
@@ -2829,57 +2862,69 @@ impl Workspace {
         {
             let slot = &self.slots[index];
             let focused = index == self.active;
-            let joins_sidebar = self.show_sidebar && (panel_left + order_offset).abs() < 1.0;
+            let left = panel_left + order_offset;
+            let top = if focused {
+                0.0
+            } else {
+                INACTIVE_PANEL_INSET.min(panel_h / 2.0)
+            };
             panel_left += width + GAP;
-            strip = strip.child(
-                div()
-                    .id(("panel", index))
-                    .relative()
-                    .left(px(order_offset))
-                    .opacity(close_progress)
-                    // Tagged so a render test can click the real panel element
-                    // and exercise the pointer slow-path detection.
-                    .debug_selector(move || format!("panel-{index}"))
-                    .w(px(width))
-                    .h(px(panel_h))
-                    .flex_none()
-                    .bg(Theme::global().PANEL_BG)
-                    .border_1()
-                    .border_color(if focused {
-                        Theme::global().PANEL_BORDER_FOCUS
-                    } else {
-                        Theme::global().PANEL_BORDER_IDLE
-                    })
-                    .rounded(px(CORNER_RADIUS))
-                    // The sidebar owns this page edge, including the opening
-                    // around its selected folder tab. Do not draw it twice.
-                    .when(joins_sidebar, |el| el.border_l_0().rounded_l_none())
-                    .overflow_hidden()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _event, window, cx| {
-                            this.clicked_to_focus(index, cx);
-                            this.set_active(index, cx);
-                            this.focus_active(window, cx);
-                            cx.notify();
-                        }),
-                    )
-                    // Selectable transcript text intentionally consumes mouse-down
-                    // so it can retain keyboard focus for copy. Mouse-up still
-                    // bubbles, which lets an inactive panel become active without
-                    // stealing that focus. This is especially important after a
-                    // hot reload, when every restored panel contains a fresh text
-                    // selection model.
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.clicked_to_focus(index, cx);
-                            this.set_active(index, cx);
-                        }),
-                    )
-                    .child(slot.panel.clone()),
-            );
+            let surface = div()
+                .id(("panel", index))
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .opacity(close_progress)
+                // Tagged so a render test can click the real panel element
+                // and exercise the pointer slow-path detection.
+                .debug_selector(move || format!("panel-{index}"))
+                .w(px(width))
+                .h(px(panel_h - top))
+                .flex_none()
+                .bg(if focused {
+                    Theme::global().PANEL_BG
+                } else {
+                    Theme::global().HEADER_BG
+                })
+                // Inactive folders share straight joins and a common bottom
+                // edge. Only the active tab rises above the connected group.
+                // No focus-colored border or ring is painted on any panel.
+                .when(focused, |el| el.rounded_t(px(CORNER_RADIUS)))
+                .when(Some(index) == first, |el| el.rounded_l(px(CORNER_RADIUS)))
+                .when(Some(index) == last, |el| el.rounded_r(px(CORNER_RADIUS)))
+                .overflow_hidden()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _event, window, cx| {
+                        this.clicked_to_focus(index, cx);
+                        this.set_active(index, cx);
+                        this.focus_active(window, cx);
+                        cx.notify();
+                    }),
+                )
+                // Selectable transcript text intentionally consumes mouse-down
+                // so it can retain keyboard focus for copy. Mouse-up still
+                // bubbles, which lets an inactive panel become active without
+                // stealing that focus. This is especially important after a
+                // hot reload, when every restored panel contains a fresh text
+                // selection model.
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.clicked_to_focus(index, cx);
+                        this.set_active(index, cx);
+                    }),
+                )
+                .child(slot.panel.clone());
+            if focused {
+                active_surface = Some(surface);
+            } else {
+                strip = strip.child(surface);
+            }
         }
+        // Paint the active folder last within this strip, not in a global
+        // deferred layer that would incorrectly cover menus and overlays.
+        strip = strip.children(active_surface);
 
         // Two-finger touchpad swipes (and horizontal mouse wheels) pan the
         // strip directly, like grabbing the canvas. The sticky axis lock in
@@ -3213,17 +3258,15 @@ impl Workspace {
                     .h(px(190.0))
                     .flex()
                     .flex_col()
-                    .bg(Theme::global().PANEL_BG)
-                    .border_2()
-                    .border_color(if focused {
-                        Theme::global().PANEL_BORDER_FOCUS
+                    .bg(if focused {
+                        Theme::global().PANEL_BG
                     } else {
-                        Theme::global().PANEL_BORDER
+                        Theme::global().HEADER_BG
                     })
                     .rounded_xl()
                     .overflow_hidden()
                     .cursor_pointer()
-                    .hover(|el| el.border_color(Theme::global().ACCENT))
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {

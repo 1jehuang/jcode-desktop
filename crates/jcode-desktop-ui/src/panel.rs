@@ -5801,13 +5801,38 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        for selector in ["tool-header", "tool-output-size", "md-quote", "code-copy"] {
-            let bounds = vcx
-                .debug_bounds(selector)
-                .unwrap_or_else(|| panic!("{selector} should paint in the demo"));
+        let selectors = ["tool-header", "tool-output-size", "md-quote", "code-copy"];
+        let mut painted = std::collections::HashSet::new();
+        let row_count = panel.read_with(vcx, |panel, _| panel.transcript_list.item_count());
+        // A virtualized transcript intentionally omits off-screen rows. Check
+        // the initial tail, then reveal each item rather than requiring every
+        // shape to fit simultaneously inside the panel's usable viewport.
+        for row in 0..=row_count {
+            if row > 0 {
+                panel.update(vcx, |panel, cx| {
+                    panel.stick_to_bottom = false;
+                    panel.transcript_list.scroll_to(gpui::ListOffset {
+                        item_ix: row - 1,
+                        offset_in_item: px(0.),
+                    });
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+            }
+            for selector in selectors {
+                if let Some(bounds) = vcx.debug_bounds(selector) {
+                    assert!(
+                        bounds.size.width > px(0.) && bounds.size.height > px(0.),
+                        "{selector} must occupy space"
+                    );
+                    painted.insert(selector);
+                }
+            }
+        }
+        for selector in selectors {
             assert!(
-                bounds.size.width > px(0.) && bounds.size.height > px(0.),
-                "{selector} must occupy space"
+                painted.contains(selector),
+                "{selector} should paint in the demo"
             );
         }
     }
