@@ -63,7 +63,7 @@ verify_bundle() {
   update_key="$(plist_value "$plist" SUPublicEDKey 2>/dev/null || true)"
   if [[ -n "$update_key" ]]; then
     [[ "$(plist_value "$plist" SUFeedURL)" == \
-      "https://github.com/1jehuang/jcode-desktop/releases/download/desktop-updates/appcast.xml" ]] || \
+      "${UPDATE_FEED_URL:-https://jcode.sh/desktop/appcast.xml}" ]] || \
       fail "unexpected automatic update feed"
     [[ "$(plist_value "$plist" SUEnableAutomaticChecks)" == "true" ]] || fail "automatic checks are disabled"
     [[ "$(plist_value "$plist" SUAutomaticallyUpdate)" == "true" ]] || fail "automatic updates are disabled"

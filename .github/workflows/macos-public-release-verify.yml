@@ -21,7 +21,7 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          base="https://jcode.sh/desktop/releases/${TAG}"
           curl --fail --location --retry 3 --output Jcode-macOS-universal.dmg "$base/Jcode-macOS-universal.dmg"
           curl --fail --location --retry 3 --output SHA256SUMS "$base/SHA256SUMS"
           shasum -a 256 -c SHA256SUMS --ignore-missing
@@ -44,6 +44,7 @@ jobs:
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
           test "$(defaults read "$app/Contents/Info" CFBundleIdentifier)" = dev.solosystems.jcode.desktop
+          test "$(defaults read "$app/Contents/Info" SUFeedURL)" = https://jcode.sh/desktop/appcast.xml
           file "$app"/Contents/MacOS/{jcode-desktop,jcode,jcode-harness-api-bridge} | tee binaries.txt
           test "$(grep -c 'universal binary with 2 architectures' binaries.txt)" = 3
           "$app/Contents/MacOS/jcode" --version

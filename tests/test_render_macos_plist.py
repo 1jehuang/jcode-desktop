@@ -45,10 +45,11 @@ class RenderMacOSPlistTests(unittest.TestCase):
         public_key = base64.b64encode(bytes(range(32))).decode()
         info = self.render(
             public_key=public_key,
-            feed_url="https://github.com/1jehuang/jcode-desktop/releases/download/desktop-updates/appcast.xml",
+            feed_url="https://jcode.sh/desktop/appcast.xml",
             require_updates=True,
         )
         self.assertEqual(info["SUPublicEDKey"], public_key)
+        self.assertEqual(info["SUFeedURL"], "https://jcode.sh/desktop/appcast.xml")
         self.assertTrue(info["SUEnableAutomaticChecks"])
         self.assertTrue(info["SUAutomaticallyUpdate"])
         self.assertEqual(info["SUScheduledCheckInterval"], 86400)

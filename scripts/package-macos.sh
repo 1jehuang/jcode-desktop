@@ -17,7 +17,7 @@ ZIP="$OUT/Jcode-macOS-universal.zip"
 DMG_ROOT="$OUT/dmg-root"
 ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
 SPARKLE_ROOT="${SPARKLE_ROOT:-$OUT/sparkle}"
-UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/1jehuang/jcode-desktop/releases/download/desktop-updates/appcast.xml}"
+UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://jcode.sh/desktop/appcast.xml}"
 TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
