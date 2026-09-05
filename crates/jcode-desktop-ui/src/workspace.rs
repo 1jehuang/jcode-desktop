@@ -7889,7 +7889,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        click_sidebar_navigation(vcx, "sidebar-unfinished-work");
+        click_sidebar_navigation(&workspace, vcx, "sidebar-unfinished-work");
 
         assert!(
             vcx.debug_bounds("unfinished-work-list").is_some(),
@@ -7935,7 +7935,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        click_sidebar_navigation(vcx, "sidebar-unfinished-work");
+        click_sidebar_navigation(&workspace, vcx, "sidebar-unfinished-work");
 
         workspace.update(vcx, |workspace, cx| {
             let panel = workspace.slots[workspace.active].panel.clone();
@@ -11341,7 +11341,7 @@ mod tests {
         vcx.run_until_parked();
 
         assert!(vcx.debug_bounds("theme-picker-button").is_none());
-        click_sidebar_navigation(vcx, "sidebar-theme-tab");
+        click_sidebar_navigation(&workspace, vcx, "sidebar-theme-tab");
         assert!(vcx.debug_bounds("theme-settings").is_some());
         assert!(vcx.debug_bounds("sidebar-session-list").is_none());
         let selectors = [
@@ -11382,7 +11382,32 @@ mod tests {
         Theme::select(original);
     }
 
-    fn click_sidebar_navigation(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+    fn click_sidebar_navigation(
+        workspace: &Entity<Workspace>,
+        cx: &mut gpui::VisualTestContext,
+        selector: &'static str,
+    ) {
+        if workspace.read_with(cx, |w, _| w.layout_mode == crate::config::LayoutMode::FolderTabs) {
+            for _ in 0..11 {
+                let tabs = cx.debug_bounds("sidebar-navigation-tabs").unwrap();
+                if let Some(tab) = cx.debug_bounds(selector)
+                    && (f32::from(tab.center().x - tabs.center().x)).abs() < 1.0
+                {
+                    cx.simulate_click(tab.center(), gpui::Modifiers::default());
+                    cx.run_until_parked();
+                    return;
+                }
+                let next = cx.debug_bounds("sidebar-roller-next").unwrap();
+                cx.simulate_click(next.center(), gpui::Modifiers::default());
+                workspace.update(cx, |w, cx| {
+                    w.sidebar_roller.settle();
+                    cx.notify();
+                });
+                cx.run_until_parked();
+            }
+            panic!("sidebar roller tab {selector} was not reachable");
+        }
+
         // Use the real navigation scroll path so tabs beyond the narrow sidebar
         // viewport must actually become reachable before clicking them.
         for _ in 0..20 {
@@ -11425,7 +11450,7 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        click_sidebar_navigation(vcx, "sidebar-settings-tab");
+        click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
         assert!(vcx.debug_bounds("workspace-settings").is_some());
         assert!(vcx.debug_bounds("theme-settings").is_none());
         assert!(vcx.debug_bounds("sidebar-session-list").is_none());
@@ -11458,10 +11483,10 @@ mod tests {
                 initial
             );
         }
-        click_sidebar_navigation(vcx, "sidebar-theme-tab");
+        click_sidebar_navigation(&workspace, vcx, "sidebar-theme-tab");
         assert!(vcx.debug_bounds("workspace-settings").is_none());
         assert!(vcx.debug_bounds("theme-settings").is_some());
-        click_sidebar_navigation(vcx, "sidebar-sessions-tab");
+        click_sidebar_navigation(&workspace, vcx, "sidebar-sessions-tab");
         assert!(vcx.debug_bounds("theme-settings").is_none());
         assert!(vcx.debug_bounds("theme-picker-button").is_none());
     }
