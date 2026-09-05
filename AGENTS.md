@@ -24,6 +24,6 @@
 
 ## Rebuild and Reload
 
-- After completing and verifying every change, rebuild and reload the running desktop application so the user immediately receives the updated behavior.
+- After every significant edit, verify the change, then rebuild and reload the running desktop application so the user immediately receives the updated behavior. Do this throughout the task, not only at the end.
 - In a hot-reload desktop session, use the application's **Ctrl+R** rebuild-and-reload action after verification. Treat a successful rebuild and reload as part of completion, not as an optional follow-up. Do not use `selfdev build`, which rebuilds the Jcode CLI rather than Jcode Desktop.
 - If rebuilding or reloading fails, diagnose and fix it before reporting the change complete. Do not silently leave the running application on stale code.
