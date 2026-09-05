@@ -110,3 +110,26 @@ that the checks fail when the forbidden presentation returns. Combined with
 the 36 passing interaction/Markdown/theme tests and the exact deployed-binary
 hash match, the measurements satisfy the requested presentation criteria.
 No subjective user satisfaction or clean full-suite result is inferred.
+
+## Consolidated whole-result rerun
+
+After the pixel/OCR checker was finalized, the complete loop was rerun from
+scratch at 22:45 on September 5, against source HEAD `8a63caa` and the same
+hash-verified running executable. Evidence is in `target/reasoning-whole-final/`.
+
+- Full current UI suite: **331 passed, 3 failed, 6 ignored**. All reasoning,
+  Markdown, and palette checks passed within this run. Remaining failures:
+  `email_inbox_moves_when_the_user_scrolls`,
+  `restored_scroll_is_not_replaced_when_history_reattaches`, and
+  `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`.
+- Newly generated dark **and light** screenshots of the exact deployed binary:
+  passed the finalized raster/OCR checker with the same measured contrasts,
+  18,013 background matches per image, six content lines, and no extra chrome.
+- All three negative controls were rejected again. Screenshot harness tests:
+  **7 passed**. No earlier capture was substituted for the two fresh outputs.
+- The consolidated command correctly returned nonzero for the full-suite
+  failures: `FULL_UI_SUITE_EXIT=101`, `VISUAL_AND_HARNESS_EXIT=0`.
+
+This final run confirms the requested thinking presentation, including the
+earlier implementation and palette change, while explicitly retaining the
+three unrelated full-suite failures instead of presenting the repository as green.
