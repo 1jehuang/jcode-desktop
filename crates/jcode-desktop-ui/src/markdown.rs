@@ -769,17 +769,19 @@ fn styled_line(
     source: &str,
     selection: &gpui::Entity<TextSelection>,
     key: SharedString,
-    window: &gpui::Window,
+    _window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui::AnyElement {
     let inline = inline_spans(source);
-    let style = window.text_style();
     let mut highlights = inline.highlights.clone();
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
-    let text = StyledText::new(inline.plain.clone())
-        .with_default_highlights(&style, flatten_highlights(&highlights));
+    // Resolve the base style during layout, inside the surrounding element.
+    // Capturing window.text_style() here bypasses the dimmed reasoning color
+    // (and heading weight), since the parent has not been laid out yet.
+    let text =
+        StyledText::new(inline.plain.clone()).with_highlights(flatten_highlights(&highlights));
     let layout = text.layout().clone();
     let child = if inline.links.is_empty() {
         text.into_any_element()
@@ -1441,6 +1443,29 @@ pub fn render(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> impl IntoElement {
+    render_with_style(source, row, selection, window, cx, false)
+}
+
+/// Thinking keeps Markdown semantics, but headings and list markers should
+/// stay as quiet as the surrounding dimmed text rather than becoming chrome.
+pub fn render_reasoning(
+    source: &str,
+    row: usize,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> impl IntoElement {
+    render_with_style(source, row, selection, window, cx, true)
+}
+
+fn render_with_style(
+    source: &str,
+    row: usize,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    reasoning: bool,
+) -> impl IntoElement {
     let blocks = parse(source);
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
@@ -1454,6 +1479,7 @@ pub fn render(
         let element = match block {
             Block::Heading(level, text) => {
                 let (size, weight) = match level {
+                    _ if reasoning => (px(12.0), FontWeight::SEMIBOLD),
                     1 => (px(19.0), FontWeight::BOLD),
                     2 => (px(16.5), FontWeight::BOLD),
                     3 => (px(14.5), FontWeight::SEMIBOLD),
@@ -1463,16 +1489,20 @@ pub fn render(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .mt_2()
+                    .when(!reasoning, |el| el.mt_2())
                     .child(
                         div()
                             .text_size(size)
                             .font_weight(weight)
-                            .text_color(Theme::global().HEADING)
+                            .text_color(if reasoning {
+                                Theme::global().REASONING
+                            } else {
+                                Theme::global().HEADING
+                            })
                             .line_height(relative(1.35))
                             .child(styled_line(&text, selection, text_key(), window, cx)),
                     )
-                    .when(level <= 2, |el| {
+                    .when(!reasoning && level <= 2, |el| {
                         el.child(div().h(px(1.0)).w_full().bg(Theme::global().PANEL_BORDER))
                     })
                     .into_any_element()
@@ -1492,6 +1522,7 @@ pub fn render(
                     },
                 };
                 let marker_color = match task {
+                    _ if reasoning => Theme::global().REASONING,
                     Some(true) => Theme::global().OK,
                     Some(false) => Theme::global().TEXT_DIM,
                     None => Theme::global().ACCENT_MUTED,
@@ -1516,7 +1547,11 @@ pub fn render(
             } => list_row(
                 depth,
                 format!("{number}."),
-                Theme::global().ACCENT_MUTED,
+                if reasoning {
+                    Theme::global().REASONING
+                } else {
+                    Theme::global().ACCENT_MUTED
+                },
                 &text,
                 selection,
                 text_key(),

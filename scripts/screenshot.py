@@ -35,6 +35,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--transcript", choices=("all", "reasoning"), default="all",
+                        help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
                         help="show the staged tutorial in the top-left Learn tab")
@@ -80,6 +82,7 @@ def main():
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n')
         env["JCODE_DESKTOP_CONFIG"] = str(config)
+        env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
