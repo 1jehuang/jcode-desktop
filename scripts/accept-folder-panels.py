@@ -257,7 +257,15 @@ def main():
         def click(x, y):
             subprocess.run(['xdotool', 'mousemove', str(x), str(y), 'click', '1'], env=env, check=True, timeout=10)
         # Settings sits midway through the overflow tabs, before the action tabs.
-        click(132, 5)
+        # Native wheel scrolling must move the visible tab outlines, with no
+        # detached scrollbar rail in the old top gutter.
+        before_scroll = capture('outline-scroll-start', strip=False)
+        assert all(before_scroll.getpixel((x, 5)) == (48, 43, 39) for x in range(12, 250))
+        subprocess.run(['xdotool', 'mousemove', '140', '36', 'click', '--repeat', '3', '--delay', '100', '5'], env=env, check=True, timeout=10)
+        time.sleep(0.3)
+        after_scroll = capture('outline-scroll-wheel', strip=False)
+        assert before_scroll.crop((12, 16, 250, 50)).tobytes() != after_scroll.crop((12, 16, 250, 50)).tobytes(), 'Native wheel input must move the navigation tabs'
+        click(132, 20)
         time.sleep(0.3)
         click(142, 36)
         capture('settings-navigation', strip=False)
@@ -282,7 +290,7 @@ def main():
         click(130, mode_y)
         wait_until(lambda: 'layout=FolderTabs' in state(), 'Native Settings restored Folder tabs mode')
         assert 'layout_mode = "folder_tabs"' in (root / 'desktop.toml').read_text()
-        click(14, 5)
+        click(14, 20)
         time.sleep(0.3)
         click(35, 36)
         wait_until(lambda: 'sidebar=Sessions' in state(), 'Native chat navigation restored')

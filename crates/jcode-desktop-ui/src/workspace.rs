@@ -86,7 +86,7 @@ const FOLDER_CONTENT_INSET: f32 = 32.0;
 /// The selected sidebar tab reaches any focused panel through this page gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
 /// One level top edge for the folder body, regardless of the focused panel.
-const FOLDER_PAGE_TOP: f32 = STRIP_PADDING_Y;
+const FOLDER_PAGE_TOP: f32 = TITLEBAR_HEIGHT - 34.0;
 const FOLDER_RIGHT_MARGIN: f32 = 12.0;
 
 #[path = "folder_surface.rs"]
@@ -3453,6 +3453,7 @@ impl Workspace {
     }
 
     fn render_sidebar_navigation_scrollbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let handle = &self.sidebar_navigation_scroll;
         let width = f32::from(handle.bounds().size.width).max(1.0);
         let max = f32::from(handle.max_offset().x).max(0.0);
@@ -3462,12 +3463,13 @@ impl Workspace {
         } else {
             0.0
         };
-        div()
+        let track = div()
             .id("sidebar-navigation-scrollbar")
             .debug_selector(|| "sidebar-navigation-scrollbar".into())
             .relative()
             .w_full()
-            .h(px(10.0))
+            .h(px(if folders { 16.0 } else { 10.0 }))
+            .when(folders, |el| el.absolute().top(px(10.0)))
             .flex_none()
             .cursor_pointer()
             .on_mouse_down(
@@ -3481,7 +3483,7 @@ impl Workspace {
                     this.scroll_sidebar_navigation_to(event.position, cx);
                 }
             }))
-            .child(
+            .when(!folders, |el| el.child(
                 div()
                     .absolute()
                     .top(px(3.0))
@@ -3489,8 +3491,8 @@ impl Workspace {
                     .h(px(4.0))
                     .rounded_full()
                     .bg(Theme::global().PANEL_BORDER),
-            )
-            .child(
+            ))
+            .when(!folders, |el| el.child(
                 div()
                     .absolute()
                     .top(px(3.0))
@@ -3499,8 +3501,8 @@ impl Workspace {
                     .h(px(4.0))
                     .rounded_full()
                     .bg(Theme::global().TEXT_FAINT),
-            )
-            .into_any_element()
+            ));
+        div().relative().w_full().h(px(10.0)).flex_none().child(track).into_any_element()
     }
 
     fn render_files_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -3881,8 +3883,8 @@ impl Workspace {
                             .flex_col()
                             .justify_end()
                             .gap(px(6.0))
-                            // The scrollbar belongs above the tabs, never between
-                            // the selected folder tab and its sidebar page.
+                            // Folder mode uses the tabs' upper contour as the thumb.
+                            // Reserve the same header geometry in both modes.
                             .child(self.render_sidebar_navigation_scrollbar(cx))
                             .child(
                                 div()
@@ -4238,6 +4240,9 @@ impl Workspace {
                         )
                     }),
             )
+            .when(folders, |el| el.child(folder_surface::navigation_scroll_outline(
+                self.sidebar_navigation_scroll.clone(),
+            )))
             .into_any_element()
     }
 
@@ -7948,8 +7953,8 @@ mod tests {
             assert_eq!(selected.size.height, px(34.0));
             let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
             assert!(
-                track.bottom() <= selected.top(),
-                "no scrollbar through the tab/page join"
+                track.bottom() <= selected.top() + px(10.0),
+                "outline scroll target stays above tab labels and page join"
             );
         }
     }
@@ -9480,8 +9485,8 @@ mod tests {
         let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
         let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
         assert!(
-            track.bottom() <= tabs.top(),
-            "scrollbar must not separate tabs from sidebar content"
+            track.bottom() <= tabs.top() + px(10.0),
+            "outline scrollbar stays above tab labels and content"
         );
         let max = workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.max_offset().x);
         assert!(max > px(0.0), "tabs must retain their widths and overflow");

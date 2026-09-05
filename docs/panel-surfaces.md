@@ -9,9 +9,10 @@ The selected sidebar session and focused panel are **one filled GPUI vector path
 - The selected page uses `PANEL_BG` (`#25221f` in Warm neutral).
 - The sidebar and inactive panels share the root backing color, `HEADER_BG` (`#302b27`). Inactive panels do not paint separate rectangles.
 - The connector rises from the selected session to the top shoulder and focused panel. It does not extend as an unrelated rail below the selected session.
-- Only the sidebar session is a tab. The folder body has one level top edge 16px below the canvas top, and every panel starts inside that body at 48px regardless of focus. A 12px outer right margin and 16px bottom margin retain the page silhouette without a focus ring.
+- Only the sidebar session is a tab. The folder body has one level top edge aligned with the selected navigation tab (18px below the canvas top), and every panel starts inside that body at 48px regardless of focus. A 12px outer right margin and 16px bottom margin retain the page silhouette without a focus ring.
 - Empty/reconnecting conversations retain a compact session label. Content, inputs, status indicators, and code keep their semantic colors.
 - Overview is a separate card canvas, rather than inheriting the connected folder backing.
+- The horizontal navigation scroll thumb is a thin highlight following the actual rounded tab outlines. Folder mode has no detached rail above them. Wheel scrolling and the outline hit strip retain scrolling behavior, while Normal keeps its conventional rail.
 
 ## Normal
 
@@ -65,3 +66,10 @@ These checks verify construction and observed behavior, not subjective approval 
 The user clarified that only the sidebar session should be a tab. Removed the focus-dependent panel offset: all panel content now starts at 48px inside the same body whose top edge is at 16px. Focus still changes the page color, never its content height. The navigation backing now matches the surrounding folder backing, removing the pinched upper-left color junction.
 
 The screenshot loop compared `folder-body-flat.png`, `folder-body-left-join.png`, and the final `folder-body-smooth-v2.png` with its 4× `folder-body-smooth-v2-join.png` crop. An intermediate 16px-deep body connection was visually obstructed by the navigation indicator and failed raster connectivity. The final 32px-deep connection remains uninterrupted beneath it. Eight focused tests passed, including equal panel tops at every focus position, both sidebar visibility states, and two viewport sizes. Real two- and three-session runs in `body-flat-v2-2` and `body-flat-v2-3` passed level-body raster samples, matching backing colors across the upper-left join, sidebar/page connectivity, native focus/overview, and Normal/Folder tabs Settings round trips. Live rebuild/reload activated generation 21.
+
+
+### Follow-up: integrate navigation scrolling into the outline
+
+The top-left scrollbar was interpreted as the horizontal rail above Chat/Learn. Replaced that rail in Folder tabs mode with a 1.5px native stroke along the real visible tab upper borders, including their curved corners. The stroke reads current layout bounds and scroll offset, so it follows tabs when scrolled rather than drawing another floating rectangle. The folder body top now aligns with the selected navigation tab's top edge. Normal mode is unchanged.
+
+Reviewed populated `outline-scroll-v1.png`, its 4× navigation crop, and real-runtime `outline-scroll-wheel-native-4x.png` after wheel scrolling. The old y=5 rail region now contains only backing pixels. Native wheel events visibly moved the tabs, clicking the outline scrolled to Settings, and Settings controls remained independently clickable. Two- and three-session native runs passed mode round trips and folder continuity. The sidebar regression run passed 40 tests with one expected ignored profile, and the Normal-mode regression passed. Final alignment is checked at both viewport sizes with the sidebar visible/hidden.

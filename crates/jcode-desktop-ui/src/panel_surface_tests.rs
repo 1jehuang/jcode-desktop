@@ -43,6 +43,10 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                 assert!(vcx.debug_bounds("native-folder-surface").is_some());
                 assert!(vcx.debug_bounds("folder-selected-sheet").is_none());
                 let shoulder = canvas.top() + px(FOLDER_PAGE_TOP);
+                if sidebar {
+                    assert_eq!(shoulder, vcx.debug_bounds("sidebar-sessions-tab").unwrap().top(),
+                        "folder body and selected navigation outline must share a top edge");
+                }
                 let expected_left = if sidebar {
                     SIDEBAR_WIDTH + FOLDER_CONNECTOR_WIDTH
                 } else {
@@ -83,7 +87,7 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                         panels[0].top(),
                         "focus must not raise a panel tab"
                     );
-                    assert_eq!(panel.top(), shoulder + px(FOLDER_CONTENT_INSET));
+                    assert_eq!(panel.top(), canvas.top() + px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET));
                 }
             }
         }
@@ -104,6 +108,10 @@ fn normal_mode_uses_separate_equal_height_panels_without_the_folder_surface(
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("native-folder-surface").is_none());
+    assert!(
+        vcx.debug_bounds("sidebar-navigation-outline-thumb")
+            .is_none()
+    );
     let a = vcx.debug_bounds("panel-0").unwrap();
     let b = vcx.debug_bounds("panel-1").unwrap();
     assert_eq!(a.top(), b.top());
@@ -116,6 +124,10 @@ fn normal_mode_uses_separate_equal_height_panels_without_the_folder_surface(
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("native-folder-surface").is_some());
+    assert!(
+        vcx.debug_bounds("sidebar-navigation-outline-thumb")
+            .is_some()
+    );
     let a = vcx.debug_bounds("panel-0").unwrap();
     let b = vcx.debug_bounds("panel-1").unwrap();
     assert_eq!(b.left(), a.right());
