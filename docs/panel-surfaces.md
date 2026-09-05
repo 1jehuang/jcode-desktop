@@ -44,3 +44,5 @@ The supported `--provider jcode` startup initializes lazily, so these lifecycle 
 | Deliver the updated view | App rebuild-and-reload command plus process log | Build succeeded and the running app activated the updated UI generation. |
 
 The complete non-fixture run passed in 31.2 seconds. Its six screenshots and state files are in `target/two-tone-real-4/`. The full-width page connectivity was checked on actual rendered pixels, not inferred from source inspection or replaced with synthetic session data. These checks do not claim to measure user-workspace hover latency or Wayland-specific behavior.
+
+The subsequent full UI regression run reported **301 passed, 3 pre-existing failures, 6 ignored**. The remaining failures are `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`, all observed before this styling change. All two-tone, sidebar geometry, and tutorial geometry checks pass. The full suite is not claimed to be green.
