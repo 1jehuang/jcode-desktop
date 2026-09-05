@@ -81,5 +81,11 @@ click/keyboard/slider/scroll/resize changes, checks attempted local/network acce
 against a loopback request counter, and tests envelope escaping/size limits.
 The screenshot path renders the actual GPUI chat with the bundled
 `assets/previews/font-pairings.html` artifact, on an isolated desktop, then drives
-the native slider, keyboard, scrolling, expand/collapse, pause/retry, and source controls. The native
-interaction check additionally requires `xdotool` and ImageMagick.
+the native Copy, Choose, slider, keyboard, Reset, scrolling, Escape,
+expand/collapse, paused-input, retry, and source controls. Clipboard checks use
+only the private X11 display. The native interaction check additionally requires
+`xdotool` and ImageMagick.
+
+See [acceptance evidence](html-preview-acceptance.md) for the requirement-to-check
+mapping, measured before/after results, delivered-artifact identity, and explicit
+validation boundaries.

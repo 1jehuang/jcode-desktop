@@ -16,7 +16,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from PIL import Image
+from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
@@ -166,6 +166,21 @@ if(blocked===5)document.body.style.background='rgb(0,255,0)';
         self.browser.click(210, 111)
         after = self.browser.frame(lambda i: i.tobytes() != before.tobytes())
         self.assertEqual(before.size, after.size)
+
+    def test_font_categories_render_distinct_glyphs(self):
+        self.browser.send(type='load', html='''<style>body{margin:0;background:white;color:black}div{position:absolute;left:0;font-size:32px;line-height:60px}</style>
+<div style="top:0;font-family:sans-serif">Narrow iii and wide WWW</div>
+<div style="top:80px;font-family:serif">Narrow iii and wide WWW</div>
+<div style="top:160px;font-family:monospace">Narrow iii and wide WWW</div>''')
+        frame = self.browser.frame()
+        samples = [frame.crop((0, y, 1500, y+140)) for y in (0,160,320)]
+        widths = []
+        for sample in samples:
+            box = ImageChops.invert(sample).getbbox()
+            self.assertIsNotNone(box)
+            widths.append(box[2]-box[0])
+        self.assertEqual(len(set(widths)), 3, widths)
+        print('Rendered sans/serif/mono specimen widths at 2x:', widths)
 
     def test_explicit_data_image_is_rendered(self):
         image = Image.new('RGB', (20,20), (0,0,255))
