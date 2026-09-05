@@ -3258,6 +3258,7 @@ impl Workspace {
         let root = self.file_browser_root(cx);
         div()
             .id("sidebar-file-list")
+            .debug_selector(|| "sidebar-file-list".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -3731,6 +3732,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .relative()
+                    .pr(px(crate::scrollbar::GUTTER))
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Files => self.render_files_sidebar(cx),
@@ -7005,10 +7007,49 @@ mod tests {
 
         let after = workspace.read_with(vcx, |workspace, _| workspace.sidebar_scroll.offset().y);
         assert_ne!(after, before, "wheel input must move the session history");
+        let scrollbar = vcx
+            .debug_bounds("sidebar-scrollbar")
+            .expect("overflowing session history should paint a scrollbar");
         assert!(
-            vcx.debug_bounds("sidebar-scrollbar").is_some(),
-            "overflowing session history should paint a scrollbar"
+            list.right() + px(4.0) <= scrollbar.left(),
+            "session content must leave a gap before the scrollbar track"
         );
+    }
+
+    #[gpui::test]
+    fn sidebar_files_reserve_a_stable_scrollbar_gutter(cx: &mut gpui::TestAppContext) {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("project", cx);
+            workspace.slots[0].panel.update(cx, |panel, _| {
+                panel.working_dir = Some(project.path().display().to_string());
+            });
+            workspace.sidebar_view = SidebarView::Files;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let before = vcx.debug_bounds("sidebar-file-list").unwrap();
+        assert!(vcx.debug_bounds("sidebar-scrollbar").is_none());
+        for index in 0..80 {
+            std::fs::write(project.path().join(format!("z-file-{index}.rs")), "").unwrap();
+        }
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        // The overlay reads the scroll bounds from the preceding layout pass.
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        let list = vcx.debug_bounds("sidebar-file-list").unwrap();
+        let row = vcx.debug_bounds("file-tree-main.rs").unwrap();
+        let scrollbar = vcx.debug_bounds("sidebar-scrollbar").unwrap();
+        assert_eq!(
+            before.size.width, list.size.width,
+            "overflow must not shift file content horizontally"
+        );
+        assert!(list.right() + px(4.0) <= scrollbar.left());
+        assert!(row.right() + px(4.0) <= scrollbar.left());
     }
 
     #[gpui::test]

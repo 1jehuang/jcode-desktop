@@ -6,6 +6,9 @@ use crate::theme::Theme;
 
 const WIDTH: f32 = 4.0;
 const INSET: f32 = 4.0;
+/// Space compact content can reserve for the track plus a gap on either side.
+/// Keep this stable even without overflow so rows do not shift as lists grow.
+pub const GUTTER: f32 = WIDTH + INSET * 2.0;
 const MIN_THUMB_HEIGHT: f32 = 28.0;
 
 fn vertical_parts(handle: &ScrollHandle, selector: &'static str, show_track: bool) -> AnyElement {
