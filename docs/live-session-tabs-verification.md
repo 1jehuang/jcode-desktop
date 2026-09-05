@@ -239,3 +239,25 @@ all five tab tests and six Python navigation-check tests.
 with hot reload enabled. After compatibility verification, its queued
 Ctrl+R-equivalent rebuild successfully activated UI generation 2 in live PID
 55458. This supersedes the earlier note that the change was built but not live.
+
+### Post-commit whole-result rerun
+
+The complete native path was run again against the current live host executable
+with 12 real sessions and two requested reloads, followed by the complete serial
+UI suite. Two attempts were made, with no additional implementation edits:
+
+- `target/compact-final-whole`: 66 successful checkpoints and 13 native tab
+  clicks. The first reload's compiler was terminated by SIGTERM.
+- `target/compact-final-retry`: 131 successful checkpoints and 26 native tab
+  clicks, including every tab before and after successful activation of UI
+  generation 2. The additional second reload's compiler was terminated by
+  SIGTERM. The requested complete UI-suite rebuild was also terminated by
+  SIGTERM in both attempts, before tests ran.
+
+These are process-termination constraints, not passing full-suite results.
+They do not replace or inflate the two earlier fully successful acceptance runs.
+The final rerun directly reconfirmed the requested improvement: 12 tabs are
+individually selectable without scrolling in the 512px strip, all original
+sessions remain in order, and composer focus follows each click across a real
+reload. The extra second-reload stress check and newest full-suite run remain
+unverified due to those external compiler interruptions.
