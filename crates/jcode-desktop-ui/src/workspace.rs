@@ -156,7 +156,6 @@ Composer shortcuts ported from the TUI:
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
-const ACCOUNT_VISIBLE_ROWS: usize = 3;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
@@ -4379,8 +4378,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Fixed-height account rows keep both viewport edges on row boundaries,
-    /// regardless of which credentials provide quota details.
+    /// The dedicated tab fills the sidebar, with fixed-height account rows and
+    /// independent scrolling when the credentials exceed the available height.
     fn render_accounts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.accounts.is_empty() {
             return None;
@@ -4388,12 +4387,14 @@ impl Workspace {
 
         let section = div()
             .debug_selector(|| "accounts-section".into())
-            .flex_none()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .py_1()
             .child(
                 div()
+                    .flex_none()
                     .px_4()
                     .pb(px(2.0))
                     .text_size(px(10.0))
@@ -4411,9 +4412,7 @@ impl Workspace {
         let mut list = div()
             .id("accounts-list")
             .debug_selector(|| "accounts-list".into())
-            .h(px(
-                ACCOUNT_ROW_HEIGHT * self.accounts.len().min(ACCOUNT_VISIBLE_ROWS) as f32
-            ))
+            .h_full()
             .overflow_hidden()
             .track_scroll(&self.accounts_scroll)
             .on_scroll_wheel(
@@ -4602,6 +4601,8 @@ impl Workspace {
                 .child(
                     div()
                         .relative()
+                        .flex_1()
+                        .min_h_0()
                         .pr(px(crate::scrollbar::GUTTER))
                         .child(list)
                         .child(crate::scrollbar::vertical_with_track(
@@ -7947,10 +7948,10 @@ mod tests {
     }
 
     #[gpui::test]
-    fn accounts_keep_whole_rows_with_mixed_quota_details(cx: &mut gpui::TestAppContext) {
+    fn accounts_fill_tab_with_mixed_quota_details(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
-        for count in [1, 2, 3, 4, 7, 12] {
+        for count in [1, 2, 3, 4, 7, 12, 40] {
             workspace.update(vcx, |w, cx| {
                 w.sidebar_view = SidebarView::Accounts;
                 w.accounts_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
@@ -7988,13 +7989,21 @@ mod tests {
                 });
                 vcx.run_until_parked();
                 let list = vcx.debug_bounds("accounts-list").unwrap();
-                assert_eq!(
-                    list.size.height,
-                    px(ACCOUNT_ROW_HEIGHT * count.min(ACCOUNT_VISIBLE_ROWS) as f32)
-                );
-                let offset =
-                    workspace.read_with(vcx, |w, _| f32::from(w.accounts_scroll.offset().y));
-                assert_eq!(offset % ACCOUNT_ROW_HEIGHT, 0.0);
+                let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+                let section = vcx.debug_bounds("accounts-section").unwrap();
+                assert_eq!(section.size.height, body.size.height);
+                assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
+                assert!(list.bottom() <= body.bottom());
+                assert!(body.bottom() - list.bottom() <= px(4.0));
+                let (offset, max) = workspace.read_with(vcx, |w, _| {
+                    (w.accounts_scroll.offset().y, w.accounts_scroll.max_offset().y)
+                });
+                assert!(offset <= px(0.0) && offset >= -max);
+                if delta == -10000.0 {
+                    assert_eq!(offset, -max);
+                } else if delta == 10000.0 {
+                    assert_eq!(offset, px(0.0));
+                }
                 let mut visible = 0;
                 for index in 0..count {
                     let row = vcx
@@ -8002,14 +8011,15 @@ mod tests {
                         .unwrap();
                     assert_eq!(row.size.height, px(ACCOUNT_ROW_HEIGHT));
                     if row.bottom() > list.top() && row.top() < list.bottom() {
-                        assert!(
-                            row.top() >= list.top() && row.bottom() <= list.bottom(),
-                            "account {index} clipped with {count} accounts"
-                        );
                         visible += 1;
                     }
                 }
-                assert_eq!(visible, count.min(ACCOUNT_VISIBLE_ROWS));
+                let capacity = (f32::from(list.size.height) / ACCOUNT_ROW_HEIGHT).floor() as usize;
+                assert!(visible >= count.min(capacity));
+                if count <= capacity {
+                    assert_eq!(offset, px(0.0));
+                    assert_eq!(visible, count);
+                }
             }
         }
     }
@@ -8024,7 +8034,7 @@ mod tests {
                 panel.provider = Some("provider-9".into());
             });
             workspace.sidebar_view = SidebarView::Accounts;
-            workspace.accounts = (0..12)
+            workspace.accounts = (0..40)
                 .map(|index| accounts::Account {
                     id: format!("provider-{index}"),
                     display_name: format!("Provider {index}"),
@@ -8041,8 +8051,11 @@ mod tests {
         workspace.update(vcx, |_, cx| cx.notify());
         vcx.run_until_parked();
         let list = vcx.debug_bounds("accounts-list").unwrap();
-        assert!(list.size.height <= px(132.0));
-        assert!(vcx.debug_bounds("accounts-section").unwrap().size.height <= px(160.0));
+        assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
+        assert_eq!(
+            vcx.debug_bounds("accounts-section").unwrap().size.height,
+            vcx.debug_bounds("sidebar-tab-body").unwrap().size.height
+        );
         assert!(
             vcx.debug_bounds("account-provider-9").unwrap().top()
                 < vcx.debug_bounds("account-provider-7").unwrap().top()
