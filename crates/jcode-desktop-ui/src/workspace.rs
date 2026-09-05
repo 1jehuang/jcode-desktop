@@ -4403,7 +4403,8 @@ impl Workspace {
             .debug_selector(|| "edge-new-session".into())
             .absolute()
             .right_0()
-            .top_0()
+            // Keep this invisible add-session target below the live tabs.
+            .top(px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET))
             .bottom_0()
             .w(px(32.0))
             .flex()

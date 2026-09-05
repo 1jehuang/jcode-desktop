@@ -54,12 +54,22 @@ def assert_reload_healthy(log):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--binary', type=Path,
+                        help='desktop host executable, including an existing live host for compatibility checks')
     parser.add_argument('--reloads', type=int, default=2)
+    parser.add_argument('--compact-tabs', action='store_true',
+                        help='use 12 real sessions at 800px and click every top tab without scrolling')
+    parser.add_argument('--linked-ui', action='store_true',
+                        help='exercise the linked UI instead of a hot-reload plugin (requires --reloads 0)')
     parser.add_argument('--build-timeout', type=int, default=600,
                         help='seconds allowed for startup/reload builds, including Cargo lock waits')
     args = parser.parse_args()
+    panel_count = 12 if args.compact_tabs else 4
+    screen = '800x700x24' if args.compact_tabs else '1800x1000x24'
     if not 0 <= args.reloads <= 10:
         parser.error('--reloads must be between 0 and 10')
+    if args.linked_ui and args.reloads:
+        parser.error('--linked-ui requires --reloads 0')
     if args.build_timeout <= 0:
         parser.error('--build-timeout must be positive')
     repo = Path(__file__).resolve().parents[1]
@@ -145,6 +155,16 @@ def main():
         time.sleep(.25)
 
     def check(label, row, position, sessions=None):
+        def ready():
+            state = navigation_state(state_path)
+            if state is None:
+                return False
+            try:
+                assert_state(state, row, position, sessions)
+                return True
+            except AssertionError:
+                return False
+        wait_until(ready, label, timeout=5)
         state = navigation_state(state_path)
         assert state is not None, 'Missing structured navigation state'
         assert_state(state, row, position, sessions)
@@ -159,7 +179,7 @@ def main():
         wait_until(lambda: socket_ready(env['JCODE_SOCKET']), 'daemon')
         launch('bridge', [jcode, '--no-update', '--no-selfdev', 'api-bridge'])
         wait_until(lambda: socket_ready(env['JCODE_API_SOCKET']), 'API bridge')
-        launch('xvfb', ['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '1800x1000x24', '-nolisten', 'tcp'], pass_fds=(write_fd,))
+        launch('xvfb', ['Xvfb', '-displayfd', str(write_fd), '-screen', '0', screen, '-nolisten', 'tcp'], pass_fds=(write_fd,))
         os.close(write_fd)
         write_fd = None
         assert select.select([read_fd], [], [], 15)[0], 'Xvfb startup timeout'
@@ -169,18 +189,19 @@ def main():
         wm = root / 'openbox.xml'
         wm.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>')
         launch('wm', ['openbox', '--sm-disable', '--config-file', str(wm)])
-        launch('app', [str(repo / 'target/debug/jcode-desktop'), '--hot-reload'])
+        launch('app', [str(args.binary.absolute() if args.binary else repo / 'target/debug/jcode-desktop')]
+               + (['--no-hot-reload'] if args.linked_ui else ['--hot-reload']))
         wait_until(lambda: (s := navigation_state(state_path)) is not None and len(s['rows'][0]['panels']) == 1,
                    'first real session (including startup build)', args.build_timeout)
         time.sleep(1)
         key('super+1')
-        for count in range(2, 5):
+        for count in range(2, panel_count + 1):
             key('super+n')
             wait_until(lambda: (s := navigation_state(state_path)) is not None and len(s['rows'][0]['panels']) == count, f'{count} sessions')
             key('super+1')
-        initial = check('created', 0, 3)
+        initial = check('created', 0, panel_count - 1)
         sessions = [p['session'] for p in initial['rows'][0]['panels']]
-        assert len(set(sessions)) == 4 and all(s.startswith('session_') for s in sessions)
+        assert len(set(sessions)) == panel_count and all(s.startswith('session_') for s in sessions)
 
         for generation in range(args.reloads + 1):
             if generation:
@@ -192,13 +213,15 @@ def main():
             # Every position, both edges and reversals. One chord means one hop.
             key('super+u')
             check(f'g{generation}-first', 0, 0, sessions)
-            for chord, positions in [('super+l', [1, 2, 3, 3]), ('super+h', [2, 1, 0, 0]),
-                                     ('ctrl+Tab', [1, 2, 3]), ('ctrl+shift+Tab', [2, 1, 0])]:
+            for chord, positions in [('super+l', [*range(1, panel_count), panel_count - 1]),
+                                     ('super+h', [*range(panel_count - 2, -1, -1), 0]),
+                                     ('ctrl+Tab', range(1, panel_count)),
+                                     ('ctrl+shift+Tab', range(panel_count - 2, -1, -1))]:
                 for position in positions:
                     key(chord)
                     check(f'g{generation}-{chord}-{position}', 0, position, sessions)
             key('super+p')
-            check(f'g{generation}-last', 0, 3, sessions)
+            check(f'g{generation}-last', 0, panel_count - 1, sessions)
             key('super+Tab')
             check(f'g{generation}-previous', 0, 0, sessions)
             key('super+j')
@@ -207,8 +230,32 @@ def main():
             check(f'g{generation}-empty-right', 1, None, [])
             key('super+k')
             check(f'g{generation}-return', 0, 0, sessions)
+            if args.compact_tabs:
+                geometry = subprocess.check_output(
+                    ['xdotool', 'getactivewindow', 'getwindowgeometry', '--shell'],
+                    env=env, text=True, timeout=10)
+                (root / f'geometry-g{generation}.txt').write_text(geometry)
+                subprocess.run(['import', '-window', 'root',
+                                str(root / f'compact-tabs-before-g{generation}.png')],
+                               env=env, check=True, timeout=15)
+                # Public native hit-testing, not fixture data or injected app
+                # actions. Twelve targets share the 512px row between the
+                # sidebar/gutter and right margin. No wheel events are sent.
+                for position in [*range(panel_count), 0]:
+                    x = round(276 + (position + .5) * 512 / panel_count)
+                    subprocess.run(['xdotool', 'mousemove', str(x), '40'],
+                                   env=env, check=True, timeout=10)
+                    time.sleep(.1)
+                    subprocess.run(['xdotool', 'click', '1'],
+                                   env=env, check=True, timeout=10)
+                    time.sleep(.25)
+                    check(f'g{generation}-tab-click-{position}', 0, position, sessions)
+                subprocess.run(['import', '-window', 'root',
+                                str(root / f'compact-tabs-g{generation}.png')],
+                               env=env, check=True, timeout=15)
         subprocess.run(['import', '-window', 'root', str(root / 'navigation.png')], env=env, check=True, timeout=15)
-        print(f'PASS: four real sessions, {args.reloads} hot reloads, native keys and consistent map/focus state. {root}', flush=True)
+        print(f'PASS: {panel_count} real sessions, {args.reloads} hot reloads, native keys'
+              f'{" and all compact tab clicks" if args.compact_tabs else ""}, consistent map/focus state. {root}', flush=True)
     finally:
         os.close(read_fd)
         if write_fd is not None:

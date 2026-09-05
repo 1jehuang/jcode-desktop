@@ -186,3 +186,56 @@ Verification:
   `hot reload is disabled; launch with --hot-reload`. Its active sessions were
   preserved rather than force-restarting the process. Applying this build to that
   window remains blocked until a safe restart.
+
+### Real-session acceptance follow-up
+
+The fixture and geometry checks were followed by the actual desktop, SDK, API
+bridge, and daemon on a private Xvfb display, with no screenshot-fixture mode and
+no inference requests:
+
+```sh
+cargo build -p jcode-desktop -p jcode-desktop-ui
+python3 scripts/accept-navigation.py target/compact-real-fixed --compact-tabs --reloads 1
+```
+
+Observed result: **PASS**, with 12 distinct daemon-created sessions at 800×700,
+131 state checkpoints, and 26 native top-tab clicks. Every tab was selected once
+plus a return to the first tab, both before and after a native Ctrl+R rebuild and
+activation of generation 2. Every click preserved all 12 sessions in order and
+left keyboard focus in the selected composer. No horizontal tab scrolling was
+used. The final real-session screenshot `compact-tabs-g1.png` was inspected.
+The available tab row is 512px wide, where the old 100px minimum could not fit
+12 tabs. All 12 now remain visible and individually clickable.
+
+This stronger check found two issues that geometry-only tests missed:
+
+1. The invisible right-edge add-session button overlapped the last tab. Clicking
+   that tab also created an unwanted thirteenth real session. Its hit area now
+   starts below the tab strip. The regression test checks both non-overlapping
+   bounds and that clicking the last tab does not invoke the spawn path.
+2. A plugin built separately from the host did not receive native mouse events,
+   while the linked UI did. GPUI mouse listeners downcast shared Rust event types.
+   Rebuilding host and plugin together preserves host dependency-feature
+   unification and resolves this cross-library dispatch failure. The acceptance
+   run now demonstrates working native tab clicks across actual plugin reloads.
+
+The five focused tab tests, the edge add-session regression, and six Python
+navigation-check tests all pass. The previously reported full-suite failures are
+not represented as resolved by these targeted checks. All temporary mouse-event
+tracing used during diagnosis was removed.
+
+The exact feature difference was subsequently isolated: the host enables
+`libc/extra_traits` through its PTY dependencies, while a standalone UI build did
+not. The UI now explicitly enables that feature too, retaining compatibility with
+already-running hosts whose reload command builds only the UI package.
+
+Compatibility was verified by running the **exact live host executable** via
+`--binary /proc/4149623/exe` on the private display. That second real-session run
+(`target/compact-live-host-compat`) also passed all 131 checkpoints and 26 tab
+clicks across a native Ctrl+R reload. The final feature configuration again passed
+all five tab tests and six Python navigation-check tests.
+
+**Live activation blocker resolved:** the desktop was subsequently relaunched
+with hot reload enabled. After compatibility verification, its queued
+Ctrl+R-equivalent rebuild successfully activated UI generation 2 in live PID
+55458. This supersedes the earlier note that the change was built but not live.

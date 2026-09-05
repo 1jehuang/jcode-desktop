@@ -183,6 +183,9 @@ impl Workspace {
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
+                                // Native default focus must not restore the old
+                                // composer after we explicitly select this tab.
+                                window.prevent_default();
                                 this.set_active(index, cx);
                                 this.overview = false;
                                 this.overview_progress.set(0.0, Instant::now());
@@ -296,9 +299,15 @@ mod tests {
                 previous_right = tab.right();
             }
             let last = vcx.debug_bounds("live-session-tab-11").unwrap();
+            let edge = vcx.debug_bounds("edge-new-session").unwrap();
+            assert!(edge.top() >= last.bottom());
             vcx.simulate_click(last.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(workspace.read_with(vcx, |w, _| w.active), 11);
+            workspace.update_in(vcx, |workspace, window, cx| {
+                assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], 11);
+                assert_eq!(workspace.test_coach().trace("new_panel").slow_paths, 0);
+            });
         }
     }
 

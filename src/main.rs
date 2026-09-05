@@ -42,7 +42,10 @@ fn rebuild_ui() -> anyhow::Result<()> {
         .as_millis()
         .to_string();
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    command.args(["build", "-p", "jcode-desktop-ui"]);
+    // Unify dependency features with the host build. Building only the plugin
+    // can give shared GPUI event types different Rust TypeIds, so native mouse
+    // events silently fail their downcast across the plugin boundary.
+    command.args(["build", "-p", "jcode-desktop", "-p", "jcode-desktop-ui"]);
     // GPUI crosses the plugin ABI as concrete Rust types. A release host must
     // therefore load a release plugin, since debug-only fields and assertions
     // can change their in-memory layout and behavior. Loading a debug cdylib
