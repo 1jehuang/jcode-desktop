@@ -3400,7 +3400,12 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_sidebar(&self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_sidebar(
+        &self,
+        fullscreen: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let active_id = self
             .slots
             .get(self.active)
@@ -3542,6 +3547,8 @@ impl Workspace {
             {
                 title.clone_from(open_title);
             }
+            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+            let title_size = sidebar_title_font_size(&title, window);
             let directory = sidebar_session_directory(&session);
             let meta = sidebar_session_meta(&session);
             let details = match (directory, meta) {
@@ -3600,17 +3607,30 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(div().text_size(px(12.0)).child(icon))
+                            .h(px(18.0))
+                            .child(
+                                div()
+                                    .w(px(16.0))
+                                    .flex_none()
+                                    .text_size(px(12.0))
+                                    .child(icon),
+                            )
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
+                                    .max_h(px(18.0))
                                     .overflow_hidden()
-                                    .text_size(px(12.0))
+                                    .text_size(px(title_size))
+                                    .line_height(relative(1.5))
+                                    .line_clamp(2)
+                                    .text_ellipsis()
                                     .child(title),
                             )
                             .child(
                                 div()
                                     .flex_none()
+                                    .w(px(12.0))
                                     .text_size(px(10.0))
                                     .text_color(status_color)
                                     .child(status_icon),
@@ -3620,7 +3640,7 @@ impl Workspace {
                         row.child(
                             div()
                                 .pl(px(20.0))
-                                .overflow_hidden()
+                                .truncate()
                                 .text_size(px(9.0))
                                 .text_color(Theme::global().TEXT_DIM)
                                 .child(details),
@@ -5859,7 +5879,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
             .when(self.show_sidebar, |root| {
-                root.child(self.render_sidebar(fullscreen, cx))
+                root.child(self.render_sidebar(fullscreen, window, cx))
             })
             .child(
                 div()
@@ -6078,6 +6098,27 @@ fn ranked_folder_matches_for_sessions(
             (path, reason)
         })
         .collect()
+}
+
+fn sidebar_title_font_size(title: &str, window: &Window) -> f32 {
+    // Sidebar border, row margins/padding/borders, gaps, and fixed icon widths.
+    let available_width = SIDEBAR_WIDTH - 1.0 - 16.0 - 18.0 - 8.0 - 16.0 - 12.0;
+    let run = gpui::TextRun {
+        len: title.len(),
+        font: gpui::font(Theme::global().FONT_UI),
+        color: Theme::global().TEXT.into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(title.to_owned().into(), px(12.0), &[run], None);
+    if line.width > px(available_width) {
+        6.0
+    } else {
+        12.0
+    }
 }
 
 fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, String) {
@@ -7132,6 +7173,40 @@ mod tests {
             "an on-disk session must paint through the real sidebar renderer"
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[gpui::test]
+    fn sidebar_title_lengths_keep_equal_row_heights(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+        });
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            assert_eq!(sidebar_title_font_size("Short", window), 12.0);
+            assert_eq!(
+                sidebar_title_font_size(&"Long title ".repeat(40), window),
+                6.0
+            );
+            Workspace::for_test(learning::Coach::new(), cx)
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![
+                        session_info("session_fox_short", Some("Short")),
+                        session_info("session_owl_long", Some(&"Long title ".repeat(40))),
+                        session_info("session_cat_multiline", Some("Title\nwith\nseveral\nlines")),
+                    ],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let short = vcx.debug_bounds("sidebar-session-0").unwrap();
+        for selector in ["sidebar-session-1", "sidebar-session-2"] {
+            let bounds = vcx.debug_bounds(selector).unwrap();
+            assert_eq!(short.size.height, bounds.size.height);
+        }
     }
 
     #[gpui::test]
