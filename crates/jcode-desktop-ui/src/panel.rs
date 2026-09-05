@@ -188,6 +188,8 @@ pub struct Panel {
     history_loaded: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
+    /// Reasoning rows the user expanded, keyed by transcript index.
+    expanded_reasoning: HashSet<usize>,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
@@ -526,6 +528,7 @@ impl Panel {
             bridge,
             history_loaded: false,
             expanded_tools: HashSet::new(),
+            expanded_reasoning: HashSet::new(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
@@ -2473,6 +2476,20 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         if !self.streaming_reasoning.trim().is_empty() {
+            let target_index = self
+                .items
+                .last()
+                .filter(|item| matches!(item, Item::Reasoning(_)))
+                .map(|_| self.items.len() - 1)
+                .unwrap_or(self.items.len());
+            // Live reasoning is shown in full as it arrives. Keep that disclosure
+            // state when the sentinel row becomes a settled transcript item so
+            // the card does not suddenly collapse at the end of the turn.
+            let was_expanded = self.expanded_reasoning.remove(&(usize::MAX - 1))
+                || self.streaming_reasoning.chars().count() > 200;
+            if was_expanded {
+                self.expanded_reasoning.insert(target_index);
+            }
             append_reasoning(
                 &mut self.items,
                 std::mem::take(&mut self.streaming_reasoning),
@@ -2572,9 +2589,10 @@ impl Panel {
                             rows.push(TranscriptRenderRow {
                                 index,
                                 source: TranscriptRowSource::Settled(index),
-                                role: None,
-                                show_label: false,
+                                role: Some("reasoning"),
+                                show_label: previous_role != Some("reasoning"),
                             });
+                            previous_role = Some("reasoning");
                             continue;
                         };
                         previous.source =
@@ -2591,9 +2609,10 @@ impl Panel {
                         rows.push(TranscriptRenderRow {
                             index,
                             source: TranscriptRowSource::Settled(index),
-                            role: None,
-                            show_label: false,
+                            role: Some("reasoning"),
+                            show_label: previous_role != Some("reasoning"),
                         });
+                        previous_role = Some("reasoning");
                         continue;
                     }
                 };
@@ -2741,23 +2760,84 @@ impl Panel {
                     )
                 })
                 .into_any_element(),
-            // Thinking is secondary transcript text, not a separate card. Keep
-            // the same presentation while streaming, settled, and restored.
-            // Never truncate it: there is deliberately no disclosure control.
-            Item::Reasoning(text) => div()
-                .debug_selector(|| "reasoning-inline".into())
-                .flex_none()
-                .px_1()
-                .text_size(px(12.0))
-                .text_color(Theme::global().REASONING)
-                .child(markdown::render_reasoning(
-                    text,
-                    index,
-                    &self.transcript_selection,
-                    window,
-                    cx,
-                ))
-                .into_any_element(),
+            Item::Reasoning(text) => {
+                let expanded = self.expanded_reasoning.contains(&index);
+                // Let the live card grow with the complete thought. Once settled,
+                // older compact cards can still be expanded on demand.
+                let live = index == usize::MAX - 1;
+                let body: String = if expanded || live {
+                    text.clone()
+                } else {
+                    condense(text, 200)
+                };
+                let long = text.chars().count() > 200;
+                div()
+                    .id(("reasoning", index))
+                    .flex()
+                    // Reasoning belongs to the scrolling transcript. It should
+                    // retain its content height rather than being flex-squashed
+                    // into a fixed-looking card when the transcript overflows.
+                    .flex_none()
+                    .flex_col()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .bg(if live {
+                        Theme::global().ACCENT_DIM
+                    } else {
+                        Theme::global().REASONING_BG
+                    })
+                    .when(long && !live, |el| {
+                        el.cursor_pointer().on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _event, _window, cx| {
+                                if !this.expanded_reasoning.remove(&index) {
+                                    this.expanded_reasoning.insert(index);
+                                }
+                                cx.notify();
+                            }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_1p5()
+                            .items_center()
+                            .text_size(px(10.0))
+                            .text_color(if live {
+                                Theme::global().TEXT_DIM
+                            } else {
+                                Theme::global().TEXT_FAINT
+                            })
+                            .child(if live {
+                                // Incoming reasoning events provide the repaint clock;
+                                // avoid a second, unbounded full-panel animation.
+                                div().child("● thinking…").into_any_element()
+                            } else {
+                                div().child("thinking").into_any_element()
+                            })
+                            .when(long && !live, |el| {
+                                el.child(if expanded { "show less" } else { "show all" })
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(Theme::global().REASONING)
+                            .italic()
+                            .line_height(relative(1.45))
+                            .child(text_selection::plain(
+                                self.transcript_selection.clone(),
+                                format!("{index}-reasoning"),
+                                body,
+                                window,
+                                cx,
+                            )),
+                    )
+                    .into_any_element()
+            }
             Item::Todos(payload) => render_todo_card(payload).into_any_element(),
             Item::BackgroundTask {
                 task_id: _,
@@ -3096,7 +3176,7 @@ impl Panel {
     }
 }
 
-/// Keep provider-level reasoning segments in one visual block. Some providers
+/// Keep provider-level reasoning segments in one visual card. Some providers
 /// emit `ReasoningDone` between segments even though they belong to the same
 /// uninterrupted thinking phase.
 fn append_reasoning(items: &mut Vec<Item>, text: String) {
@@ -3355,7 +3435,7 @@ impl Render for Panel {
             self.transcript_row_count = row_count;
         } else if row_count > 0 {
             // Panel notifications can change a row's height without changing
-            // its count (tool expansion or streaming text).
+            // its count (tool expansion, streaming text, reasoning disclosure).
             // Invalidate measurements while retaining virtualized painting.
             self.transcript_list.remeasure_items(0..row_count);
         }
@@ -5143,7 +5223,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn full_live_reasoning_is_preserved_after_it_settles(cx: &mut gpui::TestAppContext) {
+    fn full_live_reasoning_stays_expanded_after_it_settles(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -5160,7 +5240,8 @@ mod tests {
             panel.streaming_reasoning = complete_thought.clone();
             panel.flush_reasoning();
 
-            assert!(panel.streaming_reasoning.is_empty());
+            assert!(panel.expanded_reasoning.contains(&0));
+            assert!(!panel.expanded_reasoning.contains(&(usize::MAX - 1)));
             assert!(matches!(panel.items.as_slice(), [Item::Reasoning(text)] if text == &complete_thought));
         });
     }
@@ -5175,124 +5256,6 @@ mod tests {
             &items[0],
             Item::Reasoning(text) if text == "first thought\n\nsecond thought"
         ));
-    }
-
-    #[gpui::test]
-    fn reasoning_rows_never_get_role_captions(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace =
-                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-            workspace.push_test_panel("session-a", cx);
-            workspace
-        });
-        let panel = workspace
-            .read_with(vcx, |workspace, _| workspace.test_panel(0))
-            .unwrap();
-        panel.update(vcx, |panel, _| {
-            panel.items = vec![
-                Item::Reasoning("First row".into()),
-                Item::User("Question".into()),
-                Item::Reasoning("After a user".into()),
-                Item::Reasoning("Another restored segment".into()),
-                Item::Assistant("Answer".into()),
-                Item::Reasoning("After an answer".into()),
-            ];
-            panel.streaming_reasoning = "Live segment".into();
-            let rows = panel.transcript_render_rows();
-            let mut thoughts = 0;
-            for row in rows {
-                let item = match &row.source {
-                    TranscriptRowSource::Settled(index) => &panel.items[*index],
-                    TranscriptRowSource::Owned(item) => item,
-                };
-                if matches!(item, Item::Reasoning(_)) {
-                    thoughts += 1;
-                    assert_eq!(row.role, None);
-                    assert!(!row.show_label, "thinking must never gain a role caption");
-                } else {
-                    assert!(row.show_label, "normal speaker labels are preserved");
-                }
-            }
-            assert_eq!(thoughts, 4);
-        });
-    }
-
-    #[gpui::test]
-    fn inline_reasoning_paints_full_markdown_live_and_settled(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| crate::bind_workspace_keys(cx));
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace =
-                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-            workspace.push_test_panel("session-a", cx);
-            workspace
-        });
-        let panel = workspace
-            .read_with(vcx, |workspace, _| workspace.test_panel(0))
-            .unwrap();
-        let thought = format!(
-            "## A quiet heading\n\n{}\n\nThe **final sentence** is still here.",
-            "A complete thought, not a truncated preview. ".repeat(8)
-        );
-        panel.update(vcx, |panel, cx| {
-            panel.items.clear();
-            panel.apply(
-                &ApiEvent::ReasoningDelta {
-                    session_id: "session-a".into(),
-                    text: thought.clone(),
-                },
-                cx,
-            );
-        });
-        vcx.run_until_parked();
-        let live_bounds = vcx.debug_bounds("reasoning-inline").unwrap();
-        assert!(live_bounds.size.height > px(0.0));
-        assert!(
-            vcx.debug_bounds(&format!("selectable-text-{}-2", usize::MAX - 1))
-                .is_some()
-        );
-
-        panel.update(vcx, |panel, cx| {
-            panel.apply(
-                &ApiEvent::ReasoningDone {
-                    session_id: "session-a".into(),
-                },
-                cx,
-            );
-        });
-        vcx.run_until_parked();
-        let settled_bounds = vcx.debug_bounds("reasoning-inline").unwrap();
-        assert_eq!(
-            live_bounds.size, settled_bounds.size,
-            "settling must not collapse thinking"
-        );
-        let heading = vcx.debug_bounds("selectable-text-0-0").unwrap();
-        let last_line = vcx.debug_bounds("selectable-text-0-2").unwrap();
-        assert!(
-            heading.size.height <= last_line.size.height,
-            "thinking headings stay compact"
-        );
-
-        // A quadruple click selects the entire Markdown leaf, not card chrome.
-        vcx.simulate_event(gpui::MouseDownEvent {
-            button: gpui::MouseButton::Left,
-            position: last_line.center(),
-            modifiers: gpui::Modifiers::default(),
-            click_count: 4,
-            first_mouse: false,
-        });
-        panel.update(vcx, |panel, cx| {
-            panel
-                .transcript_selection
-                .update(cx, |selection, cx| selection.copy(cx));
-        });
-        let copied = vcx
-            .update(|_, cx| cx.read_from_clipboard())
-            .and_then(|item| item.text());
-        assert_eq!(copied.as_deref(), Some("The final sentence is still here."));
-        assert_eq!(
-            vcx.debug_bounds("reasoning-inline").unwrap().size,
-            settled_bounds.size
-        );
     }
 
     #[test]
@@ -6649,16 +6612,6 @@ fn demo_items() -> Vec<Item> {
         && std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1")
     {
         return Vec::new();
-    }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("reasoning")
-    {
-        return vec![
-            Item::User("Can you make the thinking display feel quieter?".into()),
-            Item::Reasoning("The content should read like part of the conversation, not another interface to manage. I'll keep it in a **dimmed font**, aligned with the answer, and remove the surrounding labels and controls.".into()),
-            Item::Reasoning("## Keep the presentation simple\n\n- No card background or border\n- No thinking label or expand button\n- Preserve the full text and Markdown formatting".into()),
-            Item::Assistant("Thinking now appears as subtle inline text. The answer keeps its normal contrast, so it's easy to tell the two apart.".into()),
-        ];
     }
     demo_item_fixtures()
 }
