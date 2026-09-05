@@ -57,3 +57,46 @@ The requested Theme/Settings interactions were independently verified above.
 No live Wayland performance improvement or cross-platform visual equivalence is
 claimed. Settings controls are explicitly scoped to the current window. Only
 palette selection is claimed to persist across a full application restart.
+
+## Whole-result rerun, 03:02 -0700
+
+The full feedback loop was rerun after rebuilding the complete desktop result,
+not merely against an earlier subset of edits. All native assertions passed in
+one isolated application lifecycle, followed by a fresh-process restart:
+
+1. Clicking the former theme-button location left its corner pixels unchanged
+   and did not write configuration.
+2. Settings minimap Off → On → Off changed **32,133 RGB channels**, then restored
+   the initial output exactly. Shortcut-display On → Off → On also changed and
+   exactly restored its label pixels.
+3. Clicking Theme and Neutral light changed the canvas from **(37, 34, 31)** to
+   **(248, 247, 244)** and wrote `neutral-light` to the isolated real config.
+4. After a native click focused the composer, four native **Super+Shift+T**
+   keystrokes produced the following saved themes and visible canvas colors:
+
+   | Step | Saved preset | Measured RGB |
+   | --- | --- | --- |
+   | 1 | `warm-neutral` | (37, 34, 31) |
+   | 2 | `warm-studio` | (45, 35, 29) |
+   | 3 | `neutral-dark` | (29, 32, 35) |
+   | 4 | `neutral-light` | (248, 247, 244) |
+
+   The composer's text region returned byte-for-byte to its original light-theme
+   pixels, checking that shortcuts did not type into the focused composer.
+5. A fresh fixture process loaded the persisted `neutral-light` theme and again
+   rendered **(248, 247, 244)** without any theme-selection input after restart.
+
+This final run returned **exit 0**. Its machine-readable results and screenshots
+are in `target/theme-settings-final-acceptance/`; its driver is
+`target/verify-theme-settings-final.py`.
+
+The full UI test suite was also rerun over the final source. It completed with
+**300 passed, 3 failed, 6 ignored** (test command exit **101**), not a clean suite.
+Both requested tab interaction tests and theme persistence passed within that
+run. The three failures were `email_inbox_moves_when_the_user_scrolls`,
+`restored_scroll_is_not_replaced_when_history_reattaches`, and
+`a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`. The earlier tutorial
+compile blocker was no longer present. The production build then succeeded.
+
+After this complete-loop rerun, the live Ctrl+R-equivalent rebuild/reload also
+succeeded and explicitly activated **UI generation 6**.
