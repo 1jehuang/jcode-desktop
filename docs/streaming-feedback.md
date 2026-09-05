@@ -75,3 +75,30 @@ The running user's host rejected the rebuild-and-reload request with
 restarting could discard drafts or workspace state. Applying the update to that
 specific running instance remains deferred pending restart approval, not
 reported as successful live delivery.
+
+## Fresh whole-result rerun
+
+At 22:30 UTC, after the implementation and measurement loop were complete, the
+entire loop was run again over the current source tree rather than relying on
+the earlier incremental checks:
+
+- `cargo build -j 1 -p jcode-desktop` succeeded.
+- `cargo test -j 1 -p jcode-desktop-ui --lib -- --test-threads=1` returned
+  **328 passed, 3 failed, 6 ignored**. The three failures were exactly the
+  pre-change failures listed above. All three activity tests passed in this run.
+- The freshly built executable passed real framebuffer acceptance in both
+  palettes. Each produced seven distinct spinner frames out of eight, 32 changed
+  spinner pixels in all seven consecutive comparisons, zero changed pixels in
+  both title crops, and the same active/idle color pairs listed above.
+- `python3 scripts/test_screenshot.py` passed all seven tests.
+- The final screenshots were read for visual review. Artifacts are
+  `target/streaming-final-dark.png`, `target/streaming-final-light.png`, their
+  corresponding JSON reports, and `target/streaming-final-full-tests.log`.
+- The original live host was still running with the same PID, and its last
+  reload result still said hot reload was disabled. No restart was attempted.
+
+Result: the requested spinner and color treatment satisfy their actual rendered
+acceptance checks across the whole implemented result. The repository-wide suite
+is **not** fully green, and the user's existing process has **not** adopted the
+update. Concurrent unrelated work remains in the working tree and was not
+included in the streaming feature commits.
