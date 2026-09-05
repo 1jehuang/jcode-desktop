@@ -121,6 +121,7 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
+const FOLDER_TAB_RADIUS: f32 = 12.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
 const ACCOUNT_VISIBLE_ROWS: usize = 3;
 /// Height of the macOS titlebar the window draws through. The window uses a
@@ -159,6 +160,40 @@ enum SidebarView {
     Sessions,
     Files,
     Accounts,
+}
+
+/// Inverse corners let the page edge turn smoothly into the selected tab.
+/// A page-colored square masks the old straight edge, while the rounded
+/// sidebar-colored cutout draws the concave border on top of it.
+fn folder_tab_corner(top: bool) -> gpui::AnyElement {
+    let radius = px(FOLDER_TAB_RADIUS);
+    div()
+        .debug_selector(move || {
+            if top {
+                "folder-tab-top-join"
+            } else {
+                "folder-tab-bottom-join"
+            }
+            .into()
+        })
+        .absolute()
+        .right_0()
+        .w(radius)
+        .h(px(FOLDER_TAB_RADIUS + 1.0))
+        .when(top, |el| el.top(px(-FOLDER_TAB_RADIUS)))
+        .when(!top, |el| el.bottom(px(-FOLDER_TAB_RADIUS)))
+        .bg(Theme::global().PANEL_BG)
+        .child(
+            div()
+                .size(radius)
+                .when(!top, |el| el.mt(px(1.0)))
+                .bg(Theme::global().HEADER_BG)
+                .border_color(Theme::global().PANEL_BORDER)
+                .border_r_1()
+                .when(top, |el| el.rounded_br(radius).border_b_1())
+                .when(!top, |el| el.rounded_tr(radius).border_t_1()),
+        )
+        .into_any_element()
 }
 
 // Minimap: a compact card in the top right that maps every strip to
@@ -3610,6 +3645,8 @@ impl Workspace {
                     .ml_2()
                     .when(!selected, |el| el.mr(px(1.0)))
                     .mb_1()
+                    .relative()
+                    .when(selected, |el| el.mb(px(FOLDER_TAB_RADIUS + 4.0)))
                     .px_2()
                     .py_1()
                     .flex()
@@ -3617,6 +3654,23 @@ impl Workspace {
                     .gap(px(1.0))
                     .rounded_l_lg()
                     .cursor_pointer()
+                    .when(selected, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .left(px(-1.0))
+                                .top(px(-1.0))
+                                .bottom(px(-1.0))
+                                .right(px(FOLDER_TAB_RADIUS))
+                                .rounded_l_lg()
+                                .border_l_1()
+                                .border_t_1()
+                                .border_b_1()
+                                .border_color(Theme::global().PANEL_BORDER),
+                        )
+                        .child(folder_tab_corner(true))
+                        .child(folder_tab_corner(false))
+                    })
                     // The selected folder tab opens directly onto the canvas.
                     .bg(if selected {
                         Theme::global().PANEL_BG
@@ -3626,11 +3680,7 @@ impl Workspace {
                     .border_l_1()
                     .border_t_1()
                     .border_b_1()
-                    .border_color(if selected {
-                        Theme::global().PANEL_BORDER
-                    } else {
-                        gpui::rgba(0x00000000)
-                    })
+                    .border_color(gpui::rgba(0x00000000))
                     .pr(px(crate::scrollbar::GUTTER + 8.0))
                     .hover(move |el| {
                         el.bg(if selected {
@@ -3734,25 +3784,40 @@ impl Workspace {
                     .pl(px(sidebar_header_left_padding(fullscreen)))
                     .pr_3()
                     .flex()
-                    .items_center()
+                    .items_end()
                     .justify_start()
-                    .border_b_1()
-                    .border_color(Theme::global().PANEL_BORDER)
+                    .relative()
+                    .bg(Theme::global().BG)
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(1.0))
+                            .bg(Theme::global().PANEL_BORDER),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
+                            .h_full()
                             .flex()
                             .flex_col()
-                            .gap(px(2.0))
+                            .justify_end()
+                            .gap(px(6.0))
+                            // The scrollbar belongs above the tabs, never between
+                            // the selected folder tab and its sidebar page.
+                            .child(self.render_sidebar_navigation_scrollbar(cx))
                             .child(
                                 div()
                                     .id("sidebar-navigation-tabs")
                                     .debug_selector(|| "sidebar-navigation-tabs".into())
-                                    .flex_1()
+                                    .flex_none()
+                                    .h(px(34.0))
                                     .min_w_0()
                                     .flex()
-                                    .items_center()
+                                    .items_end()
                                     .gap_1()
                                     .overflow_x_scroll()
                                     .track_scroll(&self.sidebar_navigation_scroll)
@@ -3779,7 +3844,18 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .when(
+                                                self.sidebar_view == SidebarView::Sessions,
+                                                |el| {
+                                                    el.h(px(34.0))
+                                                        .border_b_0()
+                                                        .bg(Theme::global().HEADER_BG)
+                                                },
+                                            )
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(
@@ -3808,7 +3884,15 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .when(self.sidebar_view == SidebarView::Files, |el| {
+                                                el.h(px(34.0))
+                                                    .border_b_0()
+                                                    .bg(Theme::global().HEADER_BG)
+                                            })
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(
@@ -3837,7 +3921,18 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .when(
+                                                self.sidebar_view == SidebarView::Accounts,
+                                                |el| {
+                                                    el.h(px(34.0))
+                                                        .border_b_0()
+                                                        .bg(Theme::global().HEADER_BG)
+                                                },
+                                            )
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(
@@ -3866,7 +3961,10 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(Theme::global().TEXT_DIM)
@@ -3895,7 +3993,10 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(Theme::global().TEXT_DIM)
@@ -3920,7 +4021,10 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(Theme::global().TEXT_DIM)
@@ -3945,7 +4049,10 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
                                             .cursor_pointer()
                                             .text_size(px(11.0))
                                             .text_color(Theme::global().TEXT_DIM)
@@ -3973,7 +4080,10 @@ impl Workspace {
                                             .border_color(Theme::global().PANEL_BORDER)
                                             .px_2()
                                             .py_1()
-                                            .rounded_md()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
                                             .cursor_pointer()
                                             .text_size(px(16.0))
                                             .text_color(Theme::global().TEXT_DIM)
@@ -3990,8 +4100,7 @@ impl Workspace {
                                             )
                                             .child("+"),
                                     ),
-                            )
-                            .child(self.render_sidebar_navigation_scrollbar(cx)),
+                            ),
                     ),
             )
             .child(
@@ -4001,6 +4110,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .relative()
+                    .debug_selector(|| "sidebar-tab-body".into())
                     .when(self.sidebar_view == SidebarView::Files, |el| {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
@@ -4017,11 +4127,26 @@ impl Workspace {
                                 .into_any_element()
                         }),
                     })
-                    .when(self.sidebar_view != SidebarView::Accounts, |el| {
+                    .when(self.sidebar_view == SidebarView::Files, |el| {
                         el.child(crate::scrollbar::vertical_with_track(
                             &self.sidebar_scroll,
                             "sidebar-scrollbar",
                         ))
+                    })
+                    .when(self.sidebar_view == SidebarView::Sessions, |el| {
+                        // Keep the scroll thumb off the page/tab junction.
+                        el.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(crate::scrollbar::GUTTER))
+                                .child(crate::scrollbar::vertical(
+                                    &self.sidebar_scroll,
+                                    "sidebar-scrollbar",
+                                )),
+                        )
                     }),
             )
             .into_any_element()
@@ -7526,8 +7651,8 @@ mod tests {
             .debug_bounds("sidebar-scrollbar")
             .expect("overflowing session history should paint a scrollbar");
         assert!(
-            scrollbar.right() <= list.right(),
-            "scrollbar overlays the reserved right padding of folder tabs"
+            scrollbar.right() <= list.left() + px(8.0),
+            "scrollbar stays in the outer gutter, away from the folder-tab join"
         );
     }
 
@@ -7827,6 +7952,36 @@ mod tests {
     }
 
     #[gpui::test]
+    fn sidebar_top_folder_tabs_join_their_content_when_clicked(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        for (selector, view) in [
+            ("sidebar-files-tab", SidebarView::Files),
+            ("sidebar-accounts-tab", SidebarView::Accounts),
+            ("sidebar-sessions-tab", SidebarView::Sessions),
+        ] {
+            let tab = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(tab.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(workspace.read_with(vcx, |w, _| w.sidebar_view), view);
+            let selected = vcx.debug_bounds(selector).unwrap();
+            let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+            assert_eq!(
+                selected.bottom(),
+                body.top(),
+                "active tab must touch its sidebar page"
+            );
+            assert_eq!(selected.size.height, px(34.0));
+            let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
+            assert!(
+                track.bottom() <= selected.top(),
+                "no scrollbar through the tab/page join"
+            );
+        }
+    }
+
+    #[gpui::test]
     fn sidebar_accounts_tab_replaces_sessions_and_has_an_empty_state(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -7883,6 +8038,12 @@ mod tests {
         vcx.run_until_parked();
         let sidebar = vcx.debug_bounds("sidebar").unwrap();
         let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
+        let top_join = vcx.debug_bounds("folder-tab-top-join").unwrap();
+        let bottom_join = vcx.debug_bounds("folder-tab-bottom-join").unwrap();
+        assert_eq!(top_join.right(), sidebar.right());
+        assert_eq!(bottom_join.right(), sidebar.right());
+        assert!(top_join.top() < tab.top());
+        assert!(bottom_join.bottom() > tab.bottom());
         assert_eq!(
             tab.right(),
             sidebar.right(),
@@ -9356,7 +9517,10 @@ mod tests {
         vcx.run_until_parked();
         let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
         let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
-        assert!(tabs.bottom() <= track.top());
+        assert!(
+            track.bottom() <= tabs.top(),
+            "scrollbar must not separate tabs from sidebar content"
+        );
         let max = workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.max_offset().x);
         assert!(max > px(0.0), "tabs must retain their widths and overflow");
         vcx.simulate_event(gpui::ScrollWheelEvent {
