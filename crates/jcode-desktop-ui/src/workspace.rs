@@ -747,6 +747,14 @@ impl Workspace {
                 workspace.active = panel_count / 2;
             }
             workspace.focus_pending = true;
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_HISTORY").as_deref() == Ok("1") {
+                for index in 0..80 {
+                    let mut session = workspace.sessions[0].clone();
+                    session.session_id = format!("screenshot-history-{index:02}");
+                    session.title = Some(format!("History session {index:02}"));
+                    workspace.sessions.push(session);
+                }
+            }
             if let Some(stage) = std::env::var("JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
@@ -3846,6 +3854,10 @@ impl Workspace {
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _event, window, cx| {
+                                            // We explicitly focus the session's composer below.
+                                            // Otherwise the focusable workspace ancestor handles
+                                            // this same press afterward and steals focus back.
+                                            window.prevent_default();
                                             this.activate_session(session.clone(), window, cx);
                                         }),
                                     )
@@ -7986,6 +7998,88 @@ mod tests {
                 "clicking the row must activate the session it displays"
             );
         });
+    }
+
+    #[gpui::test]
+    fn clicking_scrolled_history_rows_reliably_activates_the_displayed_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Sessions {
+                    sessions: (0..80)
+                        .map(|index| {
+                            session_info(
+                                Box::leak(format!("session_fox_history_{index}").into_boxed_str()),
+                                Some("previous work"),
+                            )
+                        })
+                        .collect(),
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        for mode in [
+            crate::config::LayoutMode::FolderTabs,
+            crate::config::LayoutMode::Normal,
+        ] {
+            workspace.update(vcx, |workspace, cx| {
+                workspace.layout_mode = mode;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            for target in [30, 50, 20, 60] {
+                workspace.update(vcx, |workspace, cx| {
+                    workspace
+                        .sidebar_sessions_list
+                        .scroll_to_reveal_item(target);
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let expected = workspace.read_with(vcx, |workspace, _| {
+                    workspace.sidebar_session_layout[target].session_id.clone()
+                });
+                let bounds = vcx
+                    .debug_bounds(Box::leak(
+                        format!("sidebar-session-{target}").into_boxed_str(),
+                    ))
+                    .expect("scrolled target must be rendered");
+                vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+                workspace.read_with(vcx, |workspace, cx| {
+                    assert_eq!(
+                        workspace.slots[workspace.active].panel.read(cx).session_id,
+                        expected,
+                        "history click must activate the displayed row"
+                    );
+                });
+                workspace.update_in(vcx, |workspace, window, cx| {
+                    assert_eq!(
+                        workspace.navigation_state(window, cx)["keyboard_panel"],
+                        workspace.active,
+                        "history click must leave the opened session ready for typing"
+                    );
+                });
+                vcx.simulate_input("history draft");
+                workspace.read_with(vcx, |workspace, cx| {
+                    assert!(
+                        workspace.slots[workspace.active]
+                            .panel
+                            .read(cx)
+                            .input
+                            .read(cx)
+                            .content
+                            .ends_with("history draft"),
+                        "typing must reach the clicked session"
+                    );
+                });
+            }
+        }
     }
 
     #[gpui::test]

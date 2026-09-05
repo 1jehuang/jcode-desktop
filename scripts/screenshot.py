@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render the real app on a private Xvfb display using offline fixture data."""
 import argparse
+import json
 import os
 from pathlib import Path
 import select
@@ -37,6 +38,8 @@ def main():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--html-interact", action="store_true",
                         help="exercise native input and controls on the HTML fixture")
+    parser.add_argument("--history-interact", action="store_true",
+                        help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--transcript", choices=("all", "reasoning", "streaming", "html"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
@@ -52,6 +55,10 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.history_interact and (args.panels != 1 or args.size != "1440x1000" or args.learn_stage is not None or args.focus_panel is not None or args.html_interact):
+        parser.error("history-interact requires default size, one panel, and no other interaction mode")
+    if args.history_interact and not shutil.which("xdotool"):
+        parser.error("history-interact requires xdotool")
     if args.html_interact and (args.transcript != "html" or args.size != "1440x1000" or args.theme != "warm-neutral" or args.panels != 1):
         parser.error("html-interact requires the html transcript, default size/theme, and one panel")
     if args.html_interact and not shutil.which("xdotool"):
@@ -92,6 +99,8 @@ def main():
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
+        if args.history_interact:
+            env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
         env["VK_DRIVER_FILES"] = str(drivers[0])
         wm_config = root / "openbox.xml"
         wm_config.write_text('''<openbox_config xmlns="http://openbox.org/3.4/rc">
@@ -136,6 +145,26 @@ def main():
                     time.sleep(0.1)
                 # Allow opening animation and font rasterization to settle.
                 time.sleep(2)
+                if args.history_interact:
+                    # These are visible title coordinates in the fixed-size
+                    # offline fixture. Never send input to the user's display.
+                    for y, session_id in [(488, "screenshot-history-06"), (105, "screenshot-fixture"), (153, "screenshot-history-06")]:
+                        subprocess.run(["xdotool", "mousemove", "100", str(y), "click", "1"],
+                                       env=env, cwd=root, check=True, timeout=10)
+                        deadline = time.monotonic() + 10
+                        while True:
+                            text = state.read_text()
+                            lines = [line for line in text.splitlines() if line.startswith("navigation=")]
+                            navigation = json.loads(lines[0].split("=", 1)[1]) if lines else {}
+                            focused = [panel for row in navigation.get("rows", []) for panel in row["panels"] if panel["focused"]]
+                            if focused and focused[0]["session"] == session_id and navigation.get("keyboard_panel") == focused[0]["slot"]:
+                                break
+                            if app.poll() is not None or time.monotonic() > deadline:
+                                raise RuntimeError("History click lost session or keyboard focus: " + text)
+                            time.sleep(.05)
+                    subprocess.run(["xdotool", "type", "history click typing works"],
+                                   env=env, cwd=root, check=True, timeout=10)
+                    time.sleep(.5)
                 if args.focus_panel is not None:
                     # The fixture shows a 264px sidebar and 12px page connector.
                     # Native X11
