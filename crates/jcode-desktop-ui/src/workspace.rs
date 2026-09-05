@@ -5284,7 +5284,7 @@ impl Workspace {
             } else if active == Some("new") {
                 Theme::global().ACCENT_DIM
             } else {
-                gpui::rgba(0x111318e8)
+                Theme::global().HEADER_BG
             })
             .border_1()
             .border_color(if learned("new_panel") {
@@ -5340,7 +5340,7 @@ impl Workspace {
             .bg(if learned("close_panel") {
                 gpui::rgba(0x64c86424)
             } else {
-                gpui::rgba(0x111318e8)
+                Theme::global().HEADER_BG
             })
             .border_1()
             .border_color(if learned("close_panel") {
