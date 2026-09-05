@@ -3,6 +3,7 @@ import subprocess, sys
 
 ROOT = pathlib.Path(__file__).parents[1]
 VERIFY = ROOT / "scripts/verify-release-package.py"
+PACKAGE_LINUX = ROOT / "scripts/package-linux.sh"
 
 class VerifyReleasePackageTests(unittest.TestCase):
     def run_verify(self, path):
@@ -29,5 +30,11 @@ class VerifyReleasePackageTests(unittest.TestCase):
             path = pathlib.Path(root) / "release.zip"
             with zipfile.ZipFile(path, "w") as archive: archive.writestr("Jcode/jcode-desktop.exe", b"")
             self.assertNotEqual(self.run_verify(path).returncode, 0)
+
+    def test_linux_checksums_use_downloaded_artifact_basenames(self):
+        script = PACKAGE_LINUX.read_text()
+        checksum_block = script[script.index('  sha256sum "Jcode-'):script.index('\n)', script.index('  sha256sum "Jcode-'))]
+        self.assertIn('> SHA256SUMS-linux', checksum_block)
+        self.assertNotIn('$OUT/', checksum_block)
 
 if __name__ == "__main__": unittest.main()

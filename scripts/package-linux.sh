@@ -42,5 +42,8 @@ Description: Native desktop client for Jcode
  Includes the Jcode CLI and harness bridge.
 EOF
 dpkg-deb --root-owner-group --build "$DEBROOT" "$OUT/Jcode-$VERSION-linux-amd64.deb"
-sha256sum "$OUT/Jcode-$VERSION-linux-$ARCH.tar.gz" "$OUT/Jcode-$VERSION-linux-amd64.deb" > "$OUT/SHA256SUMS-linux"
+(
+  cd "$OUT"
+  sha256sum "Jcode-$VERSION-linux-$ARCH.tar.gz" "Jcode-$VERSION-linux-amd64.deb" > SHA256SUMS-linux
+)
 echo "Packaged Linux artifacts in $OUT"
