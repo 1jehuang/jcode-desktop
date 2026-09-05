@@ -76,3 +76,37 @@ reasoning screenshot fixture. Source and copy had matching SHA-256:
 dimmed inline thinking, intact Markdown, and no reasoning labels, card, or
 disclosure controls. This verifies the running executable's presentation
 without manipulating the user's live conversation or desktop window.
+
+## Measured visual acceptance
+
+The final check measures actual rendered pixels and uses local OCR, rather
+than relying on visual inspection or source code alone:
+
+```sh
+python3 scripts/verify-thinking-screenshot.py \
+  target/reasoning-running-build.png target/reasoning-inline-light-final.png \
+  --before-light target/reasoning-inline-light.png \
+  --output target/reasoning-visual-metrics.json
+```
+
+This fixture-specific check requires Pillow and Tesseract, runs locally, and
+does not touch the live desktop. Observed results:
+
+| Requirement | Dark deployed binary | Final light theme |
+| --- | --- | --- |
+| Dimmer than the answer, but readable | Thinking 5.933:1 vs answer 11.740:1 | Thinking 5.641:1 vs answer 13.902:1 |
+| Blend into the transcript, no outer card | All 18,013 surrounding padding pixels match panel background | All 18,013 match |
+| No reasoning/thinking label or disclosure control | OCR finds exactly 6 content lines, 0 extra labels/controls | Same |
+| Preserve content and Markdown | Beginning, paragraph end, heading, and final list item recognized, no literal `**` or `##` | Same |
+
+The light-theme **rendered** text contrast improved from 2.459:1 to 5.641:1,
+a measured 2.294× increase that crosses the 4.5:1 readability threshold while
+remaining much quieter than the answer. (Raster antialiasing makes the modal
+old glyph color slightly different from the configured 2.49:1 value above.)
+
+The checker also rejected three negative controls: an altered background
+pixel, an extra thinking label, and a show-less control. These demonstrate
+that the checks fail when the forbidden presentation returns. Combined with
+the 36 passing interaction/Markdown/theme tests and the exact deployed-binary
+hash match, the measurements satisfy the requested presentation criteria.
+No subjective user satisfaction or clean full-suite result is inferred.
