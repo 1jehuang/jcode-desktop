@@ -97,6 +97,10 @@ mod tutorial;
 #[path = "tutorial_geometry_tests.rs"]
 mod tutorial_geometry_tests;
 
+#[cfg(test)]
+#[path = "tutorial_minimalism_tests.rs"]
+mod tutorial_minimalism_tests;
+
 const STRIP_COUNT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

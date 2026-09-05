@@ -54,3 +54,24 @@ controls, compare canvas bounds before and after, and round-trip snapshot state.
   with the same three pre-existing failures in email inbox scrolling, restored
   history scroll position, and touchpad reticle rendering.
 - Live desktop rebuild/reload confirmed by UI generation activation in the log.
+
+### Before/after minimalism measurement
+
+The exact same `tutorial_minimalism_tests.rs` was run against archived revisions
+`74e1dec` (top dock) and `cad62f4` (Learn tab), rendering actual Workspace views
+with the same session fixture and viewport sizes. Both measurement runs passed.
+
+| Window | Previous canvas height | Learn canvas height | Recovered height | Default tutorial controls |
+| --- | ---: | ---: | ---: | --- |
+| 640×480 | 326 px | 480 px | 154 px (+47.2%) | 6 → 0 |
+| 1440×1000 | 922 px | 1000 px | 78 px (+8.5%) | 6 → 0 |
+
+The canvas top moved from 154/78 px to 0 px. The Learn tab was present in both
+new layouts. Clicking it preserved the entire canvas rectangle and kept the
+tutorial outside that rectangle. This measures the requested reduction in
+default chrome, rather than relying on a visual preference judgment.
+
+To collect the current measurements:
+`cargo test -p jcode-desktop-ui tutorial_minimalism_measurement -- --nocapture --test-threads=1`.
+For a baseline comparison, copy this version-independent test file into an
+archived revision and register it as a test module under `workspace.rs`.
