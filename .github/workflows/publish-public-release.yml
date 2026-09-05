@@ -1,0 +1,76 @@
+name: Publish public desktop downloads
+
+on:
+  workflow_run:
+    workflows: [Linux and Windows desktop release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Complete private release to publish (desktop-vVERSION)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: desktop-public-distribution
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+    steps:
+      # Always use reviewed main, never checkout a workflow_run's untrusted ref.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Validate tag and publication tools
+        run: |
+          python3 -c 'import re,os; assert re.fullmatch(r"desktop-v\d+\.\d+\.\d+(?:-beta\.\d+)?", os.environ["RELEASE_TAG"]), "invalid desktop tag"'
+          python3 -m unittest discover -s tests -v
+      - name: Download private release assets without source archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p artifacts
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir artifacts \
+            --pattern 'Jcode-*.dmg' --pattern 'Jcode-*.zip' \
+            --pattern 'Jcode-*.tar.gz' --pattern 'Jcode-*.deb' \
+            --pattern 'SHA256SUMS*' --pattern appcast.xml
+          python3 scripts/prepare-public-release.py artifacts "$RELEASE_TAG" --manifest artifacts/latest.json
+      - name: Publish binaries and verify anonymous downloads before promotion
+        env:
+          GH_TOKEN: ${{ secrets.JCODE_PUBLIC_RELEASE_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN" || { echo 'Missing public distribution token'; exit 1; }
+          python3 scripts/publish-public-release.py artifacts "$RELEASE_TAG"
+      - name: Verify the website download routes
+        run: |
+          python3 - "$RELEASE_TAG" <<'PY'
+          import hashlib, json, sys, urllib.request
+          from pathlib import Path
+          manifest = json.loads(Path('artifacts/latest.json').read_text())
+          # Test the same stable URLs visitors use, including all package bytes.
+          for asset in manifest['assets']:
+              digest = hashlib.sha256()
+              size = 0
+              with urllib.request.urlopen(asset['browser_download_url'], timeout=120) as response:
+                  while chunk := response.read(1024 * 1024):
+                      digest.update(chunk)
+                      size += len(chunk)
+              assert digest.hexdigest() == asset['sha256'], asset['name']
+              assert size == asset['size'], asset['name']
+              print('Website download verified:', asset['name'], size, flush=True)
+          PY
+      - name: Trigger public macOS install and Gatekeeper acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run macos-public-release-verify.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
