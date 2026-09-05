@@ -4871,6 +4871,60 @@ mod tests {
         });
     }
 
+    /// Measures frame construction, not GPU presentation, with realistic history
+    /// sizes. Run explicitly with `transcript_repaint_profile -- --ignored --nocapture`.
+    #[gpui::test]
+    #[ignore = "manual transcript repaint profiler"]
+    fn transcript_repaint_profile(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("profile-transcript", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        for count in [100, 1_000, 10_000] {
+            panel.update(vcx, |panel, cx| {
+                panel.items = (0..count)
+                    .map(|index| {
+                        let text = format!("Message {index}: **formatted** text and `inline code`.\n\nA second paragraph for layout.");
+                        if index % 2 == 0 {
+                            Item::User(text)
+                        } else {
+                            Item::Assistant(text)
+                        }
+                    })
+                    .collect();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let mut samples = Vec::new();
+            for iteration in 0..60 {
+                let started = std::time::Instant::now();
+                panel.update(vcx, |_, cx| cx.notify());
+                vcx.run_until_parked();
+                if iteration >= 10 {
+                    samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            assert_eq!(
+                panel.read_with(vcx, |panel, _| panel.transcript_row_count),
+                count
+            );
+            assert!(
+                vcx.debug_bounds("transcript").is_some(),
+                "transcript must paint"
+            );
+            println!(
+                "TRANSCRIPT_REPAINT rows={count} p50={:.3}ms p95={:.3}ms",
+                samples[25], samples[47]
+            );
+        }
+    }
+
     #[gpui::test]
     fn restored_alternating_history_still_overflows_and_scrolls(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
