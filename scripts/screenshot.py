@@ -50,7 +50,7 @@ def main():
     width, height = (int(n) for n in args.size.split("x"))
     if not (640 <= width <= 7680 and 480 <= height <= 4320):
         parser.error("size must be between 640x480 and 7680x4320")
-    if args.focus_panel is not None and (width - 264) / args.panels < 320:
+    if args.focus_panel is not None and (width - 276) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     for tool in ("Xvfb", "import", "openbox"):
         if not shutil.which(tool):
@@ -118,10 +118,11 @@ def main():
                 # Allow opening animation and font rasterization to settle.
                 time.sleep(2)
                 if args.focus_panel is not None:
-                    # The fixture always shows the 264px sidebar. Native X11
+                    # The fixture shows a 264px sidebar and 12px page connector.
+                    # Native X11
                     # input crosses the same platform -> GPUI -> workspace path
                     # as a user click, on this private display only.
-                    x = round(264 + (width - 264) * (args.focus_panel + 0.5) / args.panels)
+                    x = round(276 + (width - 276) * (args.focus_panel + 0.5) / args.panels)
                     subprocess.run(["xdotool", "mousemove", str(x), str(height // 2), "click", "1"],
                                    env=env, cwd=root, check=True, timeout=10)
                     deadline = time.monotonic() + 10

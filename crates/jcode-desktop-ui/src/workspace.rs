@@ -83,6 +83,8 @@ const STRUT: f32 = 0.58;
 const STRIP_PADDING_Y: f32 = 16.0;
 /// The active folder rises above the others without adding a focus ring.
 const INACTIVE_PANEL_INSET: f32 = 8.0;
+/// The selected sidebar tab reaches any focused panel through this page gutter.
+const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
 
 #[cfg(test)]
 #[path = "panel_surface_tests.rs"]
@@ -206,10 +208,8 @@ fn folder_tab_corner(top: bool) -> gpui::AnyElement {
                 .size(radius)
                 .when(!top, |el| el.mt(px(1.0)))
                 .bg(Theme::global().HEADER_BG)
-                .border_color(Theme::global().PANEL_BORDER)
-                .border_r_1()
-                .when(top, |el| el.rounded_br(radius).border_b_1())
-                .when(!top, |el| el.rounded_tr(radius).border_t_1()),
+                .when(top, |el| el.rounded_br(radius))
+                .when(!top, |el| el.rounded_tr(radius)),
         )
         .into_any_element()
 }
@@ -3764,21 +3764,8 @@ impl Workspace {
                                     .rounded_l_lg()
                                     .cursor_pointer()
                                     .when(selected, |el| {
-                                        el.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(-1.0))
-                                                .top(px(-1.0))
-                                                .bottom(px(-1.0))
-                                                .right(px(FOLDER_TAB_RADIUS))
-                                                .rounded_l_lg()
-                                                .border_l_1()
-                                                .border_t_1()
-                                                .border_b_1()
-                                                .border_color(Theme::global().PANEL_BORDER),
-                                        )
-                                        .child(folder_tab_corner(true))
-                                        .child(folder_tab_corner(false))
+                                        el.child(folder_tab_corner(true))
+                                            .child(folder_tab_corner(false))
                                     })
                                     // The selected folder tab opens directly onto the canvas.
                                     .bg(if selected {
@@ -3791,13 +3778,7 @@ impl Workspace {
                                     .border_b_1()
                                     .border_color(gpui::rgba(0x00000000))
                                     .pr(px(crate::scrollbar::GUTTER + 8.0))
-                                    .hover(move |el| {
-                                        el.bg(if selected {
-                                            Theme::global().PANEL_BG
-                                        } else {
-                                            Theme::global().TOOL_BG
-                                        })
-                                    })
+                                    .hover(move |el| el.bg(Theme::global().PANEL_BG))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _event, window, cx| {
@@ -3880,16 +3861,7 @@ impl Workspace {
             .debug_selector(|| "sidebar".into())
             .relative()
             .bg(Theme::global().HEADER_BG)
-            // Paint the page edge behind the tabs so the active tab interrupts it.
-            .child(
-                div()
-                    .absolute()
-                    .right_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(1.0))
-                    .bg(Theme::global().PANEL_BORDER),
-            )
+            // The two filled surfaces meet directly, without a third-tone seam.
             .child(
                 div()
                     .h(px(TITLEBAR_HEIGHT))
@@ -3902,7 +3874,7 @@ impl Workspace {
                     .items_end()
                     .justify_start()
                     .relative()
-                    .bg(Theme::global().BG)
+                    .bg(Theme::global().PANEL_BG)
                     .child(
                         div()
                             .absolute()
@@ -5745,7 +5717,12 @@ impl Render for Workspace {
         } else {
             0.0
         };
-        let viewport_w = (f32::from(viewport.width) - sidebar_width).max(320.0);
+        let connector_width = if self.show_sidebar {
+            FOLDER_CONNECTOR_WIDTH
+        } else {
+            0.0
+        };
+        let viewport_w = (f32::from(viewport.width) - sidebar_width - connector_width).max(320.0);
         // On macOS the sidebar header covers the transparent titlebar strip.
         // Without the sidebar, leave room for the traffic lights. Other platforms
         // do not draw through a system titlebar, so an inset would be a visible gap.
@@ -5906,7 +5883,7 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_row()
-            .bg(Theme::global().BG)
+            .bg(Theme::global().PANEL_BG)
             .font_family(Theme::global().FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
@@ -5960,6 +5937,20 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .pt(px(content_top_inset))
+                    .pl(px(connector_width))
+                    // The sidebar and every inactive folder share this backing
+                    // sheet. The selected page reaches around them through the
+                    // left gutter and the space above the folder group.
+                    .child(
+                        div()
+                            .debug_selector(|| "folder-backing-bridge".into())
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(STRIP_PADDING_Y))
+                            .bg(Theme::global().HEADER_BG),
+                    )
                     .child(
                         div()
                             .debug_selector(|| "workspace-canvas".into())

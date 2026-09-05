@@ -6,6 +6,7 @@ sockets are used. Requires current desktop and jcode binaries plus Xvfb tools.
 """
 import argparse
 from itertools import groupby
+import json
 import os
 from pathlib import Path
 import re
@@ -16,34 +17,45 @@ import socket
 import subprocess
 import time
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from screenshot import isolated_env
 
 
 def check_strip(image, focused):
     """Assert visible public output, not a copied layout implementation."""
-    canvas, active, idle = (28, 26, 24), (37, 34, 31), (48, 43, 39)
-    tops = []
+    active, idle = (37, 34, 31), (48, 43, 39)
+    targets = []
     for index in range(3):
-        x = 284 + 384 * index
+        x = 296 + 381 * index
         color = active if index == focused else idle
         assert image.getpixel((x, 300)) == color, 'Focus must change surface color'
-        top = 300
-        while top > 0 and image.getpixel((x, top - 1)) == color:
-            top -= 1
-        tops.append(top)
         assert image.getpixel((x, 983)) == color, 'Folders must share their bottom edge'
-        assert all(image.getpixel((x, y)) == canvas for y in range(984, 1000))
-    active_top = tops[focused]
-    assert active_top >= 16, 'Canvas must remain above folders'
-    for index, top in enumerate(tops):
-        assert top - active_top == (0 if index == focused else 8), 'Active folder must rise 8px'
-        x = 284 + 384 * index
-        assert all(image.getpixel((x, y)) == canvas for y in range(active_top - 16, active_top))
-    # A scan through empty real sessions must contain only the adjoining
-    # surface colors. Any gap or focus-outline pixel fails this check.
-    assert all(image.getpixel((x, 300)) in (active, idle) for x in range(264, 1414))
-    print(f'Pixel acceptance passed: focused={focused}, raised=8px, bottom gap=16px, joined/no ring', flush=True)
+        assert all(image.getpixel((x, y)) == idle for y in range(984, 1000))
+        targets.append((x, 300))
+    assert all(image.getpixel((270, y)) == active for y in range(60, 984)), 'Page gutter must stay open'
+    assert all(image.getpixel((x, 300)) in (active, idle) for x in range(276, 1417))
+    selected_rows = []
+    for color, rows in groupby(range(60, 450), lambda y: image.getpixel((250, y))):
+        rows = list(rows)
+        if color == active and len(rows) >= 20:
+            selected_rows.append(rows)
+    assert len(selected_rows) == 1, 'The real sidebar must show exactly one selected session'
+    selected = (250, selected_rows[0][len(selected_rows[0]) // 2])
+    # Flood the actual raster, not a model of the geometry. Both colors must
+    # form connected sheets, even when an inactive panel separates the focused
+    # panel from its selected sidebar tab.
+    page = image.copy()
+    marker = (255, 0, 255)
+    ImageDraw.floodfill(page, (270, 500), marker)
+    assert page.getpixel(selected) == marker, 'Selected sidebar tab must join the page gutter'
+    assert page.getpixel(targets[focused]) == marker, 'Page gutter must reach the focused panel'
+    backing = image.copy()
+    ImageDraw.floodfill(backing, (10, 500), marker)
+    assert backing.getpixel((500, 992)) == marker, 'Sidebar must join the backing strip'
+    for index, target in enumerate(targets):
+        if index != focused:
+            assert backing.getpixel(target) == marker, 'Every inactive panel must join the sidebar sheet'
+    print(f'Pixel acceptance passed: focused={focused}, two connected sheets, sidebar-to-panel continuity, no ring', flush=True)
 
 
 def main():
@@ -61,6 +73,8 @@ def main():
     env['JCODE_RUNTIME_DIR'] = str(root / 'runtime')
     env['JCODE_API_SOCKET'] = str(root / 'runtime/api.sock')
     env['JCODE_SOCKET'] = str(root / 'runtime/daemon.sock')
+    env['JCODE_DESKTOP_CONFIG'] = str(root / 'desktop.toml')
+    (root / 'desktop.toml').write_text('[workspace]\nsession_refresh_seconds = 5\n')
     env['VK_DRIVER_FILES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
     jcode = shutil.which('jcode')
     assert jcode, 'jcode must be installed'
@@ -95,6 +109,33 @@ def main():
             return True
         except OSError:
             return False
+
+    def name_sessions(ids):
+        # Exercise the same public API used by SDK rename_session. Naming a
+        # fresh session persists its metadata without sending a model prompt.
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(15)
+            client.connect(env['JCODE_API_SOCKET'])
+            with client.makefile('rwb') as stream:
+                requests = [dict(req='hello', min_version=1, max_version=1, client='folder-acceptance/1')]
+                for i, session in enumerate(ids):
+                    requests.extend([
+                        dict(req='attach_session', session_id=session),
+                        dict(req='rename_session', session_id=session, title=f'Folder acceptance {i + 1}'),
+                        dict(req='detach_session', session_id=session),
+                    ])
+                requests.append(dict(req='list_sessions'))
+                for request_id, request in enumerate(requests, 1):
+                    stream.write((json.dumps(dict(v=1, id=request_id, **request)) + '\n').encode())
+                    stream.flush()
+                    while True:
+                        raw = stream.readline()
+                        assert raw, 'API closed before metadata reply'
+                        reply = json.loads(raw)
+                        if reply.get('reply_to') == request_id:
+                            assert reply['ev'] != 'error', reply
+                            break
+                assert set(ids) <= {s['session_id'] for s in reply['sessions']}, 'Renamed sessions must enter the real catalog'
 
     state_path = root / 'state'
     def state():
@@ -144,12 +185,20 @@ def main():
                        f'{count} SDK-created panels rendered')
             key('super+1')
         wait_until(lambda: 'widths=0.25,0.25,0.25' in state(), 'Three native width changes accepted')
+        diagnostics = root / 'logs/jcode-desktop/jcode-desktop.log'
+        ids = list(dict.fromkeys(re.findall(r'adopting created session (session_\S+)', diagnostics.read_text())))
+        assert len(ids) == 3
+        name_sessions(ids)
+        # Use the supported five-second refresh setting and wait for its actual
+        # bridge response rather than assuming a frame has the new catalog.
+        wait_until(lambda: re.search(r'session list completed[^\n]*\([1-9][0-9]* sessions\)', diagnostics.read_text()),
+                   'Real catalog refresh delivered renamed session metadata')
         key('super+u')
         key('super+l')
         wait_until(lambda: 'focus=1 ' in state(), 'Native keyboard focuses middle folder')
         capture('middle-focused')
         for index in (0, 2):
-            x = round(264 + (1800 - 264) * 0.25 * (index + 0.5))
+            x = round(276 + (1800 - 276) * 0.25 * (index + 0.5))
             subprocess.run(['xdotool', 'mousemove', str(x), '500', 'click', '1'], env=env, check=True, timeout=10)
             wait_until(lambda: f'focus={index} ' in state(), f'Native click focuses folder {index}')
             capture(f'folder-{index}-focused')
@@ -157,16 +206,22 @@ def main():
         key('super+o')
         overview = capture('overview', strip=False)
         cards = []
-        for color, pixels in groupby(range(264, 1800), lambda x: overview.getpixel((x, 500))):
-            pixels = list(pixels)
-            if color in ((48, 43, 39), (37, 34, 31)) and len(pixels) >= 250:
-                cards.append((pixels[0], pixels[-1], color))
+        for header_y in range(200, 600):
+            bands = []
+            for color, pixels in groupby(range(276, 1800), lambda x: overview.getpixel((x, header_y))):
+                pixels = list(pixels)
+                if color == (48, 43, 39) and 280 <= len(pixels) <= 320:
+                    bands.append((pixels[0], pixels[-1]))
+            if len(bands) == 3:
+                cards = bands
+                break
         assert len(cards) == 3, 'Overview must show all three real sessions'
-        assert cards[2][2] == (37, 34, 31), 'Overview must identify the active session'
-        left, right, _ = cards[0]
-        subprocess.run(['xdotool', 'mousemove', str((left + right) // 2), '500'], env=env, check=True, timeout=10)
+        body_y = header_y + 70
+        assert overview.getpixel((cards[2][0] + 4, body_y)) == (37, 34, 31)
+        left, right = cards[0]
+        subprocess.run(['xdotool', 'mousemove', str((left + right) // 2), str(body_y)], env=env, check=True, timeout=10)
         hovered = capture('overview-hover', strip=False)
-        assert hovered.getpixel((left, 500)) == hovered.getpixel((left + 4, 500)) == (41, 37, 33)
+        assert hovered.getpixel((left, body_y)) == hovered.getpixel((left + 4, body_y)) == (41, 37, 33)
         subprocess.run(['xdotool', 'click', '1'], env=env, check=True, timeout=10)
         wait_until(lambda: 'focus=0 ' in state(), 'Native overview selection focuses left folder')
         capture('overview-selected')

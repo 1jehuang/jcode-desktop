@@ -40,6 +40,18 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                 }
                 assert_eq!(workspace.read_with(vcx, |w, _| w.active), focused);
                 let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+                let backing = vcx.debug_bounds("folder-backing-bridge").unwrap();
+                let expected_left = if sidebar {
+                    SIDEBAR_WIDTH + FOLDER_CONNECTOR_WIDTH
+                } else {
+                    0.0
+                };
+                assert_eq!(canvas.left(), px(expected_left));
+                assert_eq!(
+                    backing.left(),
+                    px(if sidebar { SIDEBAR_WIDTH } else { 0.0 })
+                );
+                assert_eq!(backing.bottom(), canvas.bottom());
                 let panels = ["panel-0", "panel-1", "panel-2"]
                     .into_iter()
                     .map(|id| vcx.debug_bounds(id).unwrap())
@@ -58,6 +70,7 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                         (f32::from(canvas.bottom() - panel.bottom()) - STRIP_PADDING_Y).abs() < 1.
                     );
                     assert!(panel.size.height > px(200.));
+                    assert_eq!(panel.bottom(), backing.top());
                 }
                 for pair in panels.windows(2) {
                     assert!(

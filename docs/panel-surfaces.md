@@ -1,46 +1,46 @@
-# Connected folder panel surfaces
+# Two connected folder surfaces
 
-Panels share adjoining edges and a common bottom baseline. The workspace canvas remains visible above and below them. Focus is conveyed by a raised top edge and surface color, not an outline. Overview cards also use surface color instead of a focus ring.
+The workspace uses two structural background tones, independent of message/code styling:
 
-## Acceptance checks (2026-09-05)
+- **Selected page (`PANEL_BG`, warm-neutral `#25221f`)**: selected sidebar session, the 12px connector gutter, surrounding page, and focused panel are one connected surface.
+- **Backing sheet (`HEADER_BG`, warm-neutral `#302b27`)**: sidebar background, inactive panels, and the 16px bottom connector are one connected surface.
 
-| Requirement | Check | Observed result |
-| --- | --- | --- |
-| Leave background space | GPUI geometry test at 800×600 and 1440×1000, sidebar shown/hidden | Active top and all bottom gaps are 16px. Inactive top gap is 24px. |
-| Keep folders connected | Same test, focusing each of three panels through workspace keyboard bindings | Adjacent panel edges touch and bottom edges remain aligned. |
-| Raise and recolor the active folder | Actual app on private Xvfb, three panels, native X11 click from middle to left | Public app state changes from `focus=1` to `focus=0`. The raised surface moves to the left panel. Rendered surface color changes from `#302b27` to `#25221f`, with the middle reverting to `#302b27`. |
-| Remove the panel focus ring | Before/after screenshots inspected, edge pixels sampled | Center edge and interior have identical colors in both focus states. No panel outline is visible. Canvas pixels remain `#1c1a18`. |
-| Remove overview focus/hover outlines | Native `Super+O`, pointer hover over the right card, then click the left card | Overview uses surface color without outlines. Focused edge/interior both measure `#25221f`. Right-card edge/interior both change from `#302b27` to `#292521` on hover. Clicking the left card exits overview and returns to the joined strip with `focus=0` and the raised surface on the left. Screenshots: `ui-review-folder-overview.png`, `ui-review-folder-overview-hover.png`, and `ui-review-folder-overview-selected.png`. |
-| Default single-panel layout | Unmodified screenshot CLI defaults, no `--panels` override | Capture succeeds with `focus=0 widths=1.00`. `ui-review-folder-single.png` visibly retains canvas above/below the full-width panel with no outline. |
-| Multi-panel capture and native focus CLI | `screenshot.py --panels 3`, then `--panels 3 --focus-panel 0` | Both commands exit successfully, create PNGs, and report three equal-width panels. Native focus changes from 1 to 0. |
-| Reject unsafe or invalid capture coordinates | Real screenshot CLI subprocesses with panel counts 0/7, focus indices -1/3 for three panels, and an 800×600 three-panel focus capture | All five cases exit with argument error 2 before capture and create no image. Three durable argument tests plus two isolation tests pass. |
-| Preserve usable transcript rendering | Scroll-aware demo transcript regression | All expected item shapes paint when revealed in the shorter, virtualized viewport. |
-| Deliver to running desktop | App rebuild-and-reload command and live process log | Rebuild succeeded and UI generation 9 activated. |
+The gutter lets a selected sidebar tab reach the focused panel even when inactive panels lie between them. The bottom connector independently joins all inactive panels back to the sidebar. There is no third canvas tone or panel/selected-session outline. Session hover uses the existing page tone instead of introducing another structural shade. Inputs, code blocks, text, and status indicators retain their own semantic styling.
 
-Reproduce the native focus check without affecting the user's desktop:
+## Tight visual feedback loop
+
+Render the real current app with rich offline content on private Xvfb/Openbox:
 
 ```sh
-cargo test -p jcode-desktop-ui folder_panels_keep_canvas_space
-python3 scripts/screenshot.py target/ui-review-folder-panels.png --panels 3
-python3 scripts/screenshot.py target/ui-review-folder-click.png --panels 3 --focus-panel 0 --no-build
-python3 -m unittest discover -s scripts -p 'test_screenshot*.py'
+python3 scripts/screenshot.py target/two-tone-review.png --panels 3
+python3 scripts/screenshot.py target/two-tone-left.png --panels 3 --focus-panel 0 --no-build
 ```
 
-These screenshots run the real application and platform input path with offline session fixtures. They validate folder styling and focus behavior, not live SDK latency or sidebar hover performance. The two screenshot isolation tests pass.
+The first command builds current code. Use `--no-build` only when the binary is current. Inspect both PNGs before further edits. This does not open windows or move focus on the user's display. The reviewed captures for this change are `target/ui-review-two-tone-1.png` and `target/ui-review-two-tone-left.png`.
 
-### Non-fixture SDK/runtime acceptance
-
-**Passed.** `scripts/accept-folder-panels.py` starts an actual Jcode daemon, harness API bridge, and desktop on private Xvfb/Openbox. Screenshot mode is disabled. Native keyboard commands create three real SDK-backed sessions, resize them, and focus the middle one. Native pointer clicks then focus the left and right folders, followed by overview hover and selection of the left folder. The driver verifies three distinct runtime-created session IDs and captures the rendered frames.
-
-For all four resulting strip frames, pixel assertions verify the differently colored active surface, its 8px raised top, 16px of visible canvas above and below, a common bottom edge, and touching surfaces without outline pixels. The overview hover changes the card surface to `#292521`, and selecting it returns to `focus=0` with the same folder geometry. The full run passed in 10.6 seconds, followed by all five screenshot tests passing. Artifacts are in `target/folder-real-5/`.
+## Real SDK/runtime acceptance
 
 ```sh
 cargo build -p jcode-desktop
-python3 scripts/accept-folder-panels.py target/folder-acceptance
+python3 scripts/accept-folder-panels.py target/two-tone-acceptance
 ```
 
-Use a new output directory for each run. Dependencies are the installed `jcode` binary, Xvfb, Openbox, xdotool, ImageMagick, Mesa lavapipe, and Python Pillow. The script launches only isolated processes, disables telemetry, and terminates its process groups on success or failure.
+Use a fresh output directory. Dependencies: the installed `jcode` binary, Xvfb, Openbox, xdotool, ImageMagick, Mesa lavapipe, and Python Pillow.
 
-The initial attempt using automatic provider selection stopped at `No credentials configured`. This was resolved without credentials by the supported `--provider jcode` startup mode, which initializes the provider lazily. Session lifecycle and focus do not require an inference request. No credentials were copied, no login was attempted, no model request was sent, and no sessions were created in the user's daemon. This validates the real SDK/session boundary for folder behavior, not provider inference, live-user sidebar latency, or Wayland-specific behavior.
+The driver disables screenshot fixtures and launches an isolated real daemon, harness API, and desktop. Native keys create three SDK-backed sessions. A separate public API client attaches, names, and detaches from those sessions. The app's supported five-second catalog refresh brings their metadata into the actual sidebar. Keyboard, panel clicks, and overview selection then transfer focus.
 
-The integrated UI suite run during initial styling verification reported **296 passed, 3 failed, 6 ignored**. Those failures also occurred before the styling work: `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`. The suite is not claimed to be green.
+The supported `--provider jcode` startup initializes lazily, so these lifecycle operations require neither credentials nor inference. No user credentials are inherited, no model request is sent, and the user's daemon and desktop sockets are never used. Process groups are terminated on success or failure.
+
+## Requirement-to-evidence map (2026-09-05)
+
+| Requirement | Concrete check | Observed result |
+| --- | --- | --- |
+| Only two structural tones | Real-session raster samples through panel bodies, gutter, sidebar, and footer | Page is `#25221f`, backing sheet is `#302b27`. The former canvas tone is absent from these surfaces. |
+| Selected sidebar tab connects around to focused panel | Flood-fill the actual page-color pixels from the gutter, then inspect selected-tab and focused-panel pixels | Both belong to the same connected component for middle, left, and right focus. |
+| Sidebar background connects to every inactive panel | Flood-fill actual backing-color pixels from the sidebar, then inspect footer and inactive panels | All belong to the same connected component in every tested focus state. |
+| Preserve folder spacing without focus rings | GPUI geometry regression at 800×600 and 1440×1000, sidebar shown/hidden, focusing each panel | 12px gutter when sidebar is present, 16px top/bottom panel spacing, 8px inactive inset, shared bottom edge touching the backing connector. Raster scan finds no outline or third-tone gap between panel bodies. |
+| Keep focus and overview interaction working | Real native keys, clicks on left/right panels, overview hover, overview-card selection | Focus follows `1 → 0 → 2 → 0`; four resulting strip frames pass both connectivity checks. Overview hover and return to the selected folder also pass. |
+| Keep capture CLI correct | Updated native click coordinates include the gutter; public argument-error subprocess tests | Five screenshot tests pass, covering isolation and five invalid-argument cases. Rich-content native focus capture also succeeds. |
+| Deliver the updated view | App rebuild-and-reload command plus process log | Build succeeded and the running app activated the updated UI generation. |
+
+The complete non-fixture run passed in 31.2 seconds. Its six screenshots and state files are in `target/two-tone-real-4/`. The full-width page connectivity was checked on actual rendered pixels, not inferred from source inspection or replaced with synthetic session data. These checks do not claim to measure user-workspace hover latency or Wayland-specific behavior.
