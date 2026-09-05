@@ -236,8 +236,9 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     })
 }
 
-/// Disarm server-side crash detection when a desktop-owned attachment ends
-/// normally. A process crash skips `Drop`, leaving the server to mark it crashed.
+/// Gracefully detach idle attachments, including from older runtimes that use
+/// the ownership flag for crash detection. Current runtimes classify abrupt
+/// disconnects as crashes only when they interrupt an unfinished turn.
 struct GracefulDetach<'a> {
     client: &'a JcodeClient,
     session_id: &'a str,
@@ -253,8 +254,8 @@ impl GracefulDetach<'_> {
 impl Drop for GracefulDetach<'_> {
     fn drop(&mut self) {
         // A desktop window disappearing during a live turn is an interruption,
-        // not a graceful detach. Keep crash-on-disconnect armed so the runtime
-        // persists `crashed`; startup restoration can then surface and resume it.
+        // not an idle detach. The runtime persists interrupted work as `crashed`;
+        // startup restoration can then surface and resume it.
         if should_detach_on_drop(self.processing.get()) {
             let _ = self.client.detach_session(self.session_id);
         }
@@ -1775,6 +1776,28 @@ mod tests {
             &mut active,
         );
         assert!(!active);
+    }
+
+    #[test]
+    fn completed_worker_can_detach_without_waiting_for_idle_status() {
+        let mut active = true;
+        update_turn_activity(
+            &ApiEvent::TurnDone {
+                session_id: "s1".into(),
+            },
+            &mut active,
+        );
+        assert!(!active);
+        assert!(should_detach_on_drop(active));
+
+        // A later turn must restore interruption detection.
+        update_turn_activity(
+            &ApiEvent::MessageAccepted {
+                session_id: "s1".into(),
+            },
+            &mut active,
+        );
+        assert!(!should_detach_on_drop(active));
     }
 
     #[test]
