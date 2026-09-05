@@ -1,5 +1,9 @@
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -28,6 +32,40 @@ class ScreenshotIsolationTests(unittest.TestCase):
             self.assertTrue(env[key].startswith("/isolated/"), key)
         self.assertEqual(env["JCODE_DESKTOP_SCREENSHOT"], "1")
         self.assertEqual(env["LIBGL_ALWAYS_SOFTWARE"], "1")
+
+
+class ScreenshotArgumentTests(unittest.TestCase):
+    def assert_rejected(self, arguments, message):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "should-not-exist.png"
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("screenshot.py")),
+                 str(output), "--no-build", *arguments],
+                text=True, capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(message, result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_invalid_panel_counts_are_rejected_before_launch(self):
+        for count in (0, 7):
+            with self.subTest(count=count):
+                self.assert_rejected(["--panels", str(count)], "invalid choice")
+
+    def test_focus_must_identify_a_displayed_panel(self):
+        for index in (-1, 3):
+            with self.subTest(index=index):
+                self.assert_rejected(
+                    ["--panels", "3", "--focus-panel", str(index)],
+                    "focus-panel must identify",
+                )
+
+    @unittest.skipUnless(shutil.which("xdotool"), "native focus tool not installed")
+    def test_focus_capture_rejects_offscreen_panel_coordinates(self):
+        self.assert_rejected(
+            ["--panels", "3", "--focus-panel", "0", "--size", "800x600"],
+            "needs at least 320px",
+        )
 
 
 if __name__ == "__main__":
