@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -51,6 +53,15 @@ class PublisherTests(unittest.TestCase):
         self.assertLess(PUBLISH.version_key("desktop-v0.1.0-beta.9"), PUBLISH.version_key("desktop-v0.1.0-beta.24"))
         self.assertLess(PUBLISH.version_key(TAG), PUBLISH.version_key("desktop-v0.1.0"))
         self.assertLess(PUBLISH.version_key("desktop-v0.1.0"), PUBLISH.version_key("desktop-v0.2.0-beta.1"))
+
+    def test_download_verifier_has_an_identity_but_no_credentials(self):
+        payload = b"public package"
+        with patch.object(PUBLISH.urllib.request, "urlopen", return_value=io.BytesIO(payload)) as open_url:
+            PUBLISH.verify_download("https://jcode.sh/desktop/package.zip", hashlib.sha256(payload).hexdigest(), len(payload))
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.get_header("User-agent"), "JcodeReleaseVerifier/1.0")
+        self.assertFalse(request.has_header("Authorization"))
+        self.assertFalse(request.has_header("Cookie"))
 
     @patch.object(PUBLISH, "gh", return_value=subprocess.CompletedProcess([], 1, "", "network failure"))
     def test_api_failure_is_not_treated_as_missing_release(self, gh):

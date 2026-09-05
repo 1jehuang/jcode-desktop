@@ -62,7 +62,8 @@ jobs:
           for asset in manifest['assets']:
               digest = hashlib.sha256()
               size = 0
-              with urllib.request.urlopen(asset['browser_download_url'], timeout=120) as response:
+              request = urllib.request.Request(asset['browser_download_url'], headers={'User-Agent': 'JcodeReleaseVerifier/1.0'})
+              with urllib.request.urlopen(request, timeout=120) as response:
                   while chunk := response.read(1024 * 1024):
                       digest.update(chunk)
                       size += len(chunk)

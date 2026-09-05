@@ -50,7 +50,8 @@ def verify_download(url, expected_hash, expected_size):
     # Deliberately no GitHub token, cookies, or Authorization header.
     digest = hashlib.sha256()
     size = 0
-    with urllib.request.urlopen(url, timeout=120) as response:
+    request = urllib.request.Request(url, headers={"User-Agent": "JcodeReleaseVerifier/1.0"})
+    with urllib.request.urlopen(request, timeout=120) as response:
         while chunk := response.read(1024 * 1024):
             digest.update(chunk)
             size += len(chunk)
