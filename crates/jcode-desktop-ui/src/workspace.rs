@@ -198,6 +198,8 @@ enum SidebarView {
     Sessions,
     Files,
     Accounts,
+    Theme,
+    Settings,
 }
 
 /// Inverse corners let the page edge turn smoothly into the selected tab.
@@ -558,7 +560,6 @@ pub struct Workspace {
     gpui_performance: GpuiPerformanceSnapshot,
     action_capture: Option<ActionCapture>,
     animation_tick_task: Option<gpui::Task<()>>,
-    theme_picker: bool,
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _performance_task: gpui::Task<()>,
@@ -724,7 +725,6 @@ impl Workspace {
             gpui_performance: GpuiPerformanceSnapshot::default(),
             action_capture: ActionCapture::from_env(),
             animation_tick_task: None,
-            theme_picker: false,
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _performance_task: performance_task,
@@ -844,7 +844,6 @@ impl Workspace {
             gpui_performance: GpuiPerformanceSnapshot::default(),
             action_capture: None,
             animation_tick_task: None,
-            theme_picker: false,
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _performance_task: cx.spawn(async move |_, _| {}),
@@ -2531,12 +2530,10 @@ impl Workspace {
 
     fn select_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
         if preset == Theme::active_preset() {
-            self.theme_picker = false;
             cx.notify();
             return;
         }
         Theme::select(preset);
-        self.theme_picker = false;
         if let Err(error) = crate::config::persist_theme(preset.id()) {
             eprintln!("failed to persist desktop theme: {error}");
         }
@@ -4075,6 +4072,16 @@ impl Workspace {
                                             )
                                             .child("accounts"),
                                     )
+                                    .child(self.render_preference_tab(
+                                        SidebarView::Theme,
+                                        "theme",
+                                        cx,
+                                    ))
+                                    .child(self.render_preference_tab(
+                                        SidebarView::Settings,
+                                        "settings",
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .id("sidebar-unfinished-work")
@@ -4240,6 +4247,8 @@ impl Workspace {
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Files => self.render_files_sidebar(cx),
+                        SidebarView::Theme => self.render_theme_settings(cx),
+                        SidebarView::Settings => self.render_settings(cx),
                         SidebarView::Accounts => self.render_accounts(cx).unwrap_or_else(|| {
                             div()
                                 .debug_selector(|| "accounts-empty".into())
@@ -4727,72 +4736,164 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_theme_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let active = Theme::active_preset();
-        let button = div()
-            .id("theme-picker-button")
-            .debug_selector(|| "theme-picker-button".into())
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .cursor_pointer()
-            .bg(Theme::global().HEADER_BG)
-            .text_color(Theme::global().TEXT_DIM)
-            .hover(|el| {
-                el.text_color(Theme::global().TEXT)
-                    .bg(Theme::global().TOOL_BG)
+    fn render_preference_tab(
+        &self,
+        view: SidebarView,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = self.sidebar_view == view;
+        div()
+            .id(format!("sidebar-{label}-tab"))
+            .debug_selector(move || format!("sidebar-{label}-tab"))
+            .flex_none()
+            .border_1()
+            .border_color(Theme::global().PANEL_BORDER)
+            .px_2()
+            .py_1()
+            .rounded_t_md()
+            .h(px(30.0))
+            .flex()
+            .items_center()
+            .when(selected, |el| {
+                el.h(px(34.0)).border_b_0().bg(Theme::global().HEADER_BG)
             })
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(if selected {
+                Theme::global().TEXT
+            } else {
+                Theme::global().TEXT_DIM
+            })
+            .hover(|el| el.bg(Theme::global().HEADER_BG))
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.theme_picker = !this.theme_picker;
+                cx.listener(move |this, _, _, cx| {
+                    this.sidebar_view = view;
                     cx.notify();
                 }),
             )
-            .child(format!("Theme · {}", active.label()));
+            .child(label)
+            .into_any_element()
+    }
+
+    fn render_theme_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let active = Theme::active_preset();
         let mut picker = div()
-            .absolute()
-            .top(px(10.0))
-            .right(px(12.0))
+            .id("theme-settings")
+            .debug_selector(|| "theme-settings".into())
+            .p_3()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
-            .items_end()
-            .gap_1()
-            .child(button);
-        if self.theme_picker {
-            let mut menu = div()
-                .w(px(176.0))
-                .p_1()
-                .rounded_md()
-                .border_1()
-                .border_color(Theme::global().PANEL_BORDER)
-                .bg(Theme::global().PANEL_BG);
-            for (index, preset) in ThemePreset::ALL.into_iter().enumerate() {
-                menu = menu.child(
-                    div()
-                        .id(("theme-preset", index))
-                        .debug_selector(move || format!("theme-preset-{index}"))
-                        .px_3()
-                        .py_2()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_color(if preset == active {
-                            Theme::global().ACCENT
-                        } else {
-                            Theme::global().TEXT
-                        })
-                        .when(preset == active, |el| el.bg(Theme::global().ACCENT_DIM))
-                        .hover(|el| el.bg(Theme::global().TOOL_BG))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| this.select_theme(preset, cx)),
-                        )
-                        .child(preset.label()),
-                );
-            }
-            picker = picker.child(menu);
+            .gap_2()
+            .text_size(px(11.0))
+            .child(div().text_size(px(14.0)).child("Theme"))
+            .child(
+                div()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child("Choose a palette. Changes save automatically."),
+            );
+        for (index, preset) in ThemePreset::ALL.into_iter().enumerate() {
+            picker = picker.child(
+                div()
+                    .id(("theme-preset", index))
+                    .debug_selector(move || format!("theme-preset-{index}"))
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_color(if preset == active {
+                        Theme::global().ACCENT
+                    } else {
+                        Theme::global().TEXT
+                    })
+                    .when(preset == active, |el| el.bg(Theme::global().ACCENT_DIM))
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| this.select_theme(preset, cx)),
+                    )
+                    .child(if preset == active {
+                        format!("{}  ✓", preset.label())
+                    } else {
+                        preset.label().to_owned()
+                    }),
+            );
         }
         picker.into_any_element()
+    }
+
+    fn render_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut settings = div()
+            .id("workspace-settings")
+            .debug_selector(|| "workspace-settings".into())
+            .p_3()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .text_size(px(11.0))
+            .child(div().text_size(px(14.0)).child("Settings"))
+            .child(
+                div()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child("Current window"),
+            );
+        for (id, label, enabled) in [
+            ("settings-minimap", "Workspace minimap", self.show_minimap),
+            (
+                "settings-showcase",
+                "Show pressed shortcuts",
+                self.showcase_mode,
+            ),
+        ] {
+            settings = settings.child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .flex_none()
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            if id == "settings-minimap" {
+                                this.show_minimap = !this.show_minimap;
+                                cx.notify();
+                            } else {
+                                this.toggle_showcase(&ToggleShowcase, window, cx);
+                            }
+                        }),
+                    )
+                    .child(label)
+                    .child(
+                        div()
+                            .text_color(if enabled {
+                                Theme::global().ACCENT
+                            } else {
+                                Theme::global().TEXT_DIM
+                            })
+                            .child(if enabled { "On" } else { "Off" }),
+                    ),
+            );
+        }
+        settings
+            .child(
+                div()
+                    .mt_2()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child("Color palettes are in the Theme tab."),
+            )
+            .into_any_element()
     }
 
     /// The minimap: a rounded card in the top right that draws every strip to
@@ -6144,7 +6245,6 @@ impl Render for Workspace {
                             .overflow_hidden()
                             .child(content)
                             .child(self.render_workspace_bar(cx))
-                            .child(self.render_theme_picker(cx))
                             .when(
                                 self.show_minimap
                                     && !self.slots.is_empty()
@@ -7869,11 +7969,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let button = vcx
-            .debug_bounds("sidebar-unfinished-work")
-            .expect("todos launcher paints in the sidebar");
-        vcx.simulate_click(button.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(vcx, "sidebar-unfinished-work");
 
         assert!(
             vcx.debug_bounds("unfinished-work-list").is_some(),
@@ -7919,11 +8015,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let button = vcx
-            .debug_bounds("sidebar-unfinished-work")
-            .expect("todos launcher paints in the sidebar");
-        vcx.simulate_click(button.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(vcx, "sidebar-unfinished-work");
 
         workspace.update(vcx, |workspace, cx| {
             let panel = workspace.slots[workspace.active].panel.clone();
@@ -11259,7 +11351,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn theme_picker_and_shortcut_work_with_the_composer_focused(cx: &mut gpui::TestAppContext) {
+    fn theme_tab_and_shortcut_work_with_the_composer_focused(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let original = Theme::active_preset();
         Theme::select(ThemePreset::WarmNeutral);
@@ -11271,17 +11363,26 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let button = vcx
-            .debug_bounds("theme-picker-button")
-            .expect("theme picker paints");
-        vcx.simulate_click(button.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("theme-picker-button").is_none());
+        click_sidebar_navigation(vcx, "sidebar-theme-tab");
+        assert!(vcx.debug_bounds("theme-settings").is_some());
+        assert!(vcx.debug_bounds("sidebar-session-list").is_none());
+        for selector in [
+            "theme-preset-0",
+            "theme-preset-1",
+            "theme-preset-2",
+            "theme-preset-3",
+        ] {
+            assert!(vcx.debug_bounds(selector).is_some());
+        }
         let light = vcx
             .debug_bounds("theme-preset-3")
             .expect("all presets paint");
         vcx.simulate_click(light.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(Theme::active_preset(), ThemePreset::NeutralLight);
+        assert!(vcx.debug_bounds("theme-settings").is_some());
+        assert!(vcx.debug_bounds("theme-picker-button").is_none());
 
         // Workspace::new focuses the active panel's PromptInput. The global
         // action must bubble out of that focused composer rather than typing.
@@ -11289,5 +11390,80 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(Theme::active_preset(), ThemePreset::WarmNeutral);
         Theme::select(original);
+    }
+
+    fn click_sidebar_navigation(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+        // Use the real navigation scroll path so tabs beyond the narrow sidebar
+        // viewport must actually become reachable before clicking them.
+        for _ in 0..20 {
+            let tabs = cx.debug_bounds("sidebar-navigation-tabs").unwrap();
+            let tab = cx.debug_bounds(selector).unwrap();
+            if tab.left() >= tabs.left() && tab.right() <= tabs.right() {
+                cx.simulate_click(tab.center(), gpui::Modifiers::default());
+                cx.run_until_parked();
+                if selector.ends_with("-tab") {
+                    let selected = cx.debug_bounds(selector).unwrap();
+                    let body = cx.debug_bounds("sidebar-tab-body").unwrap();
+                    assert_eq!(selected.bottom(), body.top());
+                    assert_eq!(selected.size.height, px(34.0));
+                }
+                return;
+            }
+            let delta = if tab.left() < tabs.left() {
+                40.0
+            } else {
+                -40.0
+            };
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: tabs.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(delta), px(0.0))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+        }
+        panic!("sidebar tab {selector} was not reachable");
+    }
+
+    #[gpui::test]
+    fn settings_tab_toggles_window_preferences_and_preserves_theme_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("settings-test", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        click_sidebar_navigation(vcx, "sidebar-settings-tab");
+        assert!(vcx.debug_bounds("workspace-settings").is_some());
+        assert!(vcx.debug_bounds("theme-settings").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-list").is_none());
+        for selector in ["settings-minimap", "settings-showcase"] {
+            let initial = workspace.read_with(vcx, |w, _| (w.show_minimap, w.showcase_mode));
+            for _ in 0..2 {
+                let before = workspace.read_with(vcx, |w, _| (w.show_minimap, w.showcase_mode));
+                let button = vcx.debug_bounds(selector).unwrap();
+                vcx.simulate_click(button.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+                let after = workspace.read_with(vcx, |w, _| (w.show_minimap, w.showcase_mode));
+                if selector == "settings-minimap" {
+                    assert_eq!(after, (!before.0, before.1));
+                    assert_eq!(vcx.debug_bounds("minimap").is_some(), after.0);
+                } else {
+                    assert_eq!(after, (before.0, !before.1));
+                }
+            }
+            assert_eq!(
+                workspace.read_with(vcx, |w, _| (w.show_minimap, w.showcase_mode)),
+                initial
+            );
+        }
+        click_sidebar_navigation(vcx, "sidebar-theme-tab");
+        assert!(vcx.debug_bounds("workspace-settings").is_none());
+        assert!(vcx.debug_bounds("theme-settings").is_some());
+        click_sidebar_navigation(vcx, "sidebar-sessions-tab");
+        assert!(vcx.debug_bounds("theme-settings").is_none());
+        assert!(vcx.debug_bounds("theme-picker-button").is_none());
     }
 }

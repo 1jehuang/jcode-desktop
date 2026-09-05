@@ -6,6 +6,11 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
 ## Configuration
 
+The sidebar's **Theme** tab selects a palette and saves it automatically.
+The separate **Settings** tab toggles the workspace minimap and pressed-shortcut
+display for the current window. Scroll the sidebar tab strip to reach more tabs.
+Theme cycling also remains available with Super+Shift+T (Cmd+Shift+T on macOS).
+
 Jcode Desktop reads the `[desktop]` section of Jcode's shared
 `~/.jcode/config.toml` at startup (`$JCODE_HOME/config.toml` when `JCODE_HOME`
 is set). `JCODE_DESKTOP_CONFIG` can point to a standalone file containing the
