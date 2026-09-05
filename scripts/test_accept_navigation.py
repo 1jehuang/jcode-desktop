@@ -62,6 +62,13 @@ class NavigationCheckerTests(unittest.TestCase):
             path.write_text('strip=0 focus=1\nnavigation={"version":1}\n')
             self.assertEqual(accept.navigation_state(path), {'version': 1})
 
+    def test_rejects_failed_reload_even_if_linked_ui_can_render(self):
+        for message in ('initial UI rebuild failed', 'UI reload failed',
+                        'initial UI plugin activation failed; using the linked UI'):
+            with self.subTest(message=message), self.assertRaises(AssertionError):
+                accept.assert_reload_healthy(message)
+        accept.assert_reload_healthy('activated UI generation 2')
+
 
 if __name__ == '__main__':
     unittest.main()

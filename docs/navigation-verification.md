@@ -119,3 +119,30 @@ actual focus pin, click target, reorder and empty-row marker geometry.
 
 A fresh rebuild and rerun after this comparison passed the 68-step keyboard
 matrix again and all four rendered minimap checks (2026-09-05 21:20 UTC).
+
+### Whole-result rerun, 2026-09-05 21:35 UTC
+
+The complete result was exercised again, including the final native runner:
+
+- Full UI suite, serialized: **309 passed, 3 failed, 6 ignored**. The failures
+  were exactly the three named above. The 68-step navigation regression and all
+  four rendered map tests passed.
+- Python checker suite: **6 passed**, including rejection of failed plugin
+  activation even when the linked fallback UI can still render.
+- `python3 scripts/accept-navigation.py target/nav-whole-pass --reloads 1`:
+  **41 checkpoints passed**, four real sessions, one actual hot reload,
+  **zero skipped panels and zero focus mismatches**. An independent comparison
+  of the saved trace verified every expected row/position and agreement between
+  keyboard focus and map state, including empty rows.
+
+The preceding attempt hit the user's `/tmp` quota during plugin staging. The
+runner now keeps linker/reload temporaries beside its disk-backed artifacts and
+checks activation failures before accepting a state checkpoint. This corrected
+runner was included in the successful whole-result run, not merely inspected.
+
+Machine-readable results and individual logs are in
+`target/navigation-whole-result/summary.json` and its directory. Native state,
+screenshot and app logs are in `target/nav-whole-pass`. The tested runner SHA-256
+was `76db08fad677798a79cd6e0d1d401e51325a8c3b3cdf91db09be8043f3701237`.
+The scoped navigation acceptance passed. The full UI suite remains explicitly
+not green because of the three existing failures.

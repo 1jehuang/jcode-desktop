@@ -45,6 +45,12 @@ def assert_state(state, row, position, sessions=None):
         assert [p['session'] for p in panels] == sessions, 'Navigation changed the panel order'
 
 
+def assert_reload_healthy(log):
+    assert not any(error in log for error in (
+        'UI rebuild failed', 'UI reload failed', 'initial UI plugin activation failed',
+    )), log
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
@@ -88,10 +94,13 @@ def main():
         'CARGO_HOME': str(cargo_home),
         'RUSTUP_HOME': os.environ.get('RUSTUP_HOME', str(Path.home() / '.rustup')),
         'CARGO_NET_OFFLINE': 'true',
+        # Reload generations and linker temporaries are large. Keep them with
+        # this run's disk-backed artifacts, not the user's quota-limited /tmp.
+        'TMPDIR': str(root / 'tmp'),
     })
     jcode = shutil.which('jcode')
     env['PATH'] = ':'.join([str(cargo.parent), str(Path(jcode).parent), '/usr/bin', '/bin'])
-    for name in ('home', 'runtime', 'config', 'cache', 'data', 'jcode'):
+    for name in ('home', 'runtime', 'config', 'cache', 'data', 'jcode', 'tmp'):
         (root / name).mkdir(mode=0o700)
     (root / 'desktop.toml').write_text('[workspace]\ncoaching_hints = false\n')
     processes, logs = [], []
@@ -109,11 +118,12 @@ def main():
     def wait_until(predicate, label, timeout=60):
         deadline = time.monotonic() + timeout
         report_at = time.monotonic() + 20
-        while not predicate():
+        while True:
             assert all(p.poll() is None for p in processes), 'Child process exited: ' + label
             if diagnostics.exists():
-                log = diagnostics.read_text()
-                assert not any(error in log for error in ('UI rebuild failed', 'UI reload failed')), log
+                assert_reload_healthy(diagnostics.read_text())
+            if predicate():
+                return
             if time.monotonic() >= deadline:
                 raise AssertionError('Timed out: ' + label + '\n' + (state_path.read_text() if state_path.exists() else 'No state'))
             if time.monotonic() >= report_at:
