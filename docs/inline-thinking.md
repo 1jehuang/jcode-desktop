@@ -47,5 +47,32 @@ answer. Selection itself is covered by the passing GPUI interaction test above.
 Two attempts to rerun the expanded tests after the palette-only change were
 externally terminated with SIGTERM during rustc. Those attempts are not passes.
 
-The running desktop was launched without hot reload. A restart requires user
-approval because unsent drafts and host-owned terminal state could be lost.
+## Post-reload verification
+
+The interrupted focused check was rerun successfully on the current source:
+
+```sh
+cargo test -j 1 -p jcode-desktop-ui --lib -- reasoning markdown::tests theme::tests --test-threads=1
+```
+
+All **36 tests passed**, including the new all-palette reasoning contrast
+assertion. Log: `target/reasoning-post-reload-tests.log`.
+A subsequent full-suite attempt encountered newly edited, uncommitted
+`live_tabs.rs` test compilation errors (temporary selectors passed to
+`debug_bounds`, which requires a static lifetime). That attempt did not run
+the suite. The earlier five scrolling failures above remain the last observed
+full-suite result, not an assessment of every subsequent concurrent change.
+
+The earlier restart-approval blocker is no longer current. Other desktop work
+launched a new instance (PID 3917913, started at 15:40:36 on September 5).
+Its executable was built at 15:38:52, after both reasoning commits. This task
+did not restart or interrupt it. To verify exactly what was deployed, its
+executable was copied from `/proc/3917913/exe` and rendered with the isolated
+reasoning screenshot fixture. Source and copy had matching SHA-256:
+
+`25a43315cabe61c8ff006250d328d88e9c5b03d6c8bc03915baaccf8b728c7a2`
+
+`target/reasoning-running-build.png` was inspected and shows the requested
+dimmed inline thinking, intact Markdown, and no reasoning labels, card, or
+disclosure controls. This verifies the running executable's presentation
+without manipulating the user's live conversation or desktop window.
