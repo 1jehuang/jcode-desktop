@@ -4593,6 +4593,7 @@ mod tests {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.enable_test_minimap();
             workspace.push_test_panel("minimap-render-state", cx);
             workspace
         });

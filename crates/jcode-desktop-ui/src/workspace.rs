@@ -405,6 +405,8 @@ pub struct Workspace {
     bridge: Bridge,
     host: HostHandle,
     show_sidebar: bool,
+    // Temporarily hidden. Keep the renderer available for re-enabling later.
+    show_minimap: bool,
     sidebar_view: SidebarView,
     expanded_directories: HashSet<PathBuf>,
     slots: Vec<Slot>,
@@ -579,6 +581,7 @@ impl Workspace {
         let mut workspace = Self {
             bridge,
             host,
+            show_minimap: false,
             show_sidebar: sidebar_enabled(
                 std::env::args_os(),
                 crate::config::get().workspace.sidebar,
@@ -661,6 +664,11 @@ impl Workspace {
         workspace
     }
 
+    #[cfg(test)]
+    pub(crate) fn enable_test_minimap(&mut self) {
+        self.show_minimap = true;
+    }
+
     /// A workspace with no runtime and a caller-supplied coach, for tests that
     /// drive real keystrokes through the real keymap.
     #[cfg(test)]
@@ -670,6 +678,7 @@ impl Workspace {
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             show_sidebar: true,
+            show_minimap: false,
             sidebar_view: SidebarView::Sessions,
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
@@ -4468,7 +4477,12 @@ impl Workspace {
     ) -> gpui::AnyElement {
         div()
             .absolute()
-            .top(px(MINIMAP_TOP + MINIMAP_HEIGHT + COACH_TOAST_GAP))
+            .top(px(MINIMAP_TOP
+                + if self.show_minimap {
+                    MINIMAP_HEIGHT + COACH_TOAST_GAP
+                } else {
+                    0.0
+                }))
             .right(px(MINIMAP_RIGHT))
             .w(px(COACH_TOAST_WIDTH))
             .min_w_0()
@@ -5730,9 +5744,10 @@ impl Render for Workspace {
                     .pt(px(content_top_inset))
                     .child(content)
                     .child(self.render_workspace_bar(cx))
-                    .when(!self.slots.is_empty() && overview_progress <= 0.0, |el| {
-                        el.child(self.render_minimap(viewport_w, viewport_h, cx))
-                    })
+                    .when(
+                        self.show_minimap && !self.slots.is_empty() && overview_progress <= 0.0,
+                        |el| el.child(self.render_minimap(viewport_w, viewport_h, cx)),
+                    )
                     .when_some(coach_hint.filter(|_| coach_progress > 0.0), |el, hint| {
                         el.child(self.render_coach_toast(&hint, coach_progress, cx))
                     })
@@ -8203,6 +8218,7 @@ mod tests {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.enable_test_minimap();
             for name in ["one", "two", "three"] {
                 workspace.push_test_panel(name, cx);
             }
@@ -8318,6 +8334,7 @@ mod tests {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.enable_test_minimap();
             for name in ["one", "two", "three"] {
                 workspace.push_test_panel(name, cx);
             }
@@ -8870,6 +8887,7 @@ mod tests {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(coach, cx);
+            workspace.enable_test_minimap();
             for name in ["one", "two", "three", "four", "five"] {
                 workspace.push_test_panel(name, cx);
             }
@@ -9609,9 +9627,22 @@ mod tests {
     }
 
     #[gpui::test]
+    fn minimap_is_hidden_by_default(cx: &mut gpui::TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
+            workspace
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("panel-0").is_some());
+        assert!(cx.debug_bounds("minimap").is_none());
+    }
+
+    #[gpui::test]
     fn minimap_status_accents_leave_room_for_focus_and_viewport(cx: &mut gpui::TestAppContext) {
         let (_, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.enable_test_minimap();
             workspace.push_test_panel("one", cx);
             workspace
         });
@@ -9637,6 +9668,7 @@ mod tests {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.enable_test_minimap();
             for name in ["one", "two", "three"] {
                 workspace.push_test_panel(name, cx);
             }
@@ -9705,6 +9737,7 @@ mod tests {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.enable_test_minimap();
             workspace.push_test_panel("one", cx);
             let _ = window;
             workspace
