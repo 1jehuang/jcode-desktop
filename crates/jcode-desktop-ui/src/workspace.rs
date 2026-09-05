@@ -103,6 +103,10 @@ mod live_tabs;
 #[path = "panel_surface_tests.rs"]
 mod panel_surface_tests;
 
+#[cfg(test)]
+#[path = "hover_scroll_tests.rs"]
+mod hover_scroll_tests;
+
 #[path = "tutorial.rs"]
 mod tutorial;
 
@@ -2856,6 +2860,9 @@ impl Workspace {
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let mut panel_left = 0.0;
         let mut active_surface = None;
+        // Capture actual painted bounds, including camera/width/order animation
+        // and clipping. Keyboard focus is not a wheel hit-test target.
+        let panel_hitboxes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         for (((index, width), order_offset), close_progress) in indices
             .into_iter()
             .zip(animated_widths)
@@ -2864,6 +2871,7 @@ impl Workspace {
         {
             let slot = &self.slots[index];
             let focused = index == self.active;
+            let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
             let top = FOLDER_CONTENT_INSET.min(panel_h / 2.0);
             panel_left += width + GAP;
@@ -2910,6 +2918,17 @@ impl Workspace {
                         this.clicked_to_focus(index, cx);
                         this.set_active(index, cx);
                     }),
+                )
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, _| {
+                            let hitbox = window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal);
+                            surface_hitboxes.borrow_mut().push((index, hitbox));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
                 )
                 .child(slot.panel.clone());
             if focused {
@@ -2979,8 +2998,16 @@ impl Workspace {
                                     if this.active_row != row {
                                         return;
                                     }
+                                    let hovered_panel = panel_hitboxes
+                                        .borrow()
+                                        .iter()
+                                        .rev()
+                                        .find_map(|(index, hitbox)| {
+                                            hitbox.should_handle_scroll(window).then_some(*index)
+                                        });
                                     if this.route_strip_scroll(
                                         row,
+                                        hovered_panel,
                                         event,
                                         total_width,
                                         viewport_w,
@@ -3044,6 +3071,7 @@ impl Workspace {
     fn route_strip_scroll(
         &mut self,
         row: usize,
+        hovered_panel: Option<usize>,
         event: &gpui::ScrollWheelEvent,
         total_width: f32,
         viewport_w: f32,
@@ -3060,9 +3088,8 @@ impl Workspace {
             }
             dy = 0.0;
         }
-        let empty_panel = self
-            .slots
-            .get(self.active)
+        let empty_panel = hovered_panel
+            .and_then(|index| self.slots.get(index))
             .filter(|slot| slot.row == row)
             .is_some_and(|slot| !slot.panel.read(cx).has_scrollable_conversation());
         if empty_panel && dx == 0.0 && dy != 0.0 {
