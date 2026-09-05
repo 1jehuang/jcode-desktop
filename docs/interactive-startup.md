@@ -34,6 +34,20 @@ checks real native typing while both services are blocked, then session
 attachment and the automatic UI-generation handoff without submitting a prompt
 or invoking inference.
 
+For a short first-panel check without waiting for a build or session attachment:
+
+```sh
+python3 scripts/accept-startup.py target/startup-timing --startup-only
+python3 scripts/accept-startup.py target/startup-trace --startup-only --trace-startup
+```
+
+The optional trace requires `strace` and writes `startup.strace` in the output
+directory. Both modes still verify native typing and draft retention after Enter
+while the runtime and Cargo gates remain blocked. They do not replace the full
+attachment/reload check. Use `--binary /path/to/jcode-desktop` to compare builds.
+`timing.jsonl` records checkpoints relative to runner startup. Subtract
+`app-launch` from `first-panel-ready` to measure process-to-focused-panel latency.
+
 ## Verification, 2026-09-05
 
 - All four GPUI startup tests passed. Coverage exercises focused editing before connection, retained
@@ -76,3 +90,23 @@ Final checks were interrupted by a harness restart, concurrent edits, and a
 full-disk linker failure. Removing only unmapped temporary test plugin copies
 restored build capacity. The completed host test run, native reload acceptance,
 and live UI-generation activation above are the recovery evidence.
+
+### Follow-up first-panel profile
+
+Three consecutive native startup-only checks passed with a fixed host binary:
+
+| Run | Process launch to focused panel | Trace enabled |
+| --- | ---: | --- |
+| `target/startup-trace-1` | 0.707s | yes |
+| `target/startup-timing-1` | 0.756s | no |
+| `target/startup-timing-2` | 0.351s | no |
+
+These use private, initially empty application caches and software rendering.
+They are focused-panel state observations followed by native input checks, not
+hardware display presentation timestamps or an unloaded-machine benchmark.
+The syscall trace reaches its first workspace state write 0.650s after exec.
+It shows font discovery before approximately 0.142s and software graphics/shader
+cache initialization from approximately 0.182s through 0.575s, followed by font
+matching and workspace setup. It does not show a runtime or Cargo wait on the
+main thread. No platform font or graphics shortcuts were introduced based on
+this software-rendered profile.

@@ -51,6 +51,10 @@ def main():
                         help='seconds allowed after releasing each blocked process')
     parser.add_argument('--runtime-delay', type=float, default=2,
                         help='extra delay after releasing the isolated Jcode companion')
+    parser.add_argument('--startup-only', action='store_true',
+                        help='stop after proving input works with runtime and Cargo blocked')
+    parser.add_argument('--trace-startup', action='store_true',
+                        help='record strace syscall timings for startup attribution')
     args = parser.parse_args()
     if args.timeout <= 0 or args.runtime_delay < 0:
         parser.error('timeout must be positive and runtime-delay nonnegative')
@@ -63,6 +67,8 @@ def main():
     for name in required:
         if not shutil.which(name):
             parser.error('missing executable: ' + name)
+    if args.trace_startup and not shutil.which('strace'):
+        parser.error('--trace-startup requires strace')
     xclip = shutil.which('xclip')
     if not xclip and not (shutil.which('tesseract') and shutil.which('magick')):
         parser.error('native text verification requires xclip or tesseract plus ImageMagick')
@@ -200,7 +206,10 @@ exec "{cargo}" "$@"
         env['DISPLAY'] = ':' + display
         launch('wm', ['openbox', '--sm-disable', '--config-file', str(wm_config)])
         record('app-launch')
-        launch('app', [str(binary), '--hot-reload'])
+        command = [str(binary), '--hot-reload']
+        if args.trace_startup:
+            command = ['strace', '-f', '-ttt', '-T', '-o', str(root / 'startup.strace'), *command]
+        launch('app', command)
 
         wait_until(lambda: (s := navigation_state(state_path)) is not None and
                    focused_panel(s).get('session') == STARTUP_SESSION,
@@ -220,6 +229,9 @@ exec "{cargo}" "$@"
         assert text_verified('pending-enter') == proof, 'text proof method changed'
         capture('01-blocked-typed.png')
         record('blocked-typed-enter-disabled', pending, text_verified=proof)
+        if args.startup_only:
+            print('PASS: startup panel is editable while runtime and Cargo remain blocked.', flush=True)
+            return
 
         (root / 'release-jcode').touch()
         wait_until(lambda: (s := navigation_state(state_path)) is not None and
