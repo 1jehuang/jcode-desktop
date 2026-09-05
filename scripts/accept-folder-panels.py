@@ -21,18 +21,27 @@ from PIL import Image, ImageDraw
 from screenshot import isolated_env
 
 
-def check_strip(image, focused):
+def check_strip(image, focused, count=3):
     """Assert visible public output, not a copied layout implementation."""
     active, idle = (37, 34, 31), (48, 43, 39)
     targets = []
-    for index in range(3):
-        x = 296 + 381 * index
+    fraction = 0.5 if count == 2 else 0.25
+    panel_width = (image.width - 288) * fraction
+    for index in range(count):
+        x = round(296 + panel_width * index)
         color = active if index == focused else idle
         assert image.getpixel((x, 300)) == color, 'Focus must change surface color'
         assert image.getpixel((x, 983)) == color, 'Folders must share their bottom edge'
         assert all(image.getpixel((x, y)) == idle for y in range(984, 1000))
         targets.append((x, 300))
-    assert all(image.getpixel((270, y)) == active for y in range(60, 984)), 'Page gutter must stay open'
+    # The selected page must have a visible tab above its shoulder, not blend
+    # into the window as the rejected full-page background did.
+    for index in range(count):
+        x = round(276 + panel_width * (index + 0.5))
+        assert image.getpixel((x, 8)) == idle, 'Keep background above the folder'
+        assert image.getpixel((x, 24)) == (active if index == focused else idle), 'Only the focused tab rises above the shoulder'
+    assert image.getpixel((image.width - 6, 500)) == idle, 'Keep the outer right edge visible'
+    assert image.getpixel((270, 40)) == active, 'Native shoulder must connect the selected tab to the panel'
     assert all(image.getpixel((x, 300)) in (active, idle) for x in range(276, 1417))
     selected_rows = []
     for color, rows in groupby(range(60, 450), lambda y: image.getpixel((250, y))):
@@ -46,7 +55,7 @@ def check_strip(image, focused):
     # panel from its selected sidebar tab.
     page = image.copy()
     marker = (255, 0, 255)
-    ImageDraw.floodfill(page, (270, 500), marker)
+    ImageDraw.floodfill(page, (270, 40), marker)
     assert page.getpixel(selected) == marker, 'Selected sidebar tab must join the page gutter'
     assert page.getpixel(targets[focused]) == marker, 'Page gutter must reach the focused panel'
     backing = image.copy()
@@ -61,7 +70,11 @@ def check_strip(image, focused):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--panels', type=int, choices=(2, 3), default=3)
     args = parser.parse_args()
+    count = args.panels
+    fraction = 0.5 if count == 2 else 0.25
+    width_key = 'super+2' if count == 2 else 'super+1'
     repo = Path(__file__).resolve().parents[1]
     root = args.output.resolve()
     if len(str(root / 'runtime/daemon.sock').encode()) >= 104:
@@ -153,7 +166,7 @@ def main():
         print(name + ': ' + state().splitlines()[0], flush=True)
         image = Image.open(path).convert('RGB')
         if strip:
-            check_strip(image, int(re.search(r'focus=(\d+)', state())[1]))
+            check_strip(image, int(re.search(r'focus=(\d+)', state())[1]), count)
         return image
 
     read_fd, write_fd = os.pipe()
@@ -178,27 +191,40 @@ def main():
         time.sleep(0.5)
         launch('desktop', [str(repo / 'target/debug/jcode-desktop')])
         wait_until(lambda: re.search(r'widths=\d', state()), 'First SDK-created panel rendered')
-        key('super+1')
-        for count in (2, 3):
+        key(width_key)
+        for created in range(2, count + 1):
             key('super+n')
-            wait_until(lambda: len(state().split('widths=')[-1].splitlines()[0].split(',')) == count,
-                       f'{count} SDK-created panels rendered')
-            key('super+1')
-        wait_until(lambda: 'widths=0.25,0.25,0.25' in state(), 'Three native width changes accepted')
+            wait_until(lambda: len(state().split('widths=')[-1].splitlines()[0].split(',')) == created,
+                       f'{created} SDK-created panels rendered')
+            key(width_key)
+        expected_widths = 'widths=' + ','.join([f'{fraction:.2f}'] * count)
+        wait_until(lambda: expected_widths in state(), 'Native width changes accepted')
+        unnamed = capture('unnamed-folders', strip=False)
+        for index in range(count):
+            left = round(276 + (1800 - 288) * fraction * index)
+            top = 16 if index == count - 1 else 48
+            ink = sum(
+                unnamed.getpixel((x, y)) not in ((37, 34, 31), (48, 43, 39))
+                for x in range(left + 12, left + 160)
+                for y in range(top + 8, top + 22)
+            )
+            assert ink > 30, 'An unnamed real session must still paint its folder label'
         diagnostics = root / 'logs/jcode-desktop/jcode-desktop.log'
         ids = list(dict.fromkeys(re.findall(r'adopting created session (session_\S+)', diagnostics.read_text())))
-        assert len(ids) == 3
+        assert len(ids) == count
+        refreshes = diagnostics.read_text().count('session list completed')
         name_sessions(ids)
         # Use the supported five-second refresh setting and wait for its actual
-        # bridge response rather than assuming a frame has the new catalog.
-        wait_until(lambda: re.search(r'session list completed[^\n]*\([1-9][0-9]* sessions\)', diagnostics.read_text()),
-                   'Real catalog refresh delivered renamed session metadata')
+        # bridge response. A bounded runtime catalog can omit open sessions;
+        # Workspace must retain their real SDK-backed panel identities anyway.
+        wait_until(lambda: diagnostics.read_text().count('session list completed') > refreshes,
+                   'Real catalog refresh completed; open-session sidebar preserved')
         key('super+u')
         key('super+l')
         wait_until(lambda: 'focus=1 ' in state(), 'Native keyboard focuses middle folder')
         capture('middle-focused')
-        for index in (0, 2):
-            x = round(276 + (1800 - 276) * 0.25 * (index + 0.5))
+        for index in (0, count - 1):
+            x = round(276 + (1800 - 288) * fraction * (index + 0.5))
             subprocess.run(['xdotool', 'mousemove', str(x), '500', 'click', '1'], env=env, check=True, timeout=10)
             wait_until(lambda: f'focus={index} ' in state(), f'Native click focuses folder {index}')
             capture(f'folder-{index}-focused')
@@ -212,12 +238,12 @@ def main():
                 pixels = list(pixels)
                 if color == (48, 43, 39) and 280 <= len(pixels) <= 320:
                     bands.append((pixels[0], pixels[-1]))
-            if len(bands) == 3:
+            if len(bands) == count:
                 cards = bands
                 break
-        assert len(cards) == 3, 'Overview must show all three real sessions'
+        assert len(cards) == count, 'Overview must show all real sessions'
         body_y = header_y + 70
-        assert overview.getpixel((cards[2][0] + 4, body_y)) == (37, 34, 31)
+        assert overview.getpixel((cards[count - 1][0] + 4, body_y)) == (37, 34, 31)
         left, right = cards[0]
         subprocess.run(['xdotool', 'mousemove', str((left + right) // 2), str(body_y)], env=env, check=True, timeout=10)
         hovered = capture('overview-hover', strip=False)
@@ -225,11 +251,46 @@ def main():
         subprocess.run(['xdotool', 'click', '1'], env=env, check=True, timeout=10)
         wait_until(lambda: 'focus=0 ' in state(), 'Native overview selection focuses left folder')
         capture('overview-selected')
+        # Use the real navigation scrollbar and Settings tab, not direct app
+        # state mutation. The two modes must be selectable and persistent.
+        def click(x, y):
+            subprocess.run(['xdotool', 'mousemove', str(x), str(y), 'click', '1'], env=env, check=True, timeout=10)
+        # Settings sits midway through the overflow tabs, before the action tabs.
+        click(132, 5)
+        time.sleep(0.3)
+        click(142, 36)
+        capture('settings-navigation', strip=False)
+        wait_until(lambda: 'sidebar=Settings' in state(), 'Native Settings tab opened', timeout=10)
+        settings = capture('settings-folder-mode', strip=False)
+        controls = []
+        for color, rows in groupby(range(100, 400), lambda y: settings.getpixel((16, y))):
+            rows = list(rows)
+            if color == (37, 34, 31) and 24 <= len(rows) <= 60:
+                controls.append(rows)
+        assert len(controls) == 3, 'Find the three actual native Settings controls'
+        mode_y = controls[-1][len(controls[-1]) // 2]
+        click(130, mode_y)
+        wait_until(lambda: 'layout=Normal' in state(), 'Native Settings switched to Normal mode')
+        assert 'layout_mode = "normal"' in (root / 'desktop.toml').read_text()
+        normal = capture('normal-mode', strip=False)
+        normal_width = (1800 - 264) * fraction
+        # Separate cards have a real background gap, not a connected sheet.
+        assert normal.getpixel((round(264 + normal_width), 300)) == (28, 26, 24)
+        for i in range(count):
+            assert normal.getpixel((round(284 + normal_width * i), 300)) == (37, 34, 31)
+        click(130, mode_y)
+        wait_until(lambda: 'layout=FolderTabs' in state(), 'Native Settings restored Folder tabs mode')
+        assert 'layout_mode = "folder_tabs"' in (root / 'desktop.toml').read_text()
+        click(14, 5)
+        time.sleep(0.3)
+        click(35, 36)
+        wait_until(lambda: 'sidebar=Sessions' in state(), 'Native chat navigation restored')
+        capture('folder-mode-restored')
         log = (root / 'logs/jcode-desktop/jcode-desktop.log').read_text()
         sessions = set(re.findall(r'adopting created session (session_\S+)', log))
-        assert len(sessions) == 3, f'Expected three real runtime session IDs, got {sessions}'
+        assert len(sessions) == count, f'Expected {count} real runtime session IDs, got {sessions}'
         assert 'screenshot-fixture' not in log
-        print(f'PASS: 3 real SDK sessions, keyboard/pointer focus, overview hover/selection, and rendered geometry/colors. Artifacts: {root}', flush=True)
+        print(f'PASS: {count} real SDK sessions, keyboard/pointer focus, overview hover/selection, and rendered geometry/colors. Artifacts: {root}', flush=True)
     finally:
         os.close(read_fd)
         if write_fd is not None:

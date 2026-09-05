@@ -1,6 +1,6 @@
 //! Persisted user configuration for Jcode Desktop.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::OnceLock, time::Duration};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -14,6 +14,8 @@ pub struct DesktopConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
+    /// Overall workspace presentation.
+    pub layout_mode: LayoutMode,
     /// Built-in color theme. Unknown names fall back to warm-neutral.
     pub theme: String,
     /// UI font family. The platform-specific built-in remains the default.
@@ -26,6 +28,14 @@ pub struct AppearanceConfig {
     pub reduce_motion: bool,
     /// Semantic color overrides. Keys are documented in README.md.
     pub colors: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutMode {
+    Normal,
+    #[default]
+    FolderTabs,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -56,6 +66,7 @@ impl Default for DesktopConfig {
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
+            layout_mode: LayoutMode::default(),
             theme: "warm-neutral".into(),
             ui_font: None,
             mono_font: None,
@@ -140,7 +151,39 @@ pub fn persist_theme(_theme: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
+pub fn persist_layout_mode(layout_mode: LayoutMode) -> std::io::Result<()> {
+    let path = path();
+    let standalone = std::env::var_os("JCODE_DESKTOP_CONFIG").is_some();
+    persist_layout_mode_at(&path, standalone, layout_mode)
+}
+
+#[cfg(test)]
+pub fn persist_layout_mode(_layout_mode: LayoutMode) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn persist_theme_at(path: &std::path::Path, standalone: bool, theme: &str) -> std::io::Result<()> {
+    persist_appearance_value_at(path, standalone, "theme", &format!("{theme:?}"))
+}
+
+fn persist_layout_mode_at(
+    path: &std::path::Path,
+    standalone: bool,
+    layout_mode: LayoutMode,
+) -> std::io::Result<()> {
+    let value = toml::Value::try_from(layout_mode)
+        .expect("layout mode serializes")
+        .to_string();
+    persist_appearance_value_at(path, standalone, "layout_mode", &value)
+}
+
+fn persist_appearance_value_at(
+    path: &std::path::Path,
+    standalone: bool,
+    key: &str,
+    value: &str,
+) -> std::io::Result<()> {
     let section = if standalone {
         "[appearance]"
     } else {
@@ -165,18 +208,18 @@ fn persist_theme_at(path: &std::path::Path, standalone: bool, theme: &str) -> st
         if let Some(index) = (start + 1..end).find(|&index| {
             lines[index]
                 .split_once('=')
-                .is_some_and(|(key, _)| key.trim() == "theme")
+                .is_some_and(|(candidate, _)| candidate.trim() == key)
         }) {
-            lines[index] = format!("theme = {theme:?}");
+            lines[index] = format!("{key} = {value}");
         } else {
-            lines.insert(start + 1, format!("theme = {theme:?}"));
+            lines.insert(start + 1, format!("{key} = {value}"));
         }
     } else {
         if !text.is_empty() && !text.ends_with('\n') {
             lines.push(String::new());
         }
         lines.push(section.into());
-        lines.push(format!("theme = {theme:?}"));
+        lines.push(format!("{key} = {value}"));
     }
     text = lines.join("\n");
     text.push('\n');
@@ -248,6 +291,7 @@ mod tests {
         .unwrap();
         let config = config.normalize();
         assert_eq!(config.appearance.text_scale, 1.0);
+        assert_eq!(config.appearance.layout_mode, LayoutMode::FolderTabs);
         assert_eq!(config.appearance.theme, "neutral-dark");
         assert_eq!(config.appearance.colors["accent"], "#ff00aa");
         assert!(!config.workspace.sidebar);
@@ -292,5 +336,24 @@ mod tests {
         let text = fs::read_to_string(path).unwrap();
         assert_eq!(text.matches("theme =").count(), 1);
         assert_eq!(parse(&text, false).unwrap().appearance.theme, "warm-studio");
+    }
+
+    #[test]
+    fn layout_mode_defaults_to_folder_tabs_and_persists_without_losing_config() {
+        assert_eq!(DesktopConfig::default().appearance.layout_mode, LayoutMode::FolderTabs);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "# keep me\nmodel = \"openai:gpt-5\"\n").unwrap();
+
+        persist_layout_mode_at(&path, false, LayoutMode::Normal).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("model = \"openai:gpt-5\""));
+        assert_eq!(parse(&text, false).unwrap().appearance.layout_mode, LayoutMode::Normal);
+
+        persist_layout_mode_at(&path, false, LayoutMode::FolderTabs).unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert_eq!(text.matches("layout_mode =").count(), 1);
+        assert_eq!(parse(&text, false).unwrap().appearance.layout_mode, LayoutMode::FolderTabs);
     }
 }

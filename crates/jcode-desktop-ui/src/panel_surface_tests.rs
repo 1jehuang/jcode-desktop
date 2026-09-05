@@ -40,18 +40,16 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                 }
                 assert_eq!(workspace.read_with(vcx, |w, _| w.active), focused);
                 let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-                let backing = vcx.debug_bounds("folder-backing-bridge").unwrap();
+                assert!(vcx.debug_bounds("native-folder-surface").is_some());
+                assert!(vcx.debug_bounds("folder-selected-sheet").is_none());
+                let shoulder = canvas.top() + px(FOLDER_PAGE_TOP);
                 let expected_left = if sidebar {
                     SIDEBAR_WIDTH + FOLDER_CONNECTOR_WIDTH
                 } else {
                     0.0
                 };
                 assert_eq!(canvas.left(), px(expected_left));
-                assert_eq!(
-                    backing.left(),
-                    px(if sidebar { SIDEBAR_WIDTH } else { 0.0 })
-                );
-                assert_eq!(backing.bottom(), canvas.bottom());
+                assert_eq!(canvas.right(), px(width - FOLDER_RIGHT_MARGIN));
                 let panels = ["panel-0", "panel-1", "panel-2"]
                     .into_iter()
                     .map(|id| vcx.debug_bounds(id).unwrap())
@@ -70,7 +68,7 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                         (f32::from(canvas.bottom() - panel.bottom()) - STRIP_PADDING_Y).abs() < 1.
                     );
                     assert!(panel.size.height > px(200.));
-                    assert_eq!(panel.bottom(), backing.top());
+                    assert_eq!(panel.bottom(), canvas.bottom() - px(STRIP_PADDING_Y));
                 }
                 for pair in panels.windows(2) {
                     assert!(
@@ -83,7 +81,51 @@ fn folder_panels_keep_canvas_space_and_transfer_the_raised_tab(cx: &mut gpui::Te
                         "folders share one baseline"
                     );
                 }
+                assert!(
+                    panels[focused].top() < shoulder,
+                    "active tab must visibly rise above the sheet"
+                );
+                for (index, panel) in panels.iter().enumerate() {
+                    if index != focused {
+                        assert!(
+                            panel.top() > shoulder,
+                            "leave a visible connecting shoulder above inactive folders"
+                        );
+                    }
+                }
             }
         }
     }
+}
+
+#[gpui::test]
+fn normal_mode_uses_separate_equal_height_panels_without_the_folder_surface(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        for name in ["Left", "Right"] {
+            workspace.push_test_panel(name, cx);
+        }
+        workspace.layout_mode = crate::config::LayoutMode::Normal;
+        workspace
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("native-folder-surface").is_none());
+    let a = vcx.debug_bounds("panel-0").unwrap();
+    let b = vcx.debug_bounds("panel-1").unwrap();
+    assert_eq!(a.top(), b.top());
+    assert_eq!(a.bottom(), b.bottom());
+    assert_eq!(b.left() - a.right(), px(12.));
+    workspace.update(vcx, |workspace, cx| {
+        workspace.layout_mode = crate::config::LayoutMode::FolderTabs;
+        workspace.camera_dirty.fill(true);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("native-folder-surface").is_some());
+    let a = vcx.debug_bounds("panel-0").unwrap();
+    let b = vcx.debug_bounds("panel-1").unwrap();
+    assert_eq!(b.left(), a.right());
+    assert_ne!(a.top(), b.top());
 }

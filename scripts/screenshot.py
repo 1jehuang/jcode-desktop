@@ -42,6 +42,7 @@ def main():
                         help="show a connected folder group with its middle panel focused")
     parser.add_argument("--focus-panel", type=int,
                         help="click this zero-based panel through X11 before capture")
+    parser.add_argument("--layout-mode", choices=("normal", "folder_tabs"), default="folder_tabs")
     args = parser.parse_args()
     if args.focus_panel is not None and not 0 <= args.focus_panel < args.panels:
         parser.error("focus-panel must identify one of the displayed panels")
@@ -50,7 +51,9 @@ def main():
     width, height = (int(n) for n in args.size.split("x"))
     if not (640 <= width <= 7680 and 480 <= height <= 4320):
         parser.error("size must be between 640x480 and 7680x4320")
-    if args.focus_panel is not None and (width - 276) / args.panels < 320:
+    canvas_left = 276 if args.layout_mode == "folder_tabs" else 264
+    canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
+    if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
     for tool in ("Xvfb", "import", "openbox"):
         if not shutil.which(tool):
@@ -70,6 +73,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        config = root / "desktop.toml"
+        config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\n')
+        env["JCODE_DESKTOP_CONFIG"] = str(config)
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
@@ -122,7 +128,7 @@ def main():
                     # Native X11
                     # input crosses the same platform -> GPUI -> workspace path
                     # as a user click, on this private display only.
-                    x = round(276 + (width - 276) * (args.focus_panel + 0.5) / args.panels)
+                    x = round(canvas_left + (width - canvas_insets) * (args.focus_panel + 0.5) / args.panels)
                     subprocess.run(["xdotool", "mousemove", str(x), str(height // 2), "click", "1"],
                                    env=env, cwd=root, check=True, timeout=10)
                     deadline = time.monotonic() + 10

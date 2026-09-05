@@ -3498,8 +3498,7 @@ impl Render for Panel {
 
         let show_jump_chip = !self.stick_to_bottom;
         let model_picker = self.model_picker_open.then(|| self.render_model_picker(cx));
-        let session_title = custom_session_title(&self.session_id, self.title.as_ref())
-            .map(|title| SharedString::from(title.to_owned()));
+        let session_title = folder_session_title(&self.session_id, self.title.as_ref());
 
         div()
             .flex()
@@ -3508,19 +3507,21 @@ impl Render for Panel {
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
-            .children(session_title.map(|title| {
+            .child({
                 div()
                     .debug_selector(|| "panel-session-title".into())
+                    .flex_none()
                     .px_3()
                     .pt_2()
                     .pb_1()
                     .overflow_hidden()
                     .whitespace_nowrap()
+                    .text_ellipsis()
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(Theme::global().TEXT_DIM)
-                    .child(title)
-            }))
+                    .child(session_title)
+            })
             .children(pinned_todo.map(|payload| {
                 div()
                     .debug_selector(|| "pinned-todo-card".into())
@@ -3679,8 +3680,14 @@ impl Render for Panel {
     }
 }
 
-/// The generated short id is useful as a fallback elsewhere, but it is not a
-/// meaningful title to repeat above the conversation.
+/// Empty and reconnecting folders still need a label matching their sidebar tab.
+fn folder_session_title(session_id: &str, title: &str) -> SharedString {
+    custom_session_title(session_id, title)
+        .map(str::to_owned)
+        .unwrap_or_else(|| short_id(session_id))
+        .into()
+}
+
 fn custom_session_title<'a>(session_id: &str, title: &'a str) -> Option<&'a str> {
     let title = title.trim();
     (!title.is_empty() && title != short_id(session_id)).then_some(title)
@@ -5108,7 +5115,7 @@ mod tests {
     }
 
     #[test]
-    fn panel_header_only_shows_a_meaningful_session_title() {
+    fn folder_header_keeps_an_identity_before_a_session_is_named() {
         let session_id = "01JABCDEF0123456789";
         let fallback = short_id(session_id);
 
@@ -5118,6 +5125,18 @@ mod tests {
         );
         assert_eq!(custom_session_title(session_id, &fallback), None);
         assert_eq!(custom_session_title(session_id, "  "), None);
+        assert_eq!(
+            folder_session_title(session_id, "Plan the release").as_ref(),
+            "Plan the release"
+        );
+        assert_eq!(
+            folder_session_title(session_id, &fallback).as_ref(),
+            "session 23456789"
+        );
+        assert_eq!(
+            folder_session_title(session_id, "  ").as_ref(),
+            "session 23456789"
+        );
     }
 
     #[test]

@@ -1,60 +1,61 @@
-# Two connected folder surfaces
+# Workspace layout modes
 
-The workspace uses two structural background tones, independent of message/code styling:
+Choose **Settings → Workspace layout → Folder tabs / Normal**. The preference is saved as `desktop.appearance.layout_mode` (`folder_tabs` or `normal`) in the shared Jcode configuration, or `appearance.layout_mode` in a standalone desktop config. It also survives Ctrl+R through `WorkspaceSnapshot`. Existing configurations default to Folder tabs.
 
-- **Selected page (`PANEL_BG`, warm-neutral `#25221f`)**: selected sidebar session, the 12px connector gutter, surrounding page, and focused panel are one connected surface.
-- **Backing sheet (`HEADER_BG`, warm-neutral `#302b27`)**: sidebar background, inactive panels, and the 16px bottom connector are one connected surface.
+## Native Folder tabs
 
-The gutter lets a selected sidebar tab reach the focused panel even when inactive panels lie between them. The bottom connector independently joins all inactive panels back to the sidebar. There is no third canvas tone or panel/selected-session outline. Session hover uses the existing page tone instead of introducing another structural shade. Inputs, code blocks, text, and status indicators retain their own semantic styling.
+The selected sidebar session and focused panel are **one filled GPUI vector path**, not independently painted panel backgrounds or inverse-corner masks. `folder_surface.rs` collects the real, clipped layout bounds during prepaint, computes the external contour of their connected union, rounds its convex and concave corners, and paints it once beneath the content.
 
-## Tight visual feedback loop
+- The selected page uses `PANEL_BG` (`#25221f` in Warm neutral).
+- The sidebar and inactive panels share the root backing color, `HEADER_BG` (`#302b27`). Inactive panels do not paint separate rectangles.
+- The connector rises from the selected session to the top shoulder and focused panel. It does not extend as an unrelated rail below the selected session.
+- The active tab starts 16px below the canvas top, the shoulder starts at 32px, and inactive content starts at 48px. A 12px outer right margin and 16px bottom margin retain the page silhouette without a focus ring.
+- Empty/reconnecting conversations retain a compact session label. Content, inputs, status indicators, and code keep their semantic colors.
+- Overview is a separate card canvas, rather than inheriting the connected folder backing.
 
-Render the real current app with rich offline content on private Xvfb/Openbox:
+## Normal
+
+Normal mode renders independent, equally tall rounded panel cards with 12px gaps and a conventional focus border. There is no selected-page connector or native folder surface. Switching modes does not replace sessions or transcripts and recalculates the camera for the changed canvas width.
+
+## Visual feedback loop
 
 ```sh
-python3 scripts/screenshot.py target/two-tone-review.png --panels 3
-python3 scripts/screenshot.py target/two-tone-left.png --panels 3 --focus-panel 0 --no-build
+python3 scripts/screenshot.py target/folders.png --panels 2 --size 1644x1008
+python3 scripts/screenshot.py target/normal.png --panels 2 --size 1644x1008 --layout-mode normal --no-build
+python3 scripts/screenshot.py target/folders-left.png --panels 2 --size 1644x1008 --focus-panel 0 --no-build
 ```
 
-The first command builds current code. Use `--no-build` only when the binary is current. Inspect both PNGs before further edits. This does not open windows or move focus on the user's display. The reviewed captures for this change are `target/ui-review-two-tone-1.png` and `target/ui-review-two-tone-left.png`.
+The first command builds the current app. The others may use `--no-build` only when that binary is current. Captures use real GPUI on private Xvfb/Openbox, not the user's desktop. Read the PNGs after each significant visual change. Reviewed development captures include `native-folders-v1.png`, `native-folders-v2.png`, and `normal-mode-v1.png` under `target/`.
 
-## Real SDK/runtime acceptance
+The previous implementation passed color-count and flood-fill checks but was rejected in the user's two-panel screenshot. Those checks did not establish a satisfactory silhouette or native construction. This implementation supersedes that design and the earlier acceptance claims.
+
+## Real runtime and native input acceptance
 
 ```sh
 cargo build -p jcode-desktop
-python3 scripts/accept-folder-panels.py target/two-tone-acceptance
+python3 scripts/accept-folder-panels.py target/native-modes-two --panels 2
+python3 scripts/accept-folder-panels.py target/native-modes-three --panels 3
 ```
 
-Use a fresh output directory. Dependencies: the installed `jcode` binary, Xvfb, Openbox, xdotool, ImageMagick, Mesa lavapipe, and Python Pillow.
+Use fresh output directories. The driver starts an isolated real daemon, harness API, and desktop without screenshot fixtures or inherited credentials. Native keyboard input creates SDK-backed sessions. Public API attach/name/detach operations and the real catalog refresh exercise metadata integration. The catalog may omit open sessions, so checks validate the sidebar's merged live panel identities rather than requiring a nonempty catalog reply.
 
-The driver disables screenshot fixtures and launches an isolated real daemon, harness API, and desktop. Native keys create three SDK-backed sessions. A separate public API client attaches, names, and detaches from those sessions. The app's supported five-second catalog refresh brings their metadata into the actual sidebar. Keyboard, panel clicks, and overview selection then transfer focus.
+The same process then exercises keyboard focus, pointer focus, overview selection, navigation to Settings, switching to Normal, and switching back. It checks the saved TOML, observable mode state, actual card gaps, and folder surface connectivity. It does not submit inference prompts. All private processes are cleaned up on success or failure.
 
-The supported `--provider jcode` startup initializes lazily, so these lifecycle operations require neither credentials nor inference. No user credentials are inherited, no model request is sent, and the user's daemon and desktop sockets are never used. Process groups are terminated on success or failure.
+| Requirement | Check |
+| --- | --- |
+| One native piece | Contour union/area test, one `paint_path` site, no child background/corner masks, native raster flood-fill from selected sidebar tab to focused panel |
+| Two connected structural tones, no folder focus ring | Real two- and three-panel focus captures check backing/page colors, connected components, margins, and raised silhouette |
+| Independent Normal mode | Native Settings click and raster samples verify separate same-height cards and actual background gaps |
+| Saved mode and reload compatibility | Real Settings writes checked on disk, isolated config round trips, snapshot round trip and legacy default, Settings snapshot restoration test |
+| Empty panels remain identifiable | Title regression and raster ink check before real sessions receive custom names |
+| Focus/overview remain functional | Native keyboard/click focus, overview hover and selection, then Settings round trip to chat |
+| Reliable current-state visual inspection | Public screenshot CLI for both modes with native focus clicks and isolation/argument tests |
 
-## Requirement-to-evidence map (2026-09-05)
+These checks verify construction and observed behavior, not subjective approval of the final visual design or resolution of live daemon attachment timeouts.
 
-| Requirement | Concrete check | Observed result |
-| --- | --- | --- |
-| Only two structural tones | Real-session raster samples through panel bodies, gutter, sidebar, and footer | Page is `#25221f`, backing sheet is `#302b27`. The former canvas tone is absent from these surfaces. |
-| Selected sidebar tab connects around to focused panel | Flood-fill the actual page-color pixels from the gutter, then inspect selected-tab and focused-panel pixels | Both belong to the same connected component for middle, left, and right focus. |
-| Sidebar background connects to every inactive panel | Flood-fill actual backing-color pixels from the sidebar, then inspect footer and inactive panels | All belong to the same connected component in every tested focus state. |
-| Preserve folder spacing without focus rings | GPUI geometry regression at 800×600 and 1440×1000, sidebar shown/hidden, focusing each panel | 12px gutter when sidebar is present, 16px top/bottom panel spacing, 8px inactive inset, shared bottom edge touching the backing connector. Raster scan finds no outline or third-tone gap between panel bodies. |
-| Keep focus and overview interaction working | Real native keys, clicks on left/right panels, overview hover, overview-card selection | Focus follows `1 → 0 → 2 → 0`; four resulting strip frames pass both connectivity checks. Overview hover and return to the selected folder also pass. |
-| Keep capture CLI correct | Updated native click coordinates include the gutter; public argument-error subprocess tests | Five screenshot tests pass, covering isolation and five invalid-argument cases. Rich-content native focus capture also succeeds. |
-| Deliver the updated view | App rebuild-and-reload command plus process log | Build succeeded and the running app activated the updated UI generation. |
+## Observed verification (2026-09-05)
 
-The complete non-fixture run passed in 31.2 seconds. Its six screenshots and state files are in `target/two-tone-real-4/`. The full-width page connectivity was checked on actual rendered pixels, not inferred from source inspection or replaced with synthetic session data. These checks do not claim to measure user-workspace hover latency or Wayland-specific behavior.
-
-## Measured improvement over the previous design
-
-Compared actual 1800×1000 native app captures from `target/folder-real-5/middle-focused.png` (before) and `target/two-tone-real-4/middle-focused.png` (after). Both came from real SDK-backed session runs, not UI fixtures.
-
-| Observable property | Before | After |
-| --- | --- | --- |
-| Distinct tones sampled across sidebar, page, focused panel, inactive panel, and footer | 3 | 2 |
-| Sidebar backing pixels connected to the inactive panel beyond the focused panel | No | Yes |
-| Focused-panel pixels connected to the left page connector | No | Yes |
-
-These are pixel-value and flood-fill results, not subjective visual ratings. The former third tone `#1c1a18` was replaced by page tone `#25221f` above/alongside the panels and backing tone `#302b27` at the bottom connection. Machine-readable results are saved in `target/two-tone-before-after.json`.
-
-The subsequent full UI regression run reported **301 passed, 3 pre-existing failures, 6 ignored**. The remaining failures are `email_inbox_moves_when_the_user_scrolls`, `restored_scroll_is_not_replaced_when_history_reattaches`, and `a_touchpad_swipe_paints_the_gesture_reticle_and_minimap_dot`, all observed before this styling change. All two-tone, sidebar geometry, and tutorial geometry checks pass. The full suite is not claimed to be green.
+- Real daemon/SDK/native-input runs passed for both two and three sessions in `target/native-modes-pass-2` and `target/native-modes-pass-3`. Each passed all focus positions, overview hover/selection, Settings → Normal → Folder tabs, persisted TOML values, and return to chat without replacing session IDs.
+- Raster checks passed for the continuous selected sidebar/page component, continuous inactive backing, two structural tones, no folder ring, raised silhouette, and Normal card gaps. Final native folder and Normal screenshots were opened and visually inspected, alongside populated transcript fixture captures during iteration.
+- Eight focused folder/config/geometry tests passed. Snapshot and native Settings tests passed separately. Screenshot CLI isolation/argument tests passed.
+- The supplementary full UI suite reported 302 passed, 5 failed, and 6 ignored. Its failures were the same scroll-state/gesture and timing-sensitive vertical animation tests seen before this native-mode implementation. Both vertical animation tests passed when rerun alone serially. This is not a claim that the entire suite is green.

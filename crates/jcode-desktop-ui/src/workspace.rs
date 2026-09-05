@@ -82,9 +82,16 @@ const STRUT: f32 = 0.58;
 /// Leave the canvas visible around the joined folder surfaces.
 const STRIP_PADDING_Y: f32 = 16.0;
 /// The active folder rises above the others without adding a focus ring.
-const INACTIVE_PANEL_INSET: f32 = 8.0;
+const INACTIVE_PANEL_INSET: f32 = 32.0;
 /// The selected sidebar tab reaches any focused panel through this page gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
+/// Keep the selected sheet distinct from the window background. Its body starts
+/// below the raised active tab, but above the inactive folder shoulders.
+const FOLDER_PAGE_TOP: f32 = 32.0;
+const FOLDER_RIGHT_MARGIN: f32 = 12.0;
+
+#[path = "folder_surface.rs"]
+mod folder_surface;
 
 #[cfg(test)]
 #[path = "panel_surface_tests.rs"]
@@ -184,38 +191,6 @@ enum SidebarView {
     Accounts,
     Theme,
     Settings,
-}
-
-/// Inverse corners let the page edge turn smoothly into the selected tab.
-/// A page-colored square masks the old straight edge, while the rounded
-/// sidebar-colored cutout draws the concave border on top of it.
-fn folder_tab_corner(top: bool) -> gpui::AnyElement {
-    let radius = px(FOLDER_TAB_RADIUS);
-    div()
-        .debug_selector(move || {
-            if top {
-                "folder-tab-top-join"
-            } else {
-                "folder-tab-bottom-join"
-            }
-            .into()
-        })
-        .absolute()
-        .right_0()
-        .w(radius)
-        .h(px(FOLDER_TAB_RADIUS + 1.0))
-        .when(top, |el| el.top(px(-FOLDER_TAB_RADIUS)))
-        .when(!top, |el| el.bottom(px(-FOLDER_TAB_RADIUS)))
-        .bg(Theme::global().PANEL_BG)
-        .child(
-            div()
-                .size(radius)
-                .when(!top, |el| el.mt(px(1.0)))
-                .bg(Theme::global().HEADER_BG)
-                .when(top, |el| el.rounded_br(radius))
-                .when(!top, |el| el.rounded_tr(radius)),
-        )
-        .into_any_element()
 }
 
 // Minimap: a compact card in the top right that maps every strip to
@@ -411,6 +386,8 @@ enum FocusSnapshot {
 pub struct WorkspaceSnapshot {
     format_version: u32,
     #[serde(default)]
+    layout_mode: crate::config::LayoutMode,
+    #[serde(default)]
     recent_accounts: Vec<String>,
     #[serde(default)]
     sidebar_view: SidebarView,
@@ -472,6 +449,8 @@ pub struct Workspace {
     show_sidebar: bool,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
     show_minimap: bool,
+    layout_mode: crate::config::LayoutMode,
+    folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
     tutorial_page: usize,
     expanded_directories: HashSet<PathBuf>,
@@ -652,6 +631,8 @@ impl Workspace {
             bridge,
             host,
             show_minimap: false,
+            layout_mode: crate::config::get().appearance.layout_mode,
+            folder_frame: Default::default(),
             show_sidebar: sidebar_enabled(
                 std::env::args_os(),
                 crate::config::get().workspace.sidebar,
@@ -784,6 +765,8 @@ impl Workspace {
             host: HostHandle::inert(),
             show_sidebar: true,
             show_minimap: false,
+            layout_mode: crate::config::LayoutMode::FolderTabs,
+            folder_frame: Default::default(),
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
             expanded_directories: HashSet::new(),
@@ -874,6 +857,7 @@ impl Workspace {
             .map(|search| search.read(cx).snapshot());
         Ok(WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
             tutorial_page: self.tutorial_page,
@@ -903,6 +887,7 @@ impl Workspace {
     }
 
     fn apply_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
+        self.layout_mode = snapshot.layout_mode;
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_view = snapshot.sidebar_view;
         self.tutorial_page = snapshot.tutorial_page.min(2);
@@ -998,7 +983,7 @@ impl Workspace {
         self.camera_from = snapshot.camera_x;
         self.camera_started = [None; STRIP_COUNT];
         self.camera_touch_pan = [false; STRIP_COUNT];
-        self.camera_dirty = [false; STRIP_COUNT];
+        self.camera_dirty = [true; STRIP_COUNT];
         self.overview = snapshot.overview;
         self.overview_progress = AnimatedValue::new(
             if snapshot.overview { 1.0 } else { 0.0 },
@@ -2729,7 +2714,8 @@ impl Workspace {
         let suffix = performance
             .map(|line| format!("\n{line}"))
             .unwrap_or_default();
-        let _ = std::fs::write(path, format!("{line}\n{coach}{suffix}\n"));
+        let appearance = format!("layout={:?} sidebar={:?}", self.layout_mode, self.sidebar_view);
+        let _ = std::fs::write(path, format!("{line}\n{coach}\n{appearance}{suffix}\n"));
     }
 
     fn animation_active(&self) -> bool {
@@ -2846,8 +2832,7 @@ impl Workspace {
             ))
             .h(px(panel_h));
 
-        let first = indices.first().copied();
-        let last = indices.last().copied();
+        let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let mut panel_left = 0.0;
         let mut active_surface = None;
         for (((index, width), order_offset), close_progress) in indices
@@ -2859,7 +2844,7 @@ impl Workspace {
             let slot = &self.slots[index];
             let focused = index == self.active;
             let left = panel_left + order_offset;
-            let top = if focused {
+            let top = if focused || !folders {
                 0.0
             } else {
                 INACTIVE_PANEL_INSET.min(panel_h / 2.0)
@@ -2868,26 +2853,24 @@ impl Workspace {
             let surface = div()
                 .id(("panel", index))
                 .absolute()
-                .left(px(left))
+                .left(px(left + if folders { 0. } else { 6. }))
                 .top(px(top))
                 .opacity(close_progress)
                 // Tagged so a render test can click the real panel element
                 // and exercise the pointer slow-path detection.
                 .debug_selector(move || format!("panel-{index}"))
-                .w(px(width))
+                .w(px((width - if folders { 0. } else { 12. }).max(1.)))
                 .h(px(panel_h - top))
                 .flex_none()
-                .bg(if focused {
-                    Theme::global().PANEL_BG
-                } else {
-                    Theme::global().HEADER_BG
+                .when(!folders, |el| {
+                    el.bg(Theme::global().PANEL_BG)
+                        .rounded(px(CORNER_RADIUS))
+                        .border_1()
+                        .border_color(if focused { Theme::global().PANEL_BORDER_FOCUS } else { Theme::global().PANEL_BORDER })
                 })
-                // Inactive folders share straight joins and a common bottom
-                // edge. Only the active tab rises above the connected group.
-                // No focus-colored border or ring is painted on any panel.
-                .when(focused, |el| el.rounded_t(px(CORNER_RADIUS)))
-                .when(Some(index) == first, |el| el.rounded_l(px(CORNER_RADIUS)))
-                .when(Some(index) == last, |el| el.rounded_r(px(CORNER_RADIUS)))
+                .when(folders, |el| el.child(folder_surface::measure(
+                    self.folder_frame.clone(), folder_surface::Region::Panel { active: focused },
+                )))
                 .overflow_hidden()
                 .on_mouse_down(
                     gpui::MouseButton::Left,
@@ -3621,6 +3604,8 @@ impl Workspace {
             &mut self.sidebar_session_layout,
             layout,
         );
+        let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
+        let folder_frame = self.folder_frame.clone();
         let workspace = cx.entity();
         let mut list = div()
             .id("sidebar-session-list")
@@ -3767,22 +3752,20 @@ impl Workspace {
                                     .gap(px(1.0))
                                     .rounded_l_lg()
                                     .cursor_pointer()
-                                    .when(selected, |el| {
-                                        el.child(folder_tab_corner(true))
-                                            .child(folder_tab_corner(false))
-                                    })
-                                    // The selected folder tab opens directly onto the canvas.
-                                    .bg(if selected {
+                                    .when(selected && folders, |el| el.child(folder_surface::measure(
+                                        folder_frame.clone(), folder_surface::Region::SelectedTab,
+                                    )))
+                                    .when(!folders, |el| el.mr_2().rounded_lg().bg(if selected {
                                         Theme::global().PANEL_BG
                                     } else {
                                         Theme::global().HEADER_BG
-                                    })
+                                    }))
                                     .border_l_1()
                                     .border_t_1()
                                     .border_b_1()
                                     .border_color(gpui::rgba(0x00000000))
                                     .pr(px(crate::scrollbar::GUTTER + 8.0))
-                                    .hover(move |el| el.bg(Theme::global().PANEL_BG))
+                                    .when(!selected, |el| el.hover(move |el| el.bg(Theme::global().PANEL_BG)))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _event, window, cx| {
@@ -3864,8 +3847,8 @@ impl Workspace {
             .flex_col()
             .debug_selector(|| "sidebar".into())
             .relative()
-            .bg(Theme::global().HEADER_BG)
-            // The two filled surfaces meet directly, without a third-tone seam.
+            .when(!folders, |el| el.bg(Theme::global().HEADER_BG))
+            // Folder mode leaves this transparent: the native path owns its tab.
             .child(
                 div()
                     .h(px(TITLEBAR_HEIGHT))
@@ -4859,6 +4842,47 @@ impl Workspace {
                     ),
             );
         }
+        let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
+        settings = settings.child(
+            div()
+                .id("settings-folder-tabs")
+                .debug_selector(|| "settings-folder-tabs".into())
+                .flex_none()
+                .px_2()
+                .py_2()
+                .rounded_sm()
+                .flex()
+                .justify_between()
+                .gap_2()
+                .cursor_pointer()
+                .bg(Theme::global().PANEL_BG)
+                .hover(|el| el.bg(Theme::global().TOOL_BG))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.layout_mode = if this.layout_mode == crate::config::LayoutMode::FolderTabs {
+                            crate::config::LayoutMode::Normal
+                        } else {
+                            crate::config::LayoutMode::FolderTabs
+                        };
+                        this.camera_dirty.fill(true);
+                        if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
+                            eprintln!("failed to persist workspace layout mode: {error}");
+                        }
+                        cx.notify();
+                    }),
+                )
+                .child("Workspace layout")
+                .child(
+                    div()
+                        .text_color(if folder_tabs {
+                            Theme::global().ACCENT
+                        } else {
+                            Theme::global().TEXT_DIM
+                        })
+                        .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
+                ),
+        );
         settings
             .child(
                 div()
@@ -5721,12 +5745,18 @@ impl Render for Workspace {
         } else {
             0.0
         };
-        let connector_width = if self.show_sidebar {
+        let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
+        let connector_width = if self.show_sidebar && folders {
             FOLDER_CONNECTOR_WIDTH
         } else {
             0.0
         };
-        let viewport_w = (f32::from(viewport.width) - sidebar_width - connector_width).max(320.0);
+        let right_margin = if folders { FOLDER_RIGHT_MARGIN } else { 0. };
+        let viewport_w = (f32::from(viewport.width)
+            - sidebar_width
+            - connector_width
+            - right_margin)
+            .max(320.0);
         // On macOS the sidebar header covers the transparent titlebar strip.
         // Without the sidebar, leave room for the traffic lights. Other platforms
         // do not draw through a system titlebar, so an inset would be a visible gap.
@@ -5769,6 +5799,7 @@ impl Render for Workspace {
         let content = if overview_progress > 0.0 {
             div()
                 .size_full()
+                .bg(Theme::global().BG)
                 .opacity(overview_progress)
                 .child(self.render_overview(cx))
                 .into_any_element()
@@ -5887,7 +5918,9 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_row()
-            .bg(Theme::global().PANEL_BG)
+            .relative()
+            .bg(if folders { Theme::global().HEADER_BG } else { Theme::global().BG })
+            .when(folders, |el| el.child(folder_surface::background(self.folder_frame.clone(), sidebar_width)))
             .font_family(Theme::global().FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
@@ -5942,19 +5975,7 @@ impl Render for Workspace {
                     .flex_col()
                     .pt(px(content_top_inset))
                     .pl(px(connector_width))
-                    // The sidebar and every inactive folder share this backing
-                    // sheet. The selected page reaches around them through the
-                    // left gutter and the space above the folder group.
-                    .child(
-                        div()
-                            .debug_selector(|| "folder-backing-bridge".into())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .h(px(STRIP_PADDING_Y))
-                            .bg(Theme::global().HEADER_BG),
-                    )
+                    .pr(px(right_margin))
                     .child(
                         div()
                             .debug_selector(|| "workspace-canvas".into())
@@ -5963,6 +5984,9 @@ impl Render for Workspace {
                             .flex_1()
                             .min_h_0()
                             .overflow_hidden()
+                            .when(folders, |el| el.child(folder_surface::measure(
+                                self.folder_frame.clone(), folder_surface::Region::Canvas,
+                            )))
                             .child(content)
                             .child(self.render_workspace_bar(cx))
                             .when(
@@ -6944,6 +6968,7 @@ mod tests {
         };
         let snapshot = WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
@@ -6979,6 +7004,13 @@ mod tests {
         let encoded = snapshot.encode().expect("encode workspace snapshot");
         let decoded = WorkspaceSnapshot::decode(&encoded).expect("decode workspace snapshot");
         assert_eq!(decoded, snapshot);
+        assert_eq!(decoded.layout_mode, crate::config::LayoutMode::Normal);
+
+        let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        legacy.as_object_mut().unwrap().remove("layout_mode");
+        let legacy = WorkspaceSnapshot::decode(&serde_json::to_vec(&legacy).unwrap())
+            .expect("old workspace snapshot remains compatible");
+        assert_eq!(legacy.layout_mode, crate::config::LayoutMode::FolderTabs);
     }
 
     #[test]
@@ -7085,6 +7117,7 @@ mod tests {
             workspace.apply_snapshot(
                 WorkspaceSnapshot {
                     format_version: SNAPSHOT_FORMAT_VERSION,
+                    layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
                     tutorial_page: 0,
@@ -7975,23 +8008,12 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let sidebar = vcx.debug_bounds("sidebar").unwrap();
-        let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
-        let top_join = vcx.debug_bounds("folder-tab-top-join").unwrap();
-        let bottom_join = vcx.debug_bounds("folder-tab-bottom-join").unwrap();
-        assert_eq!(top_join.right(), sidebar.right());
-        assert_eq!(bottom_join.right(), sidebar.right());
-        assert!(top_join.top() < tab.top());
-        assert!(bottom_join.bottom() > tab.bottom());
-        assert_eq!(
-            tab.right(),
-            sidebar.right(),
-            "no gutter may split the tab from the page"
-        );
-        assert!(
-            tab.left() > sidebar.left(),
-            "tab retains its rounded left inset"
-        );
+        assert!(vcx.debug_bounds("native-folder-surface").is_some());
+        let frame = workspace.read_with(vcx, |w, _| w.folder_frame.clone());
+        let frame = frame.borrow();
+        assert!(frame.selected_tab.is_some());
+        assert!(frame.active_panel.is_some());
+        assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 0);
     }
 
     #[gpui::test]
@@ -11042,6 +11064,15 @@ mod tests {
         assert!(vcx.debug_bounds("workspace-settings").is_some());
         assert!(vcx.debug_bounds("theme-settings").is_none());
         assert!(vcx.debug_bounds("sidebar-session-list").is_none());
+        let initial_layout = workspace.read_with(vcx, |w, _| w.layout_mode);
+        let button = vcx.debug_bounds("settings-folder-tabs").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_ne!(workspace.read_with(vcx, |w, _| w.layout_mode), initial_layout);
+        let button = vcx.debug_bounds("settings-folder-tabs").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(workspace.read_with(vcx, |w, _| w.layout_mode), initial_layout);
         for selector in ["settings-minimap", "settings-showcase"] {
             let initial = workspace.read_with(vcx, |w, _| (w.show_minimap, w.showcase_mode));
             for _ in 0..2 {
