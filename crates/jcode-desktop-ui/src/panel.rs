@@ -489,7 +489,10 @@ impl Panel {
         let transcript_selection = cx.new(TextSelection::new);
         cx.observe(&transcript_selection, |_, _, cx| cx.notify())
             .detach();
-        let panel_entity = cx.entity();
+        // The panel owns this ListState. A strong entity in its persistent
+        // callback would keep the panel and its transcript alive after close
+        // or hot reload, even when no window references it anymore.
+        let panel_entity = cx.entity().downgrade();
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
                 let stick_to_bottom = event.is_following_tail;
@@ -4514,6 +4517,59 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn transcript_scroll_handler_does_not_keep_closed_panel_alive(cx: &mut gpui::TestAppContext) {
+        let panel = cx.update(|cx| {
+            cx.new(|cx| {
+                Panel::new(
+                    "lifecycle".into(),
+                    None,
+                    None,
+                    crate::harness::spawn_inert(),
+                    cx,
+                )
+            })
+        });
+        let weak = panel.downgrade();
+        drop(panel);
+        cx.run_until_parked();
+        assert!(
+            weak.upgrade().is_none(),
+            "a panel must not own itself through its scroll handler"
+        );
+    }
+
+    #[gpui::test]
+    fn replacing_window_root_releases_rendered_workspace(cx: &mut gpui::TestAppContext) {
+        use crate::workspace::Workspace;
+        let window = cx.update(|cx| {
+            cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| {
+                    let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+                    workspace.push_test_panel("retired-panel", cx);
+                    workspace
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        let old = window
+            .update(cx, |_, _, cx| cx.entity().downgrade())
+            .unwrap();
+        window
+            .update(cx, |_, window, cx| {
+                window.replace_root(cx, |_, cx| {
+                    Workspace::for_test(crate::learning::Coach::new(), cx)
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            old.upgrade().is_none(),
+            "hot reload must release the old workspace and its background tasks"
+        );
+    }
 
     #[gpui::test]
     fn minimap_state_covers_session_lifecycle_and_latest_todo_progress(
