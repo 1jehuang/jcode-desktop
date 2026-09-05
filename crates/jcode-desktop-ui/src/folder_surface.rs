@@ -1,8 +1,8 @@
-//! A single native vector surface owns the folder silhouette. Content elements
-//! only report their laid-out bounds and never paint pieces of the sheet.
+//! Independent session and sidebar sheets. The live tabs own the top edge,
+//! without a wide shoulder or a connector forcing unrelated surfaces together.
 use std::{cell::RefCell, rc::Rc};
 
-use super::{FOLDER_CONNECTOR_WIDTH, FOLDER_CONTENT_INSET, FOLDER_PAGE_TOP, STRIP_PADDING_Y};
+use super::{FOLDER_CONTENT_INSET, STRIP_PADDING_Y};
 use crate::theme::Theme;
 use gpui::{Bounds, PathBuilder, Pixels, canvas, div, point, prelude::*, px};
 
@@ -48,7 +48,7 @@ pub(super) fn measure(frame: SharedFrame, region: Region) -> impl IntoElement {
     .size_full()
 }
 
-pub(super) fn background(frame: SharedFrame, sidebar_width: f32) -> impl IntoElement {
+pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
     let reset = frame.clone();
     div()
         .debug_selector(|| "native-folder-surface".into())
@@ -60,84 +60,50 @@ pub(super) fn background(frame: SharedFrame, sidebar_width: f32) -> impl IntoEle
                 move |_, _, window, _| {
                     let frame = frame.borrow();
                     let Some(canvas) = frame.canvas else { return };
-                    let has_panels = frame.panel_right > canvas.left();
-                    let left = f32::from(canvas.left())
-                        - if sidebar_width > 0. {
-                            FOLDER_CONNECTOR_WIDTH
-                        } else {
-                            0.
-                        };
-                    let top = f32::from(canvas.top()) + FOLDER_PAGE_TOP;
-                    let shoulder_bottom =
-                        f32::from(canvas.top()) + STRIP_PADDING_Y + FOLDER_CONTENT_INSET;
-                    let bottom = f32::from(canvas.bottom()) - STRIP_PADDING_Y;
-                    let right = f32::from(frame.panel_right.min(canvas.right()));
-                    let mut regions = if has_panels {
-                        vec![Rect {
-                            left,
-                            top,
-                            right,
-                            bottom: shoulder_bottom,
-                        }]
-                    } else {
-                        vec![]
-                    };
-                    if sidebar_width > 0. && has_panels {
-                        let connector_bottom = frame.selected_tab.map_or(shoulder_bottom, |tab| {
-                            f32::from(tab.bottom()).min(bottom).max(shoulder_bottom)
-                        });
+                    let mut regions = vec![];
+                    if frame.panel_right > canvas.left() {
                         regions.push(Rect {
-                            left,
-                            top,
-                            right: f32::from(canvas.left()),
-                            bottom: connector_bottom,
+                            left: f32::from(canvas.left()),
+                            top: f32::from(canvas.top()) + STRIP_PADDING_Y + FOLDER_CONTENT_INSET,
+                            right: f32::from(frame.panel_right.min(canvas.right())),
+                            bottom: f32::from(canvas.bottom()) - STRIP_PADDING_Y,
                         });
-                        if let Some(tab) = frame.selected_tab {
-                            // The tab is part of this same outline, not a rounded
-                            // rectangle overlaid on a separate sidebar background.
-                            regions.push(Rect {
-                                left: f32::from(tab.left()),
-                                top: f32::from(tab.top()).max(top),
-                                right: f32::from(canvas.left()),
-                                bottom: f32::from(tab.bottom()).min(bottom),
-                            });
-                        }
                     }
-                    if !has_panels && let Some(tab) = frame.selected_tab {
+                    if let Some(tab) = frame.selected_tab {
                         regions.push(Rect::from_bounds(tab));
                     }
-                    if let Some(active) = frame.active_panel {
-                        regions.push(Rect::from_bounds(active));
-                    }
-                    let contour = outline(&regions);
-                    if contour.len() < 3 {
-                        return;
-                    }
-                    let mut builder = PathBuilder::fill();
-                    // Round both convex and concave corners of the union. No
-                    // overlapping masks, seam borders, or fake corner elements.
-                    for i in 0..contour.len() {
-                        let previous = contour[(i + contour.len() - 1) % contour.len()];
-                        let vertex = contour[i];
-                        let next = contour[(i + 1) % contour.len()];
-                        let radius = 8f32
-                            .min(distance(previous, vertex) / 2.)
-                            .min(distance(vertex, next) / 2.);
-                        let enter = toward(vertex, previous, radius);
-                        let exit = toward(vertex, next, radius);
-                        if i == 0 {
-                            builder.move_to(point(px(enter.0), px(enter.1)));
-                        } else {
-                            builder.line_to(point(px(enter.0), px(enter.1)));
+                    // Paint separately: disconnected navigation should never
+                    // require a bridge across the header or another panel.
+                    for region in regions {
+                        let contour = outline(&[region]);
+                        if contour.len() < 3 {
+                            return;
                         }
-                        builder.curve_to(
-                            point(px(exit.0), px(exit.1)),
-                            point(px(vertex.0), px(vertex.1)),
-                        );
-                    }
-                    builder.close();
-                    if let Ok(path) = builder.build() {
-                        window.paint_path(path, Theme::global().PANEL_BG);
+                        let mut builder = PathBuilder::fill();
+                        // Keep each sheet's corners soft without masking its neighbors.
+                        for i in 0..contour.len() {
+                            let previous = contour[(i + contour.len() - 1) % contour.len()];
+                            let vertex = contour[i];
+                            let next = contour[(i + 1) % contour.len()];
+                            let radius = 8f32
+                                .min(distance(previous, vertex) / 2.)
+                                .min(distance(vertex, next) / 2.);
+                            let enter = toward(vertex, previous, radius);
+                            let exit = toward(vertex, next, radius);
+                            if i == 0 {
+                                builder.move_to(point(px(enter.0), px(enter.1)));
+                            } else {
+                                builder.line_to(point(px(enter.0), px(enter.1)));
+                            }
+                            builder.curve_to(
+                                point(px(exit.0), px(exit.1)),
+                                point(px(vertex.0), px(vertex.1)),
+                            );
+                        }
+                        builder.close();
+                        if let Ok(path) = builder.build() {
+                            window.paint_path(path, Theme::global().PANEL_BG);
+                        }
                     }
                 },
             )

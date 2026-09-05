@@ -3681,7 +3681,7 @@ impl Render for Panel {
 }
 
 /// Empty and reconnecting folders still need a label matching their sidebar tab.
-fn folder_session_title(session_id: &str, title: &str) -> SharedString {
+pub(crate) fn folder_session_title(session_id: &str, title: &str) -> SharedString {
     custom_session_title(session_id, title)
         .map(str::to_owned)
         .unwrap_or_else(|| short_id(session_id))

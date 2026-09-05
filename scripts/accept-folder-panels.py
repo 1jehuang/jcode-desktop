@@ -23,49 +23,33 @@ from screenshot import isolated_env
 
 def check_strip(image, focused, count=3):
     """Assert visible public output, not a copied layout implementation."""
-    active, idle = (37, 34, 31), (48, 43, 39)
-    targets = []
+    sheet, backing = (37, 34, 31), (48, 43, 39)
     fraction = 0.5 if count == 2 else 0.25
     panel_width = (image.width - 288) * fraction
     for index in range(count):
         x = round(296 + panel_width * index)
-        color = active if index == focused else idle
-        assert image.getpixel((x, 300)) == color, 'Focus must change surface color'
-        assert image.getpixel((x, 983)) == color, 'Folders must share their bottom edge'
-        assert all(image.getpixel((x, y)) == idle for y in range(984, 1000))
-        targets.append((x, 300))
-    # Only the sidebar is a tab. The folder body has one level top edge
-    # across every panel, independent of focus.
-    for index in range(count):
-        x = round(276 + panel_width * (index + 0.5))
-        assert image.getpixel((x, 8)) == idle, 'Keep background above the folder'
-        assert image.getpixel((x, 24)) == active, 'The folder body must stay level across every panel'
-    assert image.getpixel((260, 8)) == image.getpixel((270, 8)) == idle, 'Top-left curve must have one backing tone on both sides'
-    assert image.getpixel((image.width - 6, 500)) == idle, 'Keep the outer right edge visible'
-    assert image.getpixel((270, 40)) == active, 'Native shoulder must connect the selected tab to the panel'
-    assert all(image.getpixel((x, 300)) in (active, idle) for x in range(276, 1417))
+        assert image.getpixel((x, 300)) == sheet, 'Panels share a calm session sheet'
+        assert image.getpixel((x, 983)) == sheet, 'Panels share their bottom edge'
+        assert all(image.getpixel((x, y)) == backing for y in range(984, 1000))
+        assert image.getpixel((x, 50)) == sheet, 'The body starts below the tabs'
+        assert image.getpixel((x, 8)) == backing, 'Keep background above the tabs'
+    # The full-height gutter is deliberately independent of the sidebar selection.
+    assert all(image.getpixel((270, y)) == backing for y in range(16, 984)), 'No sidebar-to-panel connector'
+    assert image.getpixel((image.width - 6, 500)) == backing, 'Keep the outer right edge visible'
+    assert image.getpixel((image.width - 30, 24)) == backing, 'No wide shoulder behind the live tabs'
     selected_rows = []
     for color, rows in groupby(range(60, 450), lambda y: image.getpixel((250, y))):
         rows = list(rows)
-        if color == active and len(rows) >= 20:
+        if color == sheet and len(rows) >= 20:
             selected_rows.append(rows)
-    assert len(selected_rows) == 1, 'The real sidebar must show exactly one selected session'
+    assert len(selected_rows) == 1, 'The real sidebar shows exactly one selected session'
     selected = (250, selected_rows[0][len(selected_rows[0]) // 2])
-    # Flood the actual raster, not a model of the geometry. Both colors must
-    # form connected sheets, even when an inactive panel separates the focused
-    # panel from its selected sidebar tab.
     page = image.copy()
     marker = (255, 0, 255)
-    ImageDraw.floodfill(page, (270, 40), marker)
-    assert page.getpixel(selected) == marker, 'Selected sidebar tab must join the page gutter'
-    assert page.getpixel(targets[focused]) == marker, 'Page gutter must reach the focused panel'
-    backing = image.copy()
-    ImageDraw.floodfill(backing, (10, 500), marker)
-    assert backing.getpixel((500, 992)) == marker, 'Sidebar must join the backing strip'
-    for index, target in enumerate(targets):
-        if index != focused:
-            assert backing.getpixel(target) == marker, 'Every inactive panel must join the sidebar sheet'
-    print(f'Pixel acceptance passed: focused={focused}, two connected sheets, sidebar-to-panel continuity, no ring', flush=True)
+    ImageDraw.floodfill(page, (296, 300), marker)
+    assert page.getpixel(selected) != marker, 'Sidebar selection must remain independent of the session sheet'
+    print(f'Pixel acceptance passed: focused={focused}, level body, live-tab space, independent sidebar', flush=True)
+
 
 
 def main():
@@ -88,7 +72,7 @@ def main():
     env['JCODE_API_SOCKET'] = str(root / 'runtime/api.sock')
     env['JCODE_SOCKET'] = str(root / 'runtime/daemon.sock')
     env['JCODE_DESKTOP_CONFIG'] = str(root / 'desktop.toml')
-    (root / 'desktop.toml').write_text('[workspace]\nsession_refresh_seconds = 5\n')
+    (root / 'desktop.toml').write_text('[workspace]\nsession_refresh_seconds = 5\ncoaching_hints = false\n')
     env['VK_DRIVER_FILES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
     jcode = shutil.which('jcode')
     assert jcode, 'jcode must be installed'
@@ -229,6 +213,11 @@ def main():
             subprocess.run(['xdotool', 'mousemove', str(x), '500', 'click', '1'], env=env, check=True, timeout=10)
             wait_until(lambda: f'focus={index} ' in state(), f'Native click focuses folder {index}')
             capture(f'folder-{index}-focused')
+        # The first labeled live tab is always reachable at the left edge.
+        # This is native pointer input, not direct workspace state mutation.
+        subprocess.run(['xdotool', 'mousemove', '310', '35', 'click', '1'], env=env, check=True, timeout=10)
+        wait_until(lambda: 'focus=0 ' in state(), 'Native live-session folder tab focuses first session')
+        capture('live-tab-selected')
         subprocess.run(['xdotool', 'mousemove', '5', '995'], env=env, check=True, timeout=10)
         key('super+o')
         overview = capture('overview', strip=False)
@@ -244,7 +233,7 @@ def main():
                 break
         assert len(cards) == count, 'Overview must show all real sessions'
         body_y = header_y + 70
-        assert overview.getpixel((cards[count - 1][0] + 4, body_y)) == (37, 34, 31)
+        assert overview.getpixel((cards[0][0] + 4, body_y)) == (37, 34, 31)
         left, right = cards[0]
         subprocess.run(['xdotool', 'mousemove', str((left + right) // 2), str(body_y)], env=env, check=True, timeout=10)
         hovered = capture('overview-hover', strip=False)

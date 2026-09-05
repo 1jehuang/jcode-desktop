@@ -87,16 +87,17 @@ const GAP: f32 = 0.0;
 const STRUT: f32 = 0.58;
 /// Leave the canvas visible around the joined folder surfaces.
 const STRIP_PADDING_Y: f32 = 16.0;
-/// Panels sit below the shared folder body edge, never on individual tabs.
+/// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 32.0;
-/// The selected sidebar tab reaches any focused panel through this page gutter.
+/// Keep the sidebar separate from the session sheet with a canvas gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
-/// One level top edge for the folder body, regardless of the focused panel.
-const FOLDER_PAGE_TOP: f32 = TITLEBAR_HEIGHT - 34.0;
 const FOLDER_RIGHT_MARGIN: f32 = 12.0;
 
 #[path = "folder_surface.rs"]
 mod folder_surface;
+
+#[path = "live_tabs.rs"]
+mod live_tabs;
 
 #[cfg(test)]
 #[path = "panel_surface_tests.rs"]
@@ -154,7 +155,6 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
-const FOLDER_TAB_RADIUS: f32 = 12.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
 const ACCOUNT_VISIBLE_ROWS: usize = 3;
 /// Height of the macOS titlebar the window draws through. The window uses a
@@ -510,6 +510,8 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_navigation_scroll: ScrollHandle,
+    live_tabs_scroll: ScrollHandle,
+    live_tabs_selection: Option<(usize, usize)>,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
@@ -686,6 +688,8 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
+            live_tabs_scroll: ScrollHandle::new(),
+            live_tabs_selection: None,
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -816,6 +820,8 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_navigation_scroll: ScrollHandle::new(),
+            live_tabs_scroll: ScrollHandle::new(),
+            live_tabs_selection: None,
             focus_pending: false,
             gesture_last: None,
             gesture: StripGesture::default(),
@@ -2860,11 +2866,7 @@ impl Workspace {
             let slot = &self.slots[index];
             let focused = index == self.active;
             let left = panel_left + order_offset;
-            let top = if folders {
-                FOLDER_CONTENT_INSET.min(panel_h / 2.0)
-            } else {
-                0.0
-            };
+            let top = FOLDER_CONTENT_INSET.min(panel_h / 2.0);
             panel_left += width + GAP;
             let surface = div()
                 .id(("panel", index))
@@ -3759,16 +3761,15 @@ impl Workspace {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
-                                    .when(!selected, |el| el.mr(px(1.0)))
+                                    .mr_2()
                                     .mb_1()
                                     .relative()
-                                    .when(selected, |el| el.mb(px(FOLDER_TAB_RADIUS + 4.0)))
                                     .px_2()
                                     .py_1()
                                     .flex()
                                     .flex_col()
                                     .gap(px(1.0))
-                                    .rounded_l_lg()
+                                    .rounded_lg()
                                     .cursor_pointer()
                                     .when(selected && folders, |el| el.child(folder_surface::measure(
                                         folder_frame.clone(), folder_surface::Region::SelectedTab,
@@ -4610,109 +4611,6 @@ impl Workspace {
                 )
                 .into_any_element(),
         )
-    }
-
-    /// Compact workspace switcher modeled after the user's Waybar module.
-    /// Each visible group is a strip and each vertical mark is a session. The
-    /// focused session is solid and wider, while the remembered session in an
-    /// inactive strip is a half-strength mark. Empty inactive strips stay out
-    /// of the way; the active empty strip remains available as a dot.
-    fn render_workspace_bar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let mut workspaces = div().flex().items_center().gap(px(8.0));
-
-        for row in 0..STRIP_COUNT {
-            let indices: Vec<_> = self.row_indices(row).collect();
-            let active_row = row == self.active_row;
-            if indices.is_empty() && !active_row {
-                continue;
-            }
-
-            let mut workspace = div()
-                .id(("workspace-row", row))
-                .h(px(18.0))
-                .px(px(3.0))
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .rounded_full()
-                .cursor_pointer()
-                .when(active_row, |el| el.bg(Theme::global().ACCENT_DIM))
-                .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _event, window, cx| {
-                        let position = this.active_position_in_row();
-                        this.select_row(row, position);
-                        this.overview = false;
-                        this.overview_progress.set(0.0, Instant::now());
-                        this.focus_active(window, cx);
-                        cx.notify();
-                    }),
-                );
-
-            if indices.is_empty() {
-                workspace = workspace.child(
-                    div()
-                        .w(px(4.0))
-                        .h(px(4.0))
-                        .rounded_full()
-                        .bg(Theme::global().TEXT_DIM),
-                );
-            }
-
-            for index in indices {
-                let focused = index == self.active;
-                let busy = self.slots[index].panel.read(cx).is_busy();
-                workspace = workspace.child(
-                    div()
-                        .id(("workspace-session", index))
-                        .w(px(if focused { 6.0 } else { 2.0 }))
-                        .h(px(12.0))
-                        .rounded_full()
-                        .cursor_pointer()
-                        .bg(if focused {
-                            Theme::global().ACCENT
-                        } else if active_row || busy {
-                            Theme::global().MINIMAP_PANEL_BUSY
-                        } else {
-                            Theme::global().MINIMAP_PANEL
-                        })
-                        .hover(|el| el.w(px(6.0)).bg(Theme::global().ACCENT))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _event, window, cx| {
-                                this.set_active(index, cx);
-                                this.overview = false;
-                                this.overview_progress.set(0.0, Instant::now());
-                                this.focus_active(window, cx);
-                                cx.notify();
-                            }),
-                        ),
-                );
-            }
-
-            workspaces = workspaces.child(workspace);
-        }
-
-        div()
-            .absolute()
-            .top(px(8.0))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .id("workspace-bar")
-                    .h(px(26.0))
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .rounded_full()
-                    .bg(Theme::global().HEADER_BG)
-                    .child(workspaces),
-            )
-            .into_any_element()
     }
 
     fn render_preference_tab(
@@ -5948,7 +5846,7 @@ impl Render for Workspace {
             .flex_row()
             .relative()
             .bg(if folders { Theme::global().HEADER_BG } else { Theme::global().BG })
-            .when(folders, |el| el.child(folder_surface::background(self.folder_frame.clone(), sidebar_width)))
+            .when(folders, |el| el.child(folder_surface::background(self.folder_frame.clone())))
             .font_family(Theme::global().FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)

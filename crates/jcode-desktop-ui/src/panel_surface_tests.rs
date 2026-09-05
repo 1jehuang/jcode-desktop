@@ -42,11 +42,11 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                 let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
                 assert!(vcx.debug_bounds("native-folder-surface").is_some());
                 assert!(vcx.debug_bounds("folder-selected-sheet").is_none());
-                let shoulder = canvas.top() + px(FOLDER_PAGE_TOP);
-                if sidebar {
-                    assert_eq!(shoulder, vcx.debug_bounds("sidebar-sessions-tab").unwrap().top(),
-                        "folder body and selected navigation outline must share a top edge");
-                }
+                let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
+                assert_eq!(
+                    tabs.bottom(),
+                    canvas.top() + px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET)
+                );
                 let expected_left = if sidebar {
                     SIDEBAR_WIDTH + FOLDER_CONNECTOR_WIDTH
                 } else {
@@ -87,7 +87,10 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                         panels[0].top(),
                         "focus must not raise a panel tab"
                     );
-                    assert_eq!(panel.top(), canvas.top() + px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET));
+                    assert_eq!(
+                        panel.top(),
+                        canvas.top() + px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET)
+                    );
                 }
             }
         }
