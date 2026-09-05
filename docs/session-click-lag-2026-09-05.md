@@ -50,4 +50,26 @@ multiple-sampler observation. Do not describe the full click-lag problem as fixe
 A conclusive responsiveness comparison needs matching clicks with no competing
 builds, one active timing sampler, and a clean instance if reclaiming already
 leaked objects. Restarting the user's active desktop requires approval because
-unsaved drafts and layout may otherwise be lost. No restart is part of this fix.
+unsaved drafts and layout may otherwise be lost.
+
+## Deployment and post-fix observation
+
+Both lifecycle regressions passed, as did 12 transcript-related tests (one manual
+profiler ignored). The attempted hot reload could not finish: PID 178621 exited
+while the rebuild was running. No application error or cause was established by
+the available logs. No termination command was sent by this investigation.
+The already-exited desktop was restored as PID 714979 with hot reload enabled;
+UI generation 1 activation was confirmed from the runtime log.
+
+A subsequent 20-second no-perf live capture at
+`target/live-profile/sidebar-clicks-after-0956` contained 189 sampling windows,
+22 draws, and only two input-bearing frames. Maximum wake lateness was 3.98 ms,
+draw duration 31.36 ms, and input latency 48.01 ms. Resident memory in the new
+instance was about 224 MiB. The sampling rate is consistent with one sampler.
+
+This is **not** a matching before/after workload: the process and open sessions
+changed, contention decreased, perf was disabled, and only two inputs occurred.
+It therefore does not establish improved session-click latency. The confirmed
+improvement is the lifecycle regression changing from leaked to released panels.
+The user's original click-lag acceptance remains open pending repeated matching
+session clicks in the restored app.
