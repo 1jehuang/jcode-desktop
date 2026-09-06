@@ -594,13 +594,101 @@ fn emphasize(lines: &mut [DiffLine]) {
             }
             end += 1;
         }
-        for (a, b) in removed.into_iter().zip(added) {
+        for (a, b) in replacement_pairs(lines, &removed, &added) {
             let (old, new) = changed_ranges(&lines[a].text, &lines[b].text);
             lines[a].emphasis = old;
             lines[b].emphasis = new;
         }
         start = end;
     }
+}
+
+/// Return absolute `(removed_index, added_index)` pairs for one changed block.
+/// The supplied indices should follow source order. Pairing never crosses that
+/// order, and equal-sized runs retain their stable positional alignment.
+/// Unequal runs may skip surplus lines on the longer side, for example a newly
+/// inserted comment before a replacement. Work is bounded by fixed lookahead
+/// and capped prefix/suffix comparisons, rather than a cross-product matrix.
+pub(crate) fn replacement_pairs(
+    lines: &[DiffLine],
+    removed: &[usize],
+    added: &[usize],
+) -> Vec<(usize, usize)> {
+    const LOOKAHEAD: usize = 16;
+    // Trim indentation once per line, not once per candidate comparison.
+    let indexed = |indices: &[usize], kind| {
+        indices
+            .iter()
+            .filter_map(|&index| {
+                let line = lines.get(index).filter(|line| line.kind == kind)?;
+                Some((index, line.text.trim_start()))
+            })
+            .collect::<Vec<_>>()
+    };
+    let removed = indexed(removed, LineKind::Removed);
+    let added = indexed(added, LineKind::Added);
+    if removed.len() == added.len() {
+        return removed
+            .iter()
+            .zip(&added)
+            .map(|(a, b)| (a.0, b.0))
+            .collect();
+    }
+    let removed_is_shorter = removed.len() < added.len();
+    let (shorter, longer) = if removed_is_shorter {
+        (&removed, &added)
+    } else {
+        (&added, &removed)
+    };
+    let mut result = Vec::with_capacity(shorter.len());
+    let mut cursor = 0;
+    for (at, &(short_index, short_text)) in shorter.iter().enumerate() {
+        // Leave at least one candidate for every remaining shorter-side line.
+        let surplus = longer.len() - cursor - (shorter.len() - at);
+        let last = cursor + surplus.min(LOOKAHEAD);
+        let mut best = cursor;
+        let mut best_score = replacement_similarity(short_text, longer[cursor].1);
+        for candidate in cursor + 1..=last {
+            let score = replacement_similarity(short_text, longer[candidate].1);
+            // Nearest candidate wins ties, including wholly unrelated lines.
+            if score > best_score {
+                best = candidate;
+                best_score = score;
+            }
+        }
+        let long_index = longer[best].0;
+        result.push(if removed_is_shorter {
+            (short_index, long_index)
+        } else {
+            (long_index, short_index)
+        });
+        cursor = best + 1;
+    }
+    result
+}
+
+fn replacement_similarity(old: &str, new: &str) -> usize {
+    const EDGE_CHARS: usize = 128;
+    let mut prefix_bytes = 0;
+    let mut prefix_chars = 0;
+    for (a, b) in old.chars().zip(new.chars()).take(EDGE_CHARS) {
+        if a != b {
+            break;
+        }
+        prefix_bytes += a.len_utf8();
+        prefix_chars += 1;
+    }
+    // Slice on matched character boundaries so prefix and suffix cannot count
+    // the same character twice. Prefix gets extra weight over common closing
+    // punctuation, which alone is weak evidence of an actual replacement.
+    let suffix_chars = old[prefix_bytes..]
+        .chars()
+        .rev()
+        .zip(new[prefix_bytes..].chars().rev())
+        .take(EDGE_CHARS)
+        .take_while(|(a, b)| a == b)
+        .count();
+    prefix_chars * 2 + suffix_chars
 }
 
 fn changed_ranges(old: &str, new: &str) -> (Option<Range<usize>>, Option<Range<usize>>) {
@@ -1959,5 +2047,179 @@ mod tests {
             assert_eq!(file.hunks[0].lines[1].old_line, Some(21));
             assert_eq!(file.hunks[0].lines[2].new_line, Some(31));
         }
+    }
+
+    fn replacement_block(old: &[&str], new: &[&str]) -> (Vec<DiffLine>, Vec<usize>, Vec<usize>) {
+        let lines = old
+            .iter()
+            .map(|text| line(LineKind::Removed, text, None, None))
+            .chain(
+                new.iter()
+                    .map(|text| line(LineKind::Added, text, None, None)),
+            )
+            .collect();
+        (
+            lines,
+            (0..old.len()).collect(),
+            (old.len()..old.len() + new.len()).collect(),
+        )
+    }
+
+    #[test]
+    fn review_fixture_pairs_title_replacement_after_inserted_comment() {
+        let preview =
+            from_patch(include_str!("../../../assets/previews/change-review.diff")).unwrap();
+        let lines = &preview.files[0].hunks[0].lines;
+        let removed = lines
+            .iter()
+            .position(|line| line.text.trim() == "title.to_string()")
+            .unwrap();
+        let added = lines
+            .iter()
+            .position(|line| line.text.trim() == "title.chars().take(80).collect()")
+            .unwrap();
+        let comment = added - 1;
+        assert_eq!(
+            replacement_pairs(lines, &[removed], &[comment, added]),
+            [(removed, added)]
+        );
+        assert!(lines[comment].emphasis.is_none());
+        assert_eq!(
+            &lines[removed].text[lines[removed].emphasis.clone().unwrap()],
+            "to_string"
+        );
+        assert_eq!(
+            &lines[added].text[lines[added].emphasis.clone().unwrap()],
+            "chars().take(80).collect"
+        );
+    }
+
+    #[test]
+    fn replacement_pairs_ignore_indentation_when_skipping_new_comments() {
+        let (mut lines, removed, added) = replacement_block(
+            &["                                title.to_string()"],
+            &[
+                "                                // explain the title",
+                "title.chars().collect()",
+            ],
+        );
+        assert_eq!(replacement_pairs(&lines, &removed, &added), [(0, 2)]);
+        emphasize(&mut lines);
+        assert!(lines[1].emphasis.is_none());
+        assert!(lines[0].emphasis.is_some());
+        assert!(lines[2].emphasis.is_some());
+    }
+
+    #[test]
+    fn replacement_pairs_skip_removed_comments_symmetrically() {
+        let (mut lines, removed, added) = replacement_block(
+            &["// obsolete description", "    title.to_string()"],
+            &["\ttitle.chars().collect()"],
+        );
+        assert_eq!(replacement_pairs(&lines, &removed, &added), [(1, 2)]);
+        emphasize(&mut lines);
+        assert!(lines[0].emphasis.is_none());
+        assert!(lines[1].emphasis.is_some());
+        assert!(lines[2].emphasis.is_some());
+    }
+
+    #[test]
+    fn replacement_pairs_and_emphasis_are_unicode_safe() {
+        let (mut lines, removed, added) = replacement_block(
+            &["\u{3000}日本語🦀 = 猫;"],
+            &["\u{3000}// 日本語の説明", "\t日本語🦀 = 犬;"],
+        );
+        assert_eq!(replacement_pairs(&lines, &removed, &added), [(0, 2)]);
+        emphasize(&mut lines);
+        assert!(lines[1].emphasis.is_none());
+        for line in &lines {
+            if let Some(range) = &line.emphasis {
+                assert!(line.text.get(range.clone()).is_some());
+            }
+        }
+        // Different indentation is genuinely part of the intraline change,
+        // even though it is deliberately excluded from replacement scoring.
+        assert!(lines[0].text[lines[0].emphasis.clone().unwrap()].contains('猫'));
+        assert!(lines[2].text[lines[2].emphasis.clone().unwrap()].contains('犬'));
+        assert!(replacement_similarity("日本語🦀.古い()", "日本語🦀.新しい()") > 0);
+    }
+
+    #[test]
+    fn equal_sized_replacements_keep_stable_positional_pairs() {
+        let (lines, removed, added) =
+            replacement_block(&["alpha()", "beta()"], &["beta()", "alpha()"]);
+        assert_eq!(
+            replacement_pairs(&lines, &removed, &added),
+            [(0, 2), (1, 3)]
+        );
+        let (lines, removed, added) = replacement_block(&["alpha()"], &["wholly different"]);
+        assert_eq!(replacement_pairs(&lines, &removed, &added), [(0, 1)]);
+    }
+
+    #[test]
+    fn replacement_pairs_preserve_both_orders_and_nearest_ties() {
+        let (lines, removed, added) = replacement_block(
+            &["alpha()", "beta()"],
+            &["// first", "alpha(1)", "// second", "beta(2)"],
+        );
+        assert_eq!(
+            replacement_pairs(&lines, &removed, &added),
+            [(0, 3), (1, 5)]
+        );
+        let (lines, removed, added) = replacement_block(&["x", "y"], &["a", "b", "c"]);
+        assert_eq!(
+            replacement_pairs(&lines, &removed, &added),
+            [(0, 2), (1, 3)]
+        );
+        for old_len in 0..24 {
+            for new_len in 0..24 {
+                let old = (0..old_len)
+                    .map(|i| ["alpha()", "beta()", "gamma()"][i % 3])
+                    .collect::<Vec<_>>();
+                let new = (0..new_len)
+                    .map(|i| ["// comment", "gamma()", "beta()", "alpha()"][i % 4])
+                    .collect::<Vec<_>>();
+                let (lines, removed, added) = replacement_block(&old, &new);
+                let pairs = replacement_pairs(&lines, &removed, &added);
+                assert_eq!(pairs.len(), old_len.min(new_len));
+                assert!(
+                    pairs
+                        .windows(2)
+                        .all(|pair| pair[0].0 < pair[1].0 && pair[0].1 < pair[1].1)
+                );
+                assert!(
+                    pairs
+                        .iter()
+                        .all(|(a, b)| removed.contains(a) && added.contains(b))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_pair_lookahead_and_long_line_scoring_are_capped() {
+        let mut additions = vec!["// unrelated comment"; 32];
+        additions.push("target(1)");
+        let (lines, removed, added) = replacement_block(&["target()"], &additions);
+        // A candidate beyond the fixed window is intentionally not scanned.
+        assert_eq!(replacement_pairs(&lines, &removed, &added), [(0, 1)]);
+        let long = "🦀".repeat(100_000);
+        assert_eq!(replacement_similarity(&long, &long), 128 * 3);
+        let (lines, removed, added) = replacement_block(&vec!["old"; 20_000], &vec!["new"; 40_000]);
+        let pairs = replacement_pairs(&lines, &removed, &added);
+        assert_eq!(pairs.len(), 20_000);
+        assert_eq!(pairs[0], (0, 20_000));
+        assert_eq!(pairs[19_999], (19_999, 39_999));
+    }
+
+    #[test]
+    fn replacement_pairs_ignore_nonmatching_kinds_and_invalid_indices() {
+        let (lines, _, _) = replacement_block(&["old"], &["new", "// extra"]);
+        assert_eq!(
+            replacement_pairs(&lines, &[0, usize::MAX], &[1, 2]),
+            [(0, 1)]
+        );
+        assert!(replacement_pairs(&lines, &[1], &[0]).is_empty());
+        assert!(replacement_pairs(&lines, &[], &[1, 2]).is_empty());
     }
 }

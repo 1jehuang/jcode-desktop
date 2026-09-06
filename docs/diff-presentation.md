@@ -4,7 +4,9 @@ The shared diff model (`diff_model.rs`) keeps file identity, hunk boundaries,
 context, old/new line positions, change counts, and UTF-8-safe intraline ranges.
 The native viewer (`diff_view.rs`) offers:
 
-- Unified and aligned before/after layouts.
+- Unified and aligned before/after layouts. Unequal replacement runs use bounded
+  similarity matching so inserted comments do not steal replacement highlights.
+- Readable 12.5px code with nonwrapping, content-sized line-number gutters.
 - Syntax-colored code, tinted added/removed rows, explicit change markers, and
   stronger backgrounds on the characters that changed.
 - Wrapping by default, with horizontal scrolling available when wrapping is off.

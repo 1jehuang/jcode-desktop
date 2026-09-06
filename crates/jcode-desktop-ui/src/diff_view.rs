@@ -6,7 +6,7 @@ use gpui::{
     SharedString, StyledText, Window, div, prelude::*, px, relative,
 };
 
-use crate::diff_model::{DiffFile, DiffLine, DiffPreview, LineKind};
+use crate::diff_model::{DiffFile, DiffLine, DiffPreview, LineKind, replacement_pairs};
 use crate::markdown::{flatten_highlights, highlight_code};
 use crate::text_selection::{self, TextSelection};
 use crate::theme::{Theme, to_hsla};
@@ -15,6 +15,8 @@ const PAGE_LINES: usize = 80;
 const PAGE_FILES: usize = 8;
 const CONTEXT_EDGE: usize = 3;
 const MAX_LINE_CHARS: usize = 4096;
+const CODE_FONT_SIZE: f32 = 12.5;
+const CODE_LINE_HEIGHT: f32 = 21.;
 
 fn visible_line_text(text: &str) -> &str {
     if text.len() <= MAX_LINE_CHARS {
@@ -83,12 +85,21 @@ fn split_pairs(
                 while i < end && lines[i].kind == LineKind::Added {
                     i += 1;
                 }
-                for n in 0..(added_start - removed_start).max(i - added_start) {
-                    rows.push((
-                        (removed_start + n < added_start).then_some(removed_start + n),
-                        (added_start + n < i).then_some(added_start + n),
-                    ));
+                let removed: Vec<_> = (removed_start..added_start).collect();
+                let added: Vec<_> = (added_start..i).collect();
+                let mut old = removed_start;
+                let mut new = added_start;
+                for (left, right) in replacement_pairs(lines, &removed, &added) {
+                    // Preserve each side's source order around similar-line anchors.
+                    // A newly inserted comment must not steal a replacement's row.
+                    rows.extend((old..left).map(|line| (Some(line), None)));
+                    rows.extend((new..right).map(|line| (None, Some(line))));
+                    rows.push((Some(left), Some(right)));
+                    old = left + 1;
+                    new = right + 1;
                 }
+                rows.extend((old..added_start).map(|line| (Some(line), None)));
+                rows.extend((new..i).map(|line| (None, Some(line))));
             }
             LineKind::Added => {
                 rows.push((None, Some(i)));
@@ -360,7 +371,11 @@ impl DiffView {
     ) -> AnyElement {
         let theme = Theme::global();
         let Some(index) = index else {
-            return div().flex_1().min_w_0().min_h(px(19.)).into_any_element();
+            return div()
+                .flex_1()
+                .min_w_0()
+                .min_h(px(CODE_LINE_HEIGHT))
+                .into_any_element();
         };
         let source = &self.preview.files[file];
         let line = &source.hunks[hunk].lines[index];
@@ -421,7 +436,7 @@ impl DiffView {
             .items_start()
             .flex_1()
             .min_w_0()
-            .min_h(px(19.))
+            .min_h(px(CODE_LINE_HEIGHT))
             .when_some(tint, |el, color| el.bg(to_hsla(color).opacity(0.09)))
             .when(line.kind == LineKind::Meta, |el| {
                 el.text_color(theme.TEXT_DIM)
@@ -464,7 +479,7 @@ impl DiffView {
             .text_system()
             .shape_line(
                 digits.clone().into(),
-                px(11.5),
+                px(CODE_FONT_SIZE),
                 &[style.to_run(digits.len())],
                 None,
             )
@@ -531,13 +546,15 @@ impl DiffView {
                             .flex_row()
                             .flex_wrap()
                             .gap_1()
-                            .child(self.control(
-                                format!("diff-copy-file-{index}"),
-                                "Copy diff",
-                                false,
-                                Control::CopyDiff(Some(index)),
-                                cx,
-                            ))
+                            .when(self.files.len() > 1, |el| {
+                                el.child(self.control(
+                                    format!("diff-copy-file-{index}"),
+                                    "Copy diff",
+                                    false,
+                                    Control::CopyDiff(Some(index)),
+                                    cx,
+                                ))
+                            })
                             .child(self.control(
                                 format!("diff-copy-path-{index}"),
                                 "Copy path",
@@ -627,7 +644,7 @@ impl DiffView {
                             .text_system()
                             .shape_line(
                                 text.to_owned().into(),
-                                px(11.5),
+                                px(CODE_FONT_SIZE),
                                 &[style.to_run(text.len())],
                                 None,
                             )
@@ -643,8 +660,8 @@ impl DiffView {
             .w_full()
             .when(!self.wrap, |el| el.w(width).min_w(relative(1.)))
             .font_family(theme.FONT_MONO)
-            .text_size(px(11.5))
-            .line_height(px(19.))
+            .text_size(px(CODE_FONT_SIZE))
+            .line_height(px(CODE_LINE_HEIGHT))
             .text_color(theme.CODE_TEXT);
         for row in &state.rows[start..end] {
             body =
@@ -939,8 +956,10 @@ mod tests {
         assert!(vcx.debug_bounds("diff-long-line-0-0-0-unified").is_some());
         let gutter = vcx.debug_bounds("diff-gutter-0-0-0-unified-new").unwrap();
         assert!(gutter.size.width > px(34.));
-        assert!(gutter.size.height <= px(19.));
-        let copy = vcx.debug_bounds("diff-copy-file-0").unwrap();
+        assert!(gutter.size.height <= px(CODE_LINE_HEIGHT));
+        assert!(vcx.debug_bounds("diff-copy-file-0").is_none());
+        assert!(vcx.debug_bounds("diff-copy-path-0").is_some());
+        let copy = vcx.debug_bounds("diff-copy").unwrap();
         vcx.simulate_click(copy.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let copied = vcx.read(|cx| cx.read_from_clipboard().unwrap().text().unwrap());
@@ -1006,7 +1025,7 @@ mod tests {
                 .unwrap()
                 .size
                 .height
-                > px(19.)
+                > px(CODE_LINE_HEIGHT)
         );
         let split = vcx.debug_bounds("diff-split").unwrap();
         assert!(split.right() <= px(320.));
@@ -1093,6 +1112,37 @@ mod tests {
                 (Some(3), Some(3)),
                 (None, Some(4)),
                 (Some(5), None)
+            ]
+        );
+    }
+
+    #[test]
+    fn split_pairs_inserted_comment_before_the_matching_title_replacement() {
+        let mut removed = line(LineKind::Removed, 30);
+        removed.text = "        title.to_string()".into();
+        let mut comment = line(LineKind::Added, 30);
+        comment.text = "        // Keep the sidebar readable, including Unicode titles.".into();
+        let mut replacement = line(LineKind::Added, 31);
+        replacement.text = "        title.chars().take(80).collect()".into();
+        let lines = vec![removed, comment, replacement];
+        assert_eq!(
+            split_pairs(&lines, 0, lines.len()),
+            vec![(None, Some(1)), (Some(0), Some(2))]
+        );
+        let preview = file(lines);
+        assert_eq!(
+            view_rows(&preview, true, &HashSet::new()),
+            vec![
+                Row::Line {
+                    hunk: 0,
+                    left: None,
+                    right: Some(1)
+                },
+                Row::Line {
+                    hunk: 0,
+                    left: Some(0),
+                    right: Some(2)
+                },
             ]
         );
     }
@@ -1257,6 +1307,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("diff-file-8").is_some());
         assert!(vcx.debug_bounds("diff-file-0").is_none());
+        assert!(vcx.debug_bounds("diff-copy-file-8").is_some());
         let copy = vcx.debug_bounds("diff-copy").unwrap();
         vcx.simulate_click(copy.center(), gpui::Modifiers::default());
         vcx.run_until_parked();

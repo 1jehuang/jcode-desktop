@@ -7,15 +7,25 @@ import subprocess
 import sys
 import time
 
+from PIL import Image
 import screenshot
 
 
 def verify(output, env, root, run):
     def words(path):
-        result = run(["tesseract", str(path), "stdout", "tsv"], env=env,
+        # Upscale small native text for OCR, then map coordinates back to X11.
+        ocr_image = root / "diff-ocr.png"
+        with Image.open(path) as image:
+            image.resize((image.width * 2, image.height * 2)).save(ocr_image)
+        result = run(["tesseract", str(ocr_image), "stdout", "tsv"],
+                     env={**env, "OMP_THREAD_LIMIT": "1"},
                      cwd=root, check=True, capture_output=True, text=True, timeout=30)
-        return [row for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t")
+        rows = [row for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t", quoting=csv.QUOTE_NONE)
                 if row.get("text", "").strip()]
+        for row in rows:
+            for field in ("left", "top", "width", "height"):
+                row[field] = str(int(row[field]) // 2)
+        return rows
 
     def capture(suffix):
         path = output.with_name(output.stem + suffix + ".png")
@@ -34,13 +44,25 @@ def verify(output, env, root, run):
             env=env, cwd=root, check=True, timeout=10)
 
     initial = words(output)
+    deadline = time.monotonic() + 30
+    attempt = 0
+    while not initial and time.monotonic() < deadline:
+        attempt += 1
+        time.sleep(0.5)
+        initial = capture(f"-ready-{attempt}")
+    if not initial:
+        diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"
+        raise AssertionError("App never painted text: " + (diagnostics.read_text() if diagnostics.exists() else "no diagnostics"))
     text = " ".join(row["text"] for row in initial)
     assert "src/session.rs" in text and "tests/session.rs" in text, text
     assert "Untitled" in text and "chars" in text, text
     click(initial, "Split")
     split = capture("-split")
     text = " ".join(row["text"] for row in split)
-    assert "Before" in text and "After" in text, text
+    def is_old_header(row):
+        return row["text"].lower().replace("0", "o") == "old"
+
+    assert any(is_old_header(row) for row in split) and any(row["text"] == "New" for row in split), text
     click(split, "Wrap:")
     nowrap = capture("-nowrap")
     assert "off" in " ".join(row["text"] for row in nowrap)
@@ -56,7 +78,7 @@ def verify(output, env, root, run):
     assert any("to_owned" in row["text"] for row in expanded)
     click(expanded, "Unified")
     unified = capture("-unified")
-    assert not any(row["text"] in ("Before", "After") for row in unified)
+    assert not any(is_old_header(row) for row in unified)
     print("Rich diff acceptance passed: two files, syntax text, native split/unified, wrapping, copy feedback, collapse and expand.")
 
 
