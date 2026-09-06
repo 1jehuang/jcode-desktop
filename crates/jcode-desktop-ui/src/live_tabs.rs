@@ -46,8 +46,9 @@ impl TabLayout {
         }
     }
 
-    /// Anchor all visible folders independently of keyboard focus. Hidden
-    /// folders use only the gaps around those anchors, at compact icon widths.
+    /// Anchor visible folders independently of keyboard focus. A pair meets at
+    /// the panel divider, with a small shared lip. Off-screen folders retain
+    /// their own exposed tabs in the space on either side of that pair.
     fn anchored(available: f32, panels: &[Option<(f32, f32)>]) -> Option<Vec<TabGeometry>> {
         let mut geometry: Vec<_> = panels
             .iter()
@@ -56,7 +57,10 @@ impl TabLayout {
                     let left = panel_left.clamp(0.0, available);
                     let right = (panel_left + width).clamp(left, available);
                     let visible = right - left;
-                    (visible > 0.0).then(|| {
+                    // A clipped sliver is not a useful visible panel. Treat it
+                    // like an off-screen folder so its tab keeps a real hit
+                    // target instead of shrinking to a fraction of a pixel.
+                    (visible > 0.0 && visible >= 64.0_f32.min(available * 0.25)).then(|| {
                         let width = 208.0_f32.min(visible * 0.9);
                         TabGeometry {
                             left: (left + right - width) / 2.0,
@@ -69,6 +73,30 @@ impl TabLayout {
             .collect();
         if geometry.iter().all(Option::is_none) {
             return None;
+        }
+        let visible: Vec<_> = geometry
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tab)| tab.map(|_| i))
+            .collect();
+        if let [a, b] = visible[..] {
+            let (left, right) = if geometry[a].unwrap().left <= geometry[b].unwrap().left {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let (panel_left, panel_width) = panels[left].unwrap();
+            let (panel_right, _) = panels[right].unwrap();
+            let seam = ((panel_left + panel_width).clamp(0.0, available)
+                + panel_right.clamp(0.0, available))
+                / 2.0;
+            let mut left_tab = geometry[left].unwrap();
+            let mut right_tab = geometry[right].unwrap();
+            let overlap = 12.0_f32.min(left_tab.width.min(right_tab.width) * 0.1);
+            left_tab.left = seam + overlap / 2.0 - left_tab.width;
+            right_tab.left = seam - overlap / 2.0;
+            geometry[left] = Some(left_tab);
+            geometry[right] = Some(right_tab);
         }
         let mut anchors: Vec<_> = geometry.iter().flatten().copied().collect();
         anchors.sort_by(|a, b| a.left.total_cmp(&b.left));
@@ -167,6 +195,28 @@ impl TabLayout {
         (0..selected)
             .chain((selected + 1..count).rev())
             .chain(std::iter::once(selected))
+    }
+
+    /// Keep labels, status dots, and click targets out of the overlapping lip.
+    fn exposed(tabs: &[TabGeometry], position: usize, selected: usize) -> (f32, f32) {
+        let tab = tabs[position];
+        let mut left = tab.left;
+        let mut right = tab.left + tab.width;
+        for other in Self::paint_order(tabs.len(), selected)
+            .skip_while(|&i| i != position)
+            .skip(1)
+            .map(|i| tabs[i])
+        {
+            if other.left >= right || other.left + other.width <= left {
+                continue;
+            }
+            if other.left > left {
+                right = right.min(other.left);
+            } else {
+                left = left.max(other.left + other.width).min(right);
+            }
+        }
+        (left, (right - left).max(0.0))
     }
 }
 
@@ -350,26 +400,9 @@ impl Workspace {
             let (index, row, row_position) = entries[position];
             let focused = position == selected;
             let current = geometry[position];
-            let visible = if attached || focused {
-                current.width
-            } else if position < selected {
-                (geometry[position + 1].left - current.left)
-                    .min(current.width)
-                    .max(0.0)
-            } else {
-                let previous = geometry[position - 1];
-                (current.left + current.width - previous.left - previous.width)
-                    .min(current.width)
-                    .max(0.0)
-            };
+            let (exposed_left, visible) = TabLayout::exposed(&geometry, position, selected);
             if let Some(index) = index {
-                let x = if attached || focused {
-                    current.left + current.width / 2.0
-                } else if position < selected {
-                    current.left + visible / 2.0
-                } else {
-                    current.left + current.width - visible / 2.0
-                };
+                let x = exposed_left + visible / 2.0;
                 self.live_tabs.hit_targets.push((index, x));
             }
             let padding = (visible / 12.0).min(6.0);
@@ -388,6 +421,8 @@ impl Workspace {
                 None => (format!("Workspace {}", row + 1).into(), "📁", None, None),
             };
             let text = div()
+                .absolute()
+                .left(px(exposed_left - current.left))
                 .flex_none()
                 .w(px((visible - 2.0).max(0.0)))
                 .min_w_0()
@@ -459,7 +494,6 @@ impl Workspace {
                     .h(px(current.height))
                     .flex()
                     .items_center()
-                    .when(!attached && position > selected, |el| el.justify_end())
                     .rounded_t_md()
                     // Crowded off-screen tabs can be narrower than two pixels.
                     // Their border must not force the layout wider than its slot.
@@ -517,7 +551,9 @@ impl Workspace {
                         el.child(
                             div()
                                 .absolute()
-                                .right_1()
+                                .right(px(
+                                    (current.left + current.width - exposed_left - visible) + 4.0
+                                ))
                                 .top_1()
                                 .size(px(5.0))
                                 .rounded_full()
@@ -668,17 +704,134 @@ mod tests {
                         assert_eq!(tab.height, FOLDER_CONTENT_INSET - 4.0);
                     } else {
                         let left = if i == hidden { 0.0 } else { available / 2.0 };
-                        assert!(tab.left >= left);
-                        assert!(tab.left + tab.width <= left + available / 2.0 + 0.001);
+                        assert!(tab.left >= left - 6.001);
+                        assert!(tab.left + tab.width <= left + available / 2.0 + 6.001);
                         assert_eq!(tab.height, FOLDER_CONTENT_INSET);
                     }
-                    for other in tabs.iter().take(i) {
+                    for (j, other) in tabs.iter().enumerate().take(i) {
+                        if panels[i].is_some() && panels[j].is_some() {
+                            continue; // The two visible tabs deliberately share a lip.
+                        }
                         assert!(
                             other.left + other.width <= tab.left + 0.001
                                 || tab.left + tab.width <= other.left + 0.001
                         );
                     }
                 }
+                for selected in [0, hidden, hidden + 1, tabs.len() - 1] {
+                    for i in 0..tabs.len() {
+                        let (left, width) = TabLayout::exposed(&tabs, i, selected);
+                        assert!(width > 0.0, "tab {i} must remain exposed");
+                        assert!(left >= -0.001 && left + width <= available + 0.001);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_tabs_pair_meets_at_the_divider_with_offscreen_tabs_on_each_side() {
+        let panels = [
+            None,
+            None,
+            Some((0.0, 576.0)),
+            Some((576.0, 576.0)),
+            None,
+            None,
+        ];
+        let tabs = TabLayout::anchored(1152.0, &panels).unwrap();
+        assert_eq!(tabs[2].width, 208.0);
+        assert_eq!(tabs[3].width, 208.0);
+        assert_eq!(tabs[2].left + tabs[2].width - tabs[3].left, 12.0);
+        assert_eq!((tabs[2].left + tabs[2].width + tabs[3].left) / 2.0, 576.0);
+        assert!(tabs[1].left + tabs[1].width < tabs[2].left);
+        assert!(tabs[4].left > tabs[3].left + tabs[3].width);
+        for selected in [2, 3] {
+            for i in [2, 3] {
+                let (_, width) = TabLayout::exposed(&tabs, i, selected);
+                assert_eq!(width, if i == selected { 208.0 } else { 196.0 });
+            }
+        }
+    }
+
+    #[test]
+    fn live_tabs_clipped_edge_slivers_keep_usable_tabs() {
+        let panels = [
+            Some((-575.0, 576.0)),
+            Some((1.0, 575.0)),
+            Some((576.0, 575.0)),
+            Some((1151.0, 576.0)),
+            None,
+        ];
+        let tabs = TabLayout::anchored(1152.0, &panels).unwrap();
+        for i in [0, 3, 4] {
+            assert!((tabs[i].width - 31.96).abs() < 0.001);
+            assert_eq!(tabs[i].height, FOLDER_CONTENT_INSET - 4.0);
+            for selected in 0..tabs.len() {
+                let (_, width) = TabLayout::exposed(&tabs, i, selected);
+                assert!(width > 30.0, "edge sliver {i} must stay clickable");
+            }
+        }
+        assert_eq!(tabs[1].left + tabs[1].width - tabs[2].left, 12.0);
+    }
+
+    #[gpui::test]
+    fn live_tabs_two_panel_cluster_keeps_every_offscreen_tab_visible_and_clickable(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            for i in 0..8 {
+                w.push_test_panel(&format!("session-{i}"), cx);
+                w.slots[i].width_fraction = 0.5;
+                w.slots[i].animated_width = AnimatedValue::new(0.5, Duration::ZERO);
+            }
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [1440.0, 1000.0, 640.0] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.0)));
+            vcx.run_until_parked();
+            for selected in [3, 4, 0, 7, 1, 6, 2, 5] {
+                workspace.update(vcx, |w, cx| {
+                    w.camera_x[w.active_row] = w.camera_target[w.active_row];
+                    w.camera_started[w.active_row] = None;
+                    w.live_tabs.settle();
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let track = vcx.debug_bounds("live-session-tabs").unwrap();
+                let targets = workspace.read_with(vcx, |w, _| w.live_tabs.hit_targets.clone());
+                assert_eq!(targets.len(), 8, "off-screen panels must retain their tabs");
+                for &(index, x) in &targets {
+                    let tab = vcx
+                        .debug_bounds(Box::leak(
+                            format!("live-session-tab-{index}").into_boxed_str(),
+                        ))
+                        .unwrap();
+                    assert!(tab.left() >= track.left() - px(0.01));
+                    assert!(tab.right() <= track.right() + px(0.01));
+                    assert!(tab.size.width > px(0.0));
+                    assert!(track.left() + px(x) > tab.left());
+                    assert!(track.left() + px(x) < tab.right());
+                }
+                let x = targets
+                    .iter()
+                    .find(|(index, _)| *index == selected)
+                    .unwrap()
+                    .1;
+                vcx.simulate_click(
+                    gpui::point(track.left() + px(x), track.bottom() - px(12.0)),
+                    gpui::Modifiers::default(),
+                );
+                vcx.run_until_parked();
+                assert_eq!(
+                    workspace.read_with(vcx, |w, _| w.active),
+                    selected,
+                    "window={width}, selected={selected}, track={track:?}, targets={targets:?}, camera={:?}",
+                    workspace.read_with(vcx, |w, _| (w.camera_x, w.camera_target, w.camera_dirty))
+                );
             }
         }
     }
@@ -756,14 +909,22 @@ mod tests {
                     ))
                     .unwrap();
                 let track = vcx.debug_bounds("live-session-tabs").unwrap();
-                assert!(
-                    tab.left() >= panel.left().max(track.left()) - px(1.0),
-                    "{tab:?} {panel:?}"
-                );
-                assert!(
-                    tab.right() <= panel.right().min(track.right()) + px(1.0),
-                    "{tab:?} {panel:?}"
-                );
+                let visible = (panel.right().min(track.right()) - panel.left().max(track.left()))
+                    .max(px(0.0));
+                if visible < px(64.0) {
+                    assert!(tab.size.width >= px(30.0), "edge slivers need usable tabs");
+                    assert_eq!(tab.size.height, px(FOLDER_CONTENT_INSET - 4.0));
+                    assert!(tab.left() >= track.left() && tab.right() <= track.right());
+                } else {
+                    assert!(
+                        tab.left() >= panel.left().max(track.left()) - px(6.01),
+                        "{tab:?} {panel:?}"
+                    );
+                    assert!(
+                        tab.right() <= panel.right().min(track.right()) + px(6.01),
+                        "{tab:?} {panel:?}"
+                    );
+                }
                 assert_eq!(tab.bottom(), panel.top());
             }
         }
