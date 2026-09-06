@@ -44,7 +44,7 @@ def main():
                         help="click an image, verify enlargement, and dismiss by Escape and click")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
-    parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),

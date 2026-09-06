@@ -558,7 +558,10 @@ impl Panel {
         });
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
-            && matches!(std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(), Ok("streaming" | "mermaid"));
+            && matches!(
+                std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(),
+                Ok("streaming" | "mermaid")
+            );
         let emoji = jcode_core::id::extract_session_name(&session_id)
             .map(jcode_core::id::session_icon)
             .unwrap_or("💫");
@@ -3010,7 +3013,7 @@ impl Panel {
                 let detail = tool_detail(name, input, output);
                 let edit_preview = code_edit_preview(name, input);
                 let has_detail = !detail.is_empty() || edit_preview.is_some();
-                let output_lines = output.lines().filter(|l| !l.trim().is_empty()).count();
+                let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 div()
                     .id(("tool", index))
@@ -3076,16 +3079,17 @@ impl Panel {
                                         .child("running"),
                                 )
                             })
-                            // Collapsed finished calls hint at how much output
-                            // is hiding behind the expander.
-                            .when(*done && !expanded && output_lines > 1, |el| {
+                            // Context cost stays visible even for single-line
+                            // results and while the output is expanded.
+                            .when(*done, |el| {
                                 el.child(
                                     div()
                                         .debug_selector(|| "tool-output-size".into())
                                         .flex_none()
+                                        .ml_auto()
                                         .text_size(px(10.0))
-                                        .text_color(Theme::global().TEXT_FAINT)
-                                        .child(format!("{output_lines} lines")),
+                                        .text_color(token_color)
+                                        .child(token_label),
                                 )
                             })
                             .when(has_detail, |el| {
@@ -4102,6 +4106,23 @@ fn context_window_for_model(model: &str) -> Option<u64> {
         return Some(1_000_000);
     }
     None
+}
+
+/// Match the TUI's output-token estimate and thresholds, using desktop theme
+/// colors. The tilde distinguishes the estimate from provider-billed usage.
+fn tool_output_token_badge(output: &str) -> (String, gpui::Rgba) {
+    use jcode_core::util::{
+        ApproxTokenSeverity, approx_tool_output_token_severity, estimate_tokens,
+        format_approx_token_count,
+    };
+    let tokens = estimate_tokens(output).max(usize::from(!output.is_empty()));
+    let theme = Theme::global();
+    let color = match approx_tool_output_token_severity(tokens) {
+        ApproxTokenSeverity::Normal => theme.OK,
+        ApproxTokenSeverity::Warning => theme.WARN,
+        ApproxTokenSeverity::Danger => theme.ERROR,
+    };
+    (format!("~{}", format_approx_token_count(tokens)), color)
 }
 
 /// `12500` -> `12.5k`, `1048576` -> `1.0m`; small counts stay exact.
@@ -6064,6 +6085,58 @@ mod tests {
         });
     }
 
+    #[test]
+    fn tool_token_badge_estimates_output_and_colors_severity_boundaries() {
+        let theme = Theme::global();
+        for (tokens, label, color) in [
+            (0, "~0 tok", theme.OK),
+            (1_900, "~1.9k tok", theme.OK),
+            (3_999, "~3.9k tok", theme.OK),
+            (4_000, "~4k tok", theme.WARN),
+            (11_999, "~11k tok", theme.WARN),
+            (12_000, "~12k tok", theme.ERROR),
+        ] {
+            assert_eq!(
+                tool_output_token_badge(&"x".repeat(tokens * 4)),
+                (label.into(), color)
+            );
+        }
+        assert_eq!(tool_output_token_badge("x").0, "~1 tok");
+        assert_eq!(
+            tool_output_token_badge(&"xxx\n".repeat(1_900)).0,
+            "~1.9k tok"
+        );
+    }
+
+    #[gpui::test]
+    fn tool_token_badge_paints_for_empty_and_single_line_results(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        for (done, output) in [(false, ""), (true, ""), (true, "ok")] {
+            panel.update(vcx, |panel, cx| {
+                panel.items = vec![Item::Tool {
+                    call_id: "token-visibility".into(),
+                    name: "bash".into(),
+                    input: r#"{"command":"true"}"#.into(),
+                    output: output.into(),
+                    done,
+                    error: None,
+                }];
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds("tool-output-size").is_some(), done);
+        }
+    }
+
     #[gpui::test]
     fn clicking_a_tool_row_expands_clean_detail_and_collapses_again(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -6120,8 +6193,8 @@ mod tests {
             .expect("clicking the header expands the detail");
         assert!(detail.size.height > px(0.));
         assert!(
-            vcx.debug_bounds("tool-output-size").is_none(),
-            "the size hint yields to the expanded detail"
+            vcx.debug_bounds("tool-output-size").is_some(),
+            "token cost remains visible alongside the expanded detail"
         );
         // The rendered detail is the formatted string: ANSI-free, head and
         // tail kept around the fold marker.
@@ -7128,6 +7201,33 @@ fn demo_items() -> Vec<Item> {
             Item::User("Can you render a Mermaid diagram?".into()),
             Item::Assistant("Here is a Mermaid diagram:\n\n```mermaid\nflowchart LR\n    A[Idea] --> B[Build]\n    B --> C[Test]\n    C -->|Pass| D[Ship]\n    C -->|Needs work| B\n```".into()),
         ];
+    }
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tokens")
+    {
+        let mut items = vec![Item::User(
+            "Show tool output token costs instead of line counts.".into(),
+        )];
+        for (index, (summary, tokens)) in [
+            ("Small output", 1_900),
+            ("Large output", 4_000),
+            ("Very large output", 12_000),
+            ("Empty output", 0),
+            ("Single-line output", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            items.push(Item::Tool {
+                call_id: format!("token-fixture-{index}"),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "example", "intent": summary}).to_string(),
+                output: "data".repeat(tokens),
+                done: true,
+                error: None,
+            });
+        }
+        return items;
     }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("image")
