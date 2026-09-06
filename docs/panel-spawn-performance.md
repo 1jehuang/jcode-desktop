@@ -123,3 +123,10 @@ help-session correlation. Three Rust profile tests cover stage accounting and
 retry policy. Three Python tests cover public state parsing, redirected log
 collection, and transparent delayed-request forwarding. Backend coverage is the
 62 telemetry unit tests plus production HTTP and real API before/after checks.
+
+Final delivery: the current Desktop host successfully activated the rebuilt UI
+at 07:43:22 UTC through its Ctrl+R-equivalent host action. The observed activation
+is retained in `target/panel-spawn/live-reload-final.json`. The final compiled test
+binary also passed the folder-picker pointer-focus regression, preventing the
+release of the opening click from stealing focus from the newly mounted editor.
+The shared backend daemon remains deliberately unchanged, as noted above.
