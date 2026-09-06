@@ -145,6 +145,7 @@ pub struct PromptInput {
     command_selection: usize,
     show_command_palette: bool,
     submission_enabled: bool,
+    spacious: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,6 +374,14 @@ impl PromptInput {
             command_selection: 0,
             show_command_palette: true,
             submission_enabled: true,
+            spacious: false,
+        }
+    }
+
+    pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
+        if self.spacious != spacious {
+            self.spacious = spacious;
+            cx.notify();
         }
     }
 
@@ -1295,6 +1304,7 @@ impl Render for PromptInput {
                 )
         });
         div()
+            .debug_selector(|| "prompt-input".into())
             .flex()
             .flex_col()
             .key_context("PromptInput")
@@ -1308,6 +1318,7 @@ impl Render for PromptInput {
                         .left_0()
                         .right_0()
                         .bottom(px(42.0))
+                        .when(self.spacious, |el| el.bottom_full())
                         .mb_1()
                         .flex()
                         .flex_col()
@@ -1431,6 +1442,9 @@ impl Render for PromptInput {
                     .px_3()
                     .py_2()
                     .text_size(px(14.0))
+                    .when(self.spacious, |el| {
+                        el.min_h(px(112.0)).px_4().py_4().text_size(px(16.0))
+                    })
                     // The TUI's `›` prompt marker in user blue.
                     .child(
                         div()

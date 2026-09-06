@@ -40,7 +40,7 @@ def main():
                         help="exercise native input and controls on the HTML fixture")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
-    parser.add_argument("--transcript", choices=("all", "reasoning", "streaming", "html"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),

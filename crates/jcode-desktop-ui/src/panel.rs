@@ -3420,6 +3420,11 @@ impl Render for Panel {
         });
         let rows = Arc::new(self.transcript_render_rows());
         let row_count = rows.len();
+        // Derive the empty state from session content, not the draft. Typing,
+        // pasting attachments, and reconnecting must not move the composer.
+        let fresh_session = self.items.is_empty() && row_count == 0 && !self.activity_active();
+        self.input
+            .update(cx, |input, cx| input.set_spacious(fresh_session, cx));
         if row_count != self.transcript_row_count {
             if row_count > self.transcript_row_count {
                 self.transcript_list.splice(
@@ -3456,38 +3461,65 @@ impl Render for Panel {
         let panel = cx.entity();
         let wheel_panel = panel.clone();
         let list_rows = rows.clone();
-        let transcript = if row_count == 0 {
-            transcript_shell
-        } else {
-            transcript_shell.child(
-                list(
-                    self.transcript_list.clone(),
-                    move |row_index, window, cx| {
-                        let row = &list_rows[row_index];
-                        panel.update(cx, |panel, cx| {
-                            let item = match &row.source {
-                                TranscriptRowSource::Settled(index) => &panel.items[*index],
-                                TranscriptRowSource::Owned(item) => item,
-                            };
-                            let element = panel.render_item(row.index, item, window, cx);
-                            let element = if row.show_label {
-                                role_caption(row.role.unwrap_or(""), element)
-                            } else {
-                                element
-                            };
+        let transcript = if fresh_session {
+            div()
+                .debug_selector(|| "fresh-session".into())
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px_4()
+                .pb(px(64.0))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(760.0))
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(
                             div()
-                                .debug_selector(move || {
-                                    format!("transcript-row-{row_index}").into()
-                                })
-                                .px_3()
-                                .pt_2p5()
-                                .child(element)
-                                .into_any_element()
-                        })
-                    },
+                                .text_size(px(22.0))
+                                .text_color(Theme::global().TEXT)
+                                .child("What would you like to work on?"),
+                        )
+                        .child(self.input.clone()),
                 )
-                .size_full(),
-            )
+                .into_any_element()
+        } else if row_count == 0 {
+            transcript_shell.into_any_element()
+        } else {
+            transcript_shell
+                .child(
+                    list(
+                        self.transcript_list.clone(),
+                        move |row_index, window, cx| {
+                            let row = &list_rows[row_index];
+                            panel.update(cx, |panel, cx| {
+                                let item = match &row.source {
+                                    TranscriptRowSource::Settled(index) => &panel.items[*index],
+                                    TranscriptRowSource::Owned(item) => item,
+                                };
+                                let element = panel.render_item(row.index, item, window, cx);
+                                let element = if row.show_label {
+                                    role_caption(row.role.unwrap_or(""), element)
+                                } else {
+                                    element
+                                };
+                                div()
+                                    .debug_selector(move || {
+                                        format!("transcript-row-{row_index}").into()
+                                    })
+                                    .px_3()
+                                    .pt_2p5()
+                                    .child(element)
+                                    .into_any_element()
+                            })
+                        },
+                    )
+                    .size_full(),
+                )
+                .into_any_element()
         };
 
         let status_line = self.status_line();
@@ -3667,7 +3699,9 @@ impl Render for Panel {
                     ),
             )
             // Input
-            .child(div().px_2().py_2().child(self.input.clone()))
+            .when(!fresh_session, |el| {
+                el.child(div().px_2().py_2().child(self.input.clone()))
+            })
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -4518,6 +4552,10 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
     kept.push_str(&lines[lines.len() - tail..].join("\n"));
     kept
 }
+
+#[cfg(test)]
+#[path = "panel_fresh_session_tests.rs"]
+mod fresh_session_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6846,6 +6884,11 @@ Goals: []"#,
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("empty")
+    {
+        return Vec::new();
+    }
     if !crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1")
     {
