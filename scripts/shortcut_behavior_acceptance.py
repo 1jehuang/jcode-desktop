@@ -3,10 +3,25 @@ import json
 from pathlib import Path
 
 
+def sessions_attached(state, sessions):
+    if not state:
+        return False
+    panels = state['rows'][0]['panels']
+    return ([p['session'] for p in panels] == list(sessions)
+            and all(p['history_loaded'] for p in panels))
+
+
 def verify(key, check, wait, read_state, root: Path, generation, sessions):
     prefix = f'g{generation}-extended'
     original = list(sessions)
     last = len(original) - 1
+
+    def attached():
+        state = read_state()
+        return state if sessions_attached(state, original) else False
+    wait(attached, f'{prefix}-all-session-attachments-restored', 30)
+    restored = check(f'{prefix}-attachments-restored', 0, 0, original)
+    assert all(p['history_loaded'] for p in restored['rows'][0]['panels'])
 
     def step(chord, name, row=0, position=0, order=None):
         key(chord)
@@ -103,6 +118,7 @@ def verify(key, check, wait, read_state, root: Path, generation, sessions):
         step('super+Home', f'after-{name}')
 
     parent_was_persisted = (root / 'jcode/sessions' / (original[0] + '.json')).exists()
+    assert not parent_was_persisted, 'fresh empty parent must still exercise the unsaved-session path'
     key('super+space')
     forked = wait(created, 'Super+Space forks into one real session', 30)
     order = [original[0], forked['session'], *original[1:]]

@@ -23,6 +23,23 @@ class ShortcutBehaviorCoverage(unittest.TestCase):
             self.assertTrue(action and check.strip() and outcome.strip(), chord)
             self.assertNotEqual(outcome.strip().lower(), 'passed', chord)
 
+    def test_attachment_guard_requires_every_expected_live_session(self):
+        from shortcut_behavior_acceptance import sessions_attached
+
+        def state(ids, loaded):
+            return {'rows': [{'panels': [
+                {'session': sid, 'history_loaded': ready}
+                for sid, ready in zip(ids, loaded)
+            ]}]}
+
+        expected = ['session_a', 'session_b']
+        self.assertTrue(sessions_attached(state(expected, [True, True]), expected))
+        self.assertFalse(sessions_attached(None, expected))
+        self.assertFalse(sessions_attached(state(expected, [False, True]), expected))
+        self.assertFalse(sessions_attached(state(expected, [True, False]), expected))
+        self.assertFalse(sessions_attached(state(expected[:1], [True]), expected))
+        self.assertFalse(sessions_attached(state(expected[::-1], [True, True]), expected))
+
     def test_bad_daemon_path_fails_before_creating_artifacts(self):
         scratch = Path(os.environ.get('JCODE_SCRATCH_DIR', ROOT / 'target'))
         scratch.mkdir(parents=True, exist_ok=True)

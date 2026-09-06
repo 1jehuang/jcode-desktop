@@ -150,7 +150,7 @@ Native real-session navigation rendering was visibly verified separately.
 This fixture-capture limitation does not replace or invalidate the successful
 native keyboard, focus, session-creation, close, and reload observations above.
 
-### Scope of the conclusion
+### Scope of the earlier recheck
 
 The six intercepted shortcuts have end-to-end behavioral evidence, and the
 navigation suite covers additional movement/overview/closing paths. The
@@ -180,8 +180,19 @@ Desktop was restored and the Ctrl+R rebuild/reload path activated successfully.
 The same extended run exposed a separate SDK/daemon boundary bug: Super+Space
 cannot fork a new empty session whose snapshot has never been saved. The UI
 emitted the correct request, but the daemon returned a missing-file error.
-Runtime acceptance for that correction and native Super+Shift+Q remain pending
-in the matrix until a fresh daemon build passes the entire extension.
+Runtime commit `4e7009930` fixes both the missing-parent fallback and persistence
+of an otherwise empty fork child. The untouched empty root remains lazily saved.
+Eleven scoped core tests and three base persistence-policy tests passed. One
+unrelated swarm-toggle expectation failed in both the new binary and an older
+pre-change test binary and was not changed.
+
+With the freshly linked daemon, `target/super-all-runtime` passed all 86 native
+checkpoints. The parent snapshot did not exist, yet Super+Space created exactly
+one focused child whose saved parent ID and inherited directory matched, with
+two persisted messages including the fork notice. Super+Shift+Q then exited the
+real app with status 0. Its final screenshot was read and visibly rendered two
+real panels and the selected composer. Nine GPUI behavior tests and five closing
+tests also passed again in the latest compiled UI test binary.
 
 The native runner's `--extended-shortcuts` opt-in writes additional state
 checkpoints, actual home-session creation records, fork lineage, and a native
@@ -191,3 +202,75 @@ before artifacts or processes are created. The coverage regression checks each
 of the 42 documented chords against its actual registered action, not just a
 count of rows. Service credentials stay isolated, and no provider inference or
 mail/task mutations are requested.
+
+The hot-plugin repeat `target/super-all-reload` exposed another integration
+boundary before its explicit Ctrl+R: startup plugin replacement detached and
+removed the original unsaved idle Agent. The restored panel still displayed its
+ID, but history never loaded and no fork request reached the daemon. That run
+is not a pass. The native extension now requires successful history attachment
+for every original real session, so merely restoring visible IDs cannot satisfy
+acceptance. A bounded shared-runtime reconnect grace is being verified rather
+than eagerly persisting every empty root session.
+
+## Final whole-result verification, 08:39–08:41 UTC
+
+The reload failure above is fixed by runtime commits `8d3d36ec3` (bounded idle
+reconnect retention) and `3fb613468` (SDK attachment using the daemon's
+authoritative live/persisted target directory). There is no guessed temporary
+directory, eager saving of all empty roots, or Desktop-only workaround.
+Unknown targets produce correlated API errors.
+
+- `target/super-all-final` passed **172 native checkpoints**, including one
+  explicit Ctrl+R reload. Every original real session loaded history in both
+  generations. All extended movement, width, creation, service reuse, terminal,
+  fork, closing, and native Quit checks completed. Both forks used the same
+  genuinely unsaved parent and persisted the exact parent ID, inherited HOME,
+  and two messages. Both lineage records independently matched the saved child
+  JSON. Quit exited 0. The final image was read and visibly rendered real panels
+  with the selected composer.
+- `target/super-global-final` passed **25 global-key state checkpoints and 27
+  real focused-window queries** against the final runtime. The old helper still
+  dropped H/L/Enter/Q. The installed helper selected exact neighbors, created
+  repo panels, closed exactly the selected panel without exiting, and recovered
+  from an empty workspace. Semicolon and apostrophe used repo and HOME as
+  configured. All four creation records independently matched raw daemon
+  records and their expected directories, with zero mismatches.
+- Final scoped runtime checks passed: 85 bridge tests, eight target-directory
+  checks, 11 cleanup/grace checks, 11 client-action checks, and three base
+  persistence checks. Desktop's nine public GPUI action tests and five closing
+  tests passed. The six installed-helper regressions, three behavior-map/CLI/
+  attachment-oracle tests, and seven navigation-oracle tests also passed.
+
+### Activation safety boundary
+
+The primary focus/Enter/Q changes were rebuilt and reloaded earlier. The
+additional runtime fixes are committed, pushed, built, and verified above, but
+**not active in the user's shared daemon or bridge**. At final preflight the
+running Desktop had four session panels, two without saved snapshots. The old
+shared runtime does not checkpoint idle empty roots during exec. Its new
+in-memory reconnect grace cannot help across process replacement, either.
+Reloading now would risk losing those two live attachment identities.
+
+Both verified executables are staged without promotion under:
+
+```text
+~/.jcode/builds/versions/3fb613468-debug-575bc278a882/
+  jcode
+  jcode-harness-api-bridge
+  acceptance.json
+```
+
+SHA-256:
+
+```text
+jcode: 575bc278a8822b803f3eae5883b01321010437c0c109d8e1793e75ba99e4be1f
+bridge: 5384ad72b431d84d21acf0e9fdcb216541058829b0572bc0943d5adfad2ca31f
+```
+
+No shared-server promotion or exec, bridge replacement, or stable/current
+launcher change was performed. Activation remains pending until the live
+unsaved sessions are saved or closed and no background work would be
+interrupted. The acceptance manifest records exact hashes and the three
+runtime commits, because the development version string can retain an older
+Git hash when build metadata is cached. This is a deliberate safety boundary,
+not a claim that all newly discovered runtime repairs are already live.

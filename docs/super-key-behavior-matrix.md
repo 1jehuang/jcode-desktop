@@ -1,13 +1,14 @@
 # Super-key behavior coverage
 
 This table maps every one of the 42 Linux Super bindings, not just handler
-registration. **Pending rows are not passing acceptance evidence.**
+registration. Each row names an observed action outcome and its test boundary.
 
-- **W:** real globally grabbed Wayland keys, `target/extended-global-close`.
+- **W:** real globally grabbed Wayland keys, `target/super-global-final`.
 - **X:** native navigation/reload, `target/settled-focus`.
 - **E:** extended native runner, `scripts/shortcut_behavior_acceptance.py`.
-  Current run `target/extended-super-fixed` passed through terminal close and
-  exposed a real empty-session fork error. Quit was not reached in that run.
+  `target/super-all-final` passed 172 native checkpoints across one explicit
+  Ctrl+R reload, with real session histories restored in both generations,
+  unsaved-parent forks, and clean native Quit.
 - **B:** nine public GPUI keystroke behavior tests in
   `super_action_behavior_tests.rs`, all passed from root and composer focus.
 - **Enter:** `target/settled-enter`, independent raw daemon creation checks.
@@ -18,8 +19,8 @@ registration. **Pending rows are not passing acceptance evidence.**
 | `super-l` | `FocusRight` | W/X | Exact next panel selected, keyboard focus matches, boundary no-op. |
 | `super-j` | `FocusDown` | X/E | Moves to next row, including an empty row with workspace focus. |
 | `super-k` | `FocusUp` | X/E | Returns from empty row to the remembered live composer. |
-| `super-left` | `FocusLeft` | W/X | Exact previous panel selected, keyboard focus matches, boundary no-op. |
-| `super-right` | `FocusRight` | W/X | Exact next panel selected, keyboard focus matches, boundary no-op. |
+| `super-left` | `FocusLeft` | E | Exact previous panel selected, keyboard focus matches. |
+| `super-right` | `FocusRight` | E | Exact next panel selected, keyboard focus matches. |
 | `super-down` | `FocusDown` | X/E | Moves to next row, including an empty row with workspace focus. |
 | `super-up` | `FocusUp` | X/E | Returns from empty row to the remembered live composer. |
 | `super-home` | `FocusFirst` | X/E | Selects first panel without changing session order. |
@@ -32,13 +33,13 @@ registration. **Pending rows are not passing acceptance evidence.**
 | `super-shift-j` | `MovePanelDown` | E | Selected panel moves to next row, origin retains remaining sessions. |
 | `super-shift-home` | `MovePanelToFirst` | E | Selected identity moves to start and remains focused. |
 | `super-shift-end` | `MovePanelToLast` | E | Selected identity moves to end and remains focused. |
-| `super-n` | `NewPanel` | W/E | One new focused SDK session, actual daemon working directory is isolated HOME. |
-| `super-space` | `ForkPanel` | B / pending E | Public keystroke emits one Fork for the focused real ID. Native empty-session fork exposed missing persisted snapshot and is being fixed in the runtime. |
+| `super-n` | `NewPanel` | E | One new focused SDK session, actual daemon working directory is isolated HOME. |
+| `super-space` | `ForkPanel` | B/E | One new focused child from an unsaved parent. Saved child has the exact parent ID, inherited directory and fork notice. Runtime fix verified through native key, SDK, daemon and disk. |
 | `super-t` | `NewTerminal` | E/B | One terminal panel inserted and focused. Native run uses real host PTY, GPUI test uses inert host. |
 | `super-shift-g` | `OpenGmail` | E/B | Opens gmail://inbox and focuses it. Repeating focuses the same panel, without duplicates. No credentials or mailbox mutations. |
 | `super-shift-d` | `OpenTodoist` | E/B | Opens todoist://tasks and focuses it. Repeating reuses it. No token or task mutations. |
 | `super-enter` | `NewPanelInPinnedDirectory` | W/Enter | One new focused session in /home/jeremy/jcode-desktop, before/after restart and from empty workspace. |
-| `super-;` | `NewPanelInPinnedDirectory` | W/Enter | One new focused session in /home/jeremy/jcode-desktop, before/after restart and from empty workspace. |
+| `super-;` | `NewPanelInPinnedDirectory` | W/Enter | One new focused session in /home/jeremy/jcode-desktop, before/after restart. |
 | `super-'` | `NewPanel` | W/E | One new focused SDK session, actual daemon working directory is isolated HOME. |
 | `super-q` | `ClosePanel` | W/E | Exactly selected panel removed, app stays alive, keyboard and remembered row focus target survivor. Newly exposed stale-memory bug fixed. |
 | `super-tab` | `FocusPrevious` | X | Returns to previous panel after jumping to the last panel. |
@@ -55,7 +56,7 @@ registration. **Pending rows are not passing acceptance evidence.**
 | `super-2` | `WidthPreset2` | E | Public selected panel width becomes0.5. |
 | `super-3` | `WidthPreset3` | E | Public selected panel width becomes0.75. |
 | `super-4` | `WidthPreset4` | E | Public selected panel width becomes1.0. |
-| `super-shift-q` | `Quit` | pending E | Isolated native app must exit0 after Super+Shift+Q. Not yet reached because fork check failed first. |
+| `super-shift-q` | `Quit` | E | Native Super+Shift+Q exits the isolated app with status0, after all other checks. |
 
 ## Integration boundaries
 
@@ -71,3 +72,18 @@ The existing 42-binding/84-focus-path registration audit remains a separate
 check and is not substituted for any outcome above. User compositor input is
 not driven. Global-grab acceptance uses private Sway with its focus query adapted
 to the installed helper's CLI shape.
+
+## Verified runtime versus live activation
+
+The native results use the corrected daemon and bridge. The original focus,
+pinned Enter, and close fixes were already delivered to the running Desktop.
+The additional fork/reconnect runtime repairs are **staged, not activated**.
+Two live Desktop sessions still have no persisted snapshot, and the old shared
+daemon cannot checkpoint them across exec. Promoting or reloading now could
+lose their attachment identities. See the activation boundary in
+[shortcut-requirements.md](shortcut-requirements.md).
+
+Busy sessions with a saved snapshot can fork without waiting for their Agent
+lock. A busy unsaved session returns an error rather than blocking or guessing
+state. Reconnect retention is bounded to 30 seconds for idle unsaved sessions,
+not durable storage across a shared-daemon restart.
