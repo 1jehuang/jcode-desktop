@@ -42,3 +42,31 @@ The real application was rendered and inspected using `scripts/screenshot.py`
 (`target/ui-review-focus-0633.png`). The running user desktop acknowledged its
 Ctrl+R-equivalent instance command and activated UI generation 2 with the fixes.
 No input was sent to the user's window during testing.
+
+## Independent outcome comparison
+
+The final committed regressions were rerun after delivery. All three passed.
+Their destination assertions compare directly with the saved pre-fix failures:
+
+| Public action and state | Before fix | After fix | Required result |
+| --- | --- | --- | --- |
+| Left from slot 3 past closing slots 1 and 2 | Focused closing slot 2 | Focused slot 0 | Slot 0 |
+| Right from slot 0 past closing slots 1 and 2 | Focused closing slot 1 | Focused slot 3 | Slot 3 |
+| Enter submits folder picker from panel 1 | No panel owned keyboard focus | Panel 1 owned keyboard focus | Panel 1 until the new session arrives |
+
+The picker regression also verified four subsequent left/right steps after each
+of Cancel, Open, and Enter, with selected panel and keyboard target equal at every
+step. It did not deliver a session-created response, proving that focus recovery
+does not depend on a successful or fast backend reply.
+
+A separate comparison re-read all 76 native snapshots, without trusting the
+runner's pass message. It found **zero keyboard/selection mismatches** and
+**zero closing panels selected**. Session-identity comparisons confirmed that
+close+left selected the original left neighbor and close+first+right selected
+the surviving right neighbor. Each dismissed session was absent, and all
+remaining sessions kept their order. Machine-readable evidence is saved at
+`target/focus-outcome-comparison.json`.
+
+These observations establish improvement for the reproduced failures. They do
+not establish that either failure was the user's exact original symptom, which
+was not described further.
