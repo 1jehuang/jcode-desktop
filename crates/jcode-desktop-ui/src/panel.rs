@@ -495,6 +495,14 @@ impl Panel {
         self.session_id == Self::STARTUP_SESSION_ID
     }
 
+    pub(crate) fn is_pending_session_id(id: &str) -> bool {
+        id == Self::STARTUP_SESSION_ID || id.starts_with("startup://draft/")
+    }
+
+    pub(crate) fn is_pending_session(&self) -> bool {
+        Self::is_pending_session_id(&self.session_id)
+    }
+
     /// Promote in place so focus, selection, undo history, and pasted images
     /// all survive the asynchronous runtime connection.
     pub fn attach_startup_session(
@@ -1697,7 +1705,7 @@ impl Panel {
         self.terminal.is_none()
             && self.code_file.is_none()
             && self.session_id != "unfinished-work"
-            && !self.is_startup_draft()
+            && !self.is_pending_session()
     }
 
     pub fn new_unfinished_work(
@@ -1815,7 +1823,7 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
-                            if content == "/model" && !this.is_startup_draft() {
+                            if content == "/model" && !this.is_pending_session() {
                                 this.open_model_picker(cx);
                             } else if this.model_picker_open && !content.starts_with("/model ") {
                                 this.close_model_picker(cx);
@@ -1830,11 +1838,12 @@ impl Panel {
                             if this.model_picker_open {
                                 this.close_model_picker(cx);
                                 handled = true;
-                            } else if this.status != "idle"
-                                || !this.connection_phase.is_empty()
-                                || !this.streaming_text.is_empty()
-                                || !this.streaming_reasoning.is_empty()
-                                || !this.pending_users.is_empty()
+                            } else if !this.is_pending_session()
+                                && (this.status != "idle"
+                                    || !this.connection_phase.is_empty()
+                                    || !this.streaming_text.is_empty()
+                                    || !this.streaming_reasoning.is_empty()
+                                    || !this.pending_users.is_empty())
                             {
                                 this.bridge.send(Command::Cancel {
                                     session_id: this.session_id.clone(),
@@ -1847,7 +1856,7 @@ impl Panel {
                     handled
                 })
             });
-            if this.is_startup_draft() {
+            if this.is_pending_session() {
                 this.status = "Starting session · you can type now".into();
                 this.input
                     .update(cx, |input, cx| input.set_submission_enabled(false, cx));

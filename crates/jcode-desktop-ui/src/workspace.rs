@@ -512,7 +512,6 @@ pub struct Workspace {
     /// Fade for the coach's hint toast.
     coach_progress: AnimatedValue,
     coach_expiry_task: Option<gpui::Task<()>>,
-    pending_help_session: bool,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
     /// Never rerank an established shortcut, including after session refreshes.
@@ -696,7 +695,6 @@ impl Workspace {
             learning_persistence: Some(learning::Persistence::spawn()),
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
-            pending_help_session: false,
             sessions: Vec::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             accounts: Vec::new(),
@@ -868,7 +866,6 @@ impl Workspace {
             learning_persistence: None,
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
-            pending_help_session: false,
             sessions: Vec::new(),
             pinned_working_dir: None,
             accounts: Vec::new(),
@@ -906,8 +903,11 @@ impl Workspace {
     }
 
     pub fn snapshot(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
+        // Closing slots may still be animating, but must not be resurrected
+        // by a hot reload or crash checkpoint. All saved indices use live slots.
+        let slots: Vec<_> = self.slots.iter().filter(|slot| !slot.closing).collect();
         let index_for_id = |id: gpui::EntityId| {
-            self.slots
+            slots
                 .iter()
                 .position(|slot| slot.panel.entity_id() == id)
         };
@@ -917,7 +917,7 @@ impl Workspace {
             .is_some_and(|search| search.read(cx).focus_handle.is_focused(window))
         {
             FocusSnapshot::FolderSearch
-        } else if let Some(index) = self.slots.iter().position(|slot| {
+        } else if let Some(index) = slots.iter().position(|slot| {
             slot.panel
                 .read(cx)
                 .input_focus_handle(cx)
@@ -937,8 +937,7 @@ impl Workspace {
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
             tutorial_page: self.tutorial_page,
-            slots: self
-                .slots
+            slots: slots
                 .iter()
                 .map(|slot| SlotSnapshot {
                     panel: slot.panel.read(cx).snapshot(cx),
@@ -947,7 +946,10 @@ impl Workspace {
                     restore_fraction: slot.restore_fraction,
                 })
                 .collect(),
-            active: self.active,
+            active: self.slots
+                .get(self.active)
+                .and_then(|slot| index_for_id(slot.panel.entity_id()))
+                .unwrap_or(0),
             active_row: self.active_row,
             row_focus: self.row_focus.map(|id| id.and_then(index_for_id)),
             previous: self.previous.and_then(index_for_id),
@@ -969,7 +971,23 @@ impl Workspace {
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
         for saved in snapshot.slots {
-            let panel_state = saved.panel;
+            let mut panel_state = saved.panel;
+            if panel_state.session_id.starts_with("startup://draft/") {
+                // The previous bridge generation cannot deliver its in-flight
+                // result to this workspace. Restart with a fresh correlation ID
+                // and the original local directory, not today's machine default.
+                let help = panel_state.session_id.starts_with("startup://draft/help/");
+                panel_state.session_id = pending::next_draft_id();
+                if help {
+                    panel_state.session_id = panel_state.session_id.replacen(
+                        "startup://draft/", "startup://draft/help/", 1,
+                    );
+                }
+                self.bridge.send(Command::CreateSession {
+                    working_dir: panel_state.working_dir.clone(),
+                    request_id: Some(panel_state.session_id.clone()),
+                });
+            }
             let terminal =
                 panel_state.terminal_resource_id.is_some() || panel_state.session_id == "terminal";
             let panel = if panel_state.session_id == "unfinished-work" {
@@ -1020,7 +1038,7 @@ impl Workspace {
                         cx,
                     )
                 });
-                if session_id != Panel::STARTUP_SESSION_ID {
+                if !Panel::is_pending_session_id(&session_id) {
                     self.bridge.send(Command::Watch { session_id });
                 }
                 panel
@@ -1287,14 +1305,27 @@ impl Workspace {
                 session,
                 request_id,
             } => {
-                if request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID) {
+                if request_id.as_deref().is_some_and(Panel::is_pending_session_id) {
                     if let Some(slot) = self
                         .slots
                         .iter()
-                        .find(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
+                        .find(|slot| {
+                            !slot.closing
+                                && Some(slot.panel.read(cx).session_id.as_str()) == request_id.as_deref()
+                        })
                     {
+                        let session_id = session.session_id.clone();
                         slot.panel
                             .update(cx, |panel, cx| panel.attach_startup_session(session, cx));
+                        if request_id.as_deref()
+                            .is_some_and(|id| id.starts_with("startup://draft/help/"))
+                        {
+                            self.bridge.send(Command::Send {
+                                session_id,
+                                content: HELP_SESSION_PROMPT.into(),
+                                images: Vec::new(),
+                            });
+                        }
                     } else {
                         // The user closed the draft during startup. Do not
                         // reopen it or steal focus when creation finishes.
@@ -1304,20 +1335,11 @@ impl Workspace {
                     }
                     return true;
                 }
-                let session_id = session.session_id.clone();
                 // A brand-new panel is only a local draft until its first prompt.
                 // The persisted/runtime session refresh adds it after activity.
                 let inserted = self.open_session(session, cx);
                 self.set_active(inserted, cx);
                 self.focus_pending = true;
-                if self.pending_help_session {
-                    self.pending_help_session = false;
-                    self.bridge.send(Command::Send {
-                        session_id,
-                        content: HELP_SESSION_PROMPT.into(),
-                        images: Vec::new(),
-                    });
-                }
             }
             Update::SessionForked { session } => {
                 let session_id = session.session_id.clone();
@@ -1413,6 +1435,9 @@ impl Workspace {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
+                            if panel.is_pending_session() {
+                                panel.status = "Session creation failed · draft retained".into();
+                            }
                             panel.items.push(crate::panel::Item::Error(reason.clone()));
                             cx.notify();
                         });
@@ -1469,7 +1494,7 @@ impl Workspace {
             )
         });
         Panel::connect_input(&panel, cx);
-        if session_id != Panel::STARTUP_SESSION_ID {
+        if !Panel::is_pending_session_id(&session_id) {
             self.bridge.send(Command::Watch { session_id });
         }
         let slot = Slot {
@@ -2108,10 +2133,10 @@ impl Workspace {
     ) {
         self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
-        self.bridge.send(Command::CreateSession {
-            working_dir: self.pinned_working_dir.clone().or_else(default_working_dir),
-            request_id: None,
-        });
+        self.open_default_draft(
+            self.pinned_working_dir.clone().or_else(default_working_dir),
+            cx,
+        );
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
@@ -2457,10 +2482,7 @@ impl Workspace {
         // a mounted target on the next render so navigation keeps working even
         // if session creation is slow or fails.
         self.focus_pending = true;
-        self.bridge.send(Command::CreateSession {
-            working_dir: Some(path.to_string_lossy().into_owned()),
-            request_id: None,
-        });
+        self.open_local_draft(Some(path.to_string_lossy().into_owned()), cx);
         cx.notify();
     }
 
@@ -2474,11 +2496,8 @@ impl Workspace {
 
     /// Open a session without attributing the choice to the keyboard. Pointer
     /// paths call this directly, so clicking never earns keyboard credit.
-    fn open_new_session(&mut self, _cx: &mut Context<Self>) {
-        self.bridge.send(Command::CreateSession {
-            working_dir: default_working_dir(),
-            request_id: None,
-        });
+    fn open_new_session(&mut self, cx: &mut Context<Self>) {
+        self.open_default_draft(default_working_dir(), cx);
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
@@ -2495,7 +2514,7 @@ impl Workspace {
         self.slots[closed].closing = true;
         self.slots[closed].close_progress.set(0.0, Instant::now());
         let session_id = self.slots[closed].panel.read(cx).session_id.clone();
-        if session_id != "terminal" {
+        if session_id != "terminal" && !Panel::is_pending_session_id(&session_id) {
             self.bridge.send(Command::Unwatch { session_id });
         }
         if self.previous == Some(closed_id) {
@@ -2673,13 +2692,9 @@ impl Workspace {
     }
 
     fn new_help_session(&mut self, _: &NewHelpSession, _: &mut Window, cx: &mut Context<Self>) {
-        self.pending_help_session = true;
         self.hints_overlay = false;
         self.hints_progress.set(0.0, Instant::now());
-        self.bridge.send(Command::CreateSession {
-            working_dir: default_working_dir(),
-            request_id: None,
-        });
+        self.open_local_draft_kind(default_working_dir(), true, cx);
         cx.notify();
     }
 
@@ -8827,18 +8842,19 @@ mod tests {
             }
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+            let focused = workspace.read_with(vcx, |workspace, _| workspace.active);
             vcx.update(|window, cx| {
                 assert_eq!(
                     workspace.read(cx).navigation_state(window, cx)["keyboard_panel"],
-                    1,
-                    "{button} must return keyboard focus to the selected panel"
+                    focused,
+                    "{button} must focus the selected panel, including a newly created draft"
                 );
             });
             for (chord, expected) in [
-                ("super-h", 0),
-                ("super-l", 1),
-                ("super-l", 2),
-                ("super-h", 1),
+                ("super-h", focused - 1),
+                ("super-l", focused),
+                ("super-l", focused + 1),
+                ("super-h", focused),
             ] {
                 vcx.simulate_keystrokes(chord);
                 vcx.run_until_parked();
@@ -9060,7 +9076,7 @@ mod tests {
                     request_id,
                 } => {
                     assert_eq!(working_dir, expected, "{chord}");
-                    assert!(request_id.is_none());
+                    assert!(request_id.as_deref().is_some_and(Panel::is_pending_session_id));
                 }
                 _ => panic!("{chord} dispatched the wrong command"),
             }
@@ -11330,12 +11346,13 @@ mod tests {
             );
         });
 
-        // Terminals appear synchronously, giving the arrow controls two real
-        // neighbours without depending on an external session bridge response.
+        // The new session draft already exists without a backend reply. Two
+        // terminals give the arrow controls additional synchronous neighbours.
         cx.simulate_keystrokes(&format!("{MOD}-t {MOD}-t"));
         cx.run_until_parked();
         workspace.update(cx, |workspace, cx| {
-            assert_eq!(workspace.active, 1);
+            assert_eq!(workspace.slots.len(), 3);
+            assert_eq!(workspace.active, 2);
             workspace.set_active(0, cx);
             cx.notify();
         });
@@ -11833,3 +11850,9 @@ mod tests {
 #[cfg(test)]
 #[path = "startup_tests.rs"]
 mod startup_tests;
+
+#[path = "workspace_pending.rs"]
+mod pending;
+#[cfg(test)]
+#[path = "workspace_pending_tests.rs"]
+mod pending_tests;
