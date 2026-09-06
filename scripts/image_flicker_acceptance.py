@@ -45,6 +45,8 @@ def verify_repeated_preview(output, env, root, initial_point):
                 samples += 1
                 time.sleep(.08)
 
+    assert len(baselines["open"]) > len(baselines["closed"]) * 2, \
+        "Repeated clicks did not produce a genuinely enlarged preview"
     log = root / "logs/jcode-desktop/jcode-desktop.log"
     diagnostics = log.read_text()
     output.with_suffix(".preview-diagnostics.log").write_text(diagnostics)

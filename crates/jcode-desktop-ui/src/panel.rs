@@ -3464,11 +3464,10 @@ impl Render for Panel {
         let transcript_selection = self.transcript_selection.clone();
         let transcript_selection_focus = transcript_selection.read(cx).focus_handle();
         let transcript_shell = div()
-            .id(if streaming {
-                "transcript-with-response"
-            } else {
-                "transcript"
-            })
+            // Keyed descendants (including browser-backed image previews) must
+            // retain their entities when an unrelated streamed reply starts or
+            // ends. Only the debug selector reflects streaming state.
+            .id("transcript")
             // Tagged so render tests can assert a streamed response painted.
             .debug_selector(move || {
                 if streaming {
@@ -4841,6 +4840,9 @@ mod fresh_session_tests;
 #[cfg(test)]
 #[path = "panel_startup_lifecycle_tests.rs"]
 mod startup_lifecycle_tests;
+#[cfg(test)]
+#[path = "panel_image_flicker_tests.rs"]
+mod image_flicker_tests;
 
 #[cfg(test)]
 mod tests {

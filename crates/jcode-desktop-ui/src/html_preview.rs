@@ -235,6 +235,26 @@ fn run_worker(
     result
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct TestPreviewInstances(std::collections::HashMap<String, Vec<gpui::EntityId>>);
+#[cfg(test)]
+impl gpui::Global for TestPreviewInstances {}
+
+/// Test-only creation history distinguishes a retained Preview from an identical
+/// new card, without depending on WebKit timing or requiring a native display.
+#[cfg(test)]
+pub(crate) fn test_instance_ids(source: &str, cx: &App) -> Vec<gpui::EntityId> {
+    if !cx.has_global::<TestPreviewInstances>() {
+        return Vec::new();
+    }
+    cx.global::<TestPreviewInstances>()
+        .0
+        .get(source.trim())
+        .cloned()
+        .unwrap_or_default()
+}
+
 struct Preview {
     source: String,
     image: Option<Arc<gpui::RenderImage>>,
@@ -250,6 +270,15 @@ struct Preview {
 }
 impl Preview {
     fn new(source: String, cx: &mut Context<Self>) -> Self {
+        #[cfg(test)]
+        {
+            let id = cx.entity().entity_id();
+            cx.default_global::<TestPreviewInstances>()
+                .0
+                .entry(source.trim().to_owned())
+                .or_default()
+                .push(id);
+        }
         let mut this = Self {
             source,
             image: None,
