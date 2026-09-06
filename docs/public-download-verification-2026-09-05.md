@@ -55,11 +55,20 @@ weakened.
 
 ## New release status
 
-`desktop-v0.1.0-beta.24` was tagged at `face07e`. At this checkpoint its macOS and
-Linux/Windows workflows are still building. Beta23 remains the current public
-release until all new packages pass the build, signing/notarization, package
-smoke, and public publication gates. New-release completion must be recorded only
-after observing those results.
+`desktop-v0.1.0-beta.24` was tagged at `face07e`. The macOS workflow
+[`33997432277`](https://github.com/1jehuang/jcode-desktop/actions/runs/33997432277)
+passed universal compilation, Developer ID signing, notarization, bundle/DMG
+installation checks, and signed update generation. The downloaded Mac ZIP and
+DMG both passed their SHA-256 checks. Independent verification confirmed build
+43 embeds `https://jcode.sh/desktop/appcast.xml`, retains the existing Sparkle
+public key, and has a valid Ed25519 archive signature under that key.
+
+The original Linux job compiled and packaged successfully and passed the X11
+launch check, then failed the headless Weston Wayland smoke test with exit 101.
+Recovery is in progress using the same immutable release source. Windows was
+still building at this checkpoint. Beta23 remains the current public release
+until all new packages pass the required checks. New-release completion must be
+recorded only after observing those results.
 
 The clean-source UI test limitations are recorded separately in
 [`release-preflight-beta24.md`](release-preflight-beta24.md). The full UI suite is
