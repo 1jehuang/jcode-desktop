@@ -9,6 +9,7 @@ pub(super) struct DiffReview {
     collapsed: HashSet<String>,
     rows: Vec<DiffRow>,
     scroll: ListState,
+    rich: Option<crate::diff_review_content::ReviewContent>,
 }
 
 #[derive(Clone)]
@@ -81,11 +82,15 @@ impl DiffReview {
             collapsed: HashSet::new(),
             rows,
             scroll,
+            rich: None,
         }
     }
 
-    fn select(&mut self, index: usize) {
+    fn select(&mut self, index: usize, cx: &mut App) {
         self.selected = index;
+        if let Some(rich) = &mut self.rich {
+            rich.select(index, cx);
+        }
         self.rows = numbered_rows(&self.files[index].lines);
         self.scroll = ListState::new(self.rows.len(), ListAlignment::Top, px(200.));
     }
@@ -133,6 +138,7 @@ impl Panel {
             return None;
         }
         let source = format!("{name} · {}", source_label(done, failed));
+        let rich_arguments = Arc::new((name.to_owned(), input.to_owned()));
         let mut card = div()
             .debug_selector(|| "code-edit-preview".into())
             .ml(px(24.))
@@ -142,6 +148,7 @@ impl Panel {
             .gap_1();
         for (index, file) in files.iter().enumerate() {
             let open_files = files.clone();
+            let rich_arguments = rich_arguments.clone();
             let source = source.clone();
             let header = div()
                 .id(("diff-file", index))
@@ -175,8 +182,24 @@ impl Panel {
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
-                        this.diff_review =
-                            Some(DiffReview::new(open_files.clone(), index, source.clone()));
+                        let mut review = DiffReview::new(open_files.clone(), index, source.clone());
+                        // Parse the full structured comparison only when opened, not on
+                        // every streaming transcript repaint. Never pair mismatched files.
+                        if let Some(preview) = crate::diff_model::from_tool(&rich_arguments.0, &rich_arguments.1)
+                            .filter(|preview| {
+                                preview.files.len() == open_files.len()
+                                    && preview
+                                        .files
+                                        .iter()
+                                        .zip(open_files.iter())
+                                        .all(|(new, old)| new.path == old.path)
+                            })
+                        {
+                            review.rich = Some(crate::diff_review_content::ReviewContent::new(
+                                preview, index, done, failed, cx,
+                            ));
+                        }
+                        this.diff_review = Some(review);
                         this.focus_handle.focus(window, cx);
                         cx.stop_propagation();
                         cx.notify();
@@ -315,7 +338,7 @@ impl Panel {
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             if let Some(review) = &mut this.diff_review {
-                                review.select(index);
+                                review.select(index, cx);
                             }
                             cx.stop_propagation();
                             cx.notify();
@@ -382,7 +405,7 @@ impl Panel {
                     .child(div().p_2().text_size(px(10.)).text_color(theme.TEXT_DIM).child(format!("FILES IN THIS TOOL · {}", review.files.len())))
                     .child(tree))
                 .child(div().min_w_0().flex_1().flex().flex_col()
-                    .child(div().flex_none().p_3().flex().flex_col().gap_2().border_b_1().border_color(theme.CODE_BORDER)
+                    .when(review.rich.is_none(), |el| el.child(div().flex_none().p_3().flex().flex_col().gap_2().border_b_1().border_color(theme.CODE_BORDER)
                         .child(div().debug_selector(|| "diff-selected-path".into()).text_size(px(12.)).font_family(theme.FONT_MONO).text_color(theme.TEXT).child(file.path.clone()))
                         .when_some(file.previous_path.clone(), |el, path| el.child(div().text_size(px(10.)).text_color(theme.TEXT_DIM).child(format!("Previously {path}"))))
                         .child(div().flex().items_center().gap_3().text_size(px(11.))
@@ -391,11 +414,13 @@ impl Panel {
                                         .debug_selector(|| "diff-copy".into()).ml_auto().cursor_pointer().text_color(theme.ACCENT).child("Copy diff")
                                 .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone())); cx.stop_propagation();
-                                }))))
+                                })))))
                     .child(div().flex_1().min_h_0().relative().bg(theme.CODE_BG)
+                        .when(review.rich.is_none(), |el| el
                             .when(review.rows.is_empty(), |el| el.child(div().p_4().text_size(px(12.)).text_color(theme.TEXT_DIM)
                                 .child("No line content supplied by this tool.")))
                             .child(diff_list).child(crate::scrollbar::vertical_list(&review.scroll, "diff-scrollbar")))
+                        .when_some(review.rich.as_ref(), |el, rich| el.child(rich.render())))
                     .child(div().flex_none().px_3().py_2().text_size(px(10.)).text_color(theme.TEXT_FAINT)
                         .child("Tool input snapshot, not a working-tree diff. Line numbers appear when supplied."))))
             .into_any_element())
@@ -508,8 +533,12 @@ mod tests {
                 .diff_review
                 .as_ref()
                 .unwrap()
-                .scroll
-                .scroll_px_offset_for_scrollbar()
+                .rich
+                .as_ref()
+                .unwrap()
+                .scroll()
+                .unwrap()
+                .offset()
                 .y),
             px(0.)
         );
@@ -517,6 +546,46 @@ mod tests {
             panel.read_with(vcx, |p, _| p.test_scroll_offset_y()),
             before
         );
+    }
+
+    #[gpui::test]
+    fn rich_review_retains_file_modes_and_escape_after_code_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("rich-review", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.items = fixture_items();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let click_position = vcx.debug_bounds("diff-file-0").unwrap().center();
+        vcx.simulate_click(click_position, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let click_position = vcx.debug_bounds("diff-split").unwrap().center();
+        vcx.simulate_click(click_position, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("diff-line-0-0-1-old").is_some());
+        let click_position = vcx.debug_bounds("diff-tree-file-1").unwrap().center();
+        vcx.simulate_click(click_position, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("diff-line-0-0-0-unified").is_some());
+        let click_position = vcx.debug_bounds("diff-tree-file-0").unwrap().center();
+        vcx.simulate_click(click_position, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let code = vcx
+            .debug_bounds("diff-line-0-0-1-old")
+            .expect("first file retains split mode");
+        vcx.simulate_click(code.center(), gpui::Modifiers::default());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
     }
 
     #[gpui::test]
@@ -560,7 +629,7 @@ mod tests {
         vcx.simulate_click(copy.center(), gpui::Modifiers::default());
         vcx.update(|_, cx| {
             let text = cx.read_from_clipboard().unwrap().text().unwrap();
-            assert!(text.starts_with("tests/navigation.rs\n"));
+            assert!(text.contains("tests/navigation.rs"));
             assert!(text.contains("+fn navigation_label_is_clear"));
         });
         let directory = vcx.debug_bounds("diff-directory-tests").unwrap();
