@@ -1,6 +1,53 @@
 //! Keyboard navigation must ignore dismissed panels while their surfaces fade.
 use super::*;
 
+/// Platform repeats have no intervening key-up. Focus changes during dismissal
+/// must not swallow the next repeat or target a still-fading panel.
+#[gpui::test]
+fn held_close_dismisses_each_live_panel_once(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        for name in ["first", "second", "third", "fourth"] {
+            workspace.push_test_panel(name, cx);
+        }
+        for slot in &mut workspace.slots {
+            slot.close_progress = AnimatedValue::new(1.0, Duration::from_secs(60));
+        }
+        workspace.set_active(0, cx);
+        workspace
+    });
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx));
+    });
+    vcx.run_until_parked();
+    let keystroke = gpui::Keystroke::parse("super-q").unwrap();
+    for repeat in 0..6 {
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: repeat > 0,
+            prefer_character_input: false,
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| {
+            assert_eq!(
+                workspace.slots.iter().filter(|slot| slot.closing).count(),
+                (repeat + 1).min(4),
+                "one live panel per keydown, including repeats after focus changes"
+            );
+        });
+    }
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
+    // Closing the final panel must leave a functional workspace, not quit it.
+    vcx.simulate_keystrokes("super-n");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |workspace, _| {
+        assert_eq!(workspace.slots.iter().filter(|slot| !slot.closing).count(), 1);
+        assert!(!workspace.slots[workspace.active].closing);
+    });
+}
+
 fn check_navigation_across_closing_panels(cx: &mut gpui::TestAppContext, right: bool) {
     cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {

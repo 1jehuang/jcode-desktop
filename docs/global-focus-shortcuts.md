@@ -34,9 +34,35 @@ Do not install additional global bindings or replace unrelated custom helpers
 without reviewing them. The script needs bash, jq, the compositor CLI and wtype.
 The local installation was backed up as
 `~/.config/niri/firefox-tab-shortcut.sh.bak-desktop-focus-20260906` and replaced
-at its existing path. No compositor configuration was changed or reloaded.
+at its existing path. That initial helper installation did not change or reload
+compositor configuration. The held-close follow-up below changes one repeat flag.
 Other installations can use Ctrl+Tab / Ctrl+Shift+Tab or Ctrl+PageDown / Ctrl+PageUp
 without this helper.
+
+### Held shortcuts
+
+The global binding must allow repeat as well as forwarding the first press.
+The host's Super+Q binding had `repeat=false`, so holding Q produced only one
+helper invocation. Use this setting on the **existing** close binding:
+
+```kdl
+Super+Q repeat=true hotkey-overlay-title="Firefox: Close Tab" {
+    spawn "/home/jeremy/.config/niri/firefox-tab-shortcut.sh" "close";
+}
+```
+
+Adapt the helper path for your installation. Super+H/L already allow repeat.
+Keep app quit and other intentionally single-shot actions separate from held
+navigation/close actions. No timer in Desktop should manufacture repeats after
+key release or focus loss. Each platform repeat closes the next live panel,
+skipping panels whose closing animation is still running. Closing the last
+panel leaves an empty workspace that can open another panel.
+
+The local close binding was updated in place, with the original configuration
+saved as `~/.config/niri/config.kdl.bak-held-close-20260906`. The compositor
+watches this configuration automatically. This also enables held close for
+Firefox, which shares that global binding. Super+Return remains single-shot.
+No compositor commands or input into the user's windows were used to test it.
 
 ## Verification, 2026-09-06
 
