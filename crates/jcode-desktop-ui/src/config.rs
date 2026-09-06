@@ -41,6 +41,8 @@ pub enum LayoutMode {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
+    /// Selected once from session history, then kept fixed for Super+;.
+    pub pinned_working_dir: Option<String>,
     pub sidebar: bool,
     pub showcase_keys: bool,
     pub coaching_hints: bool,
@@ -80,6 +82,7 @@ impl Default for AppearanceConfig {
 impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
+            pinned_working_dir: None,
             sidebar: true,
             showcase_keys: true,
             coaching_hints: true,
@@ -184,10 +187,48 @@ fn persist_appearance_value_at(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
+    persist_value_at(path, standalone, "appearance", key, value)
+}
+
+#[cfg(not(test))]
+pub fn persist_pinned_working_dir(directory: &str) -> std::io::Result<()> {
+    persist_pinned_working_dir_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        directory,
+    )
+}
+
+#[cfg(test)]
+pub fn persist_pinned_working_dir(_directory: &str) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn persist_pinned_working_dir_at(
+    path: &std::path::Path,
+    standalone: bool,
+    directory: &str,
+) -> std::io::Result<()> {
+    persist_value_at(
+        path,
+        standalone,
+        "workspace",
+        "pinned_working_dir",
+        &toml::Value::String(directory.into()).to_string(),
+    )
+}
+
+fn persist_value_at(
+    path: &std::path::Path,
+    standalone: bool,
+    section_name: &str,
+    key: &str,
+    value: &str,
+) -> std::io::Result<()> {
     let section = if standalone {
-        "[appearance]"
+        format!("[{section_name}]")
     } else {
-        "[desktop.appearance]"
+        format!("[desktop.{section_name}]")
     };
     let mut text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -271,6 +312,26 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_directory_round_trips_in_shared_and_standalone_config() {
+        for standalone in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            fs::write(&path, "# keep this comment\n").unwrap();
+            let directory = "/home/person/project with 'quotes' and \"double quotes\"";
+            persist_pinned_working_dir_at(&path, standalone, directory).unwrap();
+            persist_theme_at(&path, standalone, "neutral-light").unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.contains("# keep this comment"));
+            let config = parse(&text, standalone).unwrap();
+            assert_eq!(
+                config.workspace.pinned_working_dir.as_deref(),
+                Some(directory)
+            );
+            assert_eq!(config.appearance.theme, "neutral-light");
+        }
+    }
 
     #[test]
     fn partial_config_keeps_safe_defaults_and_normalizes_ranges() {

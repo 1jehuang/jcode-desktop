@@ -51,6 +51,7 @@ actions!(
         MovePanelToFirst,
         MovePanelToLast,
         NewPanel,
+        NewPanelInPinnedDirectory,
         ForkPanel,
         NewTerminal,
         OpenGmail,
@@ -503,6 +504,8 @@ pub struct Workspace {
     pending_help_session: bool,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
+    /// Never rerank an established shortcut, including after session refreshes.
+    pinned_working_dir: Option<String>,
     /// Configured logins and API keys, refreshed in the background.
     accounts: Vec<accounts::Account>,
     recent_accounts: Vec<String>,
@@ -683,6 +686,7 @@ impl Workspace {
             coach_expiry_task: None,
             pending_help_session: false,
             sessions: Vec::new(),
+            pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             accounts: Vec::new(),
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
@@ -853,6 +857,7 @@ impl Workspace {
             coach_expiry_task: None,
             pending_help_session: false,
             sessions: Vec::new(),
+            pinned_working_dir: None,
             accounts: Vec::new(),
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
@@ -1222,6 +1227,14 @@ impl Workspace {
                 }
             }
             Update::Sessions { sessions } => {
+                if self.pinned_working_dir.is_none()
+                    && let Some(directory) = most_used_working_dir(&sessions)
+                {
+                    if let Err(error) = crate::config::persist_pinned_working_dir(&directory) {
+                        eprintln!("could not persist fixed directory shortcut: {error}");
+                    }
+                    self.pinned_working_dir = Some(directory);
+                }
                 for session in &sessions {
                     let Some(title) = session.title.as_ref() else {
                         continue;
@@ -2066,6 +2079,19 @@ impl Workspace {
             return;
         };
         self.bridge.send(Command::Fork { session_id });
+    }
+
+    fn new_panel_in_pinned_directory(
+        &mut self,
+        _: &NewPanelInPinnedDirectory,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.learned("new_panel", cx);
+        self.bridge.send(Command::CreateSession {
+            working_dir: self.pinned_working_dir.clone().or_else(default_working_dir),
+            request_id: None,
+        });
     }
 
     fn new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
@@ -6049,6 +6075,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_panel_to_first))
             .on_action(cx.listener(Self::move_panel_to_last))
             .on_action(cx.listener(Self::new_panel))
+            .on_action(cx.listener(Self::new_panel_in_pinned_directory))
             .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
@@ -6167,6 +6194,24 @@ fn sidebar_enabled(
 
 fn default_working_dir() -> Option<String> {
     std::env::var("HOME").ok()
+}
+
+/// Count session directories once. Lexical ties make the initial choice stable
+/// even if the runtime returns the same history in a different order.
+fn most_used_working_dir(sessions: &[jcode_sdk::SessionInfo]) -> Option<String> {
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+    for directory in sessions
+        .iter()
+        .filter_map(|session| session.working_dir.as_deref())
+    {
+        if Path::new(directory).is_absolute() && Path::new(directory).is_dir() {
+            *counts.entry(directory).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .min_by_key(|(directory, count)| (std::cmp::Reverse(*count), *directory))
+        .map(|(directory, _)| directory.to_owned())
 }
 
 fn filesystem_root() -> PathBuf {
@@ -8866,6 +8911,101 @@ mod tests {
         assert_eq!(insert_index(0, false, None, 3), 3);
     }
 
+    #[gpui::test]
+    fn session_shortcuts_use_home_and_a_directory_pinned_once(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_workspace_keys(cx);
+            crate::input::bind_keys(cx);
+        });
+        let root = tempfile::tempdir().unwrap();
+        let favorite = root.path().join("favorite");
+        let other = root.path().join("other");
+        std::fs::create_dir(&favorite).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let session = |id: &str, path: &Path| {
+            let mut session = session_info(id, None);
+            session.working_dir = Some(path.to_string_lossy().into_owned());
+            session
+        };
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace.push_test_panel("existing", cx);
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![
+                        session("one", &favorite),
+                        session("two", &favorite),
+                        session("three", &other),
+                    ],
+                },
+                cx,
+            );
+            // Later usage must not move the shortcut, even when it overtakes
+            // the original favorite entirely.
+            workspace.apply(
+                Update::Sessions {
+                    sessions: vec![session("four", &other)],
+                },
+                cx,
+            );
+            assert_eq!(workspace.pinned_working_dir.as_deref(), favorite.to_str());
+            workspace
+        });
+        // Dispatch with the prompt focused, not just the workspace root.
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx))
+        });
+        vcx.run_until_parked();
+        for (chord, expected) in [
+            ("super-enter", default_working_dir()),
+            ("super-;", Some(favorite.to_string_lossy().into_owned())),
+            ("super-'", default_working_dir()),
+        ] {
+            vcx.simulate_keystrokes(&platform_chord(chord));
+            vcx.run_until_parked();
+            match commands
+                .try_recv()
+                .expect("shortcut should create a session")
+            {
+                Command::CreateSession {
+                    working_dir,
+                    request_id,
+                } => {
+                    assert_eq!(working_dir, expected, "{chord}");
+                    assert!(request_id.is_none());
+                }
+                _ => panic!("{chord} dispatched the wrong command"),
+            }
+            assert!(commands.try_recv().is_err(), "one panel per keypress");
+        }
+    }
+
+    #[test]
+    fn most_used_directory_ignores_unusable_paths_and_breaks_ties_stably() {
+        let root = tempfile::tempdir().unwrap();
+        let alpha = root.path().join("alpha");
+        let beta = root.path().join("beta");
+        std::fs::create_dir(&alpha).unwrap();
+        std::fs::create_dir(&beta).unwrap();
+        let mut sessions = Vec::new();
+        for path in [
+            &beta,
+            &alpha,
+            &root.path().join("missing"),
+            &PathBuf::from("relative"),
+        ] {
+            let mut session = session_info("test", None);
+            session.working_dir = Some(path.to_string_lossy().into_owned());
+            sessions.push(session);
+        }
+        assert_eq!(most_used_working_dir(&sessions).as_deref(), alpha.to_str());
+        sessions.reverse();
+        assert_eq!(most_used_working_dir(&sessions).as_deref(), alpha.to_str());
+        assert_eq!(most_used_working_dir(&[]), None);
+    }
+
     #[test]
     fn closing_focuses_the_right_neighbour() {
         // Closed index 1 of [0,1,2]; remaining strip indices are [0,1] and the
@@ -10969,26 +11109,43 @@ mod tests {
     }
 
     #[gpui::test]
-    fn enter_opens_a_terminal_directly_right_of_the_focused_panel(cx: &mut gpui::TestAppContext) {
+    fn enter_opens_a_session_directly_right_of_the_focused_panel(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
+        let (bridge, commands) = harness::spawn_recording();
+        workspace.update(cx, |workspace, _| workspace.bridge = bridge);
 
         cx.simulate_keystrokes(&format!("{MOD}-t"));
         cx.run_until_parked();
         cx.simulate_keystrokes(&format!("{MOD}-enter"));
         cx.run_until_parked();
 
+        let Command::CreateSession {
+            working_dir,
+            request_id,
+        } = commands.try_recv().unwrap()
+        else {
+            panic!("Enter must request a session rather than a terminal");
+        };
+        workspace.update(cx, |workspace, cx| {
+            let mut session = session_info("new-session", None);
+            session.working_dir = working_dir;
+            workspace.apply(
+                Update::SessionCreated {
+                    session,
+                    request_id,
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2, "Enter should open a second panel");
-            assert!(
-                workspace
-                    .slots
-                    .iter()
-                    .all(|slot| slot.panel.read(cx).session_id == "terminal"),
-                "both panels should be terminals"
-            );
+            assert_eq!(workspace.slots[0].panel.read(cx).session_id, "terminal");
+            assert_eq!(workspace.slots[1].panel.read(cx).session_id, "new-session");
             assert_eq!(
                 workspace.active, 1,
-                "the new terminal lands right of the focused panel and takes focus"
+                "the new session lands right of the focused panel and takes focus"
             );
         });
     }
@@ -11089,7 +11246,7 @@ mod tests {
 
         // Terminals appear synchronously, giving the arrow controls two real
         // neighbours without depending on an external session bridge response.
-        cx.simulate_keystrokes(&format!("{MOD}-enter {MOD}-enter"));
+        cx.simulate_keystrokes(&format!("{MOD}-t {MOD}-t"));
         cx.run_until_parked();
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.active, 1);

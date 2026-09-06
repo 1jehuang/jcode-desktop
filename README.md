@@ -4,6 +4,19 @@ A native, high-performance spatial desktop client built on the Jcode SDK.
 
 See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
+## New panel shortcuts
+
+- **Super+Enter** opens a new session panel (Super+N still works).
+- **Super+;** opens a session in your fixed most-used directory.
+- **Super+'** opens a session in your home directory.
+- **Super+T** opens a terminal panel.
+
+Use Cmd instead of Super on macOS. The most-used directory is chosen once
+from session history and saved as `pinned_working_dir` in `[desktop.workspace]`.
+It stays fixed across usage changes, reloads, and restarts. Edit that setting to
+change it, or remove it and restart to choose again. Until usable history arrives,
+Super+; uses home without pinning that fallback.
+
 ## Configuration
 
 The sidebar's **Theme** tab selects a palette and saves it automatically.
