@@ -65,10 +65,21 @@ public key, and has a valid Ed25519 archive signature under that key.
 
 The original Linux job compiled and packaged successfully and passed the X11
 launch check, then failed the headless Weston Wayland smoke test with exit 101.
-Recovery is in progress using the same immutable release source. Windows was
-still building at this checkpoint. Beta23 remains the current public release
-until all new packages pass the required checks. New-release completion must be
-recorded only after observing those results.
+The fixture failure was traced to the headless compositor exposing no `wl_seat`,
+which GPUI requires. The same packaged binary passed the corrected native
+Wayland fixture, nested Weston on a private Xvfb/Openbox display with `DISPLAY`
+removed from the app. Recovery run
+[`34000612721`](https://github.com/1jehuang/jcode-desktop/actions/runs/34000612721)
+is rebuilding the same immutable release source and pinned runtime.
+
+Windows job `101390299810` in run `33997432311` passed compilation, package
+verification, native launch smoke testing, and artifact upload at 00:49 UTC on
+September 6. Its downloaded ZIP also passed the local package-content verifier
+and SHA-256 checksum. The parent workflow's Linux failure does not invalidate
+these observed Windows acceptance results.
+
+Beta23 remains the current public release until Linux recovery passes and the
+complete beta24 release is published and anonymously verified.
 
 The clean-source UI test limitations are recorded separately in
 [`release-preflight-beta24.md`](release-preflight-beta24.md). The full UI suite is
