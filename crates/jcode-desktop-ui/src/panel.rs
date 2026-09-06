@@ -182,6 +182,7 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
+    pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
     /// Remaining mouse-wheel travel. Precise touchpad input already carries
     /// platform momentum and continues to go straight to GPUI's list.
@@ -571,6 +572,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
+            pinned_todo_expanded: false,
             transcript_selection,
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_task: None,
@@ -3548,10 +3550,19 @@ impl Render for Panel {
             .track_focus(&self.focus_handle)
             .children(pinned_todo.map(|payload| {
                 div()
+                    .id("pinned-todo-toggle")
                     .debug_selector(|| "pinned-todo-card".into())
                     .flex_none()
                     .px_3()
                     .pt_1()
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.pinned_todo_expanded = !this.pinned_todo_expanded;
+                            cx.notify();
+                        }),
+                    )
                     .children(latest_prompt.map(|prompt| {
                         div()
                             .debug_selector(|| "pinned-latest-prompt".into())
@@ -3564,7 +3575,14 @@ impl Render for Panel {
                             .text_color(Theme::global().TEXT_DIM)
                             .child(prompt)
                     }))
-                    .child(render_todo_card(&payload))
+                    .child(if self.pinned_todo_expanded {
+                        div()
+                            .debug_selector(|| "pinned-todo-expanded".into())
+                            .child(render_todo_card(&payload))
+                            .into_any_element()
+                    } else {
+                        render_pinned_todo_summary(&payload).into_any_element()
+                    })
             }))
             .child(
                 div()
@@ -4165,6 +4183,85 @@ fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
         .when(todo.status == "in_progress", |marker| {
             marker.child(div().size_full().rounded_full().bg(Theme::global().ACCENT))
         })
+}
+
+#[derive(Debug, PartialEq)]
+struct PinnedTodoSummary {
+    completed: usize,
+    total: usize,
+    current: Option<String>,
+}
+
+fn pinned_todo_summary(payload: &TodoCardPayload) -> PinnedTodoSummary {
+    let active_todos = payload
+        .todos
+        .iter()
+        .filter(|todo| todo.status != "cancelled");
+    let completed = active_todos
+        .clone()
+        .filter(|todo| todo.status == "completed")
+        .count();
+    let total = active_todos.count();
+    let current = payload
+        .todos
+        .iter()
+        .find(|todo| todo.status == "in_progress")
+        .or_else(|| payload.todos.iter().find(|todo| todo.status == "pending"))
+        .map(|todo| todo.content.clone());
+    PinnedTodoSummary {
+        completed,
+        total,
+        current,
+    }
+}
+
+fn render_pinned_todo_summary(payload: &TodoCardPayload) -> impl IntoElement {
+    let summary = pinned_todo_summary(payload);
+    let task = summary.current.unwrap_or_else(|| {
+        if summary.total > 0 && summary.completed == summary.total {
+            "All tasks complete".into()
+        } else {
+            "No active task".into()
+        }
+    });
+
+    div()
+        .debug_selector(|| "pinned-todo-summary".into())
+        .flex()
+        .w_full()
+        .min_w_0()
+        .h(px(30.0))
+        .items_center()
+        .gap_2()
+        .rounded_md()
+        .border_1()
+        .border_color(Theme::global().TOOL_BORDER)
+        .bg(Theme::global().TOOL_BG)
+        .px_2()
+        .text_size(px(12.0))
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(Theme::global().ACCENT_MUTED)
+                .child(format!("{}/{}", summary.completed, summary.total)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(Theme::global().TEXT)
+                .child(task),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(Theme::global().TEXT_FAINT)
+                .child("⌄"),
+        )
 }
 
 fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
@@ -6832,6 +6929,46 @@ Goals: []"#,
         );
     }
 
+    #[test]
+    fn pinned_todo_summary_excludes_cancelled_and_prefers_in_progress() {
+        let item = |content: &str, status: &str| TodoCardItem {
+            content: content.into(),
+            status: status.into(),
+            group: None,
+            blocked_by: vec![],
+        };
+        let payload = TodoCardPayload {
+            todos: vec![
+                item("finished", "completed"),
+                item("fallback", "pending"),
+                item("current", "in_progress"),
+                item("removed", "cancelled"),
+            ],
+            plan: TodoCardPlan::default(),
+        };
+        assert_eq!(
+            pinned_todo_summary(&payload),
+            PinnedTodoSummary {
+                completed: 1,
+                total: 3,
+                current: Some("current".into()),
+            }
+        );
+
+        let pending_only = TodoCardPayload {
+            todos: vec![item("next", "pending"), item("removed", "cancelled")],
+            plan: TodoCardPlan::default(),
+        };
+        assert_eq!(
+            pinned_todo_summary(&pending_only),
+            PinnedTodoSummary {
+                completed: 0,
+                total: 1,
+                current: Some("next".into()),
+            }
+        );
+    }
+
     #[gpui::test]
     fn completed_todo_tool_paints_as_a_native_card(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -6859,24 +6996,44 @@ Goals: []"#,
         });
         vcx.run_until_parked();
 
-        let bounds = vcx
-            .debug_bounds("todo-card")
-            .expect("todo tool output should paint as a native card");
         let pinned = vcx
             .debug_bounds("pinned-todo-card")
             .expect("todo card should be pinned outside the transcript");
+        let summary = vcx
+            .debug_bounds("pinned-todo-summary")
+            .expect("pinned todo starts as a compact summary");
         let prompt = vcx
             .debug_bounds("pinned-latest-prompt")
             .expect("latest prompt should stay visible above the todo card");
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
-        let row_content = vcx
-            .debug_bounds("todo-row-content")
-            .expect("todo content should always paint");
-        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
-        assert!(row_content.size.width > px(0.) && row_content.size.height > px(0.));
-        assert!(prompt.bottom() <= bounds.top());
+        assert!(prompt.bottom() <= summary.top());
         assert!(pinned.bottom() <= transcript.top());
+        assert_eq!(summary.size.height, px(30.0));
+        assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());
         assert!(vcx.debug_bounds("tool-inline").is_none());
+
+        vcx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: summary.center(),
+            modifiers: gpui::Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-summary").is_none());
+        let expanded = vcx
+            .debug_bounds("pinned-todo-expanded")
+            .expect("clicking the summary expands the pinned details");
+        vcx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: expanded.center(),
+            modifiers: gpui::Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());
+        assert!(vcx.debug_bounds("pinned-todo-summary").is_some());
     }
 }
 
@@ -6957,6 +7114,25 @@ fn demo_item_fixtures() -> Vec<Item> {
             done: true,
             error: None,
         },
+
+        Item::Todos(TodoCardPayload {
+            todos: vec![
+                TodoCardItem {
+                    content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
+                    status: "in_progress".into(), group: Some("Desktop".into()), blocked_by: vec![],
+                },
+                TodoCardItem {
+                    content: "Inspect the real offline screenshot".into(),
+                    status: "pending".into(), group: Some("Validation".into()), blocked_by: vec![],
+                },
+                TodoCardItem {
+                    content: "Retired task".into(), status: "cancelled".into(), group: None, blocked_by: vec![],
+                },
+            ],
+            plan: TodoCardPlan {
+                user_intention: Some("See current work without losing transcript space".into()),
+            },
+        }),
         Item::Assistant(
             "# Heading one\n## Heading two\n\nA paragraph with *italic*, **bold**, `inline code`, and math $e^{i\\pi}+1=0$ plus \\(n \\to \\infty\\).\n\n- top level\n  - nested item\n- [x] finished task\n- [ ] pending task\n\n1. first\n2. second\n\n> A quote line\n> continued here\n\n| block | supported |\n| --- | --- |\n| tables | yes |\n| code | yes |\n\n```rust\nfn main() {\n    // a comment\n    let name = \"world\";\n    println!(\"hello {name}\");\n}\n```\n\n$$\n\\sum_{i=0}^{n} i^2\n$$\n\n\\[ E = mc^2 \\]\n\n---\n\nDone."
                 .into(),
