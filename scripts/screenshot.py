@@ -42,6 +42,8 @@ def main():
                         help="exercise native input and controls on the HTML fixture")
     parser.add_argument("--image-interact", action="store_true",
                         help="click an image, verify enlargement, and dismiss by Escape and click")
+    parser.add_argument("--mermaid-interact", action="store_true",
+                        help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens"), default="all",
@@ -59,6 +61,14 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.mermaid_interact:
+        if (args.transcript != "mermaid" or args.panels != 1
+                or args.fresh_interact or args.html_interact or args.image_interact
+                or args.history_interact or args.learn_stage is not None
+                or args.focus_panel is not None):
+            parser.error("mermaid-interact requires the mermaid transcript, one panel, and no other interaction mode")
+        if not shutil.which("xdotool"):
+            parser.error("mermaid-interact requires xdotool")
     if args.fresh_interact:
         incompatible = (
             args.transcript != "empty" or args.panels != 1
@@ -208,6 +218,9 @@ def main():
                     verify(output, env, root)
                 if args.image_interact:
                     from image_preview_acceptance import verify
+                    verify(output, env, root)
+                if args.mermaid_interact:
+                    from mermaid_preview_acceptance import verify
                     verify(output, env, root)
                 if args.html_interact:
                     from html_preview_acceptance import verify

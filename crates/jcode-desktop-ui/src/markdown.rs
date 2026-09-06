@@ -1300,10 +1300,17 @@ fn render_mermaid_svg(body: &str) -> Result<RenderedMermaid, String> {
     Ok(rendered)
 }
 
+pub(crate) type MediaPreviewHandler =
+    std::rc::Rc<dyn Fn(Arc<gpui::Image>, &mut gpui::Window, &mut gpui::App)>;
+
 /// Render Mermaid source through mmdr as a real SVG. Incomplete streamed
 /// diagrams retain the lightweight text representation until they become
 /// valid, rather than flashing an error into the transcript.
-fn mermaid_diagram(body: &str) -> gpui::AnyElement {
+fn mermaid_diagram(
+    body: &str,
+    key: SharedString,
+    on_preview: Option<MediaPreviewHandler>,
+) -> gpui::AnyElement {
     if let Ok(rendered) = render_mermaid_svg(body) {
         let display_height = (640.0 * rendered.height / rendered.width).clamp(120.0, 520.0);
         // `gpui::svg` is an icon primitive: it rasterizes the SVG to an alpha
@@ -1316,7 +1323,15 @@ fn mermaid_diagram(body: &str) -> gpui::AnyElement {
             rendered.svg.to_vec(),
         ));
         return div()
+            .id(key)
             .debug_selector(|| "md-mermaid".into())
+            .when_some(on_preview, |el, on_preview| {
+                let image = image.clone();
+                el.cursor_pointer().on_click(move |_, window, cx| {
+                    on_preview(image.clone(), window, cx);
+                    cx.stop_propagation();
+                })
+            })
             .my_1()
             .w_full()
             .h(px(display_height))
@@ -1449,19 +1464,28 @@ pub fn render(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> impl IntoElement {
-    render_with_style(source, row, selection, window, cx, false)
+    render_with_style(source, row, selection, window, cx, false, None)
 }
 
-/// Thinking keeps Markdown semantics, but headings and list markers should
-/// stay as quiet as the surrounding dimmed text rather than becoming chrome.
-pub fn render_reasoning(
+/// Render transcript media with a panel-owned lightbox callback.
+pub(crate) fn render_interactive(
     source: &str,
     row: usize,
     selection: &gpui::Entity<TextSelection>,
     window: &gpui::Window,
     cx: &gpui::App,
+    reasoning: bool,
+    on_preview: MediaPreviewHandler,
 ) -> impl IntoElement {
-    render_with_style(source, row, selection, window, cx, true)
+    render_with_style(
+        source,
+        row,
+        selection,
+        window,
+        cx,
+        reasoning,
+        Some(on_preview),
+    )
 }
 
 fn render_with_style(
@@ -1471,6 +1495,7 @@ fn render_with_style(
     window: &gpui::Window,
     cx: &gpui::App,
     reasoning: bool,
+    on_preview: Option<MediaPreviewHandler>,
 ) -> impl IntoElement {
     let blocks = parse(source);
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
@@ -1609,7 +1634,7 @@ fn render_with_style(
                 crate::html_preview::HtmlPreview::new(body, row, block_index).into_any_element()
             }
             Block::HtmlPreview(body) => code_block("html-preview", &body, window),
-            Block::Mermaid(body) => mermaid_diagram(&body),
+            Block::Mermaid(body) => mermaid_diagram(&body, text_key(), on_preview.clone()),
             Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
             Block::Math(source) => math_block(&source, selection, text_key(), window, cx),
             Block::Rule => div()

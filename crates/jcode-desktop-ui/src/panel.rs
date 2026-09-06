@@ -190,6 +190,8 @@ pub struct Panel {
     sidebar_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
     image_preview: Option<TranscriptImage>,
+    image_preview_zoom: f32,
+    image_preview_scroll: gpui::ScrollHandle,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
@@ -595,6 +597,8 @@ impl Panel {
             sidebar_spinner: cx.new(activity::Spinner::new),
             input,
             image_preview: None,
+            image_preview_zoom: 1.0,
+            image_preview_scroll: gpui::ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
@@ -2807,12 +2811,14 @@ impl Panel {
                     .px_3()
                     .py_2()
                     .text_color(Theme::global().TEXT_USER)
-                    .child(markdown::render(
+                    .child(markdown::render_interactive(
                         text,
                         index,
                         &self.transcript_selection,
                         window,
                         cx,
+                        false,
+                        self.media_preview_handler(cx),
                     ))
                     .into_any_element()
             }
@@ -2864,12 +2870,14 @@ impl Panel {
                 .debug_selector(|| "assistant-response".into())
                 .px_1()
                 .text_color(Theme::global().TEXT)
-                .child(markdown::render(
+                .child(markdown::render_interactive(
                     text,
                     index,
                     &self.transcript_selection,
                     window,
                     cx,
+                    false,
+                    self.media_preview_handler(cx),
                 ))
                 // Streaming updates already repaint this row as text arrives. A
                 // repeating GPUI animation here would repaint every settled
@@ -2892,12 +2900,14 @@ impl Panel {
                 .px_1()
                 .text_size(px(12.0))
                 .text_color(Theme::global().REASONING)
-                .child(markdown::render_reasoning(
+                .child(markdown::render_interactive(
                     text,
                     index,
                     &self.transcript_selection,
                     window,
                     cx,
+                    true,
+                    self.media_preview_handler(cx),
                 ))
                 .into_any_element(),
             Item::Todos(payload) => render_todo_card(payload).into_any_element(),
