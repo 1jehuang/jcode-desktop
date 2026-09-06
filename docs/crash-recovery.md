@@ -41,8 +41,15 @@ UI was installed.
 ```sh
 cargo test -p jcode-desktop-ui --lib workspace::recovery -- --test-threads=1
 cargo build -p jcode-desktop -p jcode-desktop-ui
-python3 scripts/accept-crash-recovery.py --help
+python3 scripts/accept-crash-recovery.py target/crash-accept-main
+python3 scripts/accept-crash-recovery.py target/crash-accept-workspace --no-sidebar
+python3 scripts/accept-crash-recovery.py target/crash-accept-reload --reloads 1
 ```
 
-The acceptance script uses an isolated home, runtime directory, and private Xvfb
-display, never the user's running app or sessions.
+The acceptance script uses offline fixture sessions, an isolated home and runtime
+directory, and private Xvfb/Openbox, never the user's running app or sessions.
+It verifies SIGKILL restoration, native draft editing, focus and widths, expired
+checkpoints, and fresh starts after normal quit. Screenshots must contain nonblank
+app pixels. Each run pins private copies of the executable and optional UI plugin
+to avoid interference from concurrent builds. `--reloads` exercises native Ctrl+R
+activation with the prebuilt plugin and a no-build Cargo shim, not compilation.
