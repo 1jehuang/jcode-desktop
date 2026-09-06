@@ -72,6 +72,42 @@ fn focus_right_skips_closing_panels(cx: &mut gpui::TestAppContext) {
     check_navigation_across_closing_panels(cx, true);
 }
 
+#[gpui::test]
+fn close_remembers_surviving_panel_when_returning_to_row(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        for name in ["left", "closing", "survivor"] {
+            workspace.push_test_panel(name, cx);
+        }
+        for slot in &mut workspace.slots {
+            slot.close_progress = AnimatedValue::new(1.0, Duration::from_secs(60));
+        }
+        workspace.set_active(1, cx);
+        workspace
+    });
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx));
+    });
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("super-q");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |workspace, _| {
+        assert_eq!(workspace.active, 2);
+        assert_eq!(
+            workspace.row_focus[0],
+            Some(workspace.slots[2].panel.entity_id())
+        );
+    });
+    vcx.simulate_keystrokes("super-j super-k");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.active, 2);
+        assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], 2);
+    });
+}
+
 /// Check every Linux Super binding, including less frequently taught aliases,
 /// against the rendered root and composer dispatch paths. No external action
 /// (mail, terminal, quit, etc.) is executed by this registration audit.

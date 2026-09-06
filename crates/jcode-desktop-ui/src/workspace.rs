@@ -42,6 +42,9 @@ mod window_navigation;
 #[cfg(test)]
 #[path = "closing_navigation_tests.rs"]
 mod closing_navigation_tests;
+#[cfg(test)]
+#[path = "super_action_behavior_tests.rs"]
+mod super_action_behavior_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 #[path = "workspace_remotes.rs"]
@@ -2541,6 +2544,11 @@ impl Workspace {
             .filter(|&index| index != closed)
             .collect();
         self.active = focus_after_close(closed, &remaining);
+        self.row_focus[self.active_row] = self
+            .slots
+            .get(self.active)
+            .filter(|slot| slot.row == self.active_row && !slot.closing)
+            .map(|slot| slot.panel.entity_id());
         self.retarget_camera();
         self.focus_active(window, cx);
         cx.notify();
