@@ -133,8 +133,9 @@ def main():
             assert not exited, f'Child process exited during {label}: {exited}'
             if diagnostics.exists():
                 assert_reload_healthy(diagnostics.read_text())
-            if predicate():
-                return
+            result = predicate()
+            if result:
+                return result
             if time.monotonic() >= deadline:
                 raise AssertionError('Timed out: ' + label + '\n' + (state_path.read_text() if state_path.exists() else 'No state'))
             if time.monotonic() >= report_at:
@@ -162,13 +163,12 @@ def main():
                 return False
             try:
                 assert_state(state, row, position, sessions)
-                return True
+                return state
             except AssertionError:
                 return False
-        wait_until(ready, label, timeout=5)
-        state = navigation_state(state_path)
-        assert state is not None, 'Missing structured navigation state'
-        assert_state(state, row, position, sessions)
+        # Use the exact valid snapshot. A second read can catch the next
+        # diagnostic frame while the state file is being rewritten.
+        state = wait_until(ready, label, timeout=5)
         with (root / 'navigation.jsonl').open('a') as trace:
             trace.write(json.dumps({'checkpoint': label, 'state': state}) + '\n')
         print(f'{label}: row={row} position={position}', flush=True)
@@ -247,12 +247,12 @@ def main():
                 # hidden underneath another folder.
                 positions = [*range(panel_count), *range(panel_count - 2, -1, -1), panel_count - 1, panel_count // 2, 0]
                 for position in positions:
-                    wait_until(lambda: (s := navigation_state(state_path)) is not None
-                               and not s['tab_motion'] and not s['camera_motion'],
-                               'settled tab geometry', 10)
+                    state = wait_until(lambda: (s := navigation_state(state_path))
+                                       and not s['tab_motion'] and not s['camera_motion'] and s,
+                                       'settled tab geometry', 10)
                     # Read the actual rendered exposed-edge target rather than
                     # duplicating layout math or assuming a fully expanded tab.
-                    targets = dict(navigation_state(state_path)['tab_targets'])
+                    targets = dict(state['tab_targets'])
                     assert len(targets) == panel_count
                     x = round(276 + targets[position])
                     subprocess.run(['xdotool', 'mousemove', str(x), '40'],
