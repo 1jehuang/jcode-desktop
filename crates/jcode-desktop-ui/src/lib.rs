@@ -198,7 +198,7 @@ unsafe extern "C-unwind" fn activate(
         return ACTIVATE_FAILED;
     };
     let snapshot = if snapshot_len == 0 {
-        None
+        workspace::recovery::load()
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) };
         match workspace::WorkspaceSnapshot::decode(bytes) {
@@ -224,6 +224,7 @@ unsafe extern "C-unwind" fn activate(
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
         });
+        workspace::recovery::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup
         // rebuild must not steal OS focus if the user switched applications.
     }));

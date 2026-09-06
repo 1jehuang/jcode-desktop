@@ -28,6 +28,9 @@ use crate::theme::{Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
 
+#[path = "workspace_recovery.rs"]
+pub(crate) mod recovery;
+
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
