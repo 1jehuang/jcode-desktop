@@ -534,13 +534,18 @@ mod tests {
         let new = vcx.debug_bounds("sidebar-new-session").unwrap();
         vcx.simulate_click(new.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::CreateSession {
-                request_id: None,
-                ..
-            })
-        ));
+        let Ok(Command::CreateSession {
+            request_id: Some(request_id),
+            ..
+        }) = commands.try_recv()
+        else {
+            panic!("new local sessions must correlate their immediately opened draft");
+        };
+        assert!(crate::panel::Panel::is_pending_session_id(&request_id));
+        assert!(workspace.read_with(vcx, |w, cx| {
+            w.test_panel(0)
+                .is_some_and(|panel| panel.read(cx).session_id == request_id)
+        }));
         assert!(
             commands.try_recv().is_err(),
             "one click emits exactly one command"

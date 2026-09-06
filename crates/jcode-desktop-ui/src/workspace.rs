@@ -8538,7 +8538,9 @@ mod tests {
                 let list = vcx.debug_bounds("accounts-list").unwrap();
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 let section = vcx.debug_bounds("accounts-section").unwrap();
-                assert_eq!(section.size.height, body.size.height);
+                let machine_switcher = vcx.debug_bounds("machines-picker-button").unwrap();
+                assert_eq!(section.origin.y, machine_switcher.bottom());
+                assert_eq!(section.bottom(), body.bottom());
                 assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
                 assert!(list.bottom() <= body.bottom());
                 assert!(body.bottom() - list.bottom() <= px(4.0));
@@ -8602,10 +8604,11 @@ mod tests {
         vcx.run_until_parked();
         let list = vcx.debug_bounds("accounts-list").unwrap();
         assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
-        assert_eq!(
-            vcx.debug_bounds("accounts-section").unwrap().size.height,
-            vcx.debug_bounds("sidebar-tab-body").unwrap().size.height
-        );
+        let section = vcx.debug_bounds("accounts-section").unwrap();
+        let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+        let machine_switcher = vcx.debug_bounds("machines-picker-button").unwrap();
+        assert_eq!(section.origin.y, machine_switcher.bottom());
+        assert_eq!(section.bottom(), body.bottom());
         assert!(
             vcx.debug_bounds("account-provider-9").unwrap().top()
                 < vcx.debug_bounds("account-provider-7").unwrap().top()
