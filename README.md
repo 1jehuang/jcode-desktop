@@ -17,6 +17,13 @@ It stays fixed across usage changes, reloads, and restarts. Edit that setting to
 change it, or remove it and restart to choose again. Until usable history arrives,
 Super+; uses home without pinning that fallback.
 
+Native shortcut acceptance (Linux, after building Desktop):
+`python3 scripts/accept-shortcuts.py target/shortcuts-acceptance`.
+This uses private Xvfb and a real isolated Jcode daemon, verifies session
+directories and keyboard focus, then changes history and restarts to check the
+fixed directory. It makes no model requests. Use `--bridge /path/to/jcode-harness-api-bridge`
+to test a newly built companion bridge rather than the installed version.
+
 ## Configuration
 
 The sidebar's **Theme** tab selects a palette and saves it automatically.
