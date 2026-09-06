@@ -217,13 +217,21 @@ def main():
                 wait_until(lambda: diagnostics.read_text().count('activated UI generation') > before,
                            'Ctrl+R hot reload', args.build_timeout)
                 time.sleep(.5)
+            # Activation must identify the window, including after hot reload.
+            # This queries only our private X11 display, not the compositor.
+            identified = subprocess.check_output(
+                ['xdotool', 'search', '--onlyvisible', '--class', '^jcode-desktop$'],
+                env=env, text=True, timeout=10).splitlines()
+            assert len(identified) == 1, identified
             # Every position, both edges and reversals. One chord means one hop.
             key('super+u')
             check(f'g{generation}-first', 0, 0, sessions)
             for chord, positions in [('super+l', [*range(1, panel_count), panel_count - 1]),
                                      ('super+h', [*range(panel_count - 2, -1, -1), 0]),
                                      ('ctrl+Tab', range(1, panel_count)),
-                                     ('ctrl+shift+Tab', range(panel_count - 2, -1, -1))]:
+                                     ('ctrl+shift+Tab', range(panel_count - 2, -1, -1)),
+                                     ('ctrl+Page_Down', range(1, panel_count)),
+                                     ('ctrl+Page_Up', range(panel_count - 2, -1, -1))]:
                 for position in positions:
                     key(chord)
                     check(f'g{generation}-{chord}-{position}', 0, position, sessions)

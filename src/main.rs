@@ -175,6 +175,7 @@ fn restore_window(
     let bounds = Bounds::centered(None, size(px(1500.0), px(950.0)), cx);
     let replacement = cx.open_window(
         WindowOptions {
+            app_id: Some(jcode_desktop_ui::APP_ID.into()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(titlebar_options()),
             ..Default::default()
@@ -275,6 +276,7 @@ fn main() {
         let window = cx
             .open_window(
                 WindowOptions {
+                    app_id: Some(jcode_desktop_ui::APP_ID.into()),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(titlebar_options()),
                     ..Default::default()

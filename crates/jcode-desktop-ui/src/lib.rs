@@ -27,6 +27,8 @@ mod workspace;
 
 use gpui::{App, KeyBinding, Window};
 
+pub const APP_ID: &str = "jcode-desktop";
+
 use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
     FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
@@ -206,6 +208,10 @@ unsafe extern "C-unwind" fn activate(
     let activated = catch_unwind(AssertUnwindSafe(|| {
         let window = unsafe { &mut *window.cast::<Window>() };
         let app = unsafe { &mut *app.cast::<App>() };
+        // Retrofit already-running hosts on reload. New hosts set the ID in
+        // WindowOptions before mapping. Updating WM_CLASS during initial X11
+        // setup can disrupt the first paint, so defer until the next frame.
+        window.on_next_frame(|window, _| window.set_app_id(APP_ID));
         bind_workspace_keys(app);
         app.on_action(|_: &Quit, cx| cx.quit());
         let workspace =
