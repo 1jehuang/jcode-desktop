@@ -64,6 +64,42 @@ watches this configuration automatically. This also enables held close for
 Firefox, which shares that global binding. Super+Return remains single-shot.
 No compositor commands or input into the user's windows were used to test it.
 
+#### Repeat and panel entrance verification
+
+`scripts/accept-wayland-shortcuts.py --held-keys` sends a real key down,
+waits while it remains down, then sends key up. The ordinary shortcut tests
+tap the key and hold only its modifier, which cannot establish key repeat.
+The held mode uses a private headless Sway session, actual wtype forwarding,
+and real isolated Desktop/SDK sessions. The helper's focus query is adapted
+to that private compositor, never the user's compositor.
+
+- At a controlled 300ms delay/4Hz repeat rate, an 850ms Super+Q hold invoked
+  the helper four times and closed four of eight panels. A second 3s hold
+  closed the remaining four without quitting the workspace.
+- Each 1.2s post-release interval had 24 stable state observations and zero
+  further helper invocations. Super+Enter successfully reopened a session.
+- Held Ctrl+PageUp moved from panel 7 to 3. Held Ctrl+PageDown reached and
+  clamped at panel 7. Neither changed session identities.
+- Native evidence: `target/held-keys-native-0812/acceptance.json`.
+- GPUI regression `held_close_dismisses_each_live_panel_once` dispatches an
+  initial keydown followed by held events without intervening key-ups,
+  including repeats after every panel has started closing.
+
+Optimistic draft creation previously snapped width and camera geometry to
+keep the editor readable immediately, inadvertently removing all entrance
+motion. Drafts now retain those readable dimensions and slide into place by
+12% of a panel width using the existing `PanelOpen` transition policy.
+Trajectory tests cover initial, intermediate and settled positions, rapid
+spawning, focus changes, and typing during motion in both layout modes.
+
+Native `profile-panel-spawn.py target/held-spawn-native --samples 3
+--create-delay 1.5 --verify-early-input` passed all three drafts: each accepted
+typing before the delayed backend attachment and preserved it afterward.
+The pending draft screenshot was inspected for readable editor bounds.
+`target/ui-review-held-spawn.png` also passed the real offline app visual check.
+The running desktop acknowledged its Ctrl+R-equivalent rebuild/reload action
+and activated UI generation 4 with the animation fix.
+
 ## Verification, 2026-09-06
 
 - Running the new navigation-routing regression against the original installed
