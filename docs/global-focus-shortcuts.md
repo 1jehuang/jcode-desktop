@@ -80,7 +80,9 @@ to that private compositor, never the user's compositor.
   further helper invocations. Super+Enter successfully reopened a session.
 - Held Ctrl+PageUp moved from panel 7 to 3. Held Ctrl+PageDown reached and
   clamped at panel 7. Neither changed session identities.
-- Native evidence: `target/held-keys-native-0812/acceptance.json`.
+- Native evidence: `target/held-keys-native-0812/acceptance.json`. The integrated
+  rerun with the animation fix also passed with the same counts at
+  `target/held-keys-native-0814/acceptance.json`.
 - GPUI regression `held_close_dismisses_each_live_panel_once` dispatches an
   initial keydown followed by held events without intervening key-ups,
   including repeats after every panel has started closing.
@@ -99,6 +101,12 @@ The pending draft screenshot was inspected for readable editor bounds.
 `target/ui-review-held-spawn.png` also passed the real offline app visual check.
 The running desktop acknowledged its Ctrl+R-equivalent rebuild/reload action
 and activated UI generation 4 with the animation fix.
+
+The full serial UI suite passed 573 tests with zero failures and seven ignored
+opt-in tests. Its first run exposed an unrelated WebKit worker wakeup into an
+already-ended deterministic GPUI test scheduler. Unit-test previews now avoid
+starting that real OS worker, with a creation/retry regression test. Production
+previews still use the native worker unchanged.
 
 ## Verification, 2026-09-06
 

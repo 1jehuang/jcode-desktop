@@ -302,6 +302,13 @@ impl Preview {
         this
     }
     fn start(&mut self, cx: &mut Context<Self>) {
+        // GPUI's deterministic test scheduler cannot receive wakeups from real
+        // OS threads, especially after its test has ended. Unit tests exercise
+        // this view's identity/layout without WebKit. The native screenshot
+        // harness exercises the real worker in a normal application instead.
+        if cfg!(test) {
+            return;
+        }
         self.error = None;
         match Worker::start(self.source.clone(), crate::image_cache::ImageIds::get(cx)) {
             Ok((worker, updates)) => {
@@ -539,6 +546,22 @@ fn browser_position(position: (f32, f32), size: (f32, f32), viewport: (u32, u32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn deterministic_preview_creation_and_retry_do_not_start_native_workers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let preview = cx.new(|cx| Preview::new("<p>Preview</p>".into(), cx));
+        preview.update(cx, |preview, cx| {
+            assert!(preview.worker.is_none());
+            assert!(preview.task.is_none());
+            preview.start(cx);
+            assert!(preview.worker.is_none());
+            assert!(preview.task.is_none());
+        });
+        drop(preview);
+        cx.run_until_parked();
+    }
+
     #[test]
     fn input_tracks_scaled_browser_surface() {
         assert_eq!(
