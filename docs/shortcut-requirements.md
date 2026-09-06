@@ -3,12 +3,12 @@
 ## Acceptance environments
 
 - **W:** `scripts/accept-wayland-shortcuts.py`, evidence in
-  `target/all-global-keys`. Private headless Sway, actual global Super-key
+  `target/settled-wayland`. Private headless Sway, actual global Super-key
   bindings, actual installed helper, actual `wtype`, native Wayland Desktop,
   real SDK daemon, and an actual Ctrl+R rebuild/reload. The only compatibility
   adapter translates the existing focused-window CLI query into real private
   Sway IPC. No keyboard transport is mocked. No `niri` process is invoked.
-- **X:** `target/global-focus-final`, 88 private-Xvfb navigation checkpoints.
+- **X:** `target/settled-focus`, 88 private-Xvfb navigation checkpoints, including one real hot reload.
 - **K:** `all_super_shortcuts_have_handlers`, all 42 Linux Super bindings checked
   against registered actions with workspace-root and composer focus after
   rebinding. 84 binding/handler checks passed. This checks reachability, not
@@ -28,7 +28,7 @@
 | Focus survives close, overview, empty strips, and reload | W closed a panel then global H reached a live composer. X checked overview entry/exit and reload, empty-strip transitions, and rapid close/navigation. All 88 checkpoints passed. |
 | Stable native Desktop identity for helper routing | W made 27 real focused-window queries. Every query returned app_id `jcode-desktop`, including after UI reload. X checked native WM_CLASS in both generations. |
 | Super+Enter creates one panel in the requested repository | W baseline created none. Fixed global Enter changed 3 panels to 4, selected the new slot 2, and daemon creation recorded `/home/jeremy/jcode-desktop`. |
-| Ctrl+Alt+Enter forwards to the same pinned action | Actual installed helper emitted this chord through real wtype in W. Direct native alias tests and before/after restart cwd checks also passed in `target/enter-outcome`. |
+| Ctrl+Alt+Enter forwards to the same pinned action | Actual installed helper emitted this chord through real wtype in W. Direct native alias tests and before/after restart cwd checks also passed in `target/settled-enter`. |
 | Super+Q closes the focused panel, not Desktop | W baseline closed none. Fixed global Q changed 4 panels to 3, removed precisely the selected session from the visible panel list, and focused a surviving composer. |
 | Closing the last panel must leave shortcuts usable | W closed all remaining panels with global Q, observed zero panels and root focus, then global Enter opened one focused panel in the requested repo. The app stayed alive. |
 | Ctrl+Shift+W must not become Ctrl+W word deletion | Helper H asserts the distinct Shift modifier. W exercised actual Ctrl+Shift+W delivery and panel dismissal. Existing prompt-editing/keymap regressions passed unchanged. |
@@ -37,7 +37,7 @@
 | Other app launcher and self-dev behavior stays unchanged | L executed original fallback commands against recording stubs for non-Desktop, absent/failed focus, modified chords, and self-dev variants. All passed. Only the two regular user bindings were changed in the local config. |
 | Firefox previous/next/new/close remain unchanged | H compared all eight app-ID/action combinations with the original Ctrl+PageUp/PageDown/T/W argument vectors. All passed. No user Firefox windows or tabs were touched. |
 | Every advertised Super shortcut has a handler | Static audit found 42 bindings and exactly six global conflicts: H, L, Enter, Q, semicolon, apostrophe. K verified all 42 mappings on both focus paths. The six conflicts are covered by W. |
-| Tutorial key claims remain accurate | Three keymap tests and nine shortcut tests passed, including every taught shortcut, all advertised catalog mappings, prompt editing, and session directory selection. |
+| Tutorial key claims remain accurate | Four keymap tests and eleven shortcut tests passed, including every taught shortcut, all advertised catalog mappings, prompt editing, and session directory selection. |
 | Updated behavior reaches the user | Installed helper matches tested source. Current Desktop PID 585390 started from the verified checkout and activated UI generation 1 after the Ctrl+R-equivalent request coalesced with startup rebuild. Both managed launcher lines were installed with a backup. |
 
 ## Concrete combined outcome
@@ -102,3 +102,48 @@ check. The new full-tree focus/close/reload checks and remaining keymap tests
 must be rerun once shared edits settle. The screenshot rerun first refused to
 overwrite an existing image, which was preserved under a new name. No fresh
 rendering result is claimed for this recheck.
+
+
+## Completed native recheck, 07:35–07:55 UTC
+
+The pending shortcut checks above subsequently passed. The earlier failures
+remain recorded, but are superseded for keyboard behavior by these fresh runs:
+
+- **W**, `target/settled-wayland`: 25 observed state checkpoints and 27 real
+  focused-window queries. Baseline H/L/Enter/Q all did nothing. Fixed H/L selected
+  exact neighbors, with boundary no-ops and matching composer focus, before and
+  after real Ctrl+R reload. Enter changed 3 panels to 4 in the requested repo.
+  Q removed precisely that panel, 4 to 3, without exiting. H still worked after
+  closing. Semicolon and apostrophe each added exactly one focused panel in the
+  repo and isolated HOME respectively. Closing all five panels left the app
+  alive, and Enter reopened one repo panel. All four saved creation records
+  were independently matched to raw daemon records, with zero mismatches.
+- **X**, `target/settled-focus`: all 88 native checkpoints passed across a real
+  reload, including held modifiers, direction changes, edge no-ops, overview,
+  empty strips, and both closing-panel transitions. The separate linked-UI run
+  also passed and its `navigation.png` was inspected: real panel content and
+  the selected composer were visibly rendered.
+- `target/settled-enter`: old helper created zero. Nine real commands each
+  created exactly one focused panel. Direct Enter, forwarded Enter, and installed
+  helper used the requested repo before and after restart. Eight creations used
+  the repo and the home control used isolated HOME. Every session ID/directory
+  matched raw daemon creation records, with zero mismatches.
+- **K**: the freshly compiled UI test executable passed 11 shortcut tests, four
+  keymap tests, and three closing-navigation tests. This includes all 42 Super
+  bindings on both focus paths. Reusing the compiled executable avoided another
+  redundant Cargo queue, without substituting or copying test implementations.
+- **H/L**: six helper and five hermetic launcher tests passed. Installed helper,
+  current pin, and all generated launcher lines still match their expected
+  source/configuration. No user compositor was driven.
+
+The Wayland runner now accepts a positive `--build-timeout` (default unchanged:
+180 seconds). The passing run used 600 seconds for build/activation waits only.
+Input/state assertion timeouts were not relaxed. Zero and negative values were
+verified to fail before starting processes. The complete run took 135 seconds.
+
+Offline fixture screenshots are **not** passing visual evidence: the standard
+build attempt hit Cargo contention, and two already-built fixture captures
+returned black images despite exit 0. Both images were read and rejected.
+Native real-session navigation rendering was visibly verified separately.
+This fixture-capture limitation does not replace or invalidate the successful
+native keyboard, focus, session-creation, close, and reload observations above.

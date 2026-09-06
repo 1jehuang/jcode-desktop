@@ -27,7 +27,11 @@ def main():
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--pinned-launch-command', type=Path)
     parser.add_argument('--home-launch-command', type=Path)
+    parser.add_argument('--build-timeout', type=int, default=180,
+                        help='seconds allowed for initial/reload builds, including Cargo lock waits')
     args = parser.parse_args()
+    if args.build_timeout <= 0:
+        parser.error('--build-timeout must be positive')
     repo = Path(__file__).resolve().parents[1]
     root = args.output.resolve()
     helper = args.helper.resolve(strict=True)
@@ -172,7 +176,7 @@ print(json.dumps(result))
         launch('app', [str(repo / 'target/debug/jcode-desktop'), '--hot-reload'])
         diagnostics = root / 'logs/jcode-desktop/jcode-desktop.log'
         wait(lambda: diagnostics.exists() and 'activated UI generation' in diagnostics.read_text(),
-             'initial UI activation', 180)
+             'initial UI activation', args.build_timeout)
         wait(lambda: len(panels()) == 1 and panels()[0]['session'].startswith('session_'), 'first session')
         # Plugin activation logs before the new root's first frame is mounted.
         # Do not send setup input into that deliberately suspended interval.
@@ -197,7 +201,7 @@ print(json.dumps(result))
                 before = diagnostics.read_text().count('activated UI generation')
                 key('r', 'ctrl')
                 wait(lambda: diagnostics.read_text().count('activated UI generation') > before,
-                     'Ctrl+R UI hot reload', 180)
+                     'Ctrl+R UI hot reload', args.build_timeout)
                 time.sleep(.5)
             for chord, expected in [('h', 0), ('h', 0), ('l', 1), ('l', 2), ('l', 2), ('h', 1)]:
                 identities = [p['session'] for p in panels()]
