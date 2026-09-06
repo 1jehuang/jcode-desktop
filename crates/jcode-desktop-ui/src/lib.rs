@@ -79,10 +79,12 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-t", NewTerminal, None),
         KeyBinding::new("super-shift-g", OpenGmail, None),
         KeyBinding::new("super-shift-d", OpenTodoist, None),
-        // Session shortcuts: Enter creates a panel, ; uses the fixed favorite,
-        // and ' explicitly uses home. Super+T remains the terminal shortcut.
+        // Enter and ; use the configured fixed favorite. ' explicitly uses
+        // home. Super+T remains the terminal shortcut.
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("super-enter", NewPanel, None),
+        KeyBinding::new("super-enter", NewPanelInPinnedDirectory, None),
+        // Non-Super alias for global-shortcut helpers that intercept Enter.
+        KeyBinding::new("ctrl-alt-enter", NewPanelInPinnedDirectory, None),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("super-;", NewPanelInPinnedDirectory, None),
         #[cfg(not(target_os = "macos"))]
@@ -149,7 +151,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-g", OpenGmail, None),
         KeyBinding::new("cmd-shift-t", CycleTheme, None),
         KeyBinding::new("cmd-shift-d", OpenTodoist, None),
-        KeyBinding::new("cmd-enter", NewPanel, None),
+        KeyBinding::new("cmd-enter", NewPanelInPinnedDirectory, None),
         KeyBinding::new("cmd-;", NewPanelInPinnedDirectory, None),
         KeyBinding::new("cmd-'", NewPanel, None),
         KeyBinding::new("cmd-w", ClosePanel, None),

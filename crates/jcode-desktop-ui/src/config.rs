@@ -41,7 +41,7 @@ pub enum LayoutMode {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
-    /// Selected once from session history, then kept fixed for Super+;.
+    /// Selected once from session history, then fixed for Super+Enter / Super+;.
     pub pinned_working_dir: Option<String>,
     pub sidebar: bool,
     pub showcase_keys: bool,

@@ -2095,6 +2095,7 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.bridge.send(Command::CreateSession {
             working_dir: self.pinned_working_dir.clone().or_else(default_working_dir),
@@ -9031,7 +9032,8 @@ mod tests {
         });
         vcx.run_until_parked();
         for (chord, expected) in [
-            ("super-enter", default_working_dir()),
+            ("super-enter", Some(favorite.to_string_lossy().into_owned())),
+            ("ctrl-alt-enter", Some(favorite.to_string_lossy().into_owned())),
             ("super-n", default_working_dir()),
             ("super-;", Some(favorite.to_string_lossy().into_owned())),
             ("super-'", default_working_dir()),
@@ -9850,7 +9852,7 @@ mod tests {
             ("width_presets", "super-2", Box::new(WidthPreset2)),
             ("width_presets", "super-3", Box::new(WidthPreset3)),
             ("width_presets", "super-4", Box::new(WidthPreset4)),
-            ("new_panel", "super-enter", Box::new(NewPanel)),
+            ("new_panel", "super-enter", Box::new(NewPanelInPinnedDirectory)),
             ("close_panel", CLOSE_PANEL_CHORD, Box::new(ClosePanel)),
         ];
 

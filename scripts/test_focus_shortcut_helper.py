@@ -56,9 +56,12 @@ class FocusShortcutHelperTests(unittest.TestCase):
                 with self.subTest(window=window, action=action):
                     self.assertEqual(self.route(window, action), [])
 
-    def test_desktop_new_and_close_remain_unchanged(self):
-        for action in ['new', 'close']:
-            self.assertEqual(self.route({'app_id': 'jcode-desktop'}, action), [])
+    def test_desktop_new_uses_pinned_directory_shortcut(self):
+        self.assertEqual(self.route({'app_id': 'jcode-desktop'}, 'new'),
+                         ['-M', 'ctrl', '-M', 'alt', '-k', 'Return', '-m', 'alt', '-m', 'ctrl'])
+
+    def test_desktop_close_remains_unchanged(self):
+        self.assertEqual(self.route({'app_id': 'jcode-desktop'}, 'close'), [])
 
     def test_invalid_action_fails_before_query_or_input(self):
         result = subprocess.run(['bash', str(HELPER), 'invalid'], env={

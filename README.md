@@ -6,8 +6,9 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
 ## New panel shortcuts
 
-- **Super+Enter** is the default shortcut to open a new session panel, with no
-  configuration needed. Hints and the tutorial teach it. Super+N still works.
+- **Super+Enter** opens a new session panel in your fixed most-used directory,
+  just like Super+;. **Ctrl+Alt+Enter** is its non-Super alias. Hints and the
+  tutorial teach Enter. Super+N still opens a session in home.
 - **Super+;** opens a session in your fixed most-used directory.
 - **Super+'** opens a session in your home directory.
 - **Super+T** opens a terminal panel.
@@ -16,7 +17,16 @@ Use Cmd instead of Super on macOS. The most-used directory is chosen once
 from session history and saved as `pinned_working_dir` in `[desktop.workspace]`.
 It stays fixed across usage changes, reloads, and restarts. Edit that setting to
 change it, or remove it and restart to choose again. Until usable history arrives,
-Super+; uses home without pinning that fallback.
+Super+Enter and Super+; use home without pinning that fallback. For example:
+
+```toml
+[desktop.workspace]
+pinned_working_dir = "/path/to/your/project"
+```
+
+Global Firefox bindings can consume Super+Enter before Desktop receives it.
+See [global shortcut compatibility](docs/global-focus-shortcuts.md) for the
+helper that preserves Firefox behavior and forwards the chord to Desktop.
 
 Native shortcut acceptance (Linux, after building Desktop):
 `python3 scripts/accept-shortcuts.py target/shortcuts-acceptance`.

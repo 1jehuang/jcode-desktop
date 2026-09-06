@@ -167,7 +167,8 @@ exec "{jcode}" "$@"
         app = launch('app', [str(binary), '--no-hot-reload'])
         wait(connected, 'real runtime attachment', 90)
         wait(lambda: pinned() == str(favorite), 'initial most-used directory selection')
-        verify('super+Return', root / 'home', 'enter')
+        verify('super+Return', favorite, 'enter')
+        verify('ctrl+alt+Return', favorite, 'forwarded-enter')
         verify('super+semicolon', favorite, 'favorite')
         verify('super+apostrophe', root / 'home', 'home')
         # Make a different directory overwhelmingly more common, then restart
@@ -180,6 +181,8 @@ exec "{jcode}" "$@"
         wait(connected, 'restarted runtime attachment', 90)
         assert pinned() == str(favorite)
         verify('super+semicolon', favorite, 'favorite-after-restart')
+        verify('super+Return', favorite, 'enter-after-restart')
+        verify('ctrl+alt+Return', favorite, 'forwarded-enter-after-restart')
         (root / 'acceptance.json').write_text(json.dumps(evidence, indent=2) + '\n')
         print('PASS: native keys created real sessions in the expected directories; pin survived changed history and restart.', flush=True)
         if args.check_attachments:

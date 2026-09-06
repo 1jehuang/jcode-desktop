@@ -20,9 +20,12 @@ fixed it. The final three-panel offline render passed and was inspected at
 ## Compatibility helper
 
 `scripts/firefox-tab-shortcut.sh` preserves all four existing Firefox actions.
-For `jcode-desktop` only, `previous` and `next` send Ctrl+PageUp and Ctrl+PageDown,
-which are existing Desktop focus bindings. It never re-emits the globally
-intercepted Super chord. New/close behavior and unrelated apps remain unchanged.
+For `jcode-desktop`, `previous` and `next` send Ctrl+PageUp and Ctrl+PageDown,
+which are existing Desktop focus bindings. `new` forwards Super+Enter as
+Ctrl+Alt+Enter. Both Enter shortcuts share Super+;'s `pinned_working_dir`, falling
+back to home only if it is unset. It never re-emits a globally intercepted
+Super chord. Firefox's four actions, Desktop close, and unrelated apps remain
+unchanged.
 
 On hosts with this Firefox helper configuration, back up the existing helper
 and install this script at the path already referenced by the global bindings.
@@ -38,10 +41,10 @@ without this helper.
 
 - Running the new navigation-routing regression against the original installed
   helper failed both directions: no keyboard event was emitted.
-- All five helper tests passed against both the repository script and the
-  installed replacement. They cover both Desktop directions, all eight Firefox
-  app-ID/action combinations, missing focus, unrelated apps, invalid arguments,
-  and unchanged Desktop new/close behavior. The compositor and virtual keyboard
+- All six helper tests passed against the repository script. They cover both
+  Desktop directions and pinned Enter, all eight Firefox app-ID/action
+  combinations, missing focus, unrelated apps, invalid arguments, and unchanged
+  Desktop close behavior. The compositor and virtual keyboard
   were PATH stubs. No real compositor queries or user-window input were used.
 - `cargo build -p jcode-desktop -p jcode-desktop-ui` passed.
 - `python3 -m unittest discover -s scripts -p 'test_accept_navigation.py'`
@@ -59,3 +62,26 @@ without this helper.
 This verifies routing with synthetic compositor replies and real native app
 navigation separately. It does not claim a physical Super+H/L test against the
 user's active compositor, which project instructions prohibit.
+
+## Super+Enter follow-up
+
+Super+Enter (Cmd+Enter on macOS) now uses the same persisted pinned directory
+as Super+;. Ctrl+Alt+Enter invokes that same action for the global helper.
+Super+N and Super+' retain home-directory behavior. The existing local setting
+was verified as `/home/jeremy/jcode-desktop`, so no additional personal config
+field or hardcoded repository path was introduced.
+
+`cargo test -p jcode-desktop-ui shortcut -- --test-threads=1` passed all nine
+matching tests. Native `scripts/accept-shortcuts.py target/pinned-enter-native
+--bridge target/debug/jcode-harness-api-bridge` passed seven real-session
+creation checks. Both Enter chords created exactly one focused panel in the
+pinned directory before and after restart, even after different history became
+more common. Super+; remained pinned and Super+' still used home. Daemon creation
+records, not inferred labels, verified each working directory. Evidence is in
+`target/pinned-enter-native/acceptance.json`.
+
+All six routing tests passed against the installed helper. Its prior version
+was backed up with suffix `.bak-desktop-enter-20260906`. The current live host
+(PID 486587) acknowledged the Ctrl+R-equivalent action and activated UI
+generation 2. The final offline screenshot was inspected at
+`target/ui-review-pinned-enter.png`.
