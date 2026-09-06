@@ -12,6 +12,29 @@ import screenshot
 
 
 def verify(output, env, root, run):
+    fixture = Path(__file__).resolve().parents[1] / "assets/previews/change-review.diff"
+    expected_files = []
+    for section in fixture.read_text().split("diff --git ")[1:]:
+        lines = section.splitlines()
+        path = lines[0].split(" b/", 1)[1]
+        expected_files.append("Edit: " + path + "\n" + "\n".join(lines[3:]) + "\n")
+    expected_copy = "\n".join(expected_files)
+
+    def clipboard():
+        # Read the real X11 clipboard on the private display, not an app test hook.
+        program = """import gi, sys
+gi.require_version('Gtk', '3.0')
+gi.require_version('Gdk', '3.0')
+from gi.repository import Gtk, Gdk
+text = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()
+assert text is not None, 'No native clipboard text'
+sys.stdout.write(text)
+"""
+        result = run([sys.executable, "-c", program], env={**env, "GDK_BACKEND": "x11"}, cwd=root,
+                     capture_output=True, text=True, timeout=15)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
     def words(path):
         # Upscale small native text for OCR, then map coordinates back to X11.
         ocr_image = root / "diff-ocr.png"
@@ -69,17 +92,20 @@ def verify(output, env, root, run):
     click(nowrap, "Copy", 0)
     copied = capture("-copied")
     assert any("Copied" in row["text"] for row in copied)
+    assert clipboard() == expected_copy, "Native clipboard changed or omitted diff content"
     click(copied, "Collapse", 0)
     collapsed = capture("-collapsed")
     assert any("Expand" in row["text"] for row in collapsed)
     assert not any("to_owned" in row["text"] for row in collapsed)
+    click(collapsed, "Cop", 0)
+    assert clipboard() == expected_copy, "Collapsing a file must not remove its copied content"
     click(collapsed, "Expand", 0)
     expanded = capture("-expanded")
     assert any("to_owned" in row["text"] for row in expanded)
     click(expanded, "Unified")
     unified = capture("-unified")
     assert not any(is_old_header(row) for row in unified)
-    print("Rich diff acceptance passed: two files, syntax text, native split/unified, wrapping, copy feedback, collapse and expand.")
+    print(f"Rich diff acceptance passed: two files, syntax text, native split/unified, wrapping, copy feedback, collapse and expand. Native clipboard exactly preserved {len(expected_copy.encode())} bytes across both files before and after collapse.")
 
 
 def main():

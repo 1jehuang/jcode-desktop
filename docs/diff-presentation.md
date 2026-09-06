@@ -43,6 +43,8 @@ python3 scripts/accept-rich-diff.py target/diff-rich-acceptance.png
 The screenshot runner builds the real app and renders offline data on private
 Xvfb. The acceptance runner requires a current binary and uses native X11 clicks
 to check layout switching, wrapping, clipboard feedback, and collapse/expand.
+It also uses GTK3 to read the actual private-display clipboard and checks every
+copied byte against the two-file fixture, both before and after hiding a file.
 Use unique output paths. It deliberately refuses to overwrite screenshots.
 
 The GPUI tests additionally exercise hidden-line/file pagination, copying all
