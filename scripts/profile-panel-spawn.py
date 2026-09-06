@@ -31,6 +31,15 @@ def panels(state):
     return [panel for row in state.get('rows', []) for panel in row.get('panels', [])]
 
 
+def spawn_timings(root):
+    prefix = 'jcode desktop spawn: '
+    path = root / 'logs/jcode-desktop/jcode-desktop.log'
+    if not path.exists():
+        path = root / 'desktop.log'
+    return [json.loads(line.partition(prefix)[2]) for line in path.read_text().splitlines()
+            if prefix in line]
+
+
 class DelayedCreates:
     """Transparent private API proxy, delaying only CreateSession requests."""
     def __init__(self, path, upstream, delay):
@@ -97,8 +106,8 @@ def main():
     args = parser.parse_args()
     if args.samples < 1 or args.create_delay < 0:
         parser.error('samples must be positive and create-delay nonnegative')
-    if args.verify_early_input and (args.create_delay < 1 or not shutil.which('xclip')):
-        parser.error('early-input verification requires create-delay >= 1 and xclip')
+    if args.verify_early_input and (args.create_delay < 1 or not (shutil.which('xclip') or shutil.which('tesseract'))):
+        parser.error('early-input verification requires create-delay >= 1 and xclip or tesseract')
     binary = args.binary.resolve(strict=True)
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -179,7 +188,7 @@ def main():
             shown = wait(lambda: (p if len(p := panels(navigation(state_path))) > len(before) else None))
             visible_ms = (time.perf_counter() - started) * 1000
             focused = next(p for p in shown if p.get('focused'))
-            text = f'Pending panel draft {index}'
+            text = 'Typing before connection survives'
             if args.verify_early_input:
                 assert focused['session'].startswith('startup://draft/'), focused
                 assert visible_ms < args.create_delay * 500, 'Panel still waits for runtime'
@@ -187,6 +196,12 @@ def main():
                 subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '0', text],
                                env=env, check=True, timeout=10)
                 if index == 0:
+                    # The timing above ends at render-state construction. Give
+                    # the normal 150ms layout animation time to present before
+                    # taking independent pixel evidence, still before attach.
+                    time.sleep(.25)
+                    assert any(p.get('focused') and p['session'] == focused['session']
+                               for p in panels(navigation(state_path))), 'Attached before pending capture'
                     subprocess.run(['import', '-window', 'root', str(root / 'pending-input.png')],
                                    env=env, check=True, timeout=10)
             attached = wait(lambda: next((p for p in panels(navigation(state_path))
@@ -194,11 +209,24 @@ def main():
             attached_ms = (time.perf_counter() - started) * 1000
             if args.verify_early_input:
                 assert attached['id'] == focused['id'], 'Attachment replaced the panel entity'
-                key('ctrl+a')
-                key('ctrl+c')
-                copied = subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'],
-                                                 env=env, timeout=5).decode()
-                assert copied == text, (copied, text)
+                if index == 0 and shutil.which('tesseract'):
+                    pending_text = subprocess.check_output(
+                        ['tesseract', str(root / 'pending-input.png'), 'stdout', '--psm', '11'],
+                        env=env, timeout=15, stderr=subprocess.DEVNULL).decode()
+                    assert text.lower() in ' '.join(pending_text.lower().split()), pending_text
+                if shutil.which('xclip'):
+                    key('ctrl+a')
+                    key('ctrl+c')
+                    copied = subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'],
+                                                     env=env, timeout=5).decode()
+                    assert copied == text, (copied, text)
+                else:
+                    image = root / f'attached-input-{index}.png'
+                    time.sleep(.2)  # Let the attachment frame reach X11 too.
+                    subprocess.run(['import', '-window', 'root', str(image)], env=env, check=True, timeout=10)
+                    rendered = subprocess.check_output(['tesseract', str(image), 'stdout', '--psm', '11'],
+                                                       env=env, timeout=15, stderr=subprocess.DEVNULL).decode()
+                    assert text.lower() in ' '.join(rendered.lower().split()), rendered
             sample = dict(sample=index, panel_render_state_ms=visible_ms, attached_ms=attached_ms,
                           first_session_id=focused.get('session'), session_id=attached['session'],
                           early_input_verified=args.verify_early_input)
@@ -213,10 +241,7 @@ def main():
                       create_delay_ms=args.create_delay * 1000,
                       panel_render_state_median_ms=statistics.median(s['panel_render_state_ms'] for s in samples),
                       attached_median_ms=statistics.median(s['attached_ms'] for s in samples))
-        prefix = 'jcode desktop spawn: '
-        result['sdk_timings'] = [json.loads(line.partition(prefix)[2])
-                                 for line in (root / 'desktop.log').read_text().splitlines()
-                                 if prefix in line]
+        result['sdk_timings'] = spawn_timings(root)
         (root / 'results.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result, indent=2))
     finally:

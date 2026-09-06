@@ -12,6 +12,19 @@ spec.loader.exec_module(profile)
 
 
 class PanelSpawnProfileTests(unittest.TestCase):
+    def test_collects_redirected_app_diagnostics_instead_of_empty_launcher_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = {'session_id': 'session_test', 'create_ms': 1500.0}
+            line = 'jcode desktop spawn: ' + json.dumps(record) + '\n'
+            (root / 'desktop.log').write_text(line)
+            self.assertEqual(profile.spawn_timings(root), [record])
+            redirected = root / 'logs/jcode-desktop/jcode-desktop.log'
+            redirected.parent.mkdir(parents=True)
+            redirected.write_text('unrelated log\n' + line)
+            (root / 'desktop.log').write_text('')
+            self.assertEqual(profile.spawn_timings(root), [record])
+
     def test_reads_public_navigation_and_ignores_partial_writes(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / 'state'
