@@ -60,7 +60,7 @@ class ScreenshotArgumentTests(unittest.TestCase):
 
     def test_image_cache_probe_requires_its_isolated_fixture_geometry(self):
         self.assert_rejected(["--image-cache-interact"], "image-cache-interact requires")
-        for extra in (["--panels", "2"], ["--size", "800x600"],
+        for extra in (["--panels", "3"], ["--size", "800x600"],
                       ["--image-interact"], ["--layout-mode", "normal"]):
             with self.subTest(extra=extra):
                 self.assert_rejected(

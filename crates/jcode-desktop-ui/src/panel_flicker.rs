@@ -113,6 +113,69 @@ pub(super) fn observer(
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn render_callbacks_detect_layout_oscillation(cx: &mut gpui::TestAppContext) {
+        struct LayoutProbe {
+            detector: Rc<RefCell<Detector>>,
+            tall: bool,
+        }
+        impl gpui::Render for LayoutProbe {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                let input = Rc::new(Cell::new(None));
+                gpui::div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        gpui::div()
+                            .relative()
+                            .w_full()
+                            .h(gpui::px(if self.tall { 200. } else { 100. }))
+                            .child(super::super::startup::input_marker(input.clone())),
+                    )
+                    .child(observer(
+                        self.detector.clone(),
+                        ListState::new(0, gpui::ListAlignment::Top, gpui::px(0.)),
+                        input,
+                        false,
+                        cx.entity_id(),
+                    ))
+            }
+        }
+        let detector = Rc::new(RefCell::new(Detector::default()));
+        let (view, vcx) = cx.add_window_view(|_, _| LayoutProbe {
+            detector: detector.clone(),
+            tall: false,
+        });
+        vcx.run_until_parked();
+        assert!(detector.borrow().last_log.is_none());
+        // Deliberately alternate real element geometry to verify the mounted
+        // observer, including marker paint order, not just its pure detector.
+        for tall in [true, false, true] {
+            view.update(vcx, |view, cx| {
+                view.tall = tall;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        }
+        let detected = detector
+            .borrow()
+            .last_log
+            .expect("painted ABAB geometry must be logged");
+        for _ in 0..8 {
+            view.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+        }
+        assert_eq!(
+            detector.borrow().last_log,
+            Some(detected),
+            "settled renders must not log repeatedly"
+        );
+    }
+
     fn geometry(height: i32, pinned_prompt: bool) -> Geometry {
         Geometry {
             viewport: [0, 0, 600, height],

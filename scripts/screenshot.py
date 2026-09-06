@@ -64,12 +64,12 @@ def main():
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
     if args.image_cache_interact:
-        if (args.transcript != "image" or args.panels != 1 or args.size != "1440x1000"
+        if (args.transcript != "image" or args.panels not in (1, 2) or args.size != "1440x1000"
                 or args.layout_mode != "folder_tabs" or args.theme != "warm-neutral"
                 or args.fresh_interact or args.html_interact or args.image_interact
                 or args.mermaid_interact or args.history_interact
                 or args.learn_stage is not None or args.focus_panel is not None):
-            parser.error("image-cache-interact requires the image transcript, default size/theme/layout, one panel, and no other interaction mode")
+            parser.error("image-cache-interact requires the image transcript, default size/theme/layout, one or two panels, and no other interaction mode")
         if not shutil.which("xdotool"):
             parser.error("image-cache-interact requires xdotool")
     if args.mermaid_interact:
@@ -232,7 +232,7 @@ def main():
                     verify(output, env, root)
                 if args.image_cache_interact:
                     from image_cache_acceptance import verify
-                    verify(output, env, root)
+                    verify(output, env, root, panels=args.panels)
                 if args.mermaid_interact:
                     from mermaid_preview_acceptance import verify
                     verify(output, env, root)

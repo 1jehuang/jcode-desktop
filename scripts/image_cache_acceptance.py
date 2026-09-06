@@ -21,7 +21,7 @@ def color_count(image, color):
                if all(abs(actual - expected) <= 3 for actual, expected in zip(pixel[:3], color)))
 
 
-def verify(output, env, root):
+def verify(output, env, root, panels=1):
     """screenshot.py supplies an isolated environment and an image transcript."""
     red = (240, 20, 60)
     blue = (92, 124, 173)
@@ -62,9 +62,16 @@ def verify(output, env, root):
         command("xdotool", "mousemove", "600", "950", "click", "1", "key", "ctrl+v")
         # Regression: both old independent source counters assigned ID 1. The
         # composer showed the existing chart instead of the newly pasted red PNG.
-        wait_for("pasted", lambda image: color_count(image.crop((280, 750, 1440, 1000)), red) > 1000)
+        pasted = wait_for("pasted", lambda image: color_count(image.crop((280, 750, 1440, 1000)), red) > 1000)
+        # The navigation tutorial toast above y=94 expires on a timer. Compare
+        # the neighboring image/content below that overlay, not transient chrome.
+        neighbor = pasted.crop((855, 110, 1420, 750)).tobytes() if panels == 2 else None
+        def assert_neighbor_unchanged(image):
+            if neighbor is not None:
+                assert image.crop((855, 110, 1420, 750)).tobytes() == neighbor, "working in the left panel changed the right panel's image pixels"
         for frame in range(8):
             image = capture(f"-attachment-frame-{frame}")
+            assert_neighbor_unchanged(image)
             assert color_count(image.crop((280, 750, 1440, 1000)), red) > 1000, "attachment disappeared or changed image"
             assert color_count(image.crop((280, 80, 1440, 750)), blue) > 1000, "original transcript image changed"
             time.sleep(.12)
@@ -74,6 +81,7 @@ def verify(output, env, root):
         counts = []
         for frame in range(8):
             image = capture(f"-transcript-frame-{frame}")
+            assert_neighbor_unchanged(image)
             count = color_count(image.crop((280, 80, 1440, 900)), red)
             assert count > 80000, "submitted image disappeared or changed image"
             counts.append(count)
@@ -84,7 +92,7 @@ def verify(output, env, root):
         assert "desktop-image paint-state" in diagnostics, "image paint tracking was not active"
         for warning in ("ready-to-pending", "texture-changed", "became-error", "panel_geometry_oscillation"):
             assert warning not in diagnostics, f"unexpected flicker diagnostic: {warning}"
-        print(f"Image cache acceptance passed: distinct clipboard/transcript images, 16 stable image frames, submitted red pixels={counts}")
+        print(f"Image cache acceptance passed: panels={panels}, distinct clipboard/transcript images, 16 stable image frames, unchanged neighbor={neighbor is not None}, submitted red pixels={counts}")
     finally:
         clipboard.terminate()
         try:

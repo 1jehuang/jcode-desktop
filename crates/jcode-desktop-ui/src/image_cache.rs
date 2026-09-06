@@ -264,6 +264,92 @@ mod paint_trace_tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    #[gpui::test]
+    async fn render_callbacks_detect_cached_image_eviction(cx: &mut gpui::TestAppContext) {
+        use gpui::prelude::*;
+        struct ImageProbe(Arc<Image>);
+        impl gpui::Render for ImageProbe {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                gpui::img(source(self.0.clone())).size(gpui::px(100.))
+            }
+        }
+        async fn settle(
+            view: &gpui::Entity<ImageProbe>,
+            vcx: &mut gpui::VisualTestContext,
+            image: &Arc<Image>,
+        ) {
+            vcx.run_until_parked();
+            // A parked foreground executor does not mean decoding has finished.
+            // Await the already-started shared asset, then paint its result.
+            let _ = vcx
+                .update(|_, cx| cx.fetch_asset::<DesktopImageDecoder>(image).0)
+                .await;
+            view.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+        }
+        let image = encoded(
+            gpui::ImageFormat::Png,
+            include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
+        );
+        let (view, vcx) = cx.add_window_view(|_, _| ImageProbe(image.clone()));
+        settle(&view, vcx, &image).await;
+        // Asset completion schedules a later frame. The test dispatcher does
+        // not advance the native frame clock just by draining decoder tasks.
+        view.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        let key = (view.entity_id().as_u64(), image.id);
+        let before = vcx.update(|_, cx| {
+            let trace = cx.global::<ImagePaintTraceGlobal>().0.borrow();
+            let entry = trace.entries.iter().find(|entry| entry.key == key).unwrap();
+            assert!(matches!(entry.state, ImagePaintState::Ready(_)));
+            assert!(entry.last_anomaly.is_none());
+            entry.texture.unwrap()
+        });
+        // Fault injection validates the real source callback/logging path. It
+        // is not evidence that normal operation evicts this asset unexpectedly.
+        vcx.update(|_, cx| cx.remove_asset::<DesktopImageDecoder>(&image));
+        view.update(vcx, |_, cx| cx.notify());
+        settle(&view, vcx, &image).await;
+        view.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let trace = cx.global::<ImagePaintTraceGlobal>().0.borrow();
+            let entry = trace.entries.iter().find(|entry| entry.key == key).unwrap();
+            assert!(matches!(entry.state, ImagePaintState::Ready(_)));
+            assert_ne!(entry.texture, Some(before));
+            assert!(
+                entry.last_anomaly.is_some(),
+                "real image redraw must report the unexpected reload"
+            );
+        });
+        let invalid = encoded(gpui::ImageFormat::Png, b"invalid png fixture".to_vec());
+        let invalid_key = (view.entity_id().as_u64(), invalid.id);
+        view.update(vcx, |view, cx| {
+            view.0 = invalid.clone();
+            cx.notify();
+        });
+        settle(&view, vcx, &invalid).await;
+        view.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let trace = cx.global::<ImagePaintTraceGlobal>().0.borrow();
+            let entry = trace
+                .entries
+                .iter()
+                .find(|entry| entry.key == invalid_key)
+                .unwrap();
+            assert_eq!(entry.state, ImagePaintState::Error);
+            assert!(
+                entry.last_anomaly.is_some(),
+                "failed decoding must reach paint-state diagnostics"
+            );
+        });
+    }
+
     #[test]
     fn unique_source_churn_is_globally_rate_limited_and_recovers_after_ten_seconds() {
         let mut trace = ImagePaintTrace::default();
