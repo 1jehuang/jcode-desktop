@@ -5915,12 +5915,13 @@ impl Workspace {
                                 .cursor_pointer()
                                 .bg(Theme::global().ACCENT)
                                 .text_color(Theme::global().BG)
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.choose_browsed_folder(cx);
-                                    }),
-                                )
+                                // Keep the modal mounted until release. Opening on
+                                // mouse-down lets the rest of the click hit the
+                                // newly repositioned strip and steal draft focus.
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.choose_browsed_folder(cx);
+                                }))
                                 .child("open this folder"),
                         ),
                     ),
