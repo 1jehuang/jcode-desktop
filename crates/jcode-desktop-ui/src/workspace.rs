@@ -44,6 +44,11 @@ mod window_navigation;
 mod closing_navigation_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
+#[path = "workspace_remotes.rs"]
+mod remotes;
+#[cfg(test)]
+#[path = "workspace_remote_tests.rs"]
+mod remote_tests;
 
 actions!(
     workspace,
@@ -214,6 +219,7 @@ enum SidebarView {
     Accounts,
     Theme,
     Settings,
+    Machines,
 }
 
 // Minimap: a compact card in the top right that maps every strip to
@@ -468,6 +474,7 @@ impl WorkspaceSnapshot {
 
 pub struct Workspace {
     bridge: Bridge,
+    remotes: remotes::Machines,
     host: HostHandle,
     show_sidebar: bool,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
@@ -697,6 +704,7 @@ impl Workspace {
             coach_expiry_task: None,
             sessions: Vec::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
+            remotes: remotes::Machines::from_config(),
             accounts: Vec::new(),
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
@@ -790,6 +798,9 @@ impl Workspace {
         } else {
             workspace.open_startup_draft(cx);
         }
+        if workspace.remotes.default_host.is_some() {
+            workspace.start_default_startup(cx);
+        }
         workspace
     }
 
@@ -797,8 +808,9 @@ impl Workspace {
         self.active = self.open_session(
             jcode_sdk::SessionInfo {
                 session_id: Panel::STARTUP_SESSION_ID.into(),
-                title: Some("New session".into()),
-                working_dir: default_working_dir(),
+                title: Some(self.remotes.default_host.as_ref().map_or_else(
+                    || "New session".into(), |host| format!("Connecting to {host}"))),
+                working_dir: self.remotes.default_host.is_none().then(default_working_dir).flatten(),
                 status: "starting".into(),
                 transcript_bytes: None,
                 saved: false,
@@ -868,6 +880,7 @@ impl Workspace {
             coach_expiry_task: None,
             sessions: Vec::new(),
             pinned_working_dir: None,
+            remotes: remotes::Machines::default(),
             accounts: Vec::new(),
             recent_accounts: Vec::new(),
             accounts_scroll: ScrollHandle::new(),
@@ -1244,19 +1257,17 @@ impl Workspace {
 
         match update {
             Update::Status(status) => self.status = status,
+            Update::RemoteStatus { host, message, request_id, failed } => {
+                if request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID) {
+                    self.remotes.startup_failed = failed;
+                }
+                self.remotes.failed = failed;
+                self.remotes.status = Some(format!("{host}: {message}"));
+            }
             Update::Connected => {
                 self.connected = true;
                 self.status = "connected".into();
-                if let Some(slot) = self
-                    .slots
-                    .iter()
-                    .find(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())
-                {
-                    self.bridge.send(Command::CreateSession {
-                        working_dir: slot.panel.read(cx).working_dir.clone(),
-                        request_id: Some(Panel::STARTUP_SESSION_ID.into()),
-                    });
-                }
+                self.start_default_startup(cx);
             }
             Update::Sessions { sessions } => {
                 if self.pinned_working_dir.is_none()
@@ -3554,6 +3565,7 @@ impl Workspace {
     fn file_browser_root(&self, cx: &App) -> PathBuf {
         self.slots
             .get(self.active)
+            .filter(|slot| !slot.panel.read(cx).session_id.starts_with("ssh://"))
             .and_then(|slot| {
                 slot.panel
                     .read(cx)
@@ -3729,6 +3741,13 @@ impl Workspace {
     }
 
     fn render_files_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.slots.get(self.active).is_some_and(|slot| {
+            slot.panel.read(cx).session_id.starts_with("ssh://")
+        }) {
+            return div().debug_selector(|| "remote-file-browser-notice".into()).p_3().text_size(px(11.0)).text_color(Theme::global().TEXT_DIM)
+                .child("This panel runs on a remote machine. Ask Jcode to inspect its files in chat. The local file browser is available on local panels.")
+                .into_any_element();
+        }
         let root = self.file_browser_root(cx);
         div()
             .id("sidebar-file-list")
@@ -4469,12 +4488,14 @@ impl Workspace {
                     .when(self.sidebar_view == SidebarView::Files, |el| {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
+                    .child(self.render_machine_switcher(cx))
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Learn => self.render_tutorial_guides(cx),
                         SidebarView::Files => self.render_files_sidebar(cx),
                         SidebarView::Theme => self.render_theme_settings(cx),
                         SidebarView::Settings => self.render_settings(cx),
+                        SidebarView::Machines => self.render_machines(cx),
                         SidebarView::Accounts => self.render_accounts(cx).unwrap_or_else(|| {
                             div()
                                 .debug_selector(|| "accounts-empty".into())
@@ -5041,6 +5062,24 @@ impl Workspace {
                 ),
         );
         settings
+            .child(
+                div()
+                    .id("settings-machines")
+                    .debug_selector(|| "settings-machines".into())
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.open_machines(window, cx);
+                        }),
+                    )
+                    .child("Machines and default new-panel location →"),
+            )
             .child(
                 div()
                     .mt_2()
@@ -5881,6 +5920,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar
             && self.layout_mode == crate::config::LayoutMode::Normal
             && self.sidebar_navigation_scroll.bounds().size.width == px(0.0)
@@ -6242,6 +6282,7 @@ fn most_used_working_dir(sessions: &[jcode_sdk::SessionInfo]) -> Option<String> 
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     for directory in sessions
         .iter()
+        .filter(|session| !session.session_id.starts_with("ssh://"))
         .filter_map(|session| session.working_dir.as_deref())
     {
         if Path::new(directory).is_absolute() && Path::new(directory).is_dir() {
@@ -6471,6 +6512,12 @@ fn unix_now_ms() -> i64 {
 }
 
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
+    if let Some(host) = harness::remote_host(&session.session_id) {
+        return Some(match session.working_dir.as_deref().filter(|dir| !dir.trim().is_empty()) {
+            Some(dir) => format!("{host} · {dir}"),
+            None => host,
+        });
+    }
     session
         .working_dir
         .as_deref()

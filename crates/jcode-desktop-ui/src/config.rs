@@ -43,6 +43,10 @@ pub enum LayoutMode {
 pub struct WorkspaceConfig {
     /// Selected once from session history, then fixed for Super+Enter / Super+;.
     pub pinned_working_dir: Option<String>,
+    /// Default SSH target. Missing or empty means local sessions.
+    pub default_remote_host: Option<String>,
+    /// Previously used SSH targets, in most-recent-first order.
+    pub remote_hosts: Vec<String>,
     pub sidebar: bool,
     pub showcase_keys: bool,
     pub coaching_hints: bool,
@@ -83,6 +87,8 @@ impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             pinned_working_dir: None,
+            default_remote_host: None,
+            remote_hosts: Vec::new(),
             sidebar: true,
             showcase_keys: true,
             coaching_hints: true,
@@ -112,6 +118,12 @@ impl DesktopConfig {
         }
         self.workspace.session_refresh_seconds =
             self.workspace.session_refresh_seconds.clamp(5, 300);
+        self.workspace.default_remote_host = self
+            .workspace
+            .default_remote_host
+            .as_deref()
+            .and_then(|host| crate::remote_targets::validate_host(host).ok());
+        self.workspace.remote_hosts = normalized_remote_hosts(&self.workspace.remote_hosts);
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
         self
     }
@@ -218,6 +230,91 @@ fn persist_pinned_working_dir_at(
     )
 }
 
+/// Save the default SSH target, or an empty string to explicitly select local.
+#[cfg(not(test))]
+pub fn persist_default_remote_host(host: Option<&str>) -> std::io::Result<()> {
+    persist_default_remote_host_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        host,
+    )
+}
+
+#[cfg(test)]
+pub fn persist_default_remote_host(host: Option<&str>) -> std::io::Result<()> {
+    // Selection tests must never write the user's real config.
+    remote_host_value(host).map(|_| ())
+}
+
+/// Save normalized, deduplicated recent targets without rewriting shared settings.
+#[cfg(not(test))]
+pub fn persist_remote_hosts(hosts: &[String]) -> std::io::Result<()> {
+    persist_remote_hosts_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        hosts,
+    )
+}
+
+#[cfg(test)]
+pub fn persist_remote_hosts(_hosts: &[String]) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
+    match host.filter(|host| !host.trim().is_empty()) {
+        Some(host) => crate::remote_targets::validate_host(host)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
+        None => Ok(String::new()),
+    }
+}
+
+fn normalized_remote_hosts(hosts: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    for host in hosts {
+        if let Ok(host) = crate::remote_targets::validate_host(host) {
+            if !result.contains(&host) {
+                result.push(host);
+            }
+        }
+    }
+    result
+}
+
+fn persist_default_remote_host_at(
+    path: &std::path::Path,
+    standalone: bool,
+    host: Option<&str>,
+) -> std::io::Result<()> {
+    persist_value_at(
+        path,
+        standalone,
+        "workspace",
+        "default_remote_host",
+        &toml::Value::String(remote_host_value(host)?).to_string(),
+    )
+}
+
+fn persist_remote_hosts_at(
+    path: &std::path::Path,
+    standalone: bool,
+    hosts: &[String],
+) -> std::io::Result<()> {
+    let value = toml::Value::Array(
+        normalized_remote_hosts(hosts)
+            .into_iter()
+            .map(toml::Value::String)
+            .collect(),
+    );
+    persist_value_at(
+        path,
+        standalone,
+        "workspace",
+        "remote_hosts",
+        &value.to_string(),
+    )
+}
+
 fn persist_value_at(
     path: &std::path::Path,
     standalone: bool,
@@ -251,7 +348,15 @@ fn persist_value_at(
                 .split_once('=')
                 .is_some_and(|(candidate, _)| candidate.trim() == key)
         }) {
-            lines[index] = format!("{key} = {value}");
+            // Replace only the parsed value span. This also handles hand-edited
+            // multiline arrays without losing the key's trailing comment or
+            // rewriting neighboring settings.
+            let mut tail = lines[index..end].join("\n");
+            let values: BTreeMap<String, toml::Spanned<toml::Value>> = toml::from_str(&tail)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            let span = values[key].span();
+            tail.replace_range(span, value);
+            lines.splice(index..end, tail.lines().map(str::to_owned));
         } else {
             lines.insert(start + 1, format!("{key} = {value}"));
         }
@@ -312,6 +417,131 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_preferences_default_local_and_normalize_safe_unique_targets() {
+        let defaults = DesktopConfig::default();
+        assert!(defaults.workspace.default_remote_host.is_none());
+        assert!(defaults.workspace.remote_hosts.is_empty());
+        let config = parse(
+            "[workspace]\ndefault_remote_host = '  user@desktop  '\nremote_hosts = [' desktop ', 'desktop', '', '-Fbad', 'user@[::1]', 'other']\n",
+            true,
+        ).unwrap().normalize();
+        assert_eq!(
+            config.workspace.default_remote_host.as_deref(),
+            Some("user@desktop")
+        );
+        assert_eq!(
+            config.workspace.remote_hosts,
+            ["desktop", "user@[::1]", "other"]
+        );
+        for host in ["", "   ", "-oProxyCommand=bad", "a b"] {
+            let text = format!("[workspace]\ndefault_remote_host = {host:?}\n");
+            assert!(
+                parse(&text, true)
+                    .unwrap()
+                    .normalize()
+                    .workspace
+                    .default_remote_host
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn remote_preferences_persist_shared_and_standalone_and_switch_back_local() {
+        for standalone in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let section = if standalone {
+                "workspace"
+            } else {
+                "desktop.workspace"
+            };
+            fs::write(&path, format!("# preserve this\nmodel = 'shared-model'\n[{section}] # workspace preferences\nsidebar = false\n# host preference\n")).unwrap();
+            persist_default_remote_host_at(&path, standalone, Some(" user@desktop ")).unwrap();
+            persist_remote_hosts_at(
+                &path,
+                standalone,
+                &[
+                    " desktop ".into(),
+                    "desktop".into(),
+                    "user@[::1]".into(),
+                    "-bad".into(),
+                ],
+            )
+            .unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            for preserved in [
+                "# preserve this",
+                "model = 'shared-model'",
+                "# workspace preferences",
+                "sidebar = false",
+                "# host preference",
+            ] {
+                assert!(text.contains(preserved));
+            }
+            let config = parse(&text, standalone).unwrap().normalize();
+            assert_eq!(
+                config.workspace.default_remote_host.as_deref(),
+                Some("user@desktop")
+            );
+            assert_eq!(config.workspace.remote_hosts, ["desktop", "user@[::1]"]);
+            for local in [None, Some(""), Some("   ")] {
+                persist_default_remote_host_at(&path, standalone, local).unwrap();
+                let text = fs::read_to_string(&path).unwrap();
+                assert!(text.contains("default_remote_host = \"\""));
+                assert_eq!(text.matches("default_remote_host =").count(), 1);
+                let config = parse(&text, standalone).unwrap().normalize();
+                assert!(config.workspace.default_remote_host.is_none());
+                assert_eq!(config.workspace.remote_hosts, ["desktop", "user@[::1]"]);
+            }
+            persist_remote_hosts_at(&path, standalone, &[]).unwrap();
+            assert!(
+                parse(&fs::read_to_string(path).unwrap(), standalone)
+                    .unwrap()
+                    .workspace
+                    .remote_hosts
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_remote_preferences_do_not_overwrite_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "# original\nmodel = 'keep'\n";
+        fs::write(&path, original).unwrap();
+        for host in ["-Fbad", "user@-host", "host\n"] {
+            assert_eq!(
+                persist_default_remote_host_at(&path, false, Some(host))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
+        fs::write(&path, "[invalid").unwrap();
+        assert!(persist_default_remote_host_at(&path, false, Some("desktop")).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "[invalid");
+    }
+
+    #[test]
+    fn remote_preferences_preserve_inline_comments_and_replace_multiline_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[desktop.workspace]\ndefault_remote_host = 'old' # chosen host\nremote_hosts = [\n  'old',\n  'other',\n] # saved targets\nsidebar = false # untouched\n").unwrap();
+        persist_default_remote_host_at(&path, false, None).unwrap();
+        persist_remote_hosts_at(&path, false, &["new".into()]).unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.contains("default_remote_host = \"\" # chosen host"));
+        assert!(text.contains("# saved targets"));
+        assert!(text.contains("sidebar = false # untouched"));
+        let config = parse(&text, false).unwrap().normalize();
+        assert!(config.workspace.default_remote_host.is_none());
+        assert_eq!(config.workspace.remote_hosts, ["new"]);
+    }
 
     #[test]
     fn pinned_directory_round_trips_in_shared_and_standalone_config() {

@@ -18,6 +18,14 @@ use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInf
 #[path = "harness_spawn.rs"]
 mod spawn_profile;
 
+#[path = "remote.rs"]
+mod remote;
+
+/// Decode the host carried by a persisted remote panel ID.
+pub fn remote_host(session_id: &str) -> Option<String> {
+    remote::SessionAddress::parse(session_id).ok()?.host
+}
+
 const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
 
 /// Updates flowing from the harness threads into the UI.
@@ -25,6 +33,13 @@ const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
 pub enum Update {
     /// Connection lifecycle status line, shown until connected.
     Status(String),
+    /// Remote status persists independently of local runtime startup.
+    RemoteStatus {
+        host: String,
+        message: String,
+        request_id: Option<String>,
+        failed: bool,
+    },
     /// The runtime is up and reachable.
     Connected,
     /// The initial session list, fetched in the background.
@@ -83,8 +98,17 @@ pub enum Update {
 
 /// Commands flowing from the UI into the bridge.
 pub enum Command {
+    /// Final UI handle dropped. Stop workers, including their SSH transports.
+    Shutdown,
     RefreshSessions,
     CreateSession {
+        working_dir: Option<String>,
+        request_id: Option<String>,
+    },
+    /// Create a native session on an SSH host. Paths are sent in SDK JSON,
+    /// never interpolated into an SSH command or interpreted locally.
+    CreateRemoteSession {
+        host: String,
         working_dir: Option<String>,
         request_id: Option<String>,
     },
@@ -147,8 +171,19 @@ enum SessionCommand {
 
 #[derive(Clone)]
 pub struct Bridge {
+    _lifetime: std::sync::Arc<BridgeLifetime>,
     commands: Sender<Command>,
     updates: async_channel::Receiver<Update>,
+}
+
+struct BridgeLifetime(Sender<Command>);
+
+impl Drop for BridgeLifetime {
+    fn drop(&mut self) {
+        // The coordinator retains an internal command sender for creation
+        // handoffs, so channel disconnection alone cannot end its receive loop.
+        let _ = self.0.send(Command::Shutdown);
+    }
 }
 
 impl Bridge {
@@ -196,6 +231,7 @@ pub fn spawn() -> Bridge {
         .expect("spawn bridge thread");
 
     Bridge {
+        _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
         commands: command_tx,
         updates: update_rx,
     }
@@ -211,6 +247,7 @@ pub fn spawn_inert() -> Bridge {
     std::mem::forget(_command_rx);
     std::mem::forget(_update_tx);
     Bridge {
+        _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
         commands: command_tx,
         updates: update_rx,
     }
@@ -228,6 +265,7 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
     std::mem::forget(_update_tx);
     (
         Bridge {
+            _lifetime: std::sync::Arc::new(BridgeLifetime(command_tx.clone())),
             commands: command_tx,
             updates: update_rx,
         },
@@ -240,6 +278,15 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
         client_name: format!("jcode-desktop-{client_name}/{}", env!("CARGO_PKG_VERSION")),
         ensure_runtime: false,
         ..Default::default()
+    })
+}
+
+fn connect_remote(host: &str, client_name: &str) -> jcode_sdk::Result<JcodeClient> {
+    JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
+        client_name: format!("jcode-desktop-{client_name}/{}", env!("CARGO_PKG_VERSION")),
+        connect_timeout: Duration::from_secs(20),
+        request_timeout: Some(Duration::from_secs(30)),
+        ..jcode_sdk::SshConnectOptions::new(host)
     })
 }
 
@@ -273,13 +320,18 @@ fn should_detach_on_drop(processing: bool) -> bool {
     !processing
 }
 
-fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Command>) {
+fn start_local_runtime(updates: UpdateSender) {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
     // while it comes back instead of turning a transient failure into a dead
     // desktop window.
     loop {
-        let _ = updates.send(Update::Status("starting jcode runtime...".into()));
+        if updates
+            .send(Update::Status("starting jcode runtime...".into()))
+            .is_err()
+        {
+            return;
+        }
         let options = LaunchOptions {
             binary: Some(crate::platform::companion_executable("jcode")),
             ..Default::default()
@@ -298,15 +350,32 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
     }
     // Neither persisted history scanning nor a busy daemon's list request
     // should delay creating the first interactive session.
-    let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    refresh_sessions(updates.clone(), true, session_refresh_in_flight.clone());
+    refresh_sessions(
+        updates.clone(),
+        true,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
     let _ = updates.send(Update::Connected);
+}
+
+fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Command>) {
+    // Local startup must not gate SSH work. In particular a broken/missing
+    // local runtime cannot strand restored remote panels or remote creates.
+    std::thread::Builder::new()
+        .name("jcode-bridge-local-startup".into())
+        .spawn({
+            let updates = updates.clone();
+            move || start_local_runtime(updates)
+        })
+        .expect("spawn local startup thread");
+    let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Per-session workers, keyed by session id.
     let mut workers: HashMap<String, Sender<SessionCommand>> = HashMap::new();
 
     while let Ok(command) = commands.recv() {
         match command {
+            Command::Shutdown => break,
             Command::RefreshSessions => {
                 refresh_sessions(updates.clone(), false, session_refresh_in_flight.clone())
             }
@@ -361,6 +430,27 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                         }
                     })
                     .expect("spawn create thread");
+            }
+            Command::CreateRemoteSession {
+                host,
+                working_dir,
+                request_id,
+            } => {
+                let updates = updates.clone();
+                let internal = internal.clone();
+                std::thread::Builder::new()
+                    .name("jcode-bridge-ssh-create".into())
+                    .spawn(move || {
+                        create_remote_session(
+                            host,
+                            working_dir,
+                            request_id,
+                            updates,
+                            internal,
+                            |host| connect_remote(host, "create"),
+                        );
+                    })
+                    .expect("spawn remote create thread");
             }
             Command::CreatedInternal {
                 session,
@@ -428,6 +518,55 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                     |session_id| spawn_session_worker(session_id, &updates),
                 );
             }
+        }
+    }
+}
+
+/// A create is deliberately single-attempt, even for a startup request. An
+/// ambiguous timeout must not produce extra sessions on a recovered host.
+fn create_remote_session(
+    host: String,
+    working_dir: Option<String>,
+    request_id: Option<String>,
+    updates: UpdateSender,
+    internal: Sender<Command>,
+    connector: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
+) {
+    let result = crate::remote_targets::validate_host(&host).and_then(|host| {
+        let _ = updates.send(Update::RemoteStatus {
+            host: host.clone(),
+            message: format!("Connecting to {host} over SSH..."),
+            request_id: request_id.clone(),
+            failed: false,
+        });
+        let client = connector(&host).map_err(|error| error.to_string())?;
+        let mut session = client
+            .create_session(working_dir)
+            .map_err(|error| error.to_string())?;
+        session.session_id = remote::namespace(&host, &session.session_id);
+        Ok((session, client))
+    });
+    match result {
+        Ok((session, client)) => {
+            let _ = updates.send(Update::RemoteStatus {
+                host: host.trim().to_owned(),
+                message: format!("Connected to {}", host.trim()),
+                request_id: request_id.clone(),
+                failed: false,
+            });
+            let _ = internal.send(Command::CreatedInternal {
+                session,
+                client,
+                request_id,
+            });
+        }
+        Err(error) => {
+            let _ = updates.send(Update::RemoteStatus {
+                host,
+                message: format!("Remote session failed: {error}"),
+                request_id,
+                failed: true,
+            });
         }
     }
 }
@@ -544,6 +683,7 @@ pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
     let todos_dir = home.join("todos");
     sessions
         .iter()
+        .filter(|session| !remote::is_remote(&session.session_id))
         .filter(|session| !matches!(session.status.as_str(), "active" | "running" | "working"))
         .filter_map(|session| {
             let todos: Vec<PersistedTodoTitleItem> =
@@ -583,6 +723,9 @@ struct PersistedTodoTitlePlan {
 /// Match the title precedence used by the TUI's `/resume` picker without
 /// loading a transcript: current todo group, plan intention, then todo text.
 fn persisted_todo_title(home: &Path, session_id: &str) -> Option<String> {
+    if remote::is_remote(session_id) {
+        return None;
+    }
     let todos_dir = home.join("todos");
     let todos: Vec<PersistedTodoTitleItem> =
         std::fs::read(todos_dir.join(format!("{session_id}.json")))
@@ -743,6 +886,9 @@ pub(crate) fn merge_persisted_sessions(
     // state used by the TUI picker. Read the same bounded session records so a
     // crashed or errored session does not get flattened to a generic idle row.
     for session in &mut sessions {
+        if remote::is_remote(&session.session_id) {
+            continue;
+        }
         let path = home
             .join("sessions")
             .join(format!("{}.json", session.session_id));
@@ -945,7 +1091,22 @@ fn session_worker(
     session_id: String,
     commands: Receiver<SessionCommand>,
     updates: UpdateSender,
+    initial_client: Option<JcodeClient>,
+) {
+    session_worker_with_connector(session_id, commands, updates, initial_client, |address| {
+        match &address.host {
+            Some(host) => connect_remote(host, "panel"),
+            None => connect("panel"),
+        }
+    });
+}
+
+fn session_worker_with_connector(
+    session_id: String,
+    commands: Receiver<SessionCommand>,
+    updates: UpdateSender,
     mut initial_client: Option<JcodeClient>,
+    mut connector: impl FnMut(&remote::SessionAddress) -> jcode_sdk::Result<JcodeClient>,
 ) {
     let lost = |reason: String| {
         eprintln!("jcode desktop: session {session_id} lost: {reason}");
@@ -953,6 +1114,21 @@ fn session_worker(
             session_id: session_id.clone(),
             reason,
         });
+    };
+
+    let address = match remote::SessionAddress::parse(&session_id) {
+        Ok(address) => address,
+        Err(error) => {
+            let _ = updates.send(Update::Status(error.clone()));
+            lost(error);
+            return;
+        }
+    };
+    let real_id = address.session_id.as_str();
+    let reconnect_delay = if address.host.is_some() {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_millis(300)
     };
 
     let mut pending = VecDeque::new();
@@ -972,11 +1148,14 @@ fn session_worker(
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
     'reconnect: loop {
+        if collect_disconnected_commands(&commands, &mut pending) {
+            return;
+        }
         let already_attached = initial_client.is_some();
         let client = match initial_client
             .take()
             .map(Ok)
-            .unwrap_or_else(|| connect("panel"))
+            .unwrap_or_else(|| connector(&address))
         {
             Ok(client) => client,
             Err(error) => {
@@ -984,19 +1163,22 @@ fn session_worker(
                 if collect_disconnected_commands(&commands, &mut pending) {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(300));
+                std::thread::sleep(reconnect_delay);
                 continue;
             }
         };
         let events = client.events(None);
-        if !already_attached && let Err(error) = client.attach_session(&session_id) {
+        if !already_attached && let Err(error) = client.attach_session(real_id) {
             lost(format!("{error}; reconnecting"));
-            std::thread::sleep(Duration::from_millis(300));
+            if collect_disconnected_commands(&commands, &mut pending) {
+                return;
+            }
+            std::thread::sleep(reconnect_delay);
             continue;
         }
         let _detach = GracefulDetach {
             client: &client,
-            session_id: &session_id,
+            session_id: real_id,
             processing: Cell::new(false),
         };
         eprintln!("jcode desktop: session {session_id} connected");
@@ -1004,7 +1186,7 @@ fn session_worker(
             session_id: session_id.clone(),
         });
 
-        if let Ok((messages, images)) = client.get_history_with_images(&session_id) {
+        if let Ok((messages, images)) = client.get_history_with_images(real_id) {
             let _ = updates.send(Update::History {
                 session_id: session_id.clone(),
                 messages,
@@ -1016,7 +1198,7 @@ fn session_worker(
         // serving this session, and through which credential route. Delivered
         // as a normal event so the panel has one place that absorbs identity,
         // whether it arrives by request (here) or unsolicited (model switches).
-        if let Ok(info) = client.get_runtime_info(&session_id) {
+        if let Ok(info) = client.get_runtime_info(real_id) {
             let _ = updates.send(Update::Event {
                 session_id: session_id.clone(),
                 event: ApiEvent::RuntimeInfo {
@@ -1047,9 +1229,9 @@ fn session_worker(
                         // idle event must not let another send overwrite it.
                         let steering = turn_active || !unaccepted_sends.is_empty();
                         let result = if steering {
-                            client.soft_interrupt_with_images(&session_id, &content, images, true)
+                            client.soft_interrupt_with_images(real_id, &content, images, true)
                         } else {
-                            client.send_message(&session_id, &content, images, None)
+                            client.send_message(real_id, &content, images, None)
                         };
                         if let Err(error) = result {
                             // A daemon reload can briefly hand this SDK socket
@@ -1093,10 +1275,11 @@ fn session_worker(
                         }
                     }
                     SessionCommand::Cancel => {
-                        let _ = client.cancel(&session_id);
+                        let _ = client.cancel(real_id);
                     }
-                    SessionCommand::Fork => match client.fork_session(&session_id) {
+                    SessionCommand::Fork => match client.fork_session(real_id) {
                         Ok(session) => {
+                            let session = address.session_info(session);
                             let _ = updates.send(Update::SessionForked { session });
                         }
                         Err(error) => {
@@ -1107,7 +1290,7 @@ fn session_worker(
                         }
                     },
                     SessionCommand::SetModel(model) => {
-                        if let Err(error) = client.set_model(&session_id, &model) {
+                        if let Err(error) = client.set_model(real_id, &model) {
                             let _ = updates.send(Update::CommandFailed {
                                 session_id: session_id.clone(),
                                 reason: format!("Failed to switch model: {error}"),
@@ -1116,16 +1299,16 @@ fn session_worker(
                     }
                     SessionCommand::Operation(operation) => {
                         let result = match operation {
-                            SessionOperation::Clear => client.clear(&session_id),
-                            SessionOperation::Compact => client.compact(&session_id).map(|_| ()),
+                            SessionOperation::Clear => client.clear(real_id),
+                            SessionOperation::Compact => client.compact(real_id).map(|_| ()),
                             SessionOperation::SetEffort(effort) => {
-                                client.set_reasoning_effort(&session_id, &effort)
+                                client.set_reasoning_effort(real_id, &effort)
                             }
                             SessionOperation::Rename(title) => {
-                                client.rename_session(&session_id, title)
+                                client.rename_session(real_id, title)
                             }
-                            SessionOperation::Rewind(index) => client.rewind(&session_id, index),
-                            SessionOperation::RewindUndo => client.rewind_undo(&session_id),
+                            SessionOperation::Rewind(index) => client.rewind(real_id, index),
+                            SessionOperation::RewindUndo => client.rewind_undo(real_id),
                         };
                         if let Err(error) = result {
                             let _ = updates.send(Update::CommandFailed {
@@ -1159,7 +1342,7 @@ fn session_worker(
                 // desktop panel look busy: doing so routes its first prompt
                 // through soft_interrupt, where it waits forever because that
                 // new session has no active turn to interrupt.
-                if event_session_id(&event).is_some_and(|id| id != session_id) {
+                if event_session_id(&event).is_some_and(|id| id != real_id) {
                     continue;
                 }
                 if recover_async_busy(&event, &mut unaccepted_sends, &mut pending) {
@@ -1181,7 +1364,7 @@ fn session_worker(
                 _detach.set_processing(turn_active);
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
-                    event,
+                    event: namespace_event(event, &address),
                 });
             } else if client.is_closed() {
                 lost("runtime reloading; reconnecting".into());
@@ -1201,6 +1384,11 @@ fn session_worker(
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+        if address.host.is_some() {
+            // A reachable SSH server whose API immediately closes should not
+            // produce an unbounded rapid reconnect storm either.
+            std::thread::sleep(reconnect_delay);
+        }
     }
 }
 
@@ -1213,6 +1401,8 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::ToolInputDelta { session_id, .. }
         | ApiEvent::ToolExec { session_id, .. }
         | ApiEvent::ToolDone { session_id, .. }
+        | ApiEvent::SidePaneImages { session_id, .. }
+        | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id }
         | ApiEvent::BackgroundProgress { session_id, .. }
@@ -1232,6 +1422,50 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::History { session_id, .. } => Some(session_id),
         _ => None,
     }
+}
+
+fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> ApiEvent {
+    if address.host.is_none() {
+        return event;
+    }
+    match &mut event {
+        ApiEvent::TextDelta { session_id, .. }
+        | ApiEvent::ReasoningDelta { session_id, .. }
+        | ApiEvent::ReasoningDone { session_id, .. }
+        | ApiEvent::ToolStart { session_id, .. }
+        | ApiEvent::ToolInputDelta { session_id, .. }
+        | ApiEvent::ToolExec { session_id, .. }
+        | ApiEvent::ToolDone { session_id, .. }
+        | ApiEvent::SidePaneImages { session_id, .. }
+        | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::TokenUsage { session_id, .. }
+        | ApiEvent::TurnDone { session_id }
+        | ApiEvent::BackgroundProgress { session_id, .. }
+        | ApiEvent::MessageAccepted { session_id }
+        | ApiEvent::PermissionRequest { session_id, .. }
+        | ApiEvent::SessionStatus { session_id, .. }
+        | ApiEvent::ConnectionPhase { session_id, .. }
+        | ApiEvent::ModelInfo { session_id, .. }
+        | ApiEvent::Models { session_id, .. }
+        | ApiEvent::RuntimeInfo { session_id, .. }
+        | ApiEvent::FileContent { session_id, .. }
+        | ApiEvent::Files { session_id, .. }
+        | ApiEvent::TextMatches { session_id, .. }
+        | ApiEvent::FileStatus { session_id, .. }
+        | ApiEvent::Compacted { session_id, .. }
+        | ApiEvent::SessionRenamed { session_id, .. }
+        | ApiEvent::History { session_id, .. } => *session_id = address.ui_id(session_id),
+        ApiEvent::Attached { session } | ApiEvent::SessionForked { session } => {
+            session.session_id = address.ui_id(&session.session_id);
+        }
+        ApiEvent::Sessions { sessions } => {
+            for session in sessions {
+                session.session_id = address.ui_id(&session.session_id);
+            }
+        }
+        _ => {}
+    }
+    event
 }
 
 fn is_daemon_connection_closed(event: &ApiEvent) -> bool {
@@ -1335,6 +1569,10 @@ fn collect_disconnected_commands(
 #[cfg(test)]
 #[path = "harness_submission_tests.rs"]
 mod submission_tests;
+
+#[cfg(all(test, unix))]
+#[path = "harness_remote_tests.rs"]
+mod remote_tests;
 
 #[cfg(test)]
 mod tests {

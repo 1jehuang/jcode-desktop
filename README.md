@@ -6,6 +6,10 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
 ## New panel shortcuts
 
+These shortcuts use the default machine selected under **Machines**. When the
+default is remote, new session panels start in that machine's home directory.
+The local directory behavior below applies when **This computer** is the default.
+
 - **Super+Enter** opens a new session panel in your fixed most-used directory,
   just like Super+;. **Ctrl+Alt+Enter** is its non-Super alias. Hints and the
   tutorial teach Enter. Super+N still opens a session in home.
@@ -14,6 +18,42 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 - **Super+T** opens a terminal panel.
 - **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
   is its non-Super alias. Ctrl+W remains word deletion in the composer.
+
+## Remote machines
+
+Click **Machines** beneath the sidebar tabs, or open **Settings → Machines and
+default new-panel location**. SSH aliases from `~/.ssh/config` and previously
+entered hosts appear automatically. Click **Connect**, or enter an SSH alias or
+`user@hostname` and press Enter. Connections open normal native chat panels, not
+terminal wrappers. Local and remote panels can remain open together.
+
+Click **Set default** beside a machine to use it for new session panels, the `+`
+buttons, and the first panel after restart. This does not move existing sessions.
+Choose **This computer → Set default** to switch back, or use its **Connect**
+button for a one-off local session without changing your default. Explicit local
+folder actions, terminal panels, and email/help sessions remain local. Remote
+panels show an **SSH · host** label and retain their target across UI reloads.
+
+SSH uses the system configuration and keys/agent with host verification enabled.
+First establish access with `ssh your-host` in a terminal to trust the host and
+set up key authentication. Desktop never prompts for passwords or disables host
+verification. The remote must have a Jcode version supporting `jcode api --stdio`
+on its PATH or under `~/.local/bin`/`~/.cargo/bin`. Desktop does not install or
+upgrade remote software. Connection failures appear in Machines, with an
+explicit startup retry that preserves your draft. Remote file browsing is via
+chat rather than the local Files tab.
+
+The preference is saved without replacing unrelated settings:
+
+```toml
+[desktop.workspace]
+default_remote_host = "desktop" # empty string selects this computer
+remote_hosts = ["desktop", "user@build-server"]
+```
+
+For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead.
+
+### Local pinned directory
 
 Use Cmd instead of Super on macOS. The most-used directory is chosen once
 from session history and saved as `pinned_working_dir` in `[desktop.workspace]`.

@@ -21,6 +21,7 @@ mod markdown;
 mod panel;
 mod performance;
 mod platform;
+mod remote_targets;
 mod scrollbar;
 mod terminal;
 mod text_selection;

@@ -3729,6 +3729,17 @@ impl Render for Panel {
                     cx.stop_propagation();
                 }
             }))
+            .children(crate::harness::remote_host(&self.session_id).map(|host| {
+                div()
+                    .debug_selector(|| "panel-remote-host".into())
+                    .flex_none()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(11.0))
+                    .text_color(theme.ACCENT)
+                    .bg(theme.ACCENT_DIM)
+                    .child(format!("SSH · {host}"))
+            }))
             .children(
                 self.working_dir
                     .as_deref()
