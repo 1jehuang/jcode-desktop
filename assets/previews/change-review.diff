@@ -1,0 +1,23 @@
+diff --git a/src/session.rs b/src/session.rs
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -24,7 +24,8 @@ fn display_title(session: &Session) -> String {
+     let title = session.title.trim();
+     if title.is_empty() {
+-        "Untitled".to_string()
++        "New session".to_owned()
+     } else {
+-        title.to_string()
++        // Keep the sidebar readable, including Unicode titles.
++        title.chars().take(80).collect()
+     }
+ }
+diff --git a/tests/session.rs b/tests/session.rs
+--- a/tests/session.rs
++++ b/tests/session.rs
+@@ -10,3 +10,4 @@ fn empty_title_has_a_fallback() {
+     let session = Session::default();
+-    assert_eq!(display_title(&session), "Untitled");
++    assert_eq!(display_title(&session), "New session");
++    assert_eq!(display_title(&session).chars().count(), 11);
+ }

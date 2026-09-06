@@ -7420,6 +7420,17 @@ fn demo_items() -> Vec<Item> {
         return Vec::new();
     }
     if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff-rich")
+    {
+        return vec![
+            Item::User("Make these changes easier to review.".into()),
+            Item::Assistant(format!(
+                "The title now has a clearer fallback and a Unicode-safe length limit.\n\n```diff\n{}```",
+                include_str!("../../../assets/previews/change-review.diff")
+            )),
+        ];
+    }
+    if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mermaid")
     {
         return vec![

@@ -535,7 +535,7 @@ fn link_style() -> HighlightStyle {
 /// the process. Flatten overlaps into disjoint, sorted segments, merging the
 /// styles of every range covering each segment (inner spans first, so an
 /// outer wrapper refines rather than replaces them).
-fn flatten_highlights(
+pub(crate) fn flatten_highlights(
     highlights: &[(std::ops::Range<usize>, HighlightStyle)],
 ) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
     let mut bounds: Vec<usize> = highlights
@@ -1034,7 +1034,7 @@ const KEYWORDS: &[&str] = &[
     "require",
 ];
 
-fn highlight_code(
+pub(crate) fn highlight_code(
     body: &str,
     lang: &str,
 ) -> (String, Vec<(std::ops::Range<usize>, HighlightStyle)>) {
@@ -1629,6 +1629,11 @@ fn render_with_style(
                         ),
                 )
                 .into_any_element(),
+            Block::Code { lang, body }
+                if lang.eq_ignore_ascii_case("diff") || lang.eq_ignore_ascii_case("patch") =>
+            {
+                crate::diff_block::DiffBlock::new(&body, text_key()).into_any_element()
+            }
             Block::Code { lang, body } => code_block(&lang, &body, window),
             Block::HtmlPreview(body) if !reasoning => {
                 crate::html_preview::HtmlPreview::new(body, row, block_index).into_any_element()
