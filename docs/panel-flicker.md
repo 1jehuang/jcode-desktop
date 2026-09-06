@@ -39,6 +39,34 @@ python3 scripts/accept-mermaid.py --output-dir target/flicker-mermaid-reloads
 
 The native test requires the screenshot harness's Xvfb, Openbox, lavapipe, ImageMagick, and xdotool dependencies, plus Python Pillow and GTK3/PyGObject for an isolated clipboard owner. It never reads or writes the live desktop clipboard. It verifies the existing chart and different pasted image together, submits the attachment, and checks sixteen repeated frames for image disappearance/substitution and stable final image geometry. Artifacts include screenshots and an `.image-diagnostics.log` file beside the requested output.
 
+## Whole-result rerun, 2026-09-06
+
+After both production fixes, the complete mapped suite was rerun from 08:12:33 to 08:16:11 UTC using one copied set of the freshly built app, UI plugin, and test executable. Concurrent builds could not replace those verification artifacts.
+
+```sh
+python3 scripts/verify-image-flicker.py --output-dir target/flicker-whole-result
+```
+
+All fourteen build/check stages succeeded. This is **not** a claim that every repository test was run. The requirement-level observations below, rather than the aggregate stage count, establish the result. All artifact paths in this table are relative to `target/flicker-whole-result/`.
+
+| Requirement / public behavior | Fresh check and actual observation |
+| --- | --- |
+| Distinct transcript and pasted images | `one-panel.log`: correct red attachment remained distinct from the chart across sixteen native captures. Every submitted frame contained 99,856 red pixels, versus zero red pixels in the preserved pre-fix reproduction. |
+| One panel must not destabilize its neighbor | `two-panels.log`: sixteen native captures passed, neighboring content remained byte-identical, and each submitted-image frame contained 99,856 red pixels. |
+| Reuse the same decoded attachment on submission | Both `.image-diagnostics.log` files contained exactly two decoder starts for the two distinct images, with no extra decode on submission and no image/layout anomaly signature. |
+| Preview images must survive repeated opening and closing | `preview-lifecycle.log`: real wheel zoom, drag pan, double-click fit and Escape passed. Four additional open/close cycles passed 32 coordinate-stable captures and decoded the chart only once. The enlarged and closed blue bars had 26,271 and 5,940 pixels respectively. |
+| Settled HTML preview must survive unrelated streaming | `streaming-image-matrix.log`: the real Panel retained one HTML preview entity across start/end, where the preserved pre-fix run created three. This verifies the actual lifecycle defect, not a native video of the original symptom. |
+| Small-panel image geometry and history reconstruction | The same matrix passed both 640×480/900×600 viewports and tall/wide PNGs, retaining source identity, decoded pixels/Arc and image-card bounds through all three streaming/reconstruction cycles. |
+| Track image failures through actual render callbacks | `cache-diagnostics.log`: injected asset eviction emitted `ready-to-pending`; invalid image bytes emitted `decode-failed` and `became-error`. The raw invalid-image fixture string was absent. |
+| Track layout oscillations without repeated idle logging | `geometry-diagnostics.log`: actual painted ABAB editor heights emitted `panel_geometry_oscillation`; eight steady redraws produced no additional occurrence. |
+| Bound diagnostic state and output | The fresh cache/geometry tests passed 128-entry eviction, 1,000-source churn bounded to 32 events per ten seconds, per-source/per-panel cooldowns, idle-gap reset, translation/subpixel filtering and unchanged-state suppression. |
+| Preserve native HTML controls | `html-controls.log`: Copy, Choose, slider, keyboard, Reset, expand/collapse, paused input, retry, scroll, Escape and source view all passed against the rebuilt app. |
+| Preserve streaming, selection and startup geometry | `streaming-neighbors.log`, `selection-neighbors.log`, and `layout-neighbors.log` passed nine streaming cases, both UTF-8 selection cases and all five startup lifecycle cases. |
+| Image pixels must survive UI reloads | `reload-pixels/evidence.txt`: both actual isolated Ctrl+R library reloads changed zero of 885,500 compared pixels and retained 5,024 colorful pixels. These reloads reuse the pinned, already-built plugin. |
+| Verification arguments and evidence safety | `fixture-arguments.log`: all eight argument tests passed, including incompatible modes and unsupported geometry. `driver-contract.log`: the new runner's help succeeded, missing output was rejected, and a nonempty evidence directory was protected. |
+| Deliver the verified behavior to the running app | After the suite, a new live Ctrl+R rebuild/reload activated UI generation 6 at 08:16:55 UTC. `live-result.json` and `live-reload.log` record the fresh activation and no rebuild/reload failure. The immediate activation window contained zero anomaly events, not proof of long-term absence. |
+| Identify the user's exact intermittent symptom | No unforced image/layout anomaly was logged in the cache and repeated-image-preview workflows. Two concrete related defects have before/after proof, but attribution of the user's exact symptom remains unconfirmed. GPU-only flicker is not excluded. |
+
 ## Requirement-to-observation map
 
 | Requirement or changed output | Concrete check | Observed result |
