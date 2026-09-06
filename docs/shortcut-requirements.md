@@ -38,7 +38,7 @@
 | Firefox previous/next/new/close remain unchanged | H compared all eight app-ID/action combinations with the original Ctrl+PageUp/PageDown/T/W argument vectors. All passed. No user Firefox windows or tabs were touched. |
 | Every advertised Super shortcut has a handler | Static audit found 42 bindings and exactly six global conflicts: H, L, Enter, Q, semicolon, apostrophe. K verified all 42 mappings on both focus paths. The six conflicts are covered by W. |
 | Tutorial key claims remain accurate | Four keymap tests and eleven shortcut tests passed, including every taught shortcut, all advertised catalog mappings, prompt editing, and session directory selection. |
-| Updated behavior reaches the user | Installed helper matches tested source. Current Desktop PID 585390 started from the verified checkout and activated UI generation 1 after the Ctrl+R-equivalent request coalesced with startup rebuild. Both managed launcher lines were installed with a backup. |
+| Updated behavior reaches the user | Installed helper, requested repo pin, and generated launcher lines were rechecked against the tested configuration. At initial delivery, Desktop PID 585390 activated UI generation 1 after the Ctrl+R-equivalent request. That PID is historical, not a claim about the current process. Both managed launcher lines were installed with a backup. Latest keyboard behavior was exercised in isolated native sessions, not on the user's compositor. |
 
 ## Concrete combined outcome
 
@@ -52,7 +52,8 @@ panel, not merely keymap registration or screenshot appearance.
 The earlier exploratory Wayland run needed manual input while diagnosing test
 keyboard/first-frame readiness. It was cancelled, its private processes were
 cleaned up, and it is **not** counted as passing evidence. W is the subsequent
-unmodified, automated run with explicit virtual-keyboard readiness timing.
+automated run with explicit virtual-keyboard readiness timing and a configurable
+build wait. Its input and state assertions were not relaxed.
 
 The active user's compositor was deliberately not queried or driven. Real
 Wayland transport and global grabs were tested on isolated Sway, while the
@@ -73,8 +74,9 @@ this shortcut task. Shared remote history was not rewritten.
 
 ## Whole-result recheck, 07:12–07:24 UTC
 
-The original passing evidence above is not a claim that the later, concurrently
-modified worktree passed. A fresh rerun produced these observations:
+This historical rerun did not pass the then-current, concurrently modified
+worktree. The main requirement map now points to the later passing rerun below.
+At 07:12–07:24, the observations were:
 
 - `target/whole-enter`: the old helper created zero panels. Each of nine new
   invocations created exactly one focused panel. Direct Enter, the forwarding
@@ -97,9 +99,9 @@ modified worktree passed. A fresh rerun produced these observations:
   retries. These are recorded failures, not replacement evidence for the
   previously passing focus, close, identity, overview, and reload checks.
 
-Every row in the requirement map remains assigned to its original concrete
-check. The new full-tree focus/close/reload checks and remaining keymap tests
-must be rerun once shared edits settle. The screenshot rerun first refused to
+Every row in the requirement map had an assigned concrete check. At that time,
+the full-tree focus/close/reload checks and remaining keymap tests still needed
+rerunning once shared edits settled. The screenshot rerun first refused to
 overwrite an existing image, which was preserved under a new name. No fresh
 rendering result is claimed for this recheck.
 
@@ -147,3 +149,13 @@ returned black images despite exit 0. Both images were read and rejected.
 Native real-session navigation rendering was visibly verified separately.
 This fixture-capture limitation does not replace or invalidate the successful
 native keyboard, focus, session-creation, close, and reload observations above.
+
+### Scope of the conclusion
+
+The six intercepted shortcuts have end-to-end behavioral evidence, and the
+navigation suite covers additional movement/overview/closing paths. The
+42-binding audit proves handler reachability, not every action's complete
+behavior. It does not establish connected-service outcomes, untouched platform
+variants, or direct operation on the user's compositor. The offline fixture
+capture problem also remains unresolved and is not described as a passing
+rendering check.
