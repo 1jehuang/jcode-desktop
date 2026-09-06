@@ -56,11 +56,23 @@ impl Panel {
     }
 
     fn zoom_image_preview(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        let previous_zoom = self.image_preview_zoom;
         self.image_preview_zoom = zoom.clamp(1.0, 4.0);
-        if self.image_preview_zoom == 1.0 {
-            self.image_preview_scroll
-                .set_offset(gpui::point(px(0.0), px(0.0)));
-        }
+        let offset = if self.image_preview_zoom == 1.0 {
+            gpui::point(px(0.0), px(0.0))
+        } else {
+            // Scale around the viewport center, not the top-left of the padded
+            // image box. Otherwise a wide diagram can move entirely below the
+            // viewport at high zoom, leaving only blank space visible.
+            let ratio = self.image_preview_zoom / previous_zoom;
+            let bounds = self.image_preview_scroll.bounds();
+            let previous = self.image_preview_scroll.offset();
+            gpui::point(
+                previous.x * ratio + bounds.size.width * ((1.0 - ratio) / 2.0),
+                previous.y * ratio + bounds.size.height * ((1.0 - ratio) / 2.0),
+            )
+        };
+        self.image_preview_scroll.set_offset(offset);
         cx.notify();
     }
 
@@ -299,6 +311,9 @@ mod tests {
             let zoomed = vcx.debug_bounds("image-preview-full").unwrap();
             assert!(zoomed.size.width > enlarged.size.width * 1.4);
             assert!(zoomed.size.height > enlarged.size.height * 1.4);
+            // GPUI rounds layout positions to device pixels.
+            assert!((zoomed.center().x - enlarged.center().x).abs() < px(1.0));
+            assert!((zoomed.center().y - enlarged.center().y).abs() < px(1.0));
             let viewport = vcx.debug_bounds("image-preview-viewport").unwrap();
             vcx.simulate_event(gpui::ScrollWheelEvent {
                 position: viewport.center(),
@@ -344,6 +359,26 @@ mod tests {
                 vcx.debug_bounds("image-preview-full").unwrap().size,
                 enlarged.size
             );
+            for _ in 0..8 {
+                let zoom_in = vcx.debug_bounds("image-preview-zoom-in").unwrap();
+                vcx.simulate_click(zoom_in.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+            }
+            assert_eq!(
+                panel.read_with(vcx, |panel, _| panel.image_preview_zoom),
+                4.0
+            );
+            let center = vcx.debug_bounds("image-preview-full").unwrap().center();
+            assert!((center.x - enlarged.center().x).abs() < px(2.0));
+            assert!((center.y - enlarged.center().y).abs() < px(2.0));
+            let fit = vcx.debug_bounds("image-preview-fit").unwrap();
+            vcx.simulate_click(fit.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            // Workspace navigation asks the panel for its focus target. An
+            // open viewer must not send that focus to the hidden composer.
+            vcx.update(|window, cx| {
+                panel.update(cx, |panel, cx| panel.focus_input(window, cx));
+            });
             vcx.simulate_keystrokes("x");
             assert_eq!(
                 panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),

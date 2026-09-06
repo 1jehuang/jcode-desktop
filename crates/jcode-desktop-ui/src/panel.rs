@@ -3207,7 +3207,9 @@ impl Panel {
     }
 
     pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
-        if let Some(terminal) = &self.terminal {
+        if self.image_preview.is_some() {
+            self.focus_handle.clone()
+        } else if let Some(terminal) = &self.terminal {
             terminal.read(cx).focus_handle(cx)
         } else if self.unfinished_work.is_some()
             || self.code_file.is_some()

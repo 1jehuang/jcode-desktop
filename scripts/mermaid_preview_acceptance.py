@@ -173,6 +173,19 @@ def verify(output, env, root):
     zoom_point, fit_point = zoom_button_points(preview, close_point)
     click(zoom_point)
     _, zoomed = capture("-zoomed", enlarged, first)
+    maximum_zoom = zoomed
+    for percent in (200, 250, 300, 350, 400):
+        previous = maximum_zoom
+        click(zoom_point)
+        # Every + click must visibly change the rendered diagram. At high
+        # zoom the viewport clips the image, so its total visible area need
+        # not grow each time. Both SVG fills must still be present and the
+        # diagram must remain larger than Fit instead of moving offscreen.
+        _, maximum_zoom = capture(
+            f"-zoom-{percent}",
+            lambda fitted, actual: enlarged(fitted, actual) and not restored(previous, actual),
+            first,
+        )
     click(fit_point)
     capture("-fit", restored, first)
     escape()
@@ -188,6 +201,7 @@ def verify(output, env, root):
     escape()
     capture("-final-closed", restored)
     print(f"Mermaid preview native acceptance passed: diagram pixels {initial.count} -> {first.count}; "
-          f"height {initial.height} -> {first.height}; + zoom pixels={zoomed.count} and Fit restores; "
+          f"height {initial.height} -> {first.height}; + zoom pixels={zoomed.count}, "
+          f"400% pixels={maximum_zoom.count} remains visible and Fit restores; "
           f"Escape and Close {close_point} restore "
           "the thumbnail; repeated opening works")

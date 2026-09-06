@@ -6,7 +6,8 @@ position and the composer draft. Escape, Close, or clicking the preview dismisse
 it and returns keyboard focus to the composer.
 
 The toolbar provides zoom out, Fit, and zoom in. Zoom ranges from the fitted view
-(100%) to 400%. Scroll horizontally or vertically to inspect zoomed content.
+(100%) to 400%. Scroll horizontally or vertically to inspect zoomed content. Zoom stays centered
+on the viewport, including at the 400% limit.
 Opening another preview resets zoom and scrolling. Mermaid previews reuse the
 rendered SVG rather than re-parsing the source or opening an external browser.
 Incomplete diagrams retain their non-interactive fallback until they render.
@@ -30,6 +31,12 @@ Incomplete diagrams retain their non-interactive fallback until they render.
 
 The pre-change binary failed the native diagram-click check with unchanged
 119,983 diagram pixels. The updated viewer produced 236,696 fitted pixels and
-350,616 visible zoomed pixels in the default 1440×1000 fixture. Fit and both
+350,108 visible zoomed pixels in the default 1440×1000 fixture. Fit and both
 explicit dismissal paths restored the expected pixel masks. Normal-layout
-acceptance also passed.
+acceptance also passed. The final centered-zoom run stayed visible through every
+50% step to 400% (883,663 visible diagram pixels) and returned to the same fitted
+and closed pixel masks.
+
+The live desktop acknowledged the Ctrl+R-equivalent request, coalesced it with
+the rebuild already in progress, and activated UI generation 1 from the rebuilt
+UI library. The transcript sessions reconnected after activation.
