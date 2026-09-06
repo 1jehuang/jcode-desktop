@@ -11,13 +11,18 @@ Focus changes animate title expansion and lift over the existing 150ms focus
 transition. The tab follows the actual rendered panel coordinates, including
 camera, width, and reorder motion, without a second position tween that could
 leave it trailing behind its panel. Borders use 50% opacity when focused and
-45% otherwise, while text and emoji stay opaque. Retargeting a moving tab is continuous. Window resizing and reduced
-motion snap to the new geometry instead. Stable panel entity IDs preserve motion
+45% otherwise, while text and emoji stay opaque. Width/height interpolation
+can be retargeted continuously. Panel attachment takes priority over animating
+position across unrelated panels. Window resizing and reduced motion snap to
+the new geometry instead. Stable panel entity IDs preserve motion
 identity across changes to the slot list. Full titles remain available on hover.
 
 There is no minimum exposed width that pushes tabs off the strip. This keeps all
 tabs in the layout, but no finite display can make an unlimited number of edges
 individually distinguishable. At extreme counts, physical pixels are the limit.
+If the active panel is completely outside the viewport during navigation, the
+strip falls back to an in-bounds stack until the panel becomes visible. This
+is not an unconditional guarantee of attachment to an offscreen panel.
 
 ## Verification
 
@@ -47,9 +52,10 @@ individually distinguishable. At extreme counts, physical pixels are the limit.
 ## Panel-attachment refinement
 
 - A rendered-window regression changes selection among three panels and pans the
-  camera through 0, 80, and 160px. On every frame the selected tab's left/right
-  bounds remain inside its visible panel, and its bottom exactly meets the
-  panel's top. This checks the actual GPUI elements, not only layout arithmetic.
+  camera through 0, 80, and 160px. At each of these sampled positions the selected
+  tab's left/right bounds remain inside its visible panel, and its bottom meets
+  the panel's top. This checks actual GPUI elements, not only layout arithmetic.
+  This is not a frame-by-frame test of vertical row transitions or reordering.
 - Additional geometry tests cover partially clipped panels and 1, 3, 12, and
   200 tabs at 40, 192, 512, and 1152px. Every sibling keeps a positive exposed
   edge while the visible active folder stays over its panel.
@@ -62,7 +68,7 @@ individually distinguishable. At extreme counts, physical pixels are the limit.
   subsequent Ctrl+R, identifies exited child processes, and removes unloaded
   temporary plugin copies after each run. Earlier repeated tests filled the
   disk with plugin copies. Only finished private-test copies were removed,
-  restoring 8.6GB of free space. No user data or build outputs were removed.
+  restoring 8.6GB of free space. No user data or canonical build outputs were removed.
 
 ## Final end-user acceptance
 
