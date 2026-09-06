@@ -70,3 +70,35 @@ The supporting Jcode push also published three pre-existing Jeremy-authored
 ancestors: `9aaa0ad8a`, `458af80d7`, and `0d6dd5252` (telemetry/concurrency changes
 and their validation notes). Those changes were not authored or modified by
 this shortcut task. Shared remote history was not rewritten.
+
+## Whole-result recheck, 07:12–07:24 UTC
+
+The original passing evidence above is not a claim that the later, concurrently
+modified worktree passed. A fresh rerun produced these observations:
+
+- `target/whole-enter`: the old helper created zero panels. Each of nine new
+  invocations created exactly one focused panel. Direct Enter, the forwarding
+  chord, and the installed helper each used `/home/jeremy/jcode-desktop`, both
+  before and after restart. Eight creations used that repository and the home
+  control used isolated HOME. Independent comparison with raw daemon
+  `ENV_SNAPSHOT` creation records matched all nine session IDs and directories,
+  with zero mismatches (`independent-verification.json`). This used the successful
+  07:12 build, not later uncompiled changes.
+- The current user pin, installed helper bytes, and three source-generated
+  managed launcher lines matched their expected values. Six helper tests and
+  five hermetic source-generated launcher tests passed again.
+- The initial shortcut-filtered UI run passed ten tests, including all 42 Super
+  bindings on both focus paths. Later keymap/closing reruns could not finish
+  compiling the concurrently edited tree.
+- The fresh Xvfb navigation and Wayland global-grab runs did **not** pass.
+  Startup/reload compilation was blocked in turn by incomplete remote-module
+  integration, remote-test lifetimes, diff text measurement, missing pending
+  modules/tests, and pending-method visibility. Cargo contention also delayed
+  retries. These are recorded failures, not replacement evidence for the
+  previously passing focus, close, identity, overview, and reload checks.
+
+Every row in the requirement map remains assigned to its original concrete
+check. The new full-tree focus/close/reload checks and remaining keymap tests
+must be rerun once shared edits settle. The screenshot rerun first refused to
+overwrite an existing image, which was preserved under a new name. No fresh
+rendering result is claimed for this recheck.
