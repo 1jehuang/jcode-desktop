@@ -30,6 +30,9 @@ mod activity;
 mod image_preview;
 #[path = "panel_prompt.rs"]
 mod prompt;
+#[path = "panel_startup.rs"]
+mod startup;
+pub use startup::StartupLayout;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
 
@@ -158,6 +161,8 @@ pub struct PanelSnapshot {
     pub scroll_y: f32,
     pub stick_to_bottom: bool,
     pub terminal_resource_id: Option<u64>,
+    #[serde(default)]
+    pub startup_layout: Option<StartupLayout>,
 }
 
 pub struct Panel {
@@ -188,6 +193,7 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
+    startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
@@ -539,7 +545,7 @@ impl Panel {
         let display_title = title
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| short_id(&session_id));
-        let transcript_list = ListState::new(0, ListAlignment::Bottom, px(600.));
+        let transcript_list = ListState::new(0, ListAlignment::Top, px(600.));
         let transcript_selection = cx.new(TextSelection::new);
         cx.observe(&transcript_selection, |_, _, cx| cx.notify())
             .detach();
@@ -549,6 +555,7 @@ impl Panel {
         let panel_entity = cx.entity().downgrade();
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
+                panel.release_startup_preview();
                 let stick_to_bottom = event.is_following_tail;
                 if panel.stick_to_bottom != stick_to_bottom {
                     panel.stick_to_bottom = stick_to_bottom;
@@ -591,6 +598,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
+            startup_layout: None,
             offscreen_prompt: None,
             pinned_todo_expanded: false,
             transcript_selection,
@@ -619,6 +627,7 @@ impl Panel {
     }
 
     fn glide_transcript_wheel(&mut self, pixels: f32, cx: &mut Context<Self>) {
+        self.release_startup_preview();
         // `ListState::scroll_by` is a programmatic movement and therefore does
         // not invoke the list's user-scroll callback. Release follow mode here
         // before the first animated frame, or render would pin every step back
@@ -635,6 +644,7 @@ impl Panel {
     }
 
     fn scroll_transcript_direct(&mut self, delta_y: f32, cx: &mut Context<Self>) {
+        self.release_startup_preview();
         if delta_y > 0.0 && self.stick_to_bottom {
             self.stick_to_bottom = false;
         }
@@ -1725,6 +1735,10 @@ impl Panel {
             scroll_x: f32::from(offset.x),
             scroll_y: f32::from(offset.y),
             stick_to_bottom: self.stick_to_bottom,
+            startup_layout: self
+                .startup_layout
+                .clone()
+                .filter(|layout| layout.committed),
             terminal_resource_id: self
                 .terminal
                 .as_ref()
@@ -1736,6 +1750,7 @@ impl Panel {
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
         self.stick_to_bottom = snapshot.stick_to_bottom;
+        self.startup_layout = snapshot.startup_layout;
         self.pending_history_scroll =
             (!snapshot.stick_to_bottom).then_some((snapshot.scroll_x, snapshot.scroll_y));
         self.transcript_list
@@ -1774,6 +1789,9 @@ impl Panel {
                                     && let Some(title) = first_prompt_title(&content)
                                 {
                                     this.title = title.into();
+                                }
+                                if let Some(layout) = &mut this.startup_layout {
+                                    layout.committed = true;
                                 }
                                 let index = this.items.len();
                                 this.items.push(Item::User(content));
@@ -1897,6 +1915,7 @@ impl Panel {
                         .push(Item::Assistant("Cancellation requested.".into()));
                 }
                 "/cls" | "/clear-view" => {
+                    self.startup_layout = None;
                     self.items.clear();
                     self.streaming_text.clear();
                     self.streaming_reasoning.clear();
@@ -2240,6 +2259,17 @@ impl Panel {
             return;
         }
         self.history_loaded = true;
+        // An established session can paint an empty placeholder before its
+        // history arrives. That must not adopt a new conversation's layout.
+        if !messages.is_empty()
+            && self.pending_users.is_empty()
+            && self
+                .startup_layout
+                .as_ref()
+                .is_some_and(|layout| !layout.committed)
+        {
+            self.startup_layout = None;
+        }
         let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
         for image in images {
@@ -3466,9 +3496,21 @@ impl Render for Panel {
         let row_count = rows.len();
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
-        let fresh_session = self.items.is_empty() && row_count == 0 && !self.activity_active();
-        self.input
-            .update(cx, |input, cx| input.set_spacious(fresh_session, cx));
+        let fresh_session = self.items.is_empty()
+            && row_count == 0
+            && !self.activity_active()
+            && !self
+                .startup_layout
+                .as_ref()
+                .is_some_and(|layout| layout.committed);
+        if !fresh_session && !self.items.is_empty() {
+            if let Some(layout) = &mut self.startup_layout {
+                layout.committed = true;
+            }
+        }
+        self.input.update(cx, |input, cx| {
+            input.set_spacious(fresh_session || self.startup_layout.is_some(), cx)
+        });
         if row_count != self.transcript_row_count {
             if row_count > self.transcript_row_count {
                 self.transcript_list.splice(
@@ -3498,10 +3540,15 @@ impl Render for Panel {
                 window.request_animation_frame();
             }
         }
-        if self.stick_to_bottom {
+        let startup_preview = self.startup_prompt_preview();
+        if startup_preview {
+            self.transcript_list.scroll_to(gpui::ListOffset::default());
+        } else if self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
 
+        let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
+        let body_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let panel = cx.entity();
         let wheel_panel = panel.clone();
         let list_rows = rows.clone();
@@ -3530,7 +3577,12 @@ impl Render for Panel {
                                 .text_color(Theme::global().TEXT)
                                 .child("What would you like to work on?"),
                         )
-                        .child(self.input.clone()),
+                        .child(
+                            div()
+                                .relative()
+                                .child(self.input.clone())
+                                .child(startup::input_marker(input_bounds.clone())),
+                        ),
                 )
                 .into_any_element()
         } else if row_count == 0 {
@@ -3577,6 +3629,46 @@ impl Render for Panel {
                     .size_full(),
                 )
                 .into_any_element()
+        };
+
+        // Keep the same spacious editor at its measured welcome position.
+        // The transcript spends the blank space above it before the editor
+        // moves down. Blank space belongs to layout, never transcript rows.
+        let transcript = if !fresh_session {
+            if let Some(layout) = &self.startup_layout {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(layout.messages_height))
+                            .min_h_0()
+                            .flex_shrink_1()
+                            .child(transcript),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_none()
+                            .px_4()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(760.))
+                                    .relative()
+                                    .child(self.input.clone())
+                                    .child(startup::input_marker(input_bounds.clone())),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
+                transcript
+            }
+        } else {
+            transcript
         };
 
         let status_line = self.status_line();
@@ -3678,6 +3770,12 @@ impl Render for Panel {
                                         if y == 0.0 {
                                             return;
                                         }
+                                        let panel = wheel_panel.read(cx);
+                                        if panel.startup_layout.is_some()
+                                            && !panel.transcript_list.viewport_bounds().contains(&event.position)
+                                        {
+                                            return;
+                                        }
                                         let precise = event.delta.precise();
                                         let _ = wheel_panel.update(cx, |panel, cx| {
                                             if precise {
@@ -3695,6 +3793,7 @@ impl Render for Panel {
                         .size_full(),
                     )
                     .child(transcript)
+                    .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(
                         prompt_row.map(|(index, _)| index),
                         prompt_visible,
@@ -3711,7 +3810,16 @@ impl Render for Panel {
                                 .id("jump-to-latest")
                                 .debug_selector(|| "jump-to-latest".into())
                                 .absolute()
-                                .bottom_2()
+                                .map(|el| {
+                                    if self.startup_layout.is_some() {
+                                        let height = f32::from(
+                                            self.transcript_list.viewport_bounds().size.height,
+                                        );
+                                        el.top(px((height - 32.).max(0.)))
+                                    } else {
+                                        el.bottom_2()
+                                    }
+                                })
                                 .right_3()
                                 .px_2p5()
                                 .py_1()
@@ -3728,6 +3836,7 @@ impl Render for Panel {
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
+                                        this.release_startup_preview();
                                         this.stick_to_bottom = true;
                                         this.transcript_list.scroll_to_end();
                                         cx.notify();
@@ -3788,7 +3897,7 @@ impl Render for Panel {
                     ),
             )
             // Input
-            .when(!fresh_session, |el| {
+            .when(!fresh_session && self.startup_layout.is_none(), |el| {
                 el.child(div().px_2().py_2().child(self.input.clone()))
             })
             .on_mouse_down(
@@ -3798,6 +3907,7 @@ impl Render for Panel {
                     cx.notify();
                 }),
             )
+            .child(self.startup_layout_observer(fresh_session, input_bounds, body_bounds, cx))
             .children(model_picker)
             .children(self.render_image_preview(cx))
             .into_any_element()
@@ -4742,6 +4852,9 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
 #[cfg(test)]
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
+#[cfg(test)]
+#[path = "panel_startup_lifecycle_tests.rs"]
+mod startup_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

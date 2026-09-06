@@ -468,6 +468,9 @@ impl PromptInput {
         self.attachment_notice = None;
         self.attachment_preview = None;
         self.content = "".into();
+        // The cleared editor is one line immediately. Waiting for its next
+        // paint leaves a tall, empty composer after a wrapped prompt submits.
+        self.visual_line_count = 1;
         self.selected_range = 0..0;
         self.marked_range = None;
         self.history.push(content.clone());
@@ -1637,6 +1640,22 @@ mod tests {
         window
             .update(cx, |input, _, _| assert!(input.content.is_empty()))
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn submitting_wrapped_prompt_resets_height_before_the_next_paint(cx: &mut TestAppContext) {
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            PromptInput::new(cx, "test", |_, _, _, _| {})
+        });
+        vcx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.content = "A wrapped prompt occupying several visual lines".into();
+                input.visual_line_count = 12;
+                input.submit(&Submit, window, cx);
+                assert!(input.content.is_empty());
+                assert_eq!(input.visual_line_count, 1, "cleared editor retained old wrapped height");
+            });
+        });
     }
 
     #[gpui::test]

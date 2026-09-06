@@ -40,7 +40,7 @@ fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
     vcx.run_until_parked();
     assert_eq!(vcx.debug_bounds("prompt-input"), Some(input));
 
-    // A real keyboard submission moves the same focused editor to the bottom.
+    // A real keyboard submission preserves the same editor bounds and focus.
     vcx.simulate_keystrokes("enter");
     assert!(matches!(
         commands.recv_timeout(std::time::Duration::from_millis(100)),
@@ -48,11 +48,15 @@ fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
     ));
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("fresh-session").is_none());
-    let compact = vcx
-        .debug_bounds("prompt-input")
-        .expect("compact input paints");
-    assert!(compact.size.height < input.size.height);
-    assert!(compact.top() > input.bottom());
+    let submitted = vcx.debug_bounds("prompt-input").expect("input paints");
+    assert_eq!(
+        submitted, input,
+        "submission must not move or shrink the editor"
+    );
+    let row = vcx.debug_bounds("transcript-row-0").expect("prompt paints");
+    let transcript = vcx.debug_bounds("transcript").unwrap();
+    assert!((f32::from(row.top() - transcript.top())).abs() < 1.);
+    assert!(row.bottom() < submitted.top());
     vcx.simulate_input("Next message");
     panel.read_with(vcx, |panel, cx| {
         assert_eq!(panel.input.read(cx).content.as_ref(), "Next message");
@@ -83,4 +87,104 @@ fn fresh_session_slash_palette_stays_above_the_larger_composer(cx: &mut gpui::Te
         .expect("palette paints");
     assert!(palette.bottom() <= input.top());
     assert!(vcx.debug_bounds("fresh-session").is_some());
+}
+
+#[gpui::test]
+fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAppContext) {
+    for (width, height) in [(800., 600.), (1440., 1000.), (640., 480.)] {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "startup-growth".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
+        vcx.run_until_parked();
+        let initial = vcx.debug_bounds("prompt-input").unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::User("FIRST PROMPT".into()));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(vcx.debug_bounds("prompt-input"), Some(initial));
+        panel.update(vcx, |panel, cx| {
+            panel.streaming_text = "Small response".into();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(vcx.debug_bounds("prompt-input"), Some(initial));
+        let mut previous = initial.top();
+        for paragraphs in [10, 20, 40] {
+            panel.update(vcx, |panel, cx| {
+                panel.streaming_text = (0..paragraphs)
+                    .map(|i| format!("Response paragraph {i}\n\n"))
+                    .collect();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let input = vcx.debug_bounds("prompt-input").unwrap();
+            assert!(
+                input.top() >= previous,
+                "growing response pulled input upward"
+            );
+            assert!(input.bottom() <= px(height));
+            previous = input.top();
+        }
+        let grown = vcx.debug_bounds("prompt-input").unwrap();
+        assert!(grown.top() > initial.top());
+        let meta = vcx.debug_bounds("panel-meta").unwrap();
+        assert!((f32::from(grown.bottom() - meta.top())).abs() < 1.);
+        assert!(
+            panel
+                .read_with(vcx, |panel, _| panel.transcript_list.is_scrolled_to_end())
+                .unwrap()
+        );
+    }
+}
+
+#[gpui::test]
+fn fresh_session_tall_prompt_starts_at_top_then_follows_response(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "startup-long".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    panel.update(vcx, |panel, cx| {
+        panel.items.push(Item::User(format!(
+            "FIRST LINE\n\n{}LAST LINE",
+            "middle line\n\n".repeat(100)
+        )));
+        panel.transcript_list.scroll_to_end(); // submit normally requests the tail
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    panel.read_with(vcx, |panel, _| {
+        let offset = panel.transcript_list.logical_scroll_top();
+        assert_eq!(offset.item_ix, 0);
+        assert_eq!(offset.offset_in_item, px(0.));
+    });
+    let row = vcx.debug_bounds("transcript-row-0").unwrap();
+    let transcript = vcx.debug_bounds("transcript").unwrap();
+    assert!((f32::from(row.top() - transcript.top())).abs() < 1.);
+    assert!(row.bottom() > transcript.bottom());
+    panel.update(vcx, |panel, cx| {
+        panel.streaming_text = "RESPONSE ARRIVED".into();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(
+        panel
+            .read_with(vcx, |panel, _| panel.transcript_list.is_scrolled_to_end())
+            .unwrap()
+    );
+    assert!(vcx.debug_bounds("transcript-row-1").is_some());
 }
