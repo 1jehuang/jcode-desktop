@@ -26,6 +26,22 @@ fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
+fn settings_machine_entry_opens_the_connectable_picker(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.push_test_panel("existing", cx);
+        w.sidebar_view = SidebarView::Settings;
+        w
+    });
+    click(vcx, "settings-machines");
+    assert!(vcx.debug_bounds("machines-picker").is_some());
+    assert!(vcx.debug_bounds("machine-host-input").is_some());
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.sidebar_view, SidebarView::Machines)
+    });
+}
+
+#[gpui::test]
 fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = harness::spawn_recording();
@@ -77,6 +93,34 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
 }
 
 #[gpui::test]
+fn explicit_folder_and_help_stay_local_with_a_remote_default(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("desktop".into());
+        w.push_test_panel("existing", cx);
+        w
+    });
+    workspace.update(vcx, |w, cx| {
+        w.folder_picker_dir = Some(PathBuf::from("/local/project"));
+        w.choose_browsed_folder(cx);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/local/project")
+    );
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.new_help_session(&NewHelpSession, window, cx));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { request_id: Some(id), .. }) if id.starts_with("startup://draft/help/"))
+    );
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"))
+    });
+}
+
+#[gpui::test]
 fn machines_input_validates_and_connects_without_changing_default(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = harness::spawn_recording();
@@ -100,13 +144,20 @@ fn machines_input_validates_and_connects_without_changing_default(cx: &mut gpui:
         assert_eq!(w.remotes.hosts, ["user@desktop"]);
         assert!(w.remotes.default_host.is_none());
     });
+    vcx.simulate_input("button@desktop");
+    click(vcx, "machine-connect-input");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, .. }) if host == "button@desktop")
+    );
     workspace.update(vcx, |w, cx| {
         w.connect_machine(Some("-oProxyCommand=bad".into()), cx)
     });
     vcx.run_until_parked();
     assert!(commands.try_recv().is_err());
     assert!(vcx.debug_bounds("machine-error").is_some());
-    // Escape restores a mounted editor, rather than stranding keyboard focus.
+    // Escape belongs to the host editor. The preceding button click may move
+    // focus, so explicitly return to the editor before exercising its handler.
+    click(vcx, "machine-host-input");
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("machines-picker").is_none());
@@ -222,9 +273,21 @@ fn remote_identity_survives_snapshot_and_local_files_are_not_shown(cx: &mut gpui
     );
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("panel-remote-host").is_some());
-    workspace.read_with(vcx, |w, cx| assert!(w.slots[w.active].panel.read(cx).session_id.starts_with("ssh://")));
+    workspace.read_with(vcx, |w, cx| {
+        assert!(
+            w.slots[w.active]
+                .panel
+                .read(cx)
+                .session_id
+                .starts_with("ssh://")
+        )
+    });
     assert!(vcx.debug_bounds("remote-file-browser-notice").is_some());
-    assert!(vcx.debug_bounds("sidebar-file-list").is_none(), "unexpected local file bounds: {:?}", vcx.debug_bounds("sidebar-file-list"));
+    assert!(
+        vcx.debug_bounds("sidebar-file-list").is_none(),
+        "unexpected local file bounds: {:?}",
+        vcx.debug_bounds("sidebar-file-list")
+    );
     vcx.update(|window, cx| {
         workspace.update(cx, |w, cx| {
             let bytes = w.snapshot(window, cx).unwrap().encode().unwrap();

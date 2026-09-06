@@ -62,13 +62,13 @@ than presented as live SSH evidence.
 | Requirement or changed output | Concrete check | Observed result |
 | --- | --- | --- |
 | Discoverable Machines entry and one-click remote Connect | Native `accept-machines.py`; W `machines_picker_connect_default_shortcuts_and_local_override` | Picker opened from the sidebar. Selecting a host emitted a remote create with that host and no local working directory. |
-| Settings entry opens the same usable picker | W `settings_machine_entry_opens_the_connectable_picker` | Added for this audit; result recorded below with the final mapped suite. |
-| SSH alias or `user@hostname`, Enter and Connect via SSH button | Native `accept-machines.py`; W `machines_input_validates_and_connects_without_changing_default` | Real native typing plus Enter persisted `builder@lab`. GPUI validates mouse refocus, Enter, invalid-host feedback and unchanged default. Added separate button activation assertion for this audit. |
+| Settings entry opens the same usable picker | W `settings_machine_entry_opens_the_connectable_picker` | Passed: clicking Settings → Machines mounted the picker and usable host input. |
+| SSH alias or `user@hostname`, Enter and Connect via SSH button | Native `accept-machines.py`; W `machines_input_validates_and_connects_without_changing_default` | Real native typing plus Enter persisted `builder@lab`. GPUI validates mouse refocus, Enter, invalid-host feedback and unchanged default. The separate Connect via SSH button assertion also passed and emitted the typed host. |
 | Reuse SSH aliases and remember recent targets | D `discovers_aliases_and_bounded_recursive_includes_without_commands`; C `remote_preferences_default_local_and_normalize_safe_unique_targets`; native custom-host report | Aliases from included files are found without executing commands. Safe unique recent hosts are retained and custom host entry appears in saved preferences. |
 | Set default affects future generic and pinned panels, not current sessions | W `machines_picker_connect_default_shortcuts_and_local_override` | Set default emitted no create and left the existing panel unchanged. Both Super+N and Ctrl+Alt+Enter emitted remote creates without forwarding a pinned local path. |
 | Default persists across restart and can return to this computer | Native `accept-machines.py`; C `remote_preferences_persist_shared_and_standalone_and_switch_back_local` | Native restart restored workstation as default. Switching to local persisted an empty-string override. Both supported TOML layouts round-tripped. |
 | One-off local Connect does not overwrite a remote default | W `machines_picker_connect_default_shortcuts_and_local_override` | Local Connect emitted a local create while the saved/default target remained remote. |
-| Explicit folder and help actions stay local | W `explicit_folder_and_help_stay_local_with_a_remote_default` | Added explicit command assertions for this audit; result recorded below with the final mapped suite. Terminal creation remains the existing local `Panel::new_terminal` path, verified by source inspection rather than claimed as a new live SSH terminal test. |
+| Explicit folder and help actions stay local | W `explicit_folder_and_help_stay_local_with_a_remote_default` | Passed: choosing a local folder emitted a local create with that directory, and Help emitted a local help-draft create while preserving the remote default. Terminal creation remains the existing local `Panel::new_terminal` path, verified by source inspection rather than claimed as a new live SSH terminal test. |
 | Remote startup works independently of local readiness and preserves draft | W `remote_startup_is_independent_of_local_runtime_and_promotes_draft` | Remote create occurred before local Connected. Local readiness did not duplicate it. The existing typed draft was sent to the promoted remote ID. |
 | Connection status/error and explicit retry remain meaningful | W `remote_failure_survives_local_status_and_startup_retry_is_explicit`; H `remote_create_failure_is_visible_and_never_retries_a_startup_draft` | Local status did not overwrite the SSH error. Failure did not consume/retry the draft. Clicking Retry issued one correlated request and hid Retry while in flight. |
 | SSH identities and badge survive restoration without confusing local sessions | W `remote_identity_survives_snapshot_and_local_files_are_not_shown`; `harness::remote::tests::{remote_ids_round_trip_without_collisions,malformed_remote_ids_never_fall_back_to_local}` | Namespaced IDs survived snapshots and decoding. Malformed remote IDs were rejected, never treated as local. Real native SSH badges were visually checked in restored-default.png. |
@@ -115,3 +115,17 @@ actual application, SSH transport and native runtime. It does not establish
 connectivity to the user's unavailable external `desktop` host. SSH prerequisites
 and the distinction between new remote session panels and local terminal/file
 browsing remain documented in the picker and README.
+
+
+Final mapped regression run at 08:04 UTC: `CARGO_BUILD_JOBS=1 cargo test
+-p jcode-desktop-ui --lib remote -- --test-threads=1` **passed all 31 tests**.
+The named Settings, Connect-button, and explicit local-folder/help checks above
+are included in `target/remote-mapped-tests.log`. An intermediate expanded input
+test reached its new button assertion successfully but then tested the editor's
+Escape handler after focus had moved to a button. Explicitly refocusing the host
+editor before the editor-specific Escape check corrected the test setup. Earlier
+attempts waited for the shared build lock or received SIGTERM under host memory
+pressure. The final ordinary Cargo test command completed successfully.
+
+Only tests, acceptance scripts and this evidence document changed during this
+audit. The feature itself remains the previously built and hot-reloaded version.
