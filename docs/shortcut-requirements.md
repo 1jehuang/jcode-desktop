@@ -286,3 +286,21 @@ in `~/.jcode/scratch/shortcut-activation/` contain `daemon-activation.json`,
 comparisons without publishing session contents in this repository. Artifact
 hashes establish provenance because development build metadata can retain an
 older Git hash.
+
+## Post-deployment public-interface rerun, 08:56–08:57 UTC
+
+`target/shortcuts-public-recheck-0856` reran the complete extended native
+workflow using the exact deployed immutable runtime. It passed with four real
+sessions and one real Ctrl+R rebuild/reload. Both generations exercised native
+focus (including held modifiers and edges), row movement, overview, widths,
+home-session creation, Gmail/Todoist opening and reuse without credentials,
+real terminal creation, unsaved-parent fork persistence, and selected-panel
+closing. Every original session reattached before subsequent actions. Native
+Quit exited successfully. Both saved fork children independently matched their
+recorded parent identity and working directory. The final screenshot was read
+and showed rendered real panels with the selected composer. The three mapping,
+attachment-oracle, and invalid-runtime-path regression tests also passed.
+
+This is an additional real app/SDK/daemon acceptance run, not a substitution of
+recording-bridge tests for native behavior. Previously documented recording-host
+boundaries for help/provider requests and connected external services remain.
