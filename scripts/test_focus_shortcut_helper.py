@@ -60,8 +60,9 @@ class FocusShortcutHelperTests(unittest.TestCase):
         self.assertEqual(self.route({'app_id': 'jcode-desktop'}, 'new'),
                          ['-M', 'ctrl', '-M', 'alt', '-k', 'Return', '-m', 'alt', '-m', 'ctrl'])
 
-    def test_desktop_close_remains_unchanged(self):
-        self.assertEqual(self.route({'app_id': 'jcode-desktop'}, 'close'), [])
+    def test_desktop_close_uses_panel_alias_not_prompt_delete_word(self):
+        self.assertEqual(self.route({'app_id': 'jcode-desktop'}, 'close'),
+                         ['-M', 'ctrl', '-M', 'shift', '-k', 'w', '-m', 'shift', '-m', 'ctrl'])
 
     def test_invalid_action_fails_before_query_or_input(self):
         result = subprocess.run(['bash', str(HELPER), 'invalid'], env={

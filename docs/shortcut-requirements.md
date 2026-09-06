@@ -1,0 +1,72 @@
+# Shortcut requirements and observed outcomes, 2026-09-06
+
+## Acceptance environments
+
+- **W:** `scripts/accept-wayland-shortcuts.py`, evidence in
+  `target/all-global-keys`. Private headless Sway, actual global Super-key
+  bindings, actual installed helper, actual `wtype`, native Wayland Desktop,
+  real SDK daemon, and an actual Ctrl+R rebuild/reload. The only compatibility
+  adapter translates the existing focused-window CLI query into real private
+  Sway IPC. No keyboard transport is mocked. No `niri` process is invoked.
+- **X:** `target/global-focus-final`, 88 private-Xvfb navigation checkpoints.
+- **K:** `all_super_shortcuts_have_handlers`, all 42 Linux Super bindings checked
+  against registered actions with workspace-root and composer focus after
+  rebinding. 84 binding/handler checks passed. This checks reachability, not
+  Gmail/Todoist/provider service functionality.
+- **H:** six helper-routing tests passed, including both Firefox app IDs, all
+  four original Firefox commands, unrelated/missing focus, and invalid arguments.
+- **L:** Jcode's hermetic managed-launcher tests and exact source-rendered shell
+  commands. The generated commands are also used as real global bindings in W.
+
+## Requirement-to-evidence map
+
+| Requirement / changed public output | Concrete check and observed result |
+| --- | --- |
+| Super+H focuses left | W baseline stayed at slot 1. Fixed global H selected slot 0 with keyboard slot 0, before and after reload. |
+| Super+L focuses right | W baseline stayed at slot 1. Fixed global L advanced to slots 1 then 2, with matching keyboard focus, before and after reload. |
+| One keypress means one hop; edges do not wrap | W checked both boundary no-ops, reversals, and unchanged session order. Super remained held for 400 ms while the helper forwarded the key. X additionally checked consecutive movement with Super held. |
+| Focus survives close, overview, empty strips, and reload | W closed a panel then global H reached a live composer. X checked overview entry/exit and reload, empty-strip transitions, and rapid close/navigation. All 88 checkpoints passed. |
+| Stable native Desktop identity for helper routing | W made 27 real focused-window queries. Every query returned app_id `jcode-desktop`, including after UI reload. X checked native WM_CLASS in both generations. |
+| Super+Enter creates one panel in the requested repository | W baseline created none. Fixed global Enter changed 3 panels to 4, selected the new slot 2, and daemon creation recorded `/home/jeremy/jcode-desktop`. |
+| Ctrl+Alt+Enter forwards to the same pinned action | Actual installed helper emitted this chord through real wtype in W. Direct native alias tests and before/after restart cwd checks also passed in `target/enter-outcome`. |
+| Super+Q closes the focused panel, not Desktop | W baseline closed none. Fixed global Q changed 4 panels to 3, removed precisely the selected session from the visible panel list, and focused a surviving composer. |
+| Closing the last panel must leave shortcuts usable | W closed all remaining panels with global Q, observed zero panels and root focus, then global Enter opened one focused panel in the requested repo. The app stayed alive. |
+| Ctrl+Shift+W must not become Ctrl+W word deletion | Helper H asserts the distinct Shift modifier. W exercised actual Ctrl+Shift+W delivery and panel dismissal. Existing prompt-editing/keymap regressions passed unchanged. |
+| Super+; creates a pinned panel rather than a terminal window | W executed Jcode's exact generated managed command behind a global semicolon binding. Panel count increased by one, new composer focused, daemon cwd was `/home/jeremy/jcode-desktop`. |
+| Super+' creates a home panel rather than a terminal window | W executed the exact generated managed command behind a global apostrophe binding. Panel count increased by one, new composer focused, daemon cwd equaled the isolated HOME. |
+| Other app launcher and self-dev behavior stays unchanged | L executed original fallback commands against recording stubs for non-Desktop, absent/failed focus, modified chords, and self-dev variants. All passed. Only the two regular user bindings were changed in the local config. |
+| Firefox previous/next/new/close remain unchanged | H compared all eight app-ID/action combinations with the original Ctrl+PageUp/PageDown/T/W argument vectors. All passed. No user Firefox windows or tabs were touched. |
+| Every advertised Super shortcut has a handler | Static audit found 42 bindings and exactly six global conflicts: H, L, Enter, Q, semicolon, apostrophe. K verified all 42 mappings on both focus paths. The six conflicts are covered by W. |
+| Tutorial key claims remain accurate | Three keymap tests and nine shortcut tests passed, including every taught shortcut, all advertised catalog mappings, prompt editing, and session directory selection. |
+| Updated behavior reaches the user | Installed helper matches tested source. Current Desktop PID 585390 started from the verified checkout and activated UI generation 1 after the Ctrl+R-equivalent request coalesced with startup rebuild. Both managed launcher lines were installed with a backup. |
+
+## Concrete combined outcome
+
+W passed **25 state checkpoints and 27 real focus queries**. The old helper
+failed all four advertised global actions in the same native app: H/L left the
+middle selected, Enter added nothing, and Q closed nothing. The fixed helper
+passed all four. Both additional managed launcher commands passed. The full run
+also verified the exact creation directories and recovery after closing the last
+panel, not merely keymap registration or screenshot appearance.
+
+The earlier exploratory Wayland run needed manual input while diagnosing test
+keyboard/first-frame readiness. It was cancelled, its private processes were
+cleaned up, and it is **not** counted as passing evidence. W is the subsequent
+unmodified, automated run with explicit virtual-keyboard readiness timing.
+
+The active user's compositor was deliberately not queried or driven. Real
+Wayland transport and global grabs were tested on isolated Sway, while the
+host-specific focused-window query was translated. Optional connected services
+were not invoked by the full keymap reachability audit.
+
+## Cross-repository delivery
+
+The Jcode managed-launcher fix is commit `82a93e6fb819869d2640df8983e4b50aaf3f83ca`.
+Normal startup of the existing CLI does not regenerate an already-managed block
+when tracking version is 1, which is the current local setting. A future explicit
+hotkey reconfiguration should use a CLI rebuilt with this commit.
+
+The supporting Jcode push also published three pre-existing Jeremy-authored
+ancestors: `9aaa0ad8a`, `458af80d7`, and `0d6dd5252` (telemetry/concurrency changes
+and their validation notes). Those changes were not authored or modified by
+this shortcut task. Shared remote history was not rewritten.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Companion for global Super+H/L/Enter Firefox bindings. A compositor binding
+# Companion for global Super+H/L/Enter/Q Firefox bindings. A compositor binding
 # consumes the original key even when this helper chooses to do nothing.
 # Install at the path already referenced by those bindings, not as a second
 # set of bindings. See docs/global-focus-shortcuts.md.
@@ -22,6 +22,7 @@ case "$app_id" in
         case "$1" in
             previous|next) ;;
             new) exec wtype -M ctrl -M alt -k Return -m alt -m ctrl ;;
+            close) exec wtype -M ctrl -M shift -k w -m shift -m ctrl ;;
             *) exit 0 ;;
         esac
         ;;

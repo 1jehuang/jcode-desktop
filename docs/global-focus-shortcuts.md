@@ -23,9 +23,10 @@ fixed it. The final three-panel offline render passed and was inspected at
 For `jcode-desktop`, `previous` and `next` send Ctrl+PageUp and Ctrl+PageDown,
 which are existing Desktop focus bindings. `new` forwards Super+Enter as
 Ctrl+Alt+Enter. Both Enter shortcuts share Super+;'s `pinned_working_dir`, falling
-back to home only if it is unset. It never re-emits a globally intercepted
-Super chord. Firefox's four actions, Desktop close, and unrelated apps remain
-unchanged.
+back to home only if it is unset. `close` forwards Super+Q as Ctrl+Shift+W,
+which dismisses the focused panel without using Ctrl+W (the composer's
+DeleteWordBack key). It never re-emits a globally intercepted Super chord.
+Firefox's four actions and unrelated apps remain unchanged.
 
 On hosts with this Firefox helper configuration, back up the existing helper
 and install this script at the path already referenced by the global bindings.
@@ -43,8 +44,8 @@ without this helper.
   helper failed both directions: no keyboard event was emitted.
 - All six helper tests passed against the repository script. They cover both
   Desktop directions and pinned Enter, all eight Firefox app-ID/action
-  combinations, missing focus, unrelated apps, invalid arguments, and unchanged
-  Desktop close behavior. The compositor and virtual keyboard
+  combinations, missing focus, unrelated apps, invalid arguments, and the safe
+  Desktop close alias. The compositor and virtual keyboard
   were PATH stubs. No real compositor queries or user-window input were used.
 - `cargo build -p jcode-desktop -p jcode-desktop-ui` passed.
 - `python3 -m unittest discover -s scripts -p 'test_accept_navigation.py'`

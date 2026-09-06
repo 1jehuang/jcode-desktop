@@ -92,6 +92,9 @@ pub fn bind_workspace_keys(cx: &mut App) {
         // Cmd/Super+Q closes the focused panel on every platform. Quitting the
         // app lives on Cmd+Shift+Q so the common chord does the common thing.
         KeyBinding::new("super-q", ClosePanel, None),
+        // Global shortcut helpers must not forward Ctrl+W: the composer uses
+        // it to delete a word. Keep panel dismissal on a distinct alias.
+        KeyBinding::new("ctrl-shift-w", ClosePanel, None),
         // niri: Alt+Tab is focus-window-previous, Mod+Tab is the overview.
         KeyBinding::new("super-tab", FocusPrevious, None),
         KeyBinding::new("ctrl-tab", FocusRight, None),

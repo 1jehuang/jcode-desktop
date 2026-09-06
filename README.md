@@ -12,6 +12,8 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 - **Super+;** opens a session in your fixed most-used directory.
 - **Super+'** opens a session in your home directory.
 - **Super+T** opens a terminal panel.
+- **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
+  is its non-Super alias. Ctrl+W remains word deletion in the composer.
 
 Use Cmd instead of Super on macOS. The most-used directory is chosen once
 from session history and saved as `pinned_working_dir` in `[desktop.workspace]`.
@@ -27,6 +29,10 @@ pinned_working_dir = "/path/to/your/project"
 Global Firefox bindings can consume Super+Enter before Desktop receives it.
 See [global shortcut compatibility](docs/global-focus-shortcuts.md) for the
 helper that preserves Firefox behavior and forwards the chord to Desktop.
+The managed Super+; and Super+' launchers also route into Desktop when it is
+focused and retain their terminal-launch behavior in other applications.
+See the [shortcut requirement checks](docs/shortcut-requirements.md) for the
+native Wayland workflow and all 42 Super-binding registration checks.
 
 Native shortcut acceptance (Linux, after building Desktop):
 `python3 scripts/accept-shortcuts.py target/shortcuts-acceptance`.
