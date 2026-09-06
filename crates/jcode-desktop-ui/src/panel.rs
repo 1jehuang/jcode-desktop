@@ -26,6 +26,8 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 
 #[path = "panel_activity.rs"]
 mod activity;
+#[path = "panel_prompt.rs"]
+mod prompt;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
 
@@ -182,6 +184,7 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
+    offscreen_prompt: Option<usize>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
     /// Remaining mouse-wheel travel. Precise touchpad input already carries
@@ -572,6 +575,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
+            offscreen_prompt: None,
             pinned_todo_expanded: false,
             transcript_selection,
             transcript_wheel_glide: WheelGlide::default(),
@@ -3416,11 +3420,23 @@ impl Render for Panel {
         let pinned_todo = self
             .latest_todo_payload()
             .filter(|payload| !payload.todos.is_empty());
-        let latest_prompt = self.items.iter().rev().find_map(|item| match item {
-            Item::User(prompt) if !prompt.trim().is_empty() => Some(prompt.clone()),
-            _ => None,
-        });
+        let latest_prompt =
+            self.items
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, item)| match item {
+                    Item::User(prompt) if !prompt.trim().is_empty() => Some((index, item.clone())),
+                    _ => None,
+                });
         let rows = Arc::new(self.transcript_render_rows());
+        let prompt_row = latest_prompt.as_ref().and_then(|(index, _)| {
+            rows.iter()
+                .position(
+                    |row| matches!(row.source, TranscriptRowSource::Settled(i) if i == *index),
+                )
+                .map(|row| (*index, row))
+        });
         let row_count = rows.len();
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
@@ -3463,6 +3479,9 @@ impl Render for Panel {
         let panel = cx.entity();
         let wheel_panel = panel.clone();
         let list_rows = rows.clone();
+        let prompt_visible = std::rc::Rc::new(std::cell::Cell::new(false));
+        let row_prompt_visible = prompt_visible.clone();
+        let prompt_list = self.transcript_list.clone();
         let transcript = if fresh_session {
             div()
                 .debug_selector(|| "fresh-session".into())
@@ -3512,9 +3531,19 @@ impl Render for Panel {
                                     .debug_selector(move || {
                                         format!("transcript-row-{row_index}").into()
                                     })
+                                    .relative()
                                     .px_3()
                                     .pt_2p5()
                                     .child(element)
+                                    .when(
+                                        prompt_row.is_some_and(|(_, row)| row == row_index),
+                                        |el| {
+                                            el.child(prompt::visibility_marker(
+                                                row_prompt_visible.clone(),
+                                                prompt_list.clone(),
+                                            ))
+                                        },
+                                    )
                                     .into_any_element()
                             })
                         },
@@ -3563,18 +3592,6 @@ impl Render for Panel {
                             cx.notify();
                         }),
                     )
-                    .children(latest_prompt.map(|prompt| {
-                        div()
-                            .debug_selector(|| "pinned-latest-prompt".into())
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .pb_1()
-                            .text_size(px(11.5))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(prompt)
-                    }))
                     .child(if self.pinned_todo_expanded {
                         div()
                             .debug_selector(|| "pinned-todo-expanded".into())
@@ -3584,6 +3601,23 @@ impl Render for Panel {
                         render_pinned_todo_summary(&payload).into_any_element()
                     })
             }))
+            .children(
+                latest_prompt
+                    .filter(|(index, _)| self.offscreen_prompt == Some(*index))
+                    .map(|(index, item)| {
+                        div()
+                            .id("pinned-latest-prompt")
+                            .debug_selector(|| "pinned-latest-prompt".into())
+                            .flex_none()
+                            .min_w_0()
+                            .max_h(px(180.))
+                            .overflow_y_scroll()
+                            .px_3()
+                            .pt_2p5()
+                            .text_size(px(13.5))
+                            .child(self.render_item(index, &item, window, cx))
+                    }),
+            )
             .child(
                 div()
                     .flex_1()
@@ -3629,6 +3663,11 @@ impl Render for Panel {
                         .size_full(),
                     )
                     .child(transcript)
+                    .child(self.prompt_visibility_observer(
+                        prompt_row.map(|(index, _)| index),
+                        prompt_visible,
+                        cx,
+                    ))
                     .child(crate::scrollbar::vertical_list(
                         &self.transcript_list,
                         "transcript-scrollbar",
@@ -7002,11 +7041,11 @@ Goals: []"#,
         let summary = vcx
             .debug_bounds("pinned-todo-summary")
             .expect("pinned todo starts as a compact summary");
-        let prompt = vcx
-            .debug_bounds("pinned-latest-prompt")
-            .expect("latest prompt should stay visible above the todo card");
+        assert!(
+            vcx.debug_bounds("pinned-latest-prompt").is_none(),
+            "a visible transcript prompt must not be duplicated above the todo card"
+        );
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
-        assert!(prompt.bottom() <= summary.top());
         assert!(pinned.bottom() <= transcript.top());
         assert_eq!(summary.size.height, px(30.0));
         assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());

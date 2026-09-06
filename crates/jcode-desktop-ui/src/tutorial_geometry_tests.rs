@@ -154,7 +154,9 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
             vcx.run_until_parked();
             let guide = vcx.debug_bounds("tutorial-guides").unwrap();
             let panel = vcx.debug_bounds("panel-0").unwrap();
-            let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
+            let prompt = vcx.debug_bounds("pinned-latest-prompt")
+                .or_else(|| vcx.debug_bounds("transcript-row-0"))
+                .expect("prompt should be visible in the transcript or pinned");
             let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
             assert_eq!(overlap_area(guide, panel), 0.0);
             assert_eq!(overlap_area(guide, prompt), 0.0);
