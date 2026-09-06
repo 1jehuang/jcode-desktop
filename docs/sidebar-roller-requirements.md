@@ -77,3 +77,52 @@ results or user-confirmed preferences. External Todoist/Gmail availability and
 all-platform compositor performance are unchanged dependencies outside this task.
 The broader library suite's earlier failures/abort are documented in the main
 roller audit and are not represented as passing by these targeted results.
+
+## Whole-result rerun after completing the map
+
+All mapped checks were rerun together on 2026-09-06, 00:10–00:12 UTC. This is
+new execution evidence, not a reclassification of earlier inspection. The run
+used the complete current working tree, including concurrent unrelated changes.
+There were 46 passing sidebar tests, five passing additional tests, and 17 passing
+native checkpoints. No runtime edits were needed in this rerun.
+
+Fresh evidence lives under `target/roller-whole-result/`: `tests.log`,
+`render.log`, `dark.png`, `light.png`, `native/roller.jsonl`,
+`measurements.json`, and `reload.log`. The commands and exact test names above
+remain the reproduction recipe, with this new output directory substituted.
+Both rendered PNGs were also read for visual review. Every row below refers to
+its named check in the original map and records what that check did in this run.
+
+| ID | Fresh observed result |
+| --- | --- |
+| R1 | Native center clicks changed the top-left sidebar page to Learn, Files, Accounts, and Theme, then back to Sessions. |
+| R2 | Pixel assertions reproduced old tops `[18,22,22,22]` and new `[32,24,19,18,19,24,32]` independently in dark, light, and native captures. The previously flat inactive tops now form a symmetric 14px-deep contour. |
+| R3 | Wheel events over both blank header and tab face brought Learn to the center without selecting it. A click selected it. Previous/next and wrap completed successfully. |
+| P1 | Projection assertions passed at both mapped widths. The center retained 34px height, with shrinking/lower neighbors. Fresh contour measurement matched. |
+| P2 | Rendered Learn label bounds stayed outside the overlapping Chat face and inside Learn's exposed area. |
+| P3 | The narrow Accounts face had no unusable label. Actual hover and tooltip timer produced the full tooltip. |
+| P4 | Clicking and settling each selected folder left its bottom equal to the sidebar body top, at 34px height. |
+| P5 | Horizontal, vertical, and dominant diagonal GPUI wheel inputs reached the expected indices without page activation or panel creation. |
+| P6 | 20+20px remained below the step threshold, another 8px advanced, reverse input wrapped to the last entry. Native wrap returned to Chat. |
+| P7 | All native browsing checkpoints preserved panel identities/count, map focus, keyboard focus, page, and visible-window set. |
+| P8 | GPUI clicks selected all six intended pages within 1px of the expected center. Native clicks independently selected the first five. |
+| P9 | Native Todos activation added exactly one `unfinished-work` panel and focused it. Persistent/movable-panel and todo-to-chat regressions passed. |
+| P10 | Native Todoist activation added exactly one focused `todoist://tasks` panel in the same fixture window. |
+| P11 | Native Email activation added exactly one focused `gmail://inbox` panel in the same fixture window. |
+| P12 | Folder click opened the in-app overlay. Cancel removed it with no runtime command or OS path prompt. |
+| P13 | Centered + click emitted exactly one recorded CreateSession. Separate coaching assertions again recorded no keyboard credit. |
+| P14 | The intermediate animation sample lay between endpoints. Reversal preserved the sampled position and reached the new target. |
+| P15 | Zero-duration movement snapped without animation. Restoring 150ms duration produced intermediate movement and active animation. |
+| P16 | Visible motion scheduled frames. Hidden-sidebar and Normal-mode checks did not schedule roller frames. |
+| P17 | Snapshot/apply restored selected Settings, not the browsed entry, centered within 1px and without animation. |
+| P18 | Normal-mode wheel/track navigation passed. Separate panels retained equal heights and 12px gaps. |
+| P19 | Settings toggles, theme preservation, selectable theme rows, and composer-focused theme shortcut all passed again. |
+| P20 | Fresh 1440x1000 dark and 800x600 light app captures showed readable centered Chat labels and contained roller bounds. Both passed the same seven-point contour assertion. |
+| P21 | All 17 checkpoints ran under private Xvfb and isolated HOME/XDG/Jcode settings. Actions remained in the fixture window, without live credentials. |
+| P22 | The live instance acknowledged the rebuild command with `ok`. Another rebuild was already underway, so this request was coalesced. The current host then logged successful activation of UI generation 1, captured in `reload.log`. |
+
+The before/after pixel assertions and native page/action outcomes establish
+improvement against the explicit flat-to-curved and roller-interaction criteria.
+They do not measure subjective preference or claim that horizontal orientation
+was user-confirmed. All 25 mapped rows were exercised after the map existed.
+The complete library suite was not rerun or claimed to pass.
