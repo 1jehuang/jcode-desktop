@@ -65,6 +65,96 @@ fn add_image(input: &Entity<PromptInput>, cx: &mut gpui::VisualTestContext) {
 }
 
 #[gpui::test]
+fn local_draft_entrance_slides_a_full_width_editor(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        let duration = transition::policy(Transition::PanelOpen).duration;
+        w.slots[0].width_fraction = 1.0;
+        w.slots[0].animated_width = AnimatedValue::new(1.0, duration);
+        let before = Instant::now();
+        w.open_local_draft(Some("/project".into()), cx);
+        let now = Instant::now();
+        assert_eq!(w.active, 1);
+        assert!(
+            w.focus_pending,
+            "the draft must focus without waiting for motion"
+        );
+        assert!(w.camera_snap_pending[w.active_row]);
+        assert!(
+            w.animation_active(),
+            "opening a draft must schedule motion frames"
+        );
+
+        // Sample copies so checking the trajectory does not advance UI state.
+        let mut opening = w.slots[1].order_offset;
+        assert_eq!(opening.sample(before), 0.12);
+        let midway = opening.sample(now + duration / 2);
+        assert!(midway > 0.0 && midway < 0.12);
+        assert_eq!(opening.sample(now + duration), 0.0);
+        assert!(!opening.is_animating());
+
+        for slot in &w.slots {
+            let mut width = slot.animated_width;
+            assert_eq!(width.sample(before), DEFAULT_WIDTH);
+            assert!(
+                !width.is_animating(),
+                "motion must not collapse the editor width"
+            );
+        }
+    });
+    request(&commands);
+    assert!(
+        commands.try_recv().is_err(),
+        "motion must not wait for a backend reply"
+    );
+}
+
+#[gpui::test]
+fn repeated_local_drafts_keep_earlier_entrances_and_focus_the_latest_editor(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        let before = Instant::now();
+        for _ in 0..3 {
+            w.open_local_draft(Some("/project".into()), cx);
+        }
+        assert_eq!(w.active, 3);
+        assert!(w.focus_pending);
+        assert!(w.camera_snap_pending[w.active_row]);
+        // Focus changes during the entrance must not snap any draft in place.
+        w.set_active(2, cx);
+        for slot in &w.slots[1..] {
+            let mut offset = slot.order_offset;
+            assert!(
+                offset.is_animating(),
+                "a later spawn must not snap an earlier one"
+            );
+            assert_eq!(offset.sample(before), 0.12);
+            assert_eq!(
+                offset.sample(Instant::now() + transition::policy(Transition::PanelOpen).duration),
+                0.0
+            );
+        }
+        w.set_active(3, cx);
+    });
+    let ids: Vec<_> = (0..3).map(|_| request(&commands).0).collect();
+    assert!(ids.windows(2).all(|pair| pair[0] != pair[1]));
+    vcx.run_until_parked();
+    vcx.simulate_input("latest draft");
+    workspace.read_with(vcx, |w, cx| {
+        for (index, slot) in w.slots.iter().enumerate() {
+            let content = &slot.panel.read(cx).input.read(cx).content;
+            assert_eq!(
+                content.as_ref(),
+                if index == 3 { "latest draft" } else { "" }
+            );
+        }
+    });
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
 fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -381,7 +471,7 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn pending_editor_is_fully_visible_on_first_frame_from_full_width_and_overflow(
+fn pending_editor_accepts_input_during_motion_and_settles_visible_from_full_width_and_overflow(
     cx: &mut gpui::TestAppContext,
 ) {
     for width in [1440.0, 800.0] {
@@ -401,11 +491,36 @@ fn pending_editor_is_fully_visible_on_first_frame_from_full_width_and_overflow(
             });
             vcx.run_until_parked();
             for selector in ["panel-1", "panel-2", "panel-3"] {
-                // Do not advance the clock or deliver any backend reply. The
-                // initial painted frame must already expose the whole editor.
+                // The editor mounts and accepts input before its entrance
+                // finishes, without waiting for a backend creation reply.
                 vcx.simulate_keystrokes("super-n");
                 vcx.run_until_parked();
                 request(&commands);
+                let early_canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+                let early_input = vcx.debug_bounds("prompt-input").unwrap();
+                let visible_width = early_input.right().min(early_canvas.right())
+                    - early_input.left().max(early_canvas.left());
+                assert!(
+                    visible_width >= px(200.0),
+                    "entrance must show a readable composer, not a sliver: {early_input:?} in {early_canvas:?}"
+                );
+                vcx.simulate_input("Visible while starting");
+                workspace.read_with(vcx, |w, cx| {
+                    assert_eq!(
+                        w.slots[w.active]
+                            .panel
+                            .read(cx)
+                            .input
+                            .read(cx)
+                            .content
+                            .as_ref(),
+                        "Visible while starting"
+                    );
+                });
+                // Production tweens use Instant, not the executor's clock.
+                std::thread::sleep(transition::policy(Transition::PanelOpen).duration * 2);
+                workspace.update(vcx, |_, cx| cx.notify());
+                vcx.run_until_parked();
                 let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
                 let panel = vcx.debug_bounds(selector).unwrap();
                 let input = vcx.debug_bounds("prompt-input").unwrap();
@@ -425,19 +540,7 @@ fn pending_editor_is_fully_visible_on_first_frame_from_full_width_and_overflow(
                 workspace.read_with(vcx, |w, _| {
                     assert!(w.camera_started[w.active_row].is_none());
                     assert!(w.slots.iter().all(|s| !s.animated_width.is_animating()));
-                });
-                vcx.simulate_input("Visible while starting");
-                workspace.read_with(vcx, |w, cx| {
-                    assert_eq!(
-                        w.slots[w.active]
-                            .panel
-                            .read(cx)
-                            .input
-                            .read(cx)
-                            .content
-                            .as_ref(),
-                        "Visible while starting"
-                    );
+                    assert!(w.slots.iter().all(|s| !s.order_offset.is_animating()));
                 });
                 assert!(commands.try_recv().is_err());
             }

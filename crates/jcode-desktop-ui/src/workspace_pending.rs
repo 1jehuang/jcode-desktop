@@ -58,7 +58,7 @@ impl Workspace {
             cx,
         );
         // The editor must be hit-testable and visible in the very next frame,
-        // rather than waiting for either backend creation or an entrance tween.
+        // rather than waiting for either backend creation or a width tween.
         // Snap sibling demotions too. Otherwise the old full-width panel can
         // push this full-width editor beyond the clip until its tween finishes.
         for slot in self
@@ -71,6 +71,14 @@ impl Workspace {
                 transition::policy(Transition::PanelOpen).duration,
             );
         }
+        // Keep a spatial entrance without shrinking the native editor into a
+        // sliver. Only offset the newcomer, so rapid spawns preserve earlier
+        // entrances. The existing order tween also drives animation frames and
+        // hit testing, and respects the reduced-motion PanelOpen policy.
+        let slot = &mut self.slots[inserted];
+        slot.order_offset =
+            AnimatedValue::new(0.12, transition::policy(Transition::PanelOpen).duration);
+        slot.order_offset.set(0.0, Instant::now());
         self.set_active(inserted, cx);
         // The viewport width is only known in render_strip. Resolve and snap
         // its camera there instead of interpolating an offscreen editor in.
