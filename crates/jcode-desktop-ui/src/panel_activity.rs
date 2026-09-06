@@ -193,7 +193,12 @@ mod tests {
         assert!(vcx.debug_bounds("panel-activity-label").is_none());
         panel.update(vcx, |panel, _| {
             for status in [
-                "attached", "connected", "connecting", "lost: disconnected", "error", "crashed",
+                "attached",
+                "connected",
+                "connecting",
+                "lost: disconnected",
+                "error",
+                "crashed",
             ] {
                 panel.status = status.into();
                 assert!(!panel.activity_active(), "{status} should not animate");

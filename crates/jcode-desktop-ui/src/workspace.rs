@@ -28,11 +28,11 @@ use crate::theme::{Theme, ThemePreset};
 use crate::transition::{self, AnimatedValue, Transition};
 use crate::updates;
 
-#[path = "navigation_state.rs"]
-mod navigation_state;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
+#[path = "navigation_state.rs"]
+mod navigation_state;
 
 actions!(
     workspace,
@@ -541,6 +541,7 @@ pub struct Workspace {
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
     _performance_task: gpui::Task<()>,
+    _live_profile_task: gpui::Task<()>,
 }
 
 impl Workspace {
@@ -711,6 +712,7 @@ impl Workspace {
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
             _performance_task: performance_task,
+            _live_profile_task: crate::live_profile::spawn(window, cx),
         };
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
@@ -880,6 +882,7 @@ impl Workspace {
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
             _performance_task: cx.spawn(async move |_, _| {}),
+            _live_profile_task: cx.spawn(async move |_, _| {}),
         }
     }
 
@@ -2805,7 +2808,10 @@ impl Workspace {
         let suffix = performance
             .map(|line| format!("\n{line}"))
             .unwrap_or_default();
-        let appearance = format!("layout={:?} sidebar={:?}", self.layout_mode, self.sidebar_view);
+        let appearance = format!(
+            "layout={:?} sidebar={:?}",
+            self.layout_mode, self.sidebar_view
+        );
         let navigation = self.navigation_state(window, cx);
         let _ = std::fs::write(
             path,
@@ -2970,15 +2976,24 @@ impl Workspace {
                 .w(px((width - if folders { 0. } else { 12. }).max(1.)))
                 .h(px(panel_h - top))
                 .flex_none()
+                // Paint focus on each pane, rather than inheriting the shared sheet.
+                .bg(Theme::global().panel_background(focused))
+                .when(folders, |el| el.rounded(px(CORNER_RADIUS)))
                 .when(!folders, |el| {
-                    el.bg(Theme::global().PANEL_BG)
-                        .rounded(px(CORNER_RADIUS))
+                    el.rounded(px(CORNER_RADIUS))
                         .border_1()
-                        .border_color(if focused { Theme::global().PANEL_BORDER_FOCUS } else { Theme::global().PANEL_BORDER })
+                        .border_color(if focused {
+                            Theme::global().PANEL_BORDER_FOCUS
+                        } else {
+                            Theme::global().PANEL_BORDER
+                        })
                 })
-                .when(folders, |el| el.child(folder_surface::measure(
-                    self.folder_frame.clone(), folder_surface::Region::Panel { active: focused },
-                )))
+                .when(folders, |el| {
+                    el.child(folder_surface::measure(
+                        self.folder_frame.clone(),
+                        folder_surface::Region::Panel { active: focused },
+                    ))
+                })
                 .overflow_hidden()
                 .on_mouse_down(
                     gpui::MouseButton::Left,
@@ -3615,26 +3630,36 @@ impl Workspace {
                     this.scroll_sidebar_navigation_to(event.position, cx);
                 }
             }))
-            .when(!folders, |el| el.child(
-                div()
-                    .absolute()
-                    .top(px(3.0))
-                    .w_full()
-                    .h(px(4.0))
-                    .rounded_full()
-                    .bg(Theme::global().PANEL_BORDER),
-            ))
-            .when(!folders, |el| el.child(
-                div()
-                    .absolute()
-                    .top(px(3.0))
-                    .left(relative((width - thumb) * progress / width))
-                    .w(relative(thumb / width))
-                    .h(px(4.0))
-                    .rounded_full()
-                    .bg(Theme::global().TEXT_FAINT),
-            ));
-        div().relative().w_full().h(px(10.0)).flex_none().child(track).into_any_element()
+            .when(!folders, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(3.0))
+                        .w_full()
+                        .h(px(4.0))
+                        .rounded_full()
+                        .bg(Theme::global().PANEL_BORDER),
+                )
+            })
+            .when(!folders, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(3.0))
+                        .left(relative((width - thumb) * progress / width))
+                        .w(relative(thumb / width))
+                        .h(px(4.0))
+                        .rounded_full()
+                        .bg(Theme::global().TEXT_FAINT),
+                )
+            });
+        div()
+            .relative()
+            .w_full()
+            .h(px(10.0))
+            .flex_none()
+            .child(track)
+            .into_any_element()
     }
 
     fn render_files_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -3676,8 +3701,8 @@ impl Workspace {
             // The gutter is a sibling overlay, not part of the scrollable
             // content. Handle its wheel input just like the folder-tab strip,
             // and consume it so the list underneath cannot scroll twice.
-            .on_scroll_wheel(
-                cx.listener(move |this, event: &gpui::ScrollWheelEvent, window, cx| {
+            .on_scroll_wheel(cx.listener(
+                move |this, event: &gpui::ScrollWheelEvent, window, cx| {
                     let dy = event.delta.pixel_delta(window.line_height()).y;
                     if sessions {
                         this.sidebar_sessions_list.scroll_by(-dy);
@@ -3688,8 +3713,8 @@ impl Workspace {
                     }
                     cx.stop_propagation();
                     cx.notify();
-                }),
-            )
+                },
+            ))
             .child(if sessions {
                 crate::scrollbar::vertical_list(&self.sidebar_sessions_list, "sidebar-scrollbar")
             } else {
@@ -3703,15 +3728,12 @@ impl Workspace {
             .slots
             .get(self.active)
             .map(|slot| slot.panel.read(cx).session_id.clone());
-        let open_statuses = self
+        let open_activities = self
             .slots
             .iter()
             .map(|slot| {
                 let panel = slot.panel.read(cx);
-                (
-                    panel.session_id.clone(),
-                    panel.sidebar_runtime_status().to_string(),
-                )
+                (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
         let open_titles = self
@@ -3729,7 +3751,7 @@ impl Workspace {
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) =
             sidebar_session_order(&self.sessions)
                 .into_iter()
-                .partition(|session| open_statuses.contains_key(&session.session_id));
+                .partition(|session| open_activities.contains_key(&session.session_id));
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
         let panel_positions = panel_positions
@@ -3892,16 +3914,10 @@ impl Workspace {
                                 (None, Some(meta)) => Some(meta),
                                 (None, None) => None,
                             };
-                            let (status_icon, _status_label, status_kind) = sidebar_session_status(
-                                &session.status,
-                                open_statuses.get(&session.session_id).map(String::as_str),
-                            );
-                            let status_color = match status_kind {
-                                SidebarStatusKind::Good => Theme::global().AI_ACCENT,
-                                SidebarStatusKind::Busy => Theme::global().WARN,
-                                SidebarStatusKind::Bad => Theme::global().ERROR,
-                                SidebarStatusKind::Dim => Theme::global().TEXT_DIM,
-                            };
+                            let activity = open_activities
+                                .get(&session.session_id)
+                                .cloned()
+                                .flatten();
 
                             let session = session.clone();
                             list = list.child(
@@ -3974,14 +3990,16 @@ impl Workspace {
                                                     .line_height(relative(1.5))
                                                     .child(title),
                                             )
-                                            .child(
-                                                div()
-                                                    .flex_none()
-                                                    .w(px(12.0))
-                                                    .text_size(px(10.0))
-                                                    .text_color(status_color)
-                                                    .child(status_icon),
-                                            ),
+                                            .when_some(activity, |row, spinner| {
+                                                row.child(
+                                                    div()
+                                                        .debug_selector(move || {
+                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
+                                                        })
+                                                        .flex_none()
+                                                        .child(spinner),
+                                                )
+                                            }),
                                     )
                                     .when_some(details, |row, details| {
                                         row.child(
@@ -4042,7 +4060,11 @@ impl Workspace {
                     .relative()
                     // Keep one backing tone around the folder's top-left curve.
                     // A dark navigation rectangle here pinches that curve into a notch.
-                    .bg(if folders { Theme::global().HEADER_BG } else { Theme::global().PANEL_BG })
+                    .bg(if folders {
+                        Theme::global().HEADER_BG
+                    } else {
+                        Theme::global().PANEL_BG
+                    })
                     .child(
                         div()
                             .absolute()
@@ -4398,7 +4420,10 @@ impl Workspace {
                         }),
                     })
                     .when(
-                        matches!(self.sidebar_view, SidebarView::Sessions | SidebarView::Files),
+                        matches!(
+                            self.sidebar_view,
+                            SidebarView::Sessions | SidebarView::Files
+                        ),
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
@@ -4925,11 +4950,12 @@ impl Workspace {
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.layout_mode = if this.layout_mode == crate::config::LayoutMode::FolderTabs {
-                            crate::config::LayoutMode::Normal
-                        } else {
-                            crate::config::LayoutMode::FolderTabs
-                        };
+                        this.layout_mode =
+                            if this.layout_mode == crate::config::LayoutMode::FolderTabs {
+                                crate::config::LayoutMode::Normal
+                            } else {
+                                crate::config::LayoutMode::FolderTabs
+                            };
                         this.camera_dirty.fill(true);
                         if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
                             eprintln!("failed to persist workspace layout mode: {error}");
@@ -5080,70 +5106,70 @@ impl Workspace {
                     crate::panel::MinimapSessionState::Complete => ("complete", Theme::global().OK),
                     crate::panel::MinimapSessionState::Error => ("error", Theme::global().ERROR),
                 };
-                track = track.child(
-                    div()
-                        .id(("minimap-panel", index))
-                        .debug_selector(move || format!("minimap-panel-{index}"))
-                        .when(cfg!(test) && focused, |el| {
-                            el.child(
-                                div().absolute().size_full()
-                                    .debug_selector(move || format!("minimap-panel-{index}-focused")),
-                            )
-                        })
-                        .absolute()
-                        .left(px(left))
-                        .top(px(top))
-                        .w(px(width))
-                        .h(px(height))
-                        .rounded(px(2.0))
-                        .cursor_pointer()
-                        .bg(if focused {
-                            Theme::global().MINIMAP_PANEL_BUSY
-                        } else {
-                            Theme::global().MINIMAP_PANEL
-                        })
-                        .child(
-                            div()
-                                .debug_selector(move || {
-                                    format!("minimap-panel-{index}-{state_name}")
-                                })
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .w_full()
-                                .h(px(2.0))
-                                .bg(state_color),
-                        )
-                        // The green footline is a literal completion meter for
-                        // the latest todo card. Session color remains visible
-                        // above it, so progress and live state do not compete.
-                        .when_some(todo_progress, |panel, progress| {
-                            panel.child(
+                track =
+                    track.child(
+                        div()
+                            .id(("minimap-panel", index))
+                            .debug_selector(move || format!("minimap-panel-{index}"))
+                            .when(cfg!(test) && focused, |el| {
+                                el.child(div().absolute().size_full().debug_selector(move || {
+                                    format!("minimap-panel-{index}-focused")
+                                }))
+                            })
+                            .absolute()
+                            .left(px(left))
+                            .top(px(top))
+                            .w(px(width))
+                            .h(px(height))
+                            .rounded(px(2.0))
+                            .cursor_pointer()
+                            .bg(if focused {
+                                Theme::global().MINIMAP_PANEL_BUSY
+                            } else {
+                                Theme::global().MINIMAP_PANEL
+                            })
+                            .child(
                                 div()
                                     .debug_selector(move || {
-                                        format!("minimap-panel-{index}-todo-progress")
+                                        format!("minimap-panel-{index}-{state_name}")
                                     })
                                     .absolute()
-                                    .bottom_0()
+                                    .top_0()
                                     .left_0()
+                                    .w_full()
                                     .h(px(2.0))
-                                    .w(relative(progress))
-                                    .bg(Theme::global().OK),
+                                    .bg(state_color),
                             )
-                        })
-                        .hover(|el| el.bg(Theme::global().MINIMAP_PANEL_BUSY))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _event, window, cx| {
-                                cx.stop_propagation();
-                                this.set_active(index, cx);
-                                this.overview = false;
-                                this.overview_progress.set(0.0, Instant::now());
-                                this.focus_active(window, cx);
-                                cx.notify();
-                            }),
-                        ),
-                );
+                            // The green footline is a literal completion meter for
+                            // the latest todo card. Session color remains visible
+                            // above it, so progress and live state do not compete.
+                            .when_some(todo_progress, |panel, progress| {
+                                panel.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("minimap-panel-{index}-todo-progress")
+                                        })
+                                        .absolute()
+                                        .bottom_0()
+                                        .left_0()
+                                        .h(px(2.0))
+                                        .w(relative(progress))
+                                        .bg(Theme::global().OK),
+                                )
+                            })
+                            .hover(|el| el.bg(Theme::global().MINIMAP_PANEL_BUSY))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _event, window, cx| {
+                                    cx.stop_propagation();
+                                    this.set_active(index, cx);
+                                    this.overview = false;
+                                    this.overview_progress.set(0.0, Instant::now());
+                                    this.focus_active(window, cx);
+                                    cx.notify();
+                                }),
+                            ),
+                    );
             }
 
             // The lens: where the camera is looking on the active strip.
@@ -5825,11 +5851,8 @@ impl Render for Workspace {
             0.0
         };
         let right_margin = if folders { FOLDER_RIGHT_MARGIN } else { 0. };
-        let canvas_w = (f32::from(viewport.width)
-            - sidebar_width
-            - connector_width
-            - right_margin)
-            .max(0.0);
+        let canvas_w =
+            (f32::from(viewport.width) - sidebar_width - connector_width - right_margin).max(0.0);
         let viewport_w = canvas_w.max(320.0);
         // On macOS the sidebar header covers the transparent titlebar strip.
         // Without the sidebar, leave room for the traffic lights. Other platforms
@@ -5993,8 +6016,14 @@ impl Render for Workspace {
             .flex()
             .flex_row()
             .relative()
-            .bg(if folders { Theme::global().HEADER_BG } else { Theme::global().BG })
-            .when(folders, |el| el.child(folder_surface::background(self.folder_frame.clone())))
+            .bg(if folders {
+                Theme::global().HEADER_BG
+            } else {
+                Theme::global().BG
+            })
+            .when(folders, |el| {
+                el.child(folder_surface::background(self.folder_frame.clone()))
+            })
             .font_family(Theme::global().FONT_UI)
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
@@ -6061,9 +6090,12 @@ impl Render for Workspace {
                             .flex_1()
                             .min_h_0()
                             .overflow_hidden()
-                            .when(folders, |el| el.child(folder_surface::measure(
-                                self.folder_frame.clone(), folder_surface::Region::Canvas,
-                            )))
+                            .when(folders, |el| {
+                                el.child(folder_surface::measure(
+                                    self.folder_frame.clone(),
+                                    folder_surface::Region::Canvas,
+                                ))
+                            })
                             .child(content)
                             .child(self.render_workspace_bar(canvas_w, cx))
                             .when(
@@ -6323,41 +6355,6 @@ fn custom_sidebar_title(session_id: &str, title: &str) -> bool {
     let title = title.trim();
     !title.is_empty()
         && title != jcode_core::id::extract_session_name(session_id).unwrap_or(session_id)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SidebarStatusKind {
-    Good,
-    Busy,
-    Bad,
-    Dim,
-}
-
-fn sidebar_session_status(
-    persisted: &str,
-    runtime: Option<&str>,
-) -> (&'static str, &'static str, SidebarStatusKind) {
-    if let Some(runtime) = runtime {
-        return match runtime.to_ascii_lowercase().as_str() {
-            "generating" | "running" | "busy" | "thinking" | "streaming" => {
-                ("●", "working", SidebarStatusKind::Busy)
-            }
-            status if status.starts_with("lost:") => ("!", "lost", SidebarStatusKind::Bad),
-            _ => ("●", "ready", SidebarStatusKind::Good),
-        };
-    }
-
-    match persisted.to_ascii_lowercase().as_str() {
-        "active" | "attached" => ("▶", "active", SidebarStatusKind::Good),
-        "crashed" => ("💥", "crashed", SidebarStatusKind::Bad),
-        "error" | "errored" => ("✕", "errored", SidebarStatusKind::Bad),
-        "reloaded" => ("↻", "reloaded", SidebarStatusKind::Good),
-        "compacted" => ("▣", "compacted", SidebarStatusKind::Busy),
-        "ratelimited" | "rate_limited" | "rate limited" => {
-            ("⌛", "rate limited", SidebarStatusKind::Busy)
-        }
-        _ => ("✓", "closed", SidebarStatusKind::Dim),
-    }
 }
 
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
@@ -7293,20 +7290,107 @@ mod tests {
         });
     }
 
-    #[test]
-    fn sidebar_status_distinguishes_crashes_and_live_work() {
-        assert_eq!(
-            sidebar_session_status("crashed", None),
-            ("💥", "crashed", SidebarStatusKind::Bad)
-        );
-        assert_eq!(
-            sidebar_session_status("closed", Some("generating")),
-            ("●", "working", SidebarStatusKind::Busy)
-        );
-        assert_eq!(
-            sidebar_session_status("closed", Some("idle")),
-            ("●", "ready", SidebarStatusKind::Good)
-        );
+    #[gpui::test]
+    fn sidebar_spinner_only_paints_for_live_work(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("sidebar-activity", cx);
+            workspace.push_test_panel("quiet-session", cx);
+            workspace.sessions = vec![
+                session_info("sidebar-activity", Some("Live session")),
+                session_info("quiet-session", Some("Idle session")),
+                session_info("history", Some("Previous session")),
+            ];
+            workspace
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
+        let idle_title_width = vcx
+            .debug_bounds("sidebar-session-title-0")
+            .unwrap()
+            .size
+            .width;
+
+        for (status, active) in [
+            ("generating", true),
+            ("thinking", true),
+            ("running", true),
+            ("streaming", true),
+            ("running_tools", true),
+            ("busy", true),
+            ("idle", false),
+            ("connected", false),
+            ("lost: disconnected", false),
+            ("crashed", false),
+            ("error", false),
+        ] {
+            workspace.update(vcx, |workspace, cx| {
+                workspace.apply(
+                    Update::Event {
+                        session_id: "sidebar-activity".into(),
+                        event: jcode_sdk::ApiEvent::SessionStatus {
+                            session_id: "sidebar-activity".into(),
+                            status: status.into(),
+                        },
+                    },
+                    cx,
+                );
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert_eq!(
+                vcx.debug_bounds("sidebar-session-spinner-0").is_some(),
+                active,
+                "status {status}",
+            );
+            assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_none());
+            assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
+            let title_width = vcx
+                .debug_bounds("sidebar-session-title-0")
+                .unwrap()
+                .size
+                .width;
+            if active {
+                assert!(title_width < idle_title_width);
+            } else {
+                assert_eq!(
+                    title_width, idle_title_width,
+                    "idle rows reserve no icon space"
+                );
+            }
+        }
+
+        for event in [
+            jcode_sdk::ApiEvent::ReasoningDelta {
+                session_id: "sidebar-activity".into(),
+                text: "Thinking".into(),
+            },
+            jcode_sdk::ApiEvent::TextDelta {
+                session_id: "sidebar-activity".into(),
+                text: "Responding".into(),
+            },
+        ] {
+            workspace.update(vcx, |workspace, cx| {
+                for event in [
+                    jcode_sdk::ApiEvent::SessionStatus {
+                        session_id: "sidebar-activity".into(),
+                        status: "idle".into(),
+                    },
+                    event,
+                ] {
+                    workspace.apply(
+                        Update::Event {
+                            session_id: "sidebar-activity".into(),
+                            event,
+                        },
+                        cx,
+                    );
+                }
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
+        }
     }
 
     /// The sidebar row's metadata line mirrors the TUI `/resume` picker:
@@ -8313,7 +8397,10 @@ mod tests {
                 assert!(list.bottom() <= body.bottom());
                 assert!(body.bottom() - list.bottom() <= px(4.0));
                 let (offset, max) = workspace.read_with(vcx, |w, _| {
-                    (w.accounts_scroll.offset().y, w.accounts_scroll.max_offset().y)
+                    (
+                        w.accounts_scroll.offset().y,
+                        w.accounts_scroll.max_offset().y,
+                    )
                 });
                 assert!(offset <= px(0.0) && offset >= -max);
                 if delta == -10000.0 {
@@ -11460,11 +11547,17 @@ mod tests {
         let button = vcx.debug_bounds("settings-folder-tabs").unwrap();
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert_ne!(workspace.read_with(vcx, |w, _| w.layout_mode), initial_layout);
+        assert_ne!(
+            workspace.read_with(vcx, |w, _| w.layout_mode),
+            initial_layout
+        );
         let button = vcx.debug_bounds("settings-folder-tabs").unwrap();
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert_eq!(workspace.read_with(vcx, |w, _| w.layout_mode), initial_layout);
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.layout_mode),
+            initial_layout
+        );
         for selector in ["settings-minimap", "settings-showcase"] {
             let initial = workspace.read_with(vcx, |w, _| (w.show_minimap, w.showcase_mode));
             for _ in 0..2 {

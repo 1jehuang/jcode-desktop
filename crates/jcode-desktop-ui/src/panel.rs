@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use gpui::{
-    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, FontWeight, ImageSource,
+    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, FontWeight,
     ListAlignment, ListState, ScrollHandle, SharedString, StyledImage, Task, Window, div, img,
     list, point, prelude::*, px, relative,
 };
@@ -26,6 +26,8 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 
 #[path = "panel_activity.rs"]
 mod activity;
+#[path = "panel_image_preview.rs"]
+mod image_preview;
 #[path = "panel_prompt.rs"]
 mod prompt;
 #[path = "panel_tab_emoji.rs"]
@@ -180,7 +182,9 @@ pub struct Panel {
     streaming_reasoning: String,
     activity_spinner: Entity<activity::Spinner>,
     tab_emoji: Entity<tab_emoji::TabEmoji>,
+    sidebar_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
+    image_preview: Option<TranscriptImage>,
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
@@ -449,11 +453,18 @@ async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<Gmai
 
 impl Panel {
     pub(crate) fn tab_activity(&self) -> Option<gpui::AnyView> {
-        self.activity_active().then(|| self.tab_emoji.clone().into())
+        self.activity_active()
+            .then(|| self.tab_emoji.clone().into())
     }
 
-    pub(crate) fn sidebar_runtime_status(&self) -> &str {
-        &self.status
+    pub(crate) fn sidebar_activity(&self) -> Option<gpui::AnyView> {
+        let working = matches!(
+            self.status.to_ascii_lowercase().as_str(),
+            "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools"
+        );
+        let streaming = !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty();
+        (self.activity_active() && (working || streaming))
+            .then(|| self.sidebar_spinner.clone().into())
     }
 
     /// Whether the regular conversation surface has anything that can consume
@@ -547,7 +558,7 @@ impl Panel {
         });
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
-            && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("streaming");
+            && matches!(std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(), Ok("streaming" | "mermaid"));
         let emoji = jcode_core::id::extract_session_name(&session_id)
             .map(jcode_core::id::session_icon)
             .unwrap_or("💫");
@@ -571,7 +582,9 @@ impl Panel {
             streaming_reasoning: String::new(),
             activity_spinner: cx.new(activity::Spinner::new),
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
+            sidebar_spinner: cx.new(activity::Spinner::new),
             input,
+            image_preview: None,
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
@@ -2771,11 +2784,13 @@ impl Panel {
                     .into_any_element()
             }
             Item::Image(image) => {
+                let preview_image = image.clone();
                 let label = image
                     .label
                     .clone()
                     .unwrap_or_else(|| "image read by model".to_string());
                 div()
+                    .id(("transcript-image", index))
                     .debug_selector(|| "transcript-image".into())
                     .flex()
                     .flex_col()
@@ -2784,9 +2799,16 @@ impl Panel {
                     .rounded_md()
                     .p_2()
                     .bg(Theme::global().USER_BG)
+                    .when(image.preview.is_some(), |el| {
+                        el.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_image_preview(preview_image.clone(), window, cx);
+                                cx.stop_propagation();
+                            }))
+                    })
                     .when_some(image.preview.clone(), |el, preview| {
                         el.child(
-                            img(ImageSource::Image(preview))
+                            img(crate::image_cache::source(preview))
                                 .w_full()
                                 .h(px(320.0))
                                 .object_fit(gpui::ObjectFit::Contain)
@@ -3577,6 +3599,12 @@ impl Render for Panel {
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.image_preview.is_some() && event.keystroke.key == "escape" {
+                    this.close_image_preview(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .children(pinned_todo.map(|payload| {
                 div()
                     .id("pinned-todo-toggle")
@@ -3767,6 +3795,7 @@ impl Render for Panel {
                 }),
             )
             .children(model_picker)
+            .children(self.render_image_preview(cx))
             .into_any_element()
     }
 }
@@ -6985,6 +7014,7 @@ Goals: []"#,
             ],
             plan: TodoCardPlan::default(),
         };
+
         assert_eq!(
             pinned_todo_summary(&payload),
             PinnedTodoSummary {
@@ -7063,6 +7093,7 @@ Goals: []"#,
         let expanded = vcx
             .debug_bounds("pinned-todo-expanded")
             .expect("clicking the summary expands the pinned details");
+
         vcx.simulate_event(gpui::MouseDownEvent {
             button: gpui::MouseButton::Left,
             position: expanded.center(),
@@ -7091,11 +7122,30 @@ fn demo_items() -> Vec<Item> {
         return Vec::new();
     }
     if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mermaid")
+    {
+        return vec![
+            Item::User("Can you render a Mermaid diagram?".into()),
+            Item::Assistant("Here is a Mermaid diagram:\n\n```mermaid\nflowchart LR\n    A[Idea] --> B[Build]\n    B --> C[Test]\n    C -->|Pass| D[Ship]\n    C -->|Needs work| B\n```".into()),
+        ];
+    }
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("image")
+    {
+        return vec![
+            Item::User("Click this chart to see it larger.".into()),
+            Item::Image(image_preview::fixture_image()),
+        ];
+    }
+    if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("html")
     {
         return vec![
             Item::User("Show me different fonts directly in this chat.".into()),
-            Item::Assistant(format!("Here are live font pairings. Click inside to interact.\n\n```html-preview\n{}\n```", include_str!("../../../assets/previews/font-pairings.html"))),
+            Item::Assistant(format!(
+                "Here are live font pairings. Click inside to interact.\n\n```html-preview\n{}\n```",
+                include_str!("../../../assets/previews/font-pairings.html")
+            )),
         ];
     }
     if crate::harness::screenshot_mode()
@@ -7153,19 +7203,25 @@ fn demo_item_fixtures() -> Vec<Item> {
             done: true,
             error: None,
         },
-
         Item::Todos(TodoCardPayload {
             todos: vec![
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
-                    status: "in_progress".into(), group: Some("Desktop".into()), blocked_by: vec![],
+                    status: "in_progress".into(),
+                    group: Some("Desktop".into()),
+                    blocked_by: vec![],
                 },
                 TodoCardItem {
                     content: "Inspect the real offline screenshot".into(),
-                    status: "pending".into(), group: Some("Validation".into()), blocked_by: vec![],
+                    status: "pending".into(),
+                    group: Some("Validation".into()),
+                    blocked_by: vec![],
                 },
                 TodoCardItem {
-                    content: "Retired task".into(), status: "cancelled".into(), group: None, blocked_by: vec![],
+                    content: "Retired task".into(),
+                    status: "cancelled".into(),
+                    group: None,
+                    blocked_by: vec![],
                 },
             ],
             plan: TodoCardPlan {

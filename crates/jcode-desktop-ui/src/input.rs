@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, ImageSource, KeyBinding, LayoutId,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     SharedString, Style, StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
     actions, div, fill, img, point, prelude::*, px, relative, size,
@@ -1277,7 +1277,7 @@ impl Render for PromptInput {
                 .text_size(px(11.0))
                 .text_color(Theme::global().TEXT_DIM)
                 .child(
-                    img(ImageSource::Image(image.preview.clone()))
+                    img(crate::image_cache::source(image.preview.clone()))
                         .w(px(preview_width))
                         .h(px(preview_height))
                         .object_fit(gpui::ObjectFit::Contain)

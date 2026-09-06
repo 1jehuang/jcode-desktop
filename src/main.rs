@@ -3,6 +3,7 @@
 mod host {
     pub mod instance;
     pub mod reload;
+    pub mod reload_config;
     pub mod resources;
 }
 mod diagnostics;
@@ -130,23 +131,6 @@ impl Render for HostFallback {
     }
 }
 
-fn hot_reload_path() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("JCODE_DESKTOP_UI") {
-        return Some(path.into());
-    }
-    let mut arguments = env::args_os().skip(1);
-    while let Some(argument) = arguments.next() {
-        if argument == "--hot-reload" {
-            return arguments
-                .next()
-                .filter(|next| !next.to_string_lossy().starts_with('-'))
-                .map(PathBuf::from)
-                .or_else(|| Some(host::reload::default_plugin_path()));
-        }
-    }
-    None
-}
-
 /// A macOS-native titlebar for a window whose content runs edge to edge.
 ///
 /// The system titlebar stays in place, so the window keeps native traffic
@@ -258,7 +242,7 @@ fn main() {
             Instance::Primary { commands, _socket } => (commands, _socket),
             Instance::Secondary => return,
         };
-    let plugin_path = hot_reload_path();
+    let plugin_path = host::reload_config::plugin_path();
     let app = application();
     // Clicking the Dock icon after the red button closed the last window must
     // bring the workspace back, exactly like a second `jcode-desktop` launch

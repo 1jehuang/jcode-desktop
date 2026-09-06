@@ -1327,7 +1327,7 @@ fn mermaid_diagram(body: &str) -> gpui::AnyElement {
             .border_color(Theme::global().PANEL_BORDER)
             .bg(Theme::global().QUOTE_BG)
             .child(
-                gpui::img(image)
+                gpui::img(crate::image_cache::source(image))
                     .w_full()
                     .h_full()
                     .object_fit(ObjectFit::Contain),

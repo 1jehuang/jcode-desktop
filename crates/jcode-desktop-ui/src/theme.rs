@@ -68,6 +68,17 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Raised paper for the active pane, recessed backing for its neighbors.
+    /// Use palette roles rather than dimming the entire pane so transcript text,
+    /// code, images, and controls retain their original contrast and opacity.
+    pub fn panel_background(&self, focused: bool) -> Rgba {
+        if focused {
+            self.PANEL_BG
+        } else {
+            self.HEADER_BG
+        }
+    }
+
     pub fn global() -> &'static Self {
         let target = ACTIVE_THEME.load(Ordering::Relaxed);
         let mut transition = transition_state().lock().unwrap();
@@ -656,6 +667,33 @@ mod tests {
                     "{} {role} contrast was {}",
                     preset.id(),
                     contrast(foreground, background)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_preset_distinguishes_pane_focus_without_dimming_text() {
+        for (preset, theme) in ThemePreset::ALL.into_iter().zip(themes()) {
+            let active = theme.panel_background(true);
+            let inactive = theme.panel_background(false);
+            assert_eq!(active, theme.PANEL_BG);
+            assert_eq!(inactive.a, 1.0);
+            let difference = (active.r - inactive.r)
+                .abs()
+                .max((active.g - inactive.g).abs())
+                .max((active.b - inactive.b).abs());
+            assert!(
+                difference >= 10.0 / 255.0,
+                "{} lacks pane contrast",
+                preset.id()
+            );
+            for foreground in [theme.TEXT, theme.TEXT_DIM, theme.REASONING] {
+                assert!(
+                    contrast(foreground, inactive) >= 4.5,
+                    "{} inactive text contrast was {}",
+                    preset.id(),
+                    contrast(foreground, inactive)
                 );
             }
         }

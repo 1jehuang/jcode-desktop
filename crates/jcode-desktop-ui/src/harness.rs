@@ -1030,34 +1030,16 @@ fn session_worker(
                 };
                 match command {
                     SessionCommand::Send { content, images } => {
-                        let text_only = images.is_empty();
                         let retry_content = content.clone();
                         let retry_images = images.clone();
-                        let mut result = if turn_active && text_only {
-                            client.soft_interrupt(&session_id, &content, true)
+                        // Only one ordinary send can await acceptance. An old
+                        // idle event must not let another send overwrite it.
+                        let steering = turn_active || !unaccepted_sends.is_empty();
+                        let result = if steering {
+                            client.soft_interrupt_with_images(&session_id, &content, images, true)
                         } else {
-                            client.send_message(
-                                &session_id,
-                                &content,
-                                images,
-                                Some(Duration::from_secs(5)),
-                            )
+                            client.send_message(&session_id, &content, images, None)
                         };
-                        // A queued steering message can start its next turn
-                        // immediately after TurnDone and before its new status
-                        // event reaches this worker. If the composer submits in
-                        // that narrow window, our activity bit is stale and the
-                        // normal SendMessage call loses the race. Recover text
-                        // submissions through the same urgent queue rather than
-                        // rendering the harness's transient busy error.
-                        if !turn_active
-                            && text_only
-                            && result
-                                .as_ref()
-                                .is_err_and(|error| is_already_processing_error(&error.to_string()))
-                        {
-                            result = client.soft_interrupt(&session_id, &content, true);
-                        }
                         if let Err(error) = result {
                             // A daemon reload can briefly hand this SDK socket
                             // the state of another legacy subscription. Never
@@ -1079,10 +1061,16 @@ fn session_worker(
                                 reason: error.to_string(),
                             });
                         } else {
-                            unaccepted_sends.push_back(SessionCommand::Send {
-                                content: retry_content,
-                                images: retry_images,
-                            });
+                            // Steering is acknowledged by the synchronous SDK
+                            // reply, not a MessageAccepted stream event. Keeping
+                            // it here would replay an already-delivered message
+                            // when a later ordinary send gets rejected.
+                            if !steering {
+                                unaccepted_sends.push_back(SessionCommand::Send {
+                                    content: retry_content,
+                                    images: retry_images,
+                                });
+                            }
                             let _ = updates.send(Update::MessageSubmitted {
                                 session_id: session_id.clone(),
                             });
@@ -1163,8 +1151,20 @@ fn session_worker(
                 if event_session_id(&event).is_some_and(|id| id != session_id) {
                     continue;
                 }
+                if recover_async_busy(&event, &mut unaccepted_sends, &mut pending) {
+                    // send_message is fire-and-forget, so its busy rejection
+                    // arrives here, not in its Result. Replay the intact prompt
+                    // through steering before accepting another composer send.
+                    turn_active = true;
+                    _detach.set_processing(true);
+                    continue;
+                }
                 if matches!(event, ApiEvent::MessageAccepted { .. }) {
                     unaccepted_sends.pop_front();
+                } else if matches!(event, ApiEvent::Error { .. }) {
+                    // An unrelated terminal failure must not leave an old
+                    // payload eligible for recovery on a later busy error.
+                    unaccepted_sends.clear();
                 }
                 update_turn_activity(&event, &mut turn_active);
                 _detach.set_processing(turn_active);
@@ -1273,6 +1273,21 @@ fn is_already_processing_error(message: &str) -> bool {
         .contains("already processing a message")
 }
 
+fn recover_async_busy(
+    event: &ApiEvent,
+    unaccepted: &mut VecDeque<SessionCommand>,
+    pending: &mut VecDeque<SessionCommand>,
+) -> bool {
+    if !matches!(event, ApiEvent::Error { message, .. } if is_already_processing_error(message)) {
+        return false;
+    }
+    let Some(submission) = unaccepted.pop_front() else {
+        return false;
+    };
+    pending.push_front(submission);
+    true
+}
+
 fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
     match event {
         ApiEvent::MessageAccepted { .. } => *turn_active = true,
@@ -1305,6 +1320,10 @@ fn collect_disconnected_commands(
     }
     false
 }
+
+#[cfg(test)]
+#[path = "harness_submission_tests.rs"]
+mod submission_tests;
 
 #[cfg(test)]
 mod tests {

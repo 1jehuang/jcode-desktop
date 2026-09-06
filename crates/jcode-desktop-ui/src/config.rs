@@ -340,7 +340,10 @@ mod tests {
 
     #[test]
     fn layout_mode_defaults_to_folder_tabs_and_persists_without_losing_config() {
-        assert_eq!(DesktopConfig::default().appearance.layout_mode, LayoutMode::FolderTabs);
+        assert_eq!(
+            DesktopConfig::default().appearance.layout_mode,
+            LayoutMode::FolderTabs
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(&path, "# keep me\nmodel = \"openai:gpt-5\"\n").unwrap();
@@ -349,11 +352,17 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("# keep me"));
         assert!(text.contains("model = \"openai:gpt-5\""));
-        assert_eq!(parse(&text, false).unwrap().appearance.layout_mode, LayoutMode::Normal);
+        assert_eq!(
+            parse(&text, false).unwrap().appearance.layout_mode,
+            LayoutMode::Normal
+        );
 
         persist_layout_mode_at(&path, false, LayoutMode::FolderTabs).unwrap();
         let text = fs::read_to_string(path).unwrap();
         assert_eq!(text.matches("layout_mode =").count(), 1);
-        assert_eq!(parse(&text, false).unwrap().appearance.layout_mode, LayoutMode::FolderTabs);
+        assert_eq!(
+            parse(&text, false).unwrap().appearance.layout_mode,
+            LayoutMode::FolderTabs
+        );
     }
 }

@@ -28,10 +28,11 @@ def check_strip(image, focused, count=3):
     panel_width = (image.width - 288) * fraction
     for index in range(count):
         x = round(296 + panel_width * index)
-        assert image.getpixel((x, 300)) == sheet, 'Panels share a calm session sheet'
-        assert image.getpixel((x, 983)) == sheet, 'Panels share their bottom edge'
+        surface = sheet if index == focused else backing
+        assert image.getpixel((x, 300)) == surface, 'Pane color must follow focus'
+        assert image.getpixel((x, 983)) == surface, 'Focus color extends to the bottom edge'
         assert all(image.getpixel((x, y)) == backing for y in range(984, 1000))
-        assert image.getpixel((x, 50)) == sheet, 'The body starts below the tabs'
+        assert image.getpixel((x, 50)) == surface, 'Focus color starts below the tabs'
         assert image.getpixel((x, 8)) == backing, 'Keep background above the tabs'
     # The full-height gutter is deliberately independent of the sidebar selection.
     assert all(image.getpixel((270, y)) == backing for y in range(16, 984)), 'No sidebar-to-panel connector'

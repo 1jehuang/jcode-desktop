@@ -57,6 +57,8 @@ def main():
     parser.add_argument('--binary', type=Path,
                         help='desktop host executable, including an existing live host for compatibility checks')
     parser.add_argument('--reloads', type=int, default=2)
+    parser.add_argument('--default-launch', action='store_true',
+                        help='verify development hot reload without the --hot-reload flag')
     parser.add_argument('--compact-tabs', action='store_true',
                         help='use 12 real sessions at 800px and click every top tab without scrolling')
     parser.add_argument('--linked-ui', action='store_true',
@@ -191,7 +193,8 @@ def main():
         wm.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>')
         launch('wm', ['openbox', '--sm-disable', '--config-file', str(wm)])
         launch('app', [str(args.binary.absolute() if args.binary else repo / 'target/debug/jcode-desktop')]
-               + (['--no-hot-reload'] if args.linked_ui else ['--hot-reload']))
+               + (['--no-hot-reload'] if args.linked_ui else
+                  [] if args.default_launch else ['--hot-reload']))
         wait_until(lambda: (s := navigation_state(state_path)) is not None and len(s['rows'][0]['panels']) == 1,
                    'first real session (including startup build)', args.build_timeout)
         if not args.linked_ui:

@@ -72,7 +72,7 @@ fn rotate(source: &image::RgbaImage, degrees: f32) -> image::RgbaImage {
     })
 }
 
-fn raster_frames(emoji: &'static str) -> Option<Frames> {
+fn raster_frames(emoji: &'static str, ids: &crate::image_cache::ImageIds) -> Option<Frames> {
     // The platform's default family may not be installed (e.g. IBM Plex on
     // Linux). Shape using an installed base font and let native font fallback
     // select the emoji face, just as normal text does. Do not load emoji-only
@@ -116,15 +116,13 @@ fn raster_frames(emoji: &'static str) -> Option<Frames> {
     // Native color glyphs and RenderImage both use BGRA, no channel swap.
     let source = image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes)?;
     Some(std::array::from_fn(|step| {
-        Arc::new(RenderImage::new(vec![image::Frame::new(rotate(
-            &source,
-            pose_angle(step),
-        ))]))
+        ids.render(vec![image::Frame::new(rotate(&source, pose_angle(step)))])
     }))
 }
 
 impl Render for TabEmoji {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ids = crate::image_cache::ImageIds::get(cx);
         let reduced = crate::config::get().appearance.reduce_motion;
         let frames = if reduced {
             None
@@ -133,7 +131,7 @@ impl Render for TabEmoji {
                 .lock()
                 .unwrap()
                 .entry(self.emoji)
-                .or_insert_with(|| raster_frames(self.emoji))
+                .or_insert_with(|| raster_frames(self.emoji, &ids))
                 .clone()
         };
         let this = cx.entity().downgrade();
@@ -176,7 +174,8 @@ mod tests {
     #[ignore = "requires a native color emoji font"]
     fn native_emoji_produces_both_cached_poses() {
         for emoji in ["💫", "🦊", "🐱", "🐜", "🐟"] {
-            let frames = raster_frames(emoji).expect("native emoji rasterization");
+            let frames = raster_frames(emoji, &crate::image_cache::ImageIds::default())
+                .expect("native emoji rasterization");
             assert_ne!(frames[0].id, frames[1].id);
         }
     }

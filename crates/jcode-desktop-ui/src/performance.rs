@@ -75,7 +75,10 @@ struct ActionRecord {
 
 impl ActionCapture {
     pub(crate) fn new(path: PathBuf) -> Self {
-        Self { path, pending: None }
+        Self {
+            path,
+            pending: None,
+        }
     }
 
     pub fn from_env() -> Option<Self> {

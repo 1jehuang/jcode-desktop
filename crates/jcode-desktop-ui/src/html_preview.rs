@@ -63,7 +63,10 @@ impl Drop for Slot {
 }
 
 impl Worker {
-    fn start(source: String) -> Result<(Self, async_channel::Receiver<Update>), String> {
+    fn start(
+        source: String,
+        ids: crate::image_cache::ImageIds,
+    ) -> Result<(Self, async_channel::Receiver<Update>), String> {
         if source.len() > MAX_SOURCE {
             return Err("Preview exceeds the 256 KiB limit.".into());
         }
@@ -85,7 +88,7 @@ impl Worker {
         let (updates, output) = async_channel::bounded(2);
         std::thread::spawn(move || {
             let _slot = slot;
-            let result = run_worker(source, receiver, updates.clone());
+            let result = run_worker(source, receiver, updates.clone(), ids);
             if let Err(error) = result {
                 let _ = updates.send_blocking(Update::Error(error));
             }
@@ -101,6 +104,7 @@ fn run_worker(
     source: String,
     commands: mpsc::Receiver<Value>,
     updates: async_channel::Sender<Update>,
+    ids: crate::image_cache::ImageIds,
 ) -> Result<(), String> {
     let mut command = Command::new("/usr/bin/python3");
     command
@@ -169,9 +173,7 @@ fn run_worker(
                     for pixel in rgba.pixels_mut() {
                         pixel.0.swap(0, 2);
                     }
-                    Update::Frame(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
-                        rgba,
-                    )])))
+                    Update::Frame(ids.render(vec![image::Frame::new(rgba)]))
                 }
                 Some("error") => Update::Error(
                     value["message"]
@@ -272,7 +274,7 @@ impl Preview {
     }
     fn start(&mut self, cx: &mut Context<Self>) {
         self.error = None;
-        match Worker::start(self.source.clone()) {
+        match Worker::start(self.source.clone(), crate::image_cache::ImageIds::get(cx)) {
             Ok((worker, updates)) => {
                 self.worker = Some(worker);
                 self.task = Some(cx.spawn(async move |view, cx| {
@@ -521,7 +523,13 @@ mod tests {
     }
     #[test]
     fn rejects_large_documents_before_starting_a_process() {
-        assert!(Worker::start("x".repeat(MAX_SOURCE + 1)).is_err());
+        assert!(
+            Worker::start(
+                "x".repeat(MAX_SOURCE + 1),
+                crate::image_cache::ImageIds::default()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn preview_key_separates_content_and_position() {

@@ -40,9 +40,11 @@ def main():
                         help="measure fresh composer pixels and verify native typing and submission")
     parser.add_argument("--html-interact", action="store_true",
                         help="exercise native input and controls on the HTML fixture")
+    parser.add_argument("--image-interact", action="store_true",
+                        help="click an image, verify enlargement, and dismiss by Escape and click")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
-    parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
@@ -69,6 +71,10 @@ def main():
             parser.error("fresh-interact requires an empty transcript, one panel, warm-neutral folder tabs, and no other interaction mode")
         if not shutil.which("xdotool") or not shutil.which("tesseract"):
             parser.error("fresh-interact requires xdotool and tesseract")
+    if args.image_interact and (args.transcript != "image" or args.panels != 1 or args.html_interact or args.history_interact or args.learn_stage is not None or args.focus_panel is not None):
+        parser.error("image-interact requires the image transcript, one panel, and no other interaction mode")
+    if args.image_interact and not shutil.which("xdotool"):
+        parser.error("image-interact requires xdotool")
     if args.history_interact and (args.panels != 1 or args.size != "1440x1000" or args.learn_stage is not None or args.focus_panel is not None or args.html_interact):
         parser.error("history-interact requires default size, one panel, and no other interaction mode")
     if args.history_interact and not shutil.which("xdotool"):
@@ -199,6 +205,9 @@ def main():
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.fresh_interact:
                     from fresh_session_acceptance import verify
+                    verify(output, env, root)
+                if args.image_interact:
+                    from image_preview_acceptance import verify
                     verify(output, env, root)
                 if args.html_interact:
                     from html_preview_acceptance import verify

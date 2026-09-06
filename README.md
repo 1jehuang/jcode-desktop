@@ -111,6 +111,13 @@ cargo build -p jcode-desktop-ui
 cargo run -p jcode-desktop -- --hot-reload
 ```
 
+Debug builds launched from an available source checkout enable hot reload by
+default, including `cargo run -p jcode-desktop` and direct `target/debug`
+launches. Use `--no-hot-reload` to opt out. Release builds and offline screenshot
+fixtures keep the linked UI by default. `--hot-reload [plugin-path]` or
+`JCODE_DESKTOP_UI` can explicitly select a plugin, while `--no-hot-reload`
+overrides both. Hot reload is an explicit rebuild action, not a file watcher.
+
 Press **Ctrl+R** after changing UI code to rebuild `jcode-desktop-ui` and reload
 the latest version from the current checkout. **Ctrl+Shift+R** performs the same
 operation. The host checks the ABI, API-table size, pinned GPUI revision, and
