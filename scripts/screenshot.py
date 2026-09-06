@@ -36,6 +36,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--fresh-interact", action="store_true",
+                        help="measure fresh composer pixels and verify native typing and submission")
     parser.add_argument("--html-interact", action="store_true",
                         help="exercise native input and controls on the HTML fixture")
     parser.add_argument("--history-interact", action="store_true",
@@ -55,6 +57,18 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.fresh_interact:
+        incompatible = (
+            args.transcript != "empty" or args.panels != 1
+            or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+            or args.learn_stage is not None or args.focus_panel is not None
+            or args.html_interact or getattr(args, "image_interact", False)
+            or args.history_interact
+        )
+        if incompatible:
+            parser.error("fresh-interact requires an empty transcript, one panel, warm-neutral folder tabs, and no other interaction mode")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("fresh-interact requires xdotool and tesseract")
     if args.history_interact and (args.panels != 1 or args.size != "1440x1000" or args.learn_stage is not None or args.focus_panel is not None or args.html_interact):
         parser.error("history-interact requires default size, one panel, and no other interaction mode")
     if args.history_interact and not shutil.which("xdotool"):
@@ -183,6 +197,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.fresh_interact:
+                    from fresh_session_acceptance import verify
+                    verify(output, env, root)
                 if args.html_interact:
                     from html_preview_acceptance import verify
                     try:
