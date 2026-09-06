@@ -48,6 +48,8 @@ def main():
                         help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
+    parser.add_argument("--workspace-interact", action="store_true",
+                        help="measure four workspace identities and verify numbered map navigation")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens", "diff", "diff-rich"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
@@ -63,6 +65,16 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.workspace_interact:
+        if (args.panels != 4 or args.size != "1440x1000"
+                or args.theme not in ("warm-neutral", "neutral-light")
+                or args.layout_mode != "folder_tabs" or args.transcript != "all"
+                or args.learn_stage is not None or args.focus_panel is not None
+                or any((args.fresh_interact, args.html_interact, args.image_interact,
+                        args.image_cache_interact, args.mermaid_interact, args.history_interact))):
+            parser.error("workspace-interact requires four panels, default size/layout/transcript, warm-neutral or neutral-light, and no other interactions")
+        if not shutil.which("xdotool"):
+            parser.error("workspace-interact requires xdotool")
     if args.image_cache_interact:
         if (args.transcript != "image" or args.panels not in (1, 2) or args.size != "1440x1000"
                 or args.layout_mode != "folder_tabs" or args.theme != "warm-neutral"
@@ -220,6 +232,9 @@ def main():
                             raise RuntimeError("Native panel click did not update public focus state: " + state.read_text())
                         time.sleep(0.05)
                     time.sleep(0.5)
+                if args.workspace_interact:
+                    from workspace_identity_acceptance import verify
+                    verify(output, env, root, theme=args.theme)
                 if app.poll() is not None:
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
