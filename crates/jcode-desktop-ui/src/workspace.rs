@@ -32,6 +32,12 @@ use crate::updates;
 pub(crate) mod recovery;
 
 #[cfg(test)]
+#[path = "closing_navigation_tests.rs"]
+mod closing_navigation_tests;
+#[cfg(test)]
+#[path = "super_action_behavior_tests.rs"]
+mod super_action_behavior_tests;
+#[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
 #[cfg(test)]
@@ -39,12 +45,6 @@ mod navigation_map_tests;
 mod window_navigation_tests;
 #[path = "window_navigation.rs"]
 mod window_navigation;
-#[cfg(test)]
-#[path = "closing_navigation_tests.rs"]
-mod closing_navigation_tests;
-#[cfg(test)]
-#[path = "super_action_behavior_tests.rs"]
-mod super_action_behavior_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 #[path = "workspace_remotes.rs"]
@@ -1141,6 +1141,9 @@ impl Workspace {
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.focus_restore.clone() {
+            FocusSnapshot::Panel(_) if self.overview || self.overview_progress.is_animating() => {
+                self.focus_active(window, cx);
+            }
             FocusSnapshot::Panel(index) => {
                 if let Some(slot) = self.slots.get(index) {
                     let handle = slot.panel.read(cx).input_focus_handle(cx);
@@ -2591,7 +2594,7 @@ impl Workspace {
         self.retarget_camera();
     }
 
-    fn toggle_overview(&mut self, _: &ToggleOverview, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_overview(&mut self, _: &ToggleOverview, window: &mut Window, cx: &mut Context<Self>) {
         self.tutorial_cue("O", "Toggle overview", "overview", cx);
         self.learned("overview", cx);
         self.overview = !self.overview;
@@ -2599,6 +2602,7 @@ impl Workspace {
             .set(if self.overview { 1.0 } else { 0.0 }, Instant::now());
         self.hints_overlay = false;
         self.hints_progress.set(0.0, Instant::now());
+        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -2775,6 +2779,12 @@ impl Workspace {
     }
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
+        // Overview cards contain copied content, not mounted panel views. Keep
+        // shortcuts on the workspace until the exit animation remounts them.
+        if self.overview || self.overview_progress.is_animating() {
+            window.focus(&self.focus_handle, cx);
+            return;
+        }
         if let Some(slot) = self
             .slots
             .get(self.active)
@@ -2847,7 +2857,10 @@ impl Workspace {
                     },
                 ))
                 .child(if self.connected {
-                    format!("strip {} is empty - super-enter opens a session here", row + 1)
+                    format!(
+                        "strip {} is empty - super-enter opens a session here",
+                        row + 1
+                    )
                 } else {
                     "connecting to jcode...".into()
                 })
@@ -6002,10 +6015,6 @@ impl Render for Workspace {
             });
         }
         let render_started = Instant::now();
-        if self.focus_pending && !self.slots.is_empty() {
-            self.focus_pending = false;
-            self.focus_active(window, cx);
-        }
         let viewport = window.viewport_size();
         let sidebar_width = if self.show_sidebar {
             SIDEBAR_WIDTH
@@ -6032,7 +6041,14 @@ impl Render for Workspace {
         let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
 
         let now = Instant::now();
+        let overview_was_animating = self.overview_progress.is_animating();
         let overview_progress = self.overview_progress.sample(now);
+        let overview_finished =
+            overview_was_animating && !self.overview_progress.is_animating() && !self.overview;
+        if self.focus_pending || (overview_finished && self.focus_handle.is_focused(window)) {
+            self.focus_pending = false;
+            self.focus_active(window, cx);
+        }
         let hints_progress = self.hints_progress.sample(now);
         // Expire the hint on a schedule of its own, so a suggestion the user
         // ignores fades without needing another input to clear it.
@@ -8973,7 +8989,10 @@ mod tests {
                 vcx.update(|window, cx| {
                     let workspace = workspace.read(cx);
                     assert_eq!(workspace.active, expected, "{chord} after {button}");
-                    assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], expected);
+                    assert_eq!(
+                        workspace.navigation_state(window, cx)["keyboard_panel"],
+                        expected
+                    );
                 });
             }
         }
@@ -9172,7 +9191,10 @@ mod tests {
         vcx.run_until_parked();
         for (chord, expected) in [
             ("super-enter", Some(favorite.to_string_lossy().into_owned())),
-            ("ctrl-alt-enter", Some(favorite.to_string_lossy().into_owned())),
+            (
+                "ctrl-alt-enter",
+                Some(favorite.to_string_lossy().into_owned()),
+            ),
             ("super-n", default_working_dir()),
             ("super-;", Some(favorite.to_string_lossy().into_owned())),
             ("super-'", default_working_dir()),
@@ -9991,7 +10013,11 @@ mod tests {
             ("width_presets", "super-2", Box::new(WidthPreset2)),
             ("width_presets", "super-3", Box::new(WidthPreset3)),
             ("width_presets", "super-4", Box::new(WidthPreset4)),
-            ("new_panel", "super-enter", Box::new(NewPanelInPinnedDirectory)),
+            (
+                "new_panel",
+                "super-enter",
+                Box::new(NewPanelInPinnedDirectory),
+            ),
             ("close_panel", CLOSE_PANEL_CHORD, Box::new(ClosePanel)),
         ];
 
@@ -10177,12 +10203,11 @@ mod tests {
 
     #[gpui::test]
     fn sidebar_navigation_scrolls_with_wheel_and_track(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) =
-            cx.add_window_view(|_, cx| {
-                let mut w = Workspace::for_test(learning::Coach::new(), cx);
-                w.layout_mode = crate::config::LayoutMode::Normal;
-                w
-            });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.layout_mode = crate::config::LayoutMode::Normal;
+            w
+        });
         vcx.run_until_parked();
         let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
         let track = vcx.debug_bounds("sidebar-navigation-scrollbar").unwrap();
@@ -10627,6 +10652,118 @@ mod tests {
             vcx.debug_bounds("tutorial-learned-focus_up_down").is_some(),
             "the J/K chips should render their green completion state"
         );
+    }
+
+    #[gpui::test]
+    fn overview_navigation_keeps_root_focus_and_restores_composer(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["left", "middle", "right"] {
+                workspace.push_test_panel(name, cx);
+            }
+            workspace.set_active(1, cx);
+            workspace
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx));
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            assert_eq!(
+                workspace.read(cx).navigation_state(window, cx)["keyboard_panel"],
+                1
+            );
+        });
+
+        vcx.simulate_keystrokes("super-o");
+        std::thread::sleep(transition::policy(Transition::Overview).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        for (chord, expected) in [("super-h", 0), ("super-l", 1), ("super-l", 2)] {
+            vcx.simulate_keystrokes(chord);
+            vcx.run_until_parked();
+            vcx.update(|window, cx| {
+                let workspace = workspace.read(cx);
+                assert_eq!(workspace.active, expected, "{chord} must navigate overview");
+                assert!(workspace.overview, "navigation must keep overview visible");
+                assert!(
+                    workspace.focus_handle.is_focused(window),
+                    "overview must own keyboard focus"
+                );
+            });
+        }
+        vcx.simulate_keystrokes("super-o");
+        std::thread::sleep(transition::policy(Transition::Overview).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let workspace = workspace.read(cx);
+            assert!(!workspace.overview);
+            assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], 2);
+        });
+        vcx.simulate_keystrokes("super-h");
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active, 1));
+    }
+
+    #[gpui::test]
+    fn overview_restore_and_new_panel_keep_mounted_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("left", cx);
+            workspace.push_test_panel("right", cx);
+            workspace.set_active(1, cx);
+            workspace
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let mut snapshot = workspace.snapshot(window, cx).unwrap();
+                snapshot.overview = true;
+                // Older generations could persist a detached panel handle.
+                snapshot.focus = FocusSnapshot::Panel(1);
+                workspace.apply_snapshot(snapshot, cx);
+                workspace.restore_focus(window, cx);
+            });
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            assert!(workspace.read(cx).focus_handle.is_focused(window));
+        });
+        vcx.simulate_keystrokes("super-h");
+        vcx.run_until_parked();
+        workspace.update(vcx, |workspace, cx| {
+            assert_eq!(workspace.active, 0);
+            workspace.apply(
+                Update::SessionCreated {
+                    session: session_info("new-in-overview", None),
+                    request_id: None,
+                },
+                cx,
+            );
+            assert!(workspace.focus_pending);
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let workspace = workspace.read(cx);
+            assert!(workspace.overview);
+            assert!(workspace.focus_handle.is_focused(window));
+            assert!(!workspace.focus_pending);
+            assert_eq!(workspace.active, 1);
+        });
+        vcx.simulate_keystrokes("super-o");
+        std::thread::sleep(transition::policy(Transition::Overview).duration * 2);
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let workspace = workspace.read(cx);
+            assert!(!workspace.overview);
+            assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], 1);
+        });
+        vcx.simulate_keystrokes("super-h");
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active, 0));
     }
 
     #[gpui::test]
@@ -11848,7 +11985,9 @@ mod tests {
         cx: &mut gpui::VisualTestContext,
         selector: &'static str,
     ) {
-        if workspace.read_with(cx, |w, _| w.layout_mode == crate::config::LayoutMode::FolderTabs) {
+        if workspace.read_with(cx, |w, _| {
+            w.layout_mode == crate::config::LayoutMode::FolderTabs
+        }) {
             for _ in 0..11 {
                 let tabs = cx.debug_bounds("sidebar-navigation-tabs").unwrap();
                 if let Some(tab) = cx.debug_bounds(selector)

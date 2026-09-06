@@ -45,6 +45,14 @@ It leaves `navigation.jsonl`, logs and `navigation.png` under the output path,
 then cleans up all private processes. The output directory must not exist.
 `--reloads 0` is a quick navigation-only run. The default is two reloads.
 
+The runner also holds Super down across repeated H/L presses and checks both
+strip boundaries without releasing the modifier. It opens Overview from a
+focused composer, waits for the inputs to unmount, navigates right/left/right,
+then closes Overview and checks that the selected composer receives focus.
+Reloads now happen with Overview open, exercising the same focus ownership
+across the UI handoff. Overview must keep keyboard focus off hidden panel
+inputs while preserving the selected panel and session order.
+
 ## Opt-in state format
 
 Set `JCODE_DESKTOP_STATE=/path/to/state` when starting a test instance. Existing

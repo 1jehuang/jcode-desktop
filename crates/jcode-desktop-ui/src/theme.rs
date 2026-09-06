@@ -68,17 +68,10 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Stable spatial identities, separate from session status colors. Darker
-    /// inks on light palettes keep the small workspace numbers readable.
-    pub fn workspace_accent(&self, row: usize) -> Rgba {
-        let light =
-            self.PANEL_BG.r * 0.2126 + self.PANEL_BG.g * 0.7152 + self.PANEL_BG.b * 0.0722 > 0.5;
-        let colors = if light {
-            [0x245b9c, 0x19685e, 0x805210, 0x7540a2]
-        } else {
-            [0x8ab4f8, 0x80cbc4, 0xe8b86d, 0xc4a1ed]
-        };
-        rgb(colors[row % colors.len()])
+    /// Workspace numbers and selection use the theme's neutral ink, not
+    /// per-workspace colors. Numbers provide the stable workspace identity.
+    pub fn workspace_accent(&self, _row: usize) -> Rgba {
+        self.TEXT_DIM
     }
 
     /// Raised paper for the active pane, recessed backing for its neighbors.
@@ -611,12 +604,13 @@ mod tests {
     }
 
     #[test]
-    fn workspace_identities_are_distinct_and_readable_in_every_palette() {
+    fn workspace_identities_are_neutral_and_readable_in_every_palette() {
         for theme in themes() {
             for row in 0..4 {
                 let accent = theme.workspace_accent(row);
+                assert_eq!(accent, theme.TEXT_DIM);
                 for other in 0..row {
-                    assert_ne!(accent, theme.workspace_accent(other));
+                    assert_eq!(accent, theme.workspace_accent(other));
                 }
                 for background in [
                     theme.PANEL_BG,

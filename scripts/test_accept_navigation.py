@@ -14,6 +14,7 @@ class NavigationCheckerTests(unittest.TestCase):
     def setUp(self):
         self.state = {
             'version': 1, 'active_row': 0, 'focused_slot': 1, 'keyboard_panel': 1,
+            'overview': False,
             'rows': [
                 {'remembered': 1, 'panels': [
                     {'slot': 0, 'session': 'a', 'focused': False},
@@ -31,6 +32,15 @@ class NavigationCheckerTests(unittest.TestCase):
         for row, position in [(0, 0), (0, 2), (1, None)]:
             with self.subTest(row=row, position=position), self.assertRaises(AssertionError):
                 accept.assert_state(self.state, row, position)
+
+    def test_overview_rejects_focus_on_unmounted_panel_input(self):
+        self.state['overview'] = True
+        with self.assertRaises(AssertionError):
+            accept.assert_state(self.state, 0, 1, overview=True)
+        self.state['keyboard_panel'] = None
+        accept.assert_state(self.state, 0, 1, overview=True)
+        with self.assertRaises(AssertionError):
+            accept.assert_state(self.state, 0, 1)
 
     def test_rejects_divergent_keyboard_map_memory_or_order(self):
         mutations = [

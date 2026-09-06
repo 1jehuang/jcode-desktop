@@ -64,14 +64,24 @@ def comparison(reference_path, actual_path, crop):
     reference = Image.open(reference_path).convert("RGB").crop(crop)
     actual = Image.open(actual_path).convert("RGB").crop(crop)
     difference = ImageChops.difference(reference, actual)
-    changed = sum(1 for pixel in difference.getdata() if pixel != (0, 0, 0))
+    raw_difference = difference.tobytes()
+    changed = sum(
+        1
+        for offset in range(0, len(raw_difference), 3)
+        if raw_difference[offset:offset + 3] != b"\0\0\0"
+    )
     pixels = reference.width * reference.height
 
     # Mermaid's full-color image should have meaningful chroma. A stretched
     # tab emoji occupying the diagram rectangle changes both this count and the
     # exact crop by far more than the small tolerance below.
     def colorful(image):
-        return sum(1 for r, g, b in image.getdata() if max(r, g, b) - min(r, g, b) >= 24)
+        raw = image.tobytes()
+        return sum(
+            1
+            for offset in range(0, len(raw), 3)
+            if max(raw[offset:offset + 3]) - min(raw[offset:offset + 3]) >= 24
+        )
 
     ref_color = colorful(reference)
     actual_color = colorful(actual)
@@ -106,7 +116,7 @@ def main():
     except ValueError:
         parser.error("size must be WIDTHxHEIGHT")
     crop = parse_crop(args.crop, width, height)
-    for tool in ("Xvfb", "openbox", "xdotool", "import", "cargo"):
+    for tool in ("Xvfb", "openbox", "xdotool", "import"):
         if not shutil.which(tool):
             parser.error(f"missing required tool: {tool}")
     drivers = sorted(Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json"))
@@ -124,14 +134,19 @@ def main():
     with tempfile.TemporaryDirectory(prefix="accept-mermaid-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        cargo_shim = root / "cargo-no-build"
+        cargo_shim.write_text("#!/bin/sh\n# Acceptance reloads the already-built plugin.\nexit 0\n")
+        cargo_shim.chmod(0o700)
         env.update({
+            "CARGO": str(cargo_shim),
+            "TMPDIR": str(root / "tmp"),
             "JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "mermaid",
             "JCODE_DESKTOP_SCREENSHOT_PANELS": "1",
             "JCODE_DESKTOP_CONFIG": str(root / "desktop.toml"),
             "VK_DRIVER_FILES": str(drivers[0]),
         })
         (root / "desktop.toml").write_text('[appearance]\nlayout_mode = "folder_tabs"\ntheme = "warm-neutral"\n')
-        for name in ("home", "runtime", "config", "cache", "data", "jcode"):
+        for name in ("home", "runtime", "config", "cache", "data", "jcode", "tmp"):
             (root / name).mkdir(mode=0o700)
         wm_config = root / "openbox.xml"
         wm_config.write_text('''<openbox_config xmlns="http://openbox.org/3.4/rc">

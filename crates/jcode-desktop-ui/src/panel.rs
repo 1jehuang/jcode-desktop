@@ -2252,6 +2252,10 @@ impl Panel {
         self.pending_users.push_back(index);
     }
 
+    pub(crate) fn history_loaded(&self) -> bool {
+        self.history_loaded
+    }
+
     pub fn load_history(
         &mut self,
         messages: Vec<jcode_sdk::HistoryMessage>,
@@ -7328,6 +7332,11 @@ fn demo_items() -> Vec<Item> {
         return Vec::new();
     }
     if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff")
+    {
+        return diff_review::fixture_items();
+    }
+    if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff-rich")
     {
         return vec![
@@ -7337,11 +7346,6 @@ fn demo_items() -> Vec<Item> {
                 include_str!("../../../assets/previews/change-review.diff")
             )),
         ];
-    }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff")
-    {
-        return diff_review::fixture_items();
     }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mermaid")

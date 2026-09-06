@@ -50,6 +50,8 @@ def main():
                         help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--workspace-interact", action="store_true",
                         help="measure four workspace identities and verify numbered map navigation")
+    parser.add_argument("--model-interact", action="store_true",
+                        help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens", "diff", "diff-rich"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
@@ -65,6 +67,17 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.model_interact:
+        if (args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript not in ("all", "empty")
+                or args.learn_stage is not None or args.focus_panel is not None
+                or any((args.fresh_interact, args.html_interact, args.image_interact,
+                        args.image_cache_interact, args.mermaid_interact,
+                        args.history_interact, args.workspace_interact))):
+            parser.error("model-interact requires one panel, default size/theme/layout, all or empty transcript, and no other interaction mode")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("model-interact requires xdotool and tesseract")
     if args.workspace_interact:
         if (args.panels != 4 or args.size != "1440x1000"
                 or args.theme not in ("warm-neutral", "neutral-light")
@@ -152,6 +165,8 @@ def main():
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
+        if args.model_interact:
+            env["JCODE_DESKTOP_SCREENSHOT_MODELS"] = "1"
         if args.history_interact:
             env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
         env["VK_DRIVER_FILES"] = str(drivers[0])
@@ -239,6 +254,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.model_interact:
+                    from model_picker_acceptance import verify
+                    verify(output, env, root)
                 if args.fresh_interact:
                     from fresh_session_acceptance import verify
                     verify(output, env, root)

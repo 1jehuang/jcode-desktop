@@ -33,6 +33,8 @@ impl Workspace {
                             "slot": index,
                             "id": slot.panel.entity_id().as_u64(),
                             "session": slot.panel.read(cx).session_id,
+                            "history_loaded": slot.panel.read(cx).history_loaded(),
+                            "history_items": slot.panel.read(cx).items.len(),
                             "width": slot.width_fraction,
                             "focused": focused == Some(index),
                             "closing": slot.closing,

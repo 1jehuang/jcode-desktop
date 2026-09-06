@@ -30,13 +30,14 @@ def navigation_state(path):
         return None
 
 
-def assert_state(state, row, position, sessions=None):
+def assert_state(state, row, position, sessions=None, overview=False):
     assert state['version'] == 1
     assert state['active_row'] == row, state
     panels = state['rows'][row]['panels']
     slot = panels[position]['slot'] if position is not None else None
     assert state['focused_slot'] == slot, state
-    assert state['keyboard_panel'] == slot, 'Keyboard focus diverged from map focus'
+    assert state['overview'] == overview, 'Unexpected overview state'
+    assert state['keyboard_panel'] == (None if overview else slot), 'Keyboard focus diverged from visible input'
     focused = [p['slot'] for r in state['rows'] for p in r['panels'] if p['focused']]
     assert focused == ([] if slot is None else [slot]), 'Map must have exactly one focus, or none on an empty row'
     if slot is not None:
@@ -171,13 +172,13 @@ def main():
         subprocess.run(['xdotool', 'key', '--clearmodifiers', chord], env=env, check=True, timeout=10)
         time.sleep(.25)
 
-    def check(label, row, position, sessions=None):
+    def check(label, row, position, sessions=None, overview=False):
         def ready():
             state = navigation_state(state_path)
             if state is None:
                 return False
             try:
-                assert_state(state, row, position, sessions)
+                assert_state(state, row, position, sessions, overview)
                 return state
             except AssertionError:
                 return False
@@ -225,11 +226,16 @@ def main():
 
         for generation in range(args.reloads + 1):
             if generation:
+                key('super+o')
+                check(f'g{generation}-overview-before-reload', 0, 0, sessions, overview=True)
                 before = diagnostics.read_text().count('activated UI generation')
                 key('ctrl+r')
                 wait_until(lambda: diagnostics.read_text().count('activated UI generation') > before,
                            'Ctrl+R hot reload', args.build_timeout)
                 time.sleep(.5)
+                check(f'g{generation}-overview-after-reload', 0, 0, sessions, overview=True)
+                key('super+o')
+                check(f'g{generation}-input-after-reload', 0, 0, sessions)
             # Activation must identify the window, including after hot reload.
             # This queries only our private X11 display, not the compositor.
             identified = subprocess.check_output(
@@ -239,6 +245,21 @@ def main():
             # Every position, both edges and reversals. One chord means one hop.
             key('super+u')
             check(f'g{generation}-first', 0, 0, sessions)
+            # People commonly keep Super held while moving across several
+            # panels. Exercise that native modifier lifetime, not only chords
+            # that release every modifier between presses. Do not clear the
+            # modifiers here, which would hide a stuck/lost Super regression.
+            subprocess.run(['xdotool', 'keydown', 'Super_L'], env=env, check=True, timeout=10)
+            try:
+                for direction, positions in [
+                    ('l', [*range(1, panel_count), panel_count - 1]),
+                    ('h', [*range(panel_count - 2, -1, -1), 0]),
+                ]:
+                    for position in positions:
+                        subprocess.run(['xdotool', 'key', direction], env=env, check=True, timeout=10)
+                        check(f'g{generation}-held-super-{direction}-{position}', 0, position, sessions)
+            finally:
+                subprocess.run(['xdotool', 'keyup', 'Super_L'], env=env, check=True, timeout=10)
             for chord, positions in [('super+l', [*range(1, panel_count), panel_count - 1]),
                                      ('super+h', [*range(panel_count - 2, -1, -1), 0]),
                                      ('ctrl+Tab', range(1, panel_count)),
@@ -258,6 +279,21 @@ def main():
             check(f'g{generation}-empty-right', 1, None, [])
             key('super+k')
             check(f'g{generation}-return', 0, 0, sessions)
+            key('super+o')
+            # Wait until the panel inputs have actually unmounted. Dispatching
+            # during the opening animation can hide a detached focus handle.
+            time.sleep(1)
+            check(f'g{generation}-overview-open', 0, 0, sessions, overview=True)
+            key('super+l')
+            check(f'g{generation}-overview-right', 0, 1, sessions, overview=True)
+            key('super+h')
+            check(f'g{generation}-overview-left', 0, 0, sessions, overview=True)
+            key('super+l')
+            check(f'g{generation}-overview-right-again', 0, 1, sessions, overview=True)
+            key('super+o')
+            check(f'g{generation}-overview-close', 0, 1, sessions)
+            key('super+h')
+            check(f'g{generation}-after-overview-left', 0, 0, sessions)
             if args.compact_tabs:
                 geometry = subprocess.check_output(
                     ['xdotool', 'getactivewindow', 'getwindowgeometry', '--shell'],

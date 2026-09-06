@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    SharedString, Style, StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
-    actions, div, fill, img, point, prelude::*, px, relative, size,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, SharedString, Style,
+    StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill,
+    img, point, prelude::*, px, relative, size,
 };
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
@@ -1640,16 +1640,18 @@ mod tests {
 
     #[gpui::test]
     fn submitting_wrapped_prompt_resets_height_before_the_next_paint(cx: &mut TestAppContext) {
-        let (input, vcx) = cx.add_window_view(|_, cx| {
-            PromptInput::new(cx, "test", |_, _, _, _| {})
-        });
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
         vcx.update(|window, cx| {
             input.update(cx, |input, cx| {
                 input.content = "A wrapped prompt occupying several visual lines".into();
                 input.visual_line_count = 12;
                 input.submit(&Submit, window, cx);
                 assert!(input.content.is_empty());
-                assert_eq!(input.visual_line_count, 1, "cleared editor retained old wrapped height");
+                assert_eq!(
+                    input.visual_line_count, 1,
+                    "cleared editor retained old wrapped height"
+                );
             });
         });
     }
