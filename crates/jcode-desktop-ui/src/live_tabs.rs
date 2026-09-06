@@ -144,12 +144,16 @@ impl TabLayout {
                 })
                 .unwrap();
             let (left, right) = gaps[gap];
-            let step = ((right - left).max(0.0) / count).min(34.0);
-            let width = (step * 0.94).min(32.0);
-            let origin = if start == 0 {
-                left
-            } else {
+            let step = ((right - left).max(0.0) / count).min(114.0);
+            let width = (step * 0.94).min(112.0);
+            // Pack toward the neighboring visible folder, not the viewport
+            // edge. Panel order then reads naturally outwards from the pair.
+            // Only compact labels when the available side actually fills up.
+            let pack_right = end < geometry.len();
+            let origin = if pack_right {
                 right - step * count
+            } else {
+                left + step - width
             };
             for (offset, tab) in geometry[start..end].iter_mut().enumerate() {
                 *tab = Some(TabGeometry {
@@ -158,10 +162,10 @@ impl TabLayout {
                     height: FOLDER_CONTENT_INSET - 4.0,
                 });
             }
-            if start == 0 {
-                gaps[gap].0 += step * count;
-            } else {
+            if pack_right {
                 gaps[gap].1 -= step * count;
+            } else {
+                gaps[gap].0 += step * count;
             }
             start = end;
         }
@@ -700,7 +704,7 @@ mod tests {
                     assert!(tab.left + tab.width <= available + 0.001);
                     assert!(tab.width > 0.0);
                     if panels[i].is_none() {
-                        assert!(tab.width <= 32.0);
+                        assert!(tab.width <= 112.0);
                         assert_eq!(tab.height, FOLDER_CONTENT_INSET - 4.0);
                     } else {
                         let left = if i == hidden { 0.0 } else { available / 2.0 };
@@ -746,6 +750,15 @@ mod tests {
         assert_eq!((tabs[2].left + tabs[2].width + tabs[3].left) / 2.0, 576.0);
         assert!(tabs[1].left + tabs[1].width < tabs[2].left);
         assert!(tabs[4].left > tabs[3].left + tabs[3].width);
+        for i in [0, 1, 4, 5] {
+            assert!(tabs[i].width >= 100.0, "neighbor titles have room");
+        }
+        let left_gap = tabs[2].left - tabs[1].left - tabs[1].width;
+        let right_gap = tabs[4].left - tabs[3].left - tabs[3].width;
+        assert!(left_gap > 0.0 && left_gap <= 7.0);
+        assert!((left_gap - right_gap).abs() < 0.001);
+        assert!(tabs[0].left > 0.0, "left neighbors stay near the pair");
+        assert!(tabs[5].left + tabs[5].width < 1152.0);
         for selected in [2, 3] {
             for i in [2, 3] {
                 let (_, width) = TabLayout::exposed(&tabs, i, selected);
@@ -765,7 +778,7 @@ mod tests {
         ];
         let tabs = TabLayout::anchored(1152.0, &panels).unwrap();
         for i in [0, 3, 4] {
-            assert!((tabs[i].width - 31.96).abs() < 0.001);
+            assert!(tabs[i].width >= 100.0);
             assert_eq!(tabs[i].height, FOLDER_CONTENT_INSET - 4.0);
             for selected in 0..tabs.len() {
                 let (_, width) = TabLayout::exposed(&tabs, i, selected);

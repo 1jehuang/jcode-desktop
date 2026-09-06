@@ -162,6 +162,12 @@ def main():
             if label == "middle-right":
                 separation = points[3] - points[2]
                 assert 0 < separation < 220, f"middle tabs are not a joined pair: {points}"
+                assert all(points[i] < points[i + 1] for i in range(5)), points
+                # Hidden neighbors belong beside the pair, not at the canvas
+                # edges. Centers allow for their smaller labeled silhouettes.
+                for neighbor, anchor in ((1, 2), (4, 3)):
+                    distance = abs(points[neighbor] - points[anchor])
+                    assert 100 < distance < 175, (neighbor, anchor, points)
                 joined_pair = {"slots": [2, 3], "targets": [points[2], points[3]],
                                "separation_px": separation}
             assert len(panels(nav)) == 6 and not any(p["closing"] for p in panels(nav)), nav
