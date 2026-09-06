@@ -31,6 +31,9 @@ use crate::updates;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
+#[cfg(test)]
+#[path = "closing_navigation_tests.rs"]
+mod closing_navigation_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 
@@ -1780,9 +1783,12 @@ impl Workspace {
         self.showcase_motion("H", false, "Focus left", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
-            && position > 0
+            && let Some(&target) = indices[..position]
+                .iter()
+                .rev()
+                .find(|&&index| !self.slots[index].closing)
         {
-            self.set_active(indices[position - 1], cx);
+            self.set_active(target, cx);
             self.begin_action_capture("focus_left", window);
             self.focus_active(window, cx);
             // Credit only when the key did something: pressing into the edge of
@@ -1797,9 +1803,11 @@ impl Workspace {
         self.showcase_motion("L", false, "Focus right", cx);
         let indices: Vec<_> = self.row_indices(self.active_row).collect();
         if let Some(position) = indices.iter().position(|&index| index == self.active)
-            && position + 1 < indices.len()
+            && let Some(&target) = indices[position + 1..]
+                .iter()
+                .find(|&&index| !self.slots[index].closing)
         {
-            self.set_active(indices[position + 1], cx);
+            self.set_active(target, cx);
             self.begin_action_capture("focus_right", window);
             self.focus_active(window, cx);
             self.learned("focus_left_right", cx);
@@ -2433,6 +2441,10 @@ impl Workspace {
         };
         self.folder_picker_error = None;
         self.folder_search = None;
+        // Enter removes the focused search before the runtime responds. Restore
+        // a mounted target on the next render so navigation keeps working even
+        // if session creation is slow or fails.
+        self.focus_pending = true;
         self.bridge.send(Command::CreateSession {
             working_dir: Some(path.to_string_lossy().into_owned()),
             request_id: None,
@@ -2444,6 +2456,7 @@ impl Workspace {
         self.folder_picker_dir = None;
         self.folder_picker_error = None;
         self.folder_search = None;
+        self.focus_pending = true;
         cx.notify();
     }
 
@@ -8767,6 +8780,63 @@ mod tests {
             _ => panic!("folder selection sent the wrong runtime command"),
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn folder_picker_dismissal_restores_navigation_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["left", "middle", "right"] {
+                workspace.push_test_panel(name, cx);
+            }
+            workspace.set_active(1, cx);
+            workspace
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx));
+        });
+        vcx.run_until_parked();
+
+        // Both cancellation and submission unmount the focused search input.
+        // Submission must not depend on a future runtime reply to repair focus.
+        for button in ["folder-picker-cancel", "folder-picker-open", "enter"] {
+            vcx.simulate_keystrokes("ctrl-o");
+            vcx.run_until_parked();
+            vcx.update(|window, cx| {
+                let search = workspace.read(cx).folder_search.as_ref().unwrap();
+                assert!(search.read(cx).focus_handle.is_focused(window));
+            });
+            if button == "enter" {
+                vcx.simulate_keystrokes(". enter");
+            } else {
+                let bounds = vcx.debug_bounds(button).expect("picker button must render");
+                vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            }
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+            vcx.update(|window, cx| {
+                assert_eq!(
+                    workspace.read(cx).navigation_state(window, cx)["keyboard_panel"],
+                    1,
+                    "{button} must return keyboard focus to the selected panel"
+                );
+            });
+            for (chord, expected) in [
+                ("super-h", 0),
+                ("super-l", 1),
+                ("super-l", 2),
+                ("super-h", 1),
+            ] {
+                vcx.simulate_keystrokes(chord);
+                vcx.run_until_parked();
+                vcx.update(|window, cx| {
+                    let workspace = workspace.read(cx);
+                    assert_eq!(workspace.active, expected, "{chord} after {button}");
+                    assert_eq!(workspace.navigation_state(window, cx)["keyboard_panel"], expected);
+                });
+            }
+        }
     }
 
     #[test]

@@ -268,6 +268,20 @@ def main():
                 subprocess.run(['import', '-window', 'root',
                                 str(root / f'compact-tabs-g{generation}.png')],
                                env=env, check=True, timeout=15)
+        # No per-key settling delay: navigation must skip the dismissed panel
+        # while its close animation is still in flight, in either direction.
+        key('super+l')
+        check('before-close-left', 0, 1, sessions)
+        subprocess.run(['xdotool', 'key', '--clearmodifiers', '--delay', '1',
+                        'super+q', 'super+h'], env=env, check=True, timeout=10)
+        sessions.pop(1)
+        check('after-close-left', 0, 0, sessions)
+        key('super+l')
+        check('before-close-right', 0, 1, sessions)
+        subprocess.run(['xdotool', 'key', '--clearmodifiers', '--delay', '1',
+                        'super+q', 'super+Home', 'super+l'], env=env, check=True, timeout=10)
+        sessions.pop(1)
+        check('after-close-right', 0, 1, sessions)
         subprocess.run(['import', '-window', 'root', str(root / 'navigation.png')], env=env, check=True, timeout=15)
         print(f'PASS: {panel_count} real sessions, {args.reloads} hot reloads, native keys'
               f'{" and all compact tab clicks" if args.compact_tabs else ""}, consistent map/focus state. {root}', flush=True)
