@@ -110,3 +110,25 @@ cache initialization from approximately 0.182s through 0.575s, followed by font
 matching and workspace setup. It does not show a runtime or Cargo wait on the
 main thread. No platform font or graphics shortcuts were introduced based on
 this software-rendered profile.
+
+The follow-up full runner also passed at
+`target/startup-followthrough-full`: process-to-focused-panel latency was 0.459s,
+native typing and early Enter passed with both gates closed, the runtime attached
+at 9.425s, and automatic hot reload completed at 140.811s while preserving the
+same draft and focus. The long background build did not block the first panel.
+
+### Regression cleanup
+
+The final serial UI suite passed **361 tests with zero failures and seven
+opt-in tests ignored** (`target/startup-followthrough-ui-final.log`). This
+supersedes the earlier failing suite result above. All 19 host tests also passed
+again (`target/startup-followthrough-host-tests.log`).
+
+The Email overflow container now constrains its scrollable body with a flex
+column. History restoration uses a logical offset from the first transcript
+row, allowing the virtual list to measure and clamp it during layout instead
+of using an incomplete scrollbar height or a message-count heuristic. Tests
+cover short histories with stale offsets, a few very tall messages, and a long
+alternating transcript. A single requested follow-up frame refreshes scrollbar
+geometry. The gesture-lock and tab-state fixes landed in concurrent UI commits
+and also pass in this final suite.

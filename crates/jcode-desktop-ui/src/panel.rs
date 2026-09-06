@@ -1622,9 +1622,19 @@ impl Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .child(header)
-            .child(div().flex_1().min_h_0().relative().child(body).child(
-                crate::scrollbar::vertical(&self.gmail_scroll, "gmail-scrollbar"),
-            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(body)
+                    .child(crate::scrollbar::vertical(
+                        &self.gmail_scroll,
+                        "gmail-scrollbar",
+                    )),
+            )
             .into_any_element()
     }
 
@@ -2268,16 +2278,6 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.items = items;
-        // A saved offset is meaningful only for a transcript that can scroll.
-        // Applying an old negative offset to a short history leaves every row
-        // outside the viewport, so selecting that session appears to open an
-        // empty panel even though its minimap contains messages. Short histories
-        // fit comfortably in the panel at the minimum supported window size.
-        if self.pending_history_scroll.is_some() && self.items.len() <= 6 {
-            self.pending_history_scroll = None;
-            self.stick_to_bottom = true;
-            self.transcript_list.scroll_to_end();
-        }
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
@@ -3185,7 +3185,7 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 }
 
 impl Render for Panel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(terminal) = &self.terminal {
             return div()
                 .size_full()
@@ -3436,10 +3436,18 @@ impl Render for Panel {
             // Invalidate measurements while retaining virtualized painting.
             self.transcript_list.remeasure_items(0..row_count);
         }
-        if !self.items.is_empty() && self.pending_history_scroll.is_some() {
-            let (x, y) = self.pending_history_scroll.take().unwrap();
-            self.transcript_list
-                .set_offset_from_scrollbar(point(px(x), px(y)));
+        if row_count > 0 {
+            if let Some((_, y)) = self.pending_history_scroll.take() {
+                // Restore relative to the first row, not the scrollbar's
+                // partially measured total. The virtual list measures and
+                // clamps this logical position while laying out the history.
+                self.transcript_list.scroll_to(gpui::ListOffset {
+                    item_ix: 0,
+                    offset_in_item: px((-y).max(0.0)),
+                });
+                // Scrollbar geometry is available after this layout pass.
+                window.request_animation_frame();
+            }
         }
         if self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
@@ -4915,6 +4923,57 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_few_tall_restored_messages_keep_their_measured_scroll(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+
+        panel.update(vcx, |panel, cx| {
+            let mut snapshot = panel.snapshot(cx);
+            snapshot.scroll_y = -137.0;
+            snapshot.stick_to_bottom = false;
+            panel.restore_snapshot(snapshot, cx);
+            panel.load_history(
+                vec![
+                    jcode_sdk::HistoryMessage {
+                        role: "user".into(),
+                        content: (0..80)
+                            .map(|line| format!("Detailed request line {line}"))
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                    },
+                    jcode_sdk::HistoryMessage {
+                        role: "assistant".into(),
+                        content: (0..80)
+                            .map(|line| format!("Detailed response line {line}"))
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                    },
+                ],
+                Vec::new(),
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        vcx.run_until_parked();
+
+        panel.read_with(vcx, |panel, _| {
+            assert!(panel.pending_history_scroll.is_none());
+            assert_eq!(f32::from(panel.test_scroll_offset_y()), -137.0);
+            assert!(!panel.stick_to_bottom);
+        });
+    }
+
+    #[gpui::test]
     fn short_restored_history_discards_stale_offscreen_scroll(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -4945,10 +5004,20 @@ mod tests {
                 Vec::new(),
                 cx,
             );
-
-            assert!(panel.pending_history_scroll.is_none());
-            assert!(panel.stick_to_bottom);
         });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert!(panel.pending_history_scroll.is_none());
+            assert_eq!(f32::from(panel.test_scroll_offset_y()), 0.0);
+        });
+        assert!(
+            vcx.debug_bounds("transcript").is_some(),
+            "short restored history remains visible after measured clamping"
+        );
     }
 
     /// Measures frame construction, not GPU presentation, with realistic history
@@ -5040,7 +5109,9 @@ mod tests {
             panel.load_history(history, Vec::new(), cx);
         });
         vcx.run_until_parked();
-        panel.update(vcx, |_panel, cx| cx.notify());
+        vcx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         vcx.run_until_parked();
 
         assert!(
