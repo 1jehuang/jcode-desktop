@@ -3701,6 +3701,52 @@ impl Render for Panel {
                     cx.stop_propagation();
                 }
             }))
+            .children(
+                self.working_dir
+                    .as_deref()
+                    .filter(|dir| !dir.trim().is_empty())
+                    .map(|dir| {
+                        let path = compact_dir(dir);
+                        let name = std::path::Path::new(dir)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(&path)
+                            .to_owned();
+                        div()
+                            .debug_selector(|| "panel-working-directory".into())
+                            .flex_none()
+                            .min_w_0()
+                            .px_3()
+                            .py_1p5()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .border_b_1()
+                            .border_color(theme.PANEL_BORDER)
+                            .text_size(px(12.0))
+                            .child(
+                                div()
+                                    .debug_selector(|| "panel-directory-name".into())
+                                    .min_w_0()
+                                    .max_w_full()
+                                    .truncate()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.TEXT)
+                                    .child(name.clone()),
+                            )
+                            .when(path != name, |row| {
+                                row.child(
+                                    div()
+                                        .debug_selector(|| "panel-directory-path".into())
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(path),
+                                )
+                            })
+                    }),
+            )
             .children(pinned_todo.map(|payload| {
                 div()
                     .id("pinned-todo-toggle")
@@ -6591,6 +6637,60 @@ mod tests {
             .debug_bounds("md-quote")
             .expect("the quote region paints");
         assert!(quote.size.width > px(0.) && quote.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn working_directory_is_visible_above_the_chat_and_handles_missing_paths(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "directory-label".into(),
+                None,
+                Some("/srv/projects/jcode-desktop".into()),
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [320., 800.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
+            for dir in [
+                "/srv/projects/jcode-desktop",
+                "/srv/a-very-long-parent-directory/another-long-parent/jcode-desktop/",
+                "/srv/项目/桌面",
+                "/",
+                "relative-repo",
+            ] {
+                panel.update(vcx, |panel, cx| {
+                    panel.working_dir = Some(dir.into());
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let row = vcx
+                    .debug_bounds("panel-working-directory")
+                    .expect("directory row paints");
+                let name = vcx
+                    .debug_bounds("panel-directory-name")
+                    .expect("folder name paints");
+                let chat = vcx.debug_bounds("fresh-session").expect("chat paints");
+                assert!(row.size.height > px(0.));
+                assert!(row.bottom() <= chat.top());
+                assert!(name.size.width > px(0.));
+                assert!(name.left() >= row.left() && name.right() <= row.right());
+                if let Some(path) = vcx.debug_bounds("panel-directory-path") {
+                    assert!(path.left() >= name.right() && path.right() <= row.right());
+                }
+            }
+        }
+        for dir in [None, Some(""), Some("   ")] {
+            panel.update(vcx, |panel, cx| {
+                panel.working_dir = dir.map(str::to_owned);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("panel-working-directory").is_none());
+        }
     }
 
     /// The acceptance path: real events land in a real panel inside a painted
