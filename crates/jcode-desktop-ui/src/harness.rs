@@ -15,6 +15,9 @@ use std::time::Duration;
 
 use jcode_sdk::{ApiEvent, ConnectOptions, JcodeClient, LaunchOptions, SessionInfo};
 
+#[path = "harness_spawn.rs"]
+mod spawn_profile;
+
 const SIDEBAR_METADATA_WINDOW: usize = 64 * 1024;
 
 /// Updates flowing from the harness threads into the UI.
@@ -319,10 +322,10 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                     .name("jcode-bridge-create".into())
                     .spawn(move || {
                         loop {
-                            let result = connect("create").and_then(|client| {
-                                let session = client.create_session(working_dir.clone())?;
-                                Ok((session, client))
-                            });
+                            let result = spawn_profile::create(
+                                || connect("create"),
+                                working_dir.clone(),
+                            );
                             match result {
                                 Ok((session, client)) => {
                                     let _ = internal.send(Command::CreatedInternal {
@@ -333,12 +336,20 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                                     break;
                                 }
                                 Err(error) => {
+                                    if let Some(session_id) = &request_id
+                                        && !spawn_profile::retry_startup(Some(session_id))
+                                    {
+                                        let _ = updates.send(Update::CommandFailed {
+                                            session_id: session_id.clone(),
+                                            reason: format!("Could not start session: {error}"),
+                                        });
+                                    }
                                     if updates
                                         .send(Update::Status(format!(
                                             "create session failed: {error}"
                                         )))
                                         .is_err()
-                                        || request_id.is_none()
+                                        || !spawn_profile::retry_startup(request_id.as_deref())
                                     {
                                         break;
                                     }
