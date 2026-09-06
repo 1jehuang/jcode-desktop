@@ -115,3 +115,22 @@ public website feed.
 The clean-source UI test limitations are recorded separately in
 [`release-preflight-beta24.md`](release-preflight-beta24.md). The full UI suite is
 not claimed to be green.
+
+## Whole-result acceptance sweep
+
+After publication and public macOS acceptance had completed, a fresh sweep at
+02:11 UTC on September 6 reran the checks against the delivered result:
+
+| Requirement or public output | Observed result |
+| --- | --- |
+| Release tooling regression checks | All 26 Python tests passed again. |
+| Current website release metadata | Anonymous `latest.json` exactly matched the locally validated beta24 manifest, with `Cache-Control: no-store`. |
+| Downloadable platform packages and supporting files | All nine website URLs were fetched again in full without credentials. Every byte count and SHA-256 matched the manifest. |
+| Current macOS updater output | Anonymous appcast hash matched beta24 and its signed enclosure referenced the exact public beta24 ZIP. |
+| Public landing page | Anonymous `/desktop` returned HTTP 200. Earlier real-browser button checks remain recorded above. |
+| Private source preserved | GitHub reported the source repository private and the distribution repository public. The distribution git tree still contained only `README.md`. |
+| Public macOS installation | Rechecked completed run `34005671711`: success, including anonymous download, Gatekeeper/notarization, installation, and launch. This acceptance ran after publication against the delivered artifacts. |
+
+The sweep did not rebuild or alter immutable package bytes. Linux and Windows
+native launch acceptance applies to those same hash-verified packages, as
+recorded above. The separate pre-existing UI test limitations remain unchanged.
