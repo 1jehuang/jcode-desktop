@@ -487,6 +487,11 @@ fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
         light.CODE_NUMBER = rgb_c(0x7a542b);
         light.CODE_TYPE = rgb_c(0x4d587b);
         light.CODE_PUNCT = rgb_c(0x4e4a45);
+        // Status colors are also small foreground text in tool token badges.
+        // The inherited dark-theme pastels wash out against this light panel.
+        light.OK = rgb_c(0x3f6848);
+        light.WARN = rgb_c(0x7a542b);
+        light.ERROR = rgb_c(0xa33b3b);
         light.INPUT_BG = rgb_c(0xffffff);
         light.INPUT_BORDER = rgb_c(0xbdb7ae);
         light.CURSOR = rgb_c(0x292724);
@@ -659,6 +664,9 @@ mod tests {
                 (theme.TEXT, theme.PANEL_BG, "panel text"),
                 (theme.TEXT_DIM, theme.PANEL_BG, "secondary text"),
                 (theme.REASONING, theme.PANEL_BG, "thinking text"),
+                (theme.OK, theme.PANEL_BG, "normal token badge"),
+                (theme.WARN, theme.PANEL_BG, "warning token badge"),
+                (theme.ERROR, theme.PANEL_BG, "large token badge"),
                 (theme.CODE_TEXT, theme.CODE_BG, "code text"),
                 (theme.TEXT_USER, theme.USER_BG, "user text"),
             ] {
