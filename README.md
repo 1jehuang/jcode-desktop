@@ -24,6 +24,9 @@ This uses private Xvfb and a real isolated Jcode daemon, verifies session
 directories and keyboard focus, then changes history and restarts to check the
 fixed directory. It makes no model requests. Use `--bridge /path/to/jcode-harness-api-bridge`
 to test a newly built companion bridge rather than the installed version.
+Add `--check-attachments` to verify the companion's explicit/default create
+directories, persisted-session reattachment, and typed errors for missing cwd.
+This writes a requirement-by-requirement `api-attachment-acceptance.json` report.
 
 ## Configuration
 

@@ -22,6 +22,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='new evidence directory')
     parser.add_argument('--bridge', type=Path, help='freshly built jcode-harness-api-bridge')
+    parser.add_argument('--check-attachments', action='store_true',
+                        help='also verify the real companion API cwd and error contracts')
     args = parser.parse_args()
     root = args.output.resolve()
     assert len(str(root / 'runtime/daemon.sock').encode()) < 104
@@ -180,6 +182,9 @@ exec "{jcode}" "$@"
         verify('super+semicolon', favorite, 'favorite-after-restart')
         (root / 'acceptance.json').write_text(json.dumps(evidence, indent=2) + '\n')
         print('PASS: native keys created real sessions in the expected directories; pin survived changed history and restart.', flush=True)
+        if args.check_attachments:
+            from api_attachment_acceptance import verify as verify_attachments
+            verify_attachments(root, env)
     finally:
         os.close(read_fd)
         if write_fd is not None:
