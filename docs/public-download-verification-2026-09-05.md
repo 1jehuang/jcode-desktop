@@ -70,7 +70,9 @@ which GPUI requires. The same packaged binary passed the corrected native
 Wayland fixture, nested Weston on a private Xvfb/Openbox display with `DISPLAY`
 removed from the app. Recovery run
 [`34000612721`](https://github.com/1jehuang/jcode-desktop/actions/runs/34000612721)
-is rebuilding the same immutable release source and pinned runtime.
+passed the recovered build, package verification, X11 and native Wayland smoke
+tests, and upload to the private prerelease. Both downloaded Linux packages
+passed their SHA-256 checks and the tarball passed the package-content verifier.
 
 Windows job `101390299810` in run `33997432311` passed compilation, package
 verification, native launch smoke testing, and artifact upload at 00:49 UTC on
@@ -78,8 +80,37 @@ September 6. Its downloaded ZIP also passed the local package-content verifier
 and SHA-256 checksum. The parent workflow's Linux failure does not invalidate
 these observed Windows acceptance results.
 
-Beta23 remains the current public release until Linux recovery passes and the
-complete beta24 release is published and anonymously verified.
+The complete beta24 release was published by run
+[`34005643062`](https://github.com/1jehuang/jcode-desktop/actions/runs/34005643062)
+at 02:07 UTC on September 6. All nine assets were downloaded in full without
+credentials from both the public GitHub origin and stable website URLs, with
+matching SHA-256 hashes and lengths:
+
+| Artifact | Bytes |
+| --- | ---: |
+| Linux amd64 DEB | 58,165,336 |
+| Linux x86_64 tar.gz | 82,100,793 |
+| macOS universal update ZIP | 146,733,629 |
+| Windows x86_64 ZIP | 64,857,341 |
+| macOS universal DMG | 162,314,138 |
+| SHA256SUMS | 198 |
+| SHA256SUMS-linux | 208 |
+| SHA256SUMS-windows | 106 |
+| appcast.xml | 811 |
+
+An independent request confirmed `/desktop/latest.json` equals the complete
+locally validated beta24 manifest and retains `Cache-Control: no-store`. The
+current `/desktop/appcast.xml` matches the published feed hash and points to the
+exact beta24 public update ZIP. The website now advertises beta24.
+
+Public-artifact macOS installation acceptance passed at 02:08 UTC on September 6
+in run [`34005671711`](https://github.com/1jehuang/jcode-desktop/actions/runs/34005671711).
+The job downloaded the exact public artifacts anonymously, verified checksums,
+validated DMG notarization and Gatekeeper acceptance, installed the app, and
+passed installed-bundle verification and launch checks.
+Existing Mac installations with the old private-GitHub feed require one manual
+installation from the new public DMG to receive future updates through the
+public website feed.
 
 The clean-source UI test limitations are recorded separately in
 [`release-preflight-beta24.md`](release-preflight-beta24.md). The full UI suite is
