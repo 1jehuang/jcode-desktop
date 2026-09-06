@@ -71,12 +71,23 @@ impl Default for Roller {
 
 impl Roller {
     fn move_to(&mut self, target: f32) {
+        self.move_to_at(
+            target,
+            transition::policy(Transition::Focus).duration,
+            Instant::now(),
+        );
+    }
+
+    fn move_to_at(&mut self, target: f32, duration: Duration, now: Instant) {
         self.target = target;
-        let duration = transition::policy(Transition::Focus).duration;
         if duration.is_zero() {
             self.position = AnimatedValue::new(target, duration);
         } else {
-            self.position.set(target, Instant::now());
+            // Reapply the current policy after reduced motion is switched off,
+            // preserving the sampled position when reversing mid-animation.
+            let current = self.position.sample(now);
+            self.position = AnimatedValue::new(current, duration);
+            self.position.set(target, now);
         }
     }
 
@@ -103,7 +114,9 @@ impl Roller {
 struct Label(&'static str);
 impl Render for Label {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let label = self.0;
         div()
+            .debug_selector(move || format!("sidebar-roller-tooltip-{label}"))
             .px_2()
             .py_1()
             .rounded_md()
@@ -278,6 +291,7 @@ impl Workspace {
                     .when(exposed >= 16.0, |el| {
                         el.child(
                             div()
+                                .debug_selector(move || format!("sidebar-roller-label-{label}"))
                                 .flex_none()
                                 .w(px((exposed - 4.0).max(0.0)))
                                 .mx(px(2.0))
@@ -337,6 +351,92 @@ impl Workspace {
 mod tests {
     use super::*;
 
+    #[test]
+    fn roller_motion_reverses_without_jumps_and_resumes_after_reduced_motion() {
+        let now = Instant::now();
+        let duration = Duration::from_millis(150);
+        let mut roller = Roller::default();
+        roller.move_to_at(1.0, duration, now);
+        assert_eq!(roller.position.sample(now), 0.0);
+        let mid_time = now + Duration::from_millis(50);
+        let middle = roller.position.sample(mid_time);
+        assert!(middle > 0.0 && middle < 1.0);
+        roller.move_to_at(0.0, duration, mid_time);
+        assert_eq!(roller.position.sample(mid_time), middle);
+        assert_eq!(
+            roller.position.sample(now + Duration::from_millis(250)),
+            0.0
+        );
+        assert!(!roller.is_animating());
+        let restart = now + Duration::from_millis(300);
+        roller.move_to_at(3.0, Duration::ZERO, restart);
+        assert_eq!(roller.position.sample(restart), 3.0);
+        assert!(!roller.is_animating());
+        roller.move_to_at(4.0, duration, restart);
+        let resumed = roller.position.sample(restart + Duration::from_millis(50));
+        assert!(resumed > 3.0 && resumed < 4.0);
+        assert!(roller.is_animating());
+    }
+
+    #[gpui::test]
+    fn roller_exposed_labels_do_not_overlap_and_thin_tabs_keep_full_tooltips(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_, vcx) = cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        let selected = vcx.debug_bounds("sidebar-sessions-tab").unwrap();
+        let label = vcx.debug_bounds("sidebar-roller-label-learn").unwrap();
+        let tab = vcx.debug_bounds("sidebar-learn-tab").unwrap();
+        assert!(label.left() >= selected.right());
+        assert!(label.right() <= tab.right());
+        assert!(label.top() >= tab.top() && label.bottom() <= tab.bottom());
+        let thin = vcx.debug_bounds("sidebar-accounts-tab").unwrap();
+        assert!(thin.size.width < px(16.0));
+        assert!(vcx.debug_bounds("sidebar-roller-label-accounts").is_none());
+        vcx.update(|window, cx| window.simulate_mouse_move(thin.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_secs(1));
+        vcx.run_until_parked();
+        let tooltip = vcx.debug_bounds("sidebar-roller-tooltip-accounts").unwrap();
+        assert!(tooltip.size.width > thin.size.width);
+    }
+
+    #[gpui::test]
+    fn roller_restores_selected_page_and_hidden_motion_does_not_schedule_frames(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.sidebar_view = SidebarView::Settings;
+            w
+        });
+        vcx.run_until_parked();
+        let snapshot = workspace.update_in(vcx, |w, window, cx| {
+            w.sidebar_roller
+                .move_to_at(6.0, Duration::from_secs(1), Instant::now());
+            assert!(w.animation_active());
+            w.show_sidebar = false;
+            assert!(!w.animation_active());
+            w.show_sidebar = true;
+            w.layout_mode = crate::config::LayoutMode::Normal;
+            assert!(!w.animation_active());
+            w.layout_mode = crate::config::LayoutMode::FolderTabs;
+            w.snapshot(window, cx).unwrap()
+        });
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_roller = Roller::default();
+            w.apply_snapshot(snapshot, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let restored = vcx.debug_bounds("sidebar-settings-tab").unwrap();
+        assert!((f32::from(restored.center().x) - SIDEBAR_WIDTH / 2.0).abs() < 1.0);
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.sidebar_view, SidebarView::Settings);
+            assert!(!w.sidebar_roller.is_animating());
+        });
+    }
+
     #[gpui::test]
     fn roller_browses_without_launching_and_clicks_each_sidebar_page(
         cx: &mut gpui::TestAppContext,
@@ -345,10 +445,16 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         vcx.run_until_parked();
         let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
-        for delta in [-48.0, -96.0, -384.0, 48.0, 480.0] {
+        for (dx, dy) in [
+            (-48.0, 0.0),
+            (0.0, -96.0),
+            (-384.0, -1.0),
+            (48.0, 1.0),
+            (0.0, 480.0),
+        ] {
             vcx.simulate_event(gpui::ScrollWheelEvent {
                 position: tabs.center(),
-                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(delta))),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(dx), px(dy))),
                 modifiers: gpui::Modifiers::default(),
                 touch_phase: gpui::TouchPhase::Moved,
             });
@@ -379,6 +485,66 @@ mod tests {
             vcx.run_until_parked();
             workspace.read_with(vcx, |w, _| assert_eq!(Some(w.sidebar_view), *view));
         }
+    }
+
+    #[gpui::test]
+    fn roller_folder_and_new_session_clicks_preserve_their_action_contracts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(move |_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w
+        });
+        vcx.run_until_parked();
+        for _ in 0..2 {
+            let previous = vcx.debug_bounds("sidebar-roller-previous").unwrap();
+            vcx.simulate_click(previous.center(), gpui::Modifiers::default());
+            workspace.update(vcx, |w, cx| {
+                w.sidebar_roller.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        }
+        assert!(
+            commands.try_recv().is_err(),
+            "browsing must not create a session"
+        );
+        let folder = vcx.debug_bounds("sidebar-open-folder").unwrap();
+        vcx.simulate_click(folder.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+        assert!(
+            !vcx.did_prompt_for_paths(),
+            "folder action stays in the app"
+        );
+        let cancel = vcx.debug_bounds("folder-picker-cancel").unwrap();
+        vcx.simulate_click(cancel.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+        assert!(commands.try_recv().is_err());
+        let next = vcx.debug_bounds("sidebar-roller-next").unwrap();
+        vcx.simulate_click(next.center(), gpui::Modifiers::default());
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_roller.settle();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let new = vcx.debug_bounds("sidebar-new-session").unwrap();
+        vcx.simulate_click(new.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::CreateSession {
+                request_id: None,
+                ..
+            })
+        ));
+        assert!(
+            commands.try_recv().is_err(),
+            "one click emits exactly one command"
+        );
     }
 
     #[test]

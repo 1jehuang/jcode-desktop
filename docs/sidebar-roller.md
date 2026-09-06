@@ -86,3 +86,13 @@ This establishes improvement on the requested flat-to-curved and roller-navigati
 criteria. It does not establish that the user prefers this interpretation to a
 vertical roller. Neighbors intentionally expose less label text than the old flat
 strip; the centered label and full-label tooltips preserve access to their names.
+
+## Complete requirement mapping
+
+The follow-up [requirement-to-check map](sidebar-roller-requirements.md) records
+observed results for all three explicit requirements and 22 changed public-output
+contracts. It adds tooltip, reduced-motion recovery, hidden-frame scheduling,
+snapshot restoration, and all five action-tab checks. The final run passed 46
+sidebar tests plus five additional regressions and 17 native checkpoints. A
+reduced-motion policy-resumption bug found during this mapping was fixed, rebuilt,
+and activated in the running desktop before the final native run.

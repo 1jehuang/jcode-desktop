@@ -60,6 +60,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="new directory for screenshots, trace, and logs")
     parser.add_argument("--binary", type=Path, help="current binary; defaults to target/debug/jcode-desktop")
+    parser.add_argument("--actions", action="store_true",
+                        help="also verify Todos, Todoist, and Email open their intended panels")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -265,6 +267,34 @@ def main():
         assert_page("Sessions", "wrapped Sessions activation")
         final = capture("08-final-sessions", "chat")
         assert_browse_safe(final, "final Sessions activation")
+
+        if args.actions:
+            # Only the isolated fixture is touched. No account credentials exist
+            # here; this checks action routing, not external service availability.
+            for _ in range(6):
+                point_and_click(NEXT)
+            for number, (label, session) in enumerate([
+                    ("todos", "unfinished-work"), ("todoist", "todoist://tasks"),
+                    ("email", "gmail://inbox")], 9):
+                if number > 9:
+                    point_and_click(NEXT)
+                before = navigation_state(state_path)
+                old_panels = panel_signature(before)[0]
+                point_and_click(CENTER)
+
+                def opened():
+                    nav = navigation_state(state_path)
+                    if nav is None:
+                        return False
+                    panels = [p for row in nav["rows"] for p in row["panels"]]
+                    return (len(panels) == len(old_panels) + 1
+                            and any(p["session"] == session and p["focused"]
+                                    and nav["keyboard_panel"] == p["slot"] for p in panels))
+
+                wait_until(opened, label + " action opened and focused its panel")
+                item = capture(f"{number:02d}-action-{label}", label)
+                assert item["visible_windows"] == baseline_windows, \
+                    label + " action unexpectedly opened another native window"
 
         print("PASS: wheel and arrows browse without activation; centered Learn, Files, "
               "Accounts, and Theme clicks activate; next wraps to Sessions. "
