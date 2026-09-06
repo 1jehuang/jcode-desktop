@@ -47,3 +47,31 @@ The post-audit rerun completed successfully at
 - Private temporary plugin directories were again absent after cleanup.
 - No UI implementation changes followed these checks. The only follow-up was
   documenting this requirement map and its explicitly bounded observations.
+
+## Combined rerun of every mapped check
+
+The final combined command completed successfully with no UI edits between its
+stages: the current project tab tests, fresh 800×700 and 1440×900 real-app
+screenshots, and the full real-session/native-input/hot-reload workflow.
+
+- **Shapes, compactness, titles, emoji, motion, tooltip, resize, and attachment:**
+  all 9 mapped tab tests passed again. Exact test names are preserved in
+  `target/tab-requirements-final-native/requirement-results.json`.
+- **Current rendered output:** both `tab-requirements-final-crowded.png` and
+  `tab-requirements-final-wide.png` were freshly captured and inspected. The
+  active full title and emoji remain visible, the crowded neighbors overlap,
+  and the active folder is above its own panel rather than the strip center.
+- **Native compact-tab selection, identities, composer focus, rows and reload:**
+  157 checkpoints and 52 native clicks passed again across one actual
+  reload in `target/tab-requirements-final-native`.
+- **Current native attachment:** 153 applicable snapshots give a maximum
+  tab/panel center error of 0.0px.
+- **Current rendered outline softness:** the freshly captured border is RGB
+  (86, 78, 69), with unchanged interior RGB (37, 34, 31). Against the original border, the
+  measured RGB contrast reduction is 49.81%.
+- **Changed diagnostics and cleanup:** the native checks used the actual rendered
+  targets and settled-motion flags, and zero private plugin copies remained.
+
+The explicit physical/offscreen and unverified vertical-transition limits above
+remain limits, not silently promoted to successful guarantees. Only evidence
+documentation followed this run.
