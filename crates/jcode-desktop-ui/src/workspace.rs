@@ -35,6 +35,11 @@ pub(crate) mod recovery;
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
 #[cfg(test)]
+#[path = "window_navigation_tests.rs"]
+mod window_navigation_tests;
+#[path = "window_navigation.rs"]
+mod window_navigation;
+#[cfg(test)]
 #[path = "closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[path = "navigation_state.rs"]
@@ -521,6 +526,7 @@ pub struct Workspace {
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
+    _navigation_fallback: gpui::Subscription,
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
@@ -701,6 +707,7 @@ impl Workspace {
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle(),
+            _navigation_fallback: Self::install_navigation_fallback(cx),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
@@ -872,6 +879,7 @@ impl Workspace {
             status: "test".into(),
             connected: true,
             focus_handle: cx.focus_handle(),
+            _navigation_fallback: Self::install_navigation_fallback(cx),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
