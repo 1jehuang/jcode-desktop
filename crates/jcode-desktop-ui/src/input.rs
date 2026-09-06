@@ -3,7 +3,6 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -237,14 +236,11 @@ struct Attachment {
     preview: Arc<gpui::Image>,
 }
 
-static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
-
 fn preview_image(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
-    Some(Arc::new(gpui::Image {
-        format: gpui::ImageFormat::from_mime_type(media_type)?,
+    Some(crate::image_cache::encoded(
+        gpui::ImageFormat::from_mime_type(media_type)?,
         bytes,
-        id: NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed),
-    }))
+    ))
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

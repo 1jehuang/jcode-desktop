@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -28,6 +27,8 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 mod activity;
 #[path = "panel_diff.rs"]
 mod diff_review;
+#[path = "panel_flicker.rs"]
+mod flicker;
 #[path = "panel_image_preview.rs"]
 mod image_preview;
 #[path = "panel_prompt.rs"]
@@ -126,19 +127,16 @@ pub struct TranscriptImage {
     preview: Option<Arc<gpui::Image>>,
 }
 
-static NEXT_TRANSCRIPT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
-
 impl TranscriptImage {
     fn new(media_type: String, data: String, label: Option<String>) -> Self {
         let preview = base64::engine::general_purpose::STANDARD
             .decode(&data)
             .ok()
             .and_then(|bytes| {
-                Some(Arc::new(gpui::Image {
-                    format: gpui::ImageFormat::from_mime_type(&media_type)?,
+                Some(crate::image_cache::encoded(
+                    gpui::ImageFormat::from_mime_type(&media_type)?,
                     bytes,
-                    id: NEXT_TRANSCRIPT_IMAGE_ID.fetch_add(1, Ordering::Relaxed),
-                }))
+                ))
             });
         Self {
             media_type,
@@ -198,6 +196,7 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
+    flicker_diagnostics: std::rc::Rc<std::cell::RefCell<flicker::Detector>>,
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
     pinned_todo_expanded: bool,
@@ -614,6 +613,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
+            flicker_diagnostics: Default::default(),
             startup_layout: None,
             offscreen_prompt: None,
             pinned_todo_expanded: false,
@@ -3986,7 +3986,14 @@ impl Render for Panel {
             )
             // Input
             .when(!fresh_session && self.startup_layout.is_none(), |el| {
-                el.child(div().px_2().py_2().child(self.input.clone()))
+                el.child(
+                    div().px_2().py_2().child(
+                        div()
+                            .relative()
+                            .child(self.input.clone())
+                            .child(startup::input_marker(input_bounds.clone())),
+                    ),
+                )
             })
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -3995,7 +4002,19 @@ impl Render for Panel {
                     cx.notify();
                 }),
             )
-            .child(self.startup_layout_observer(fresh_session, input_bounds, body_bounds, cx))
+            .child(self.startup_layout_observer(
+                fresh_session,
+                input_bounds.clone(),
+                body_bounds,
+                cx,
+            ))
+            .child(flicker::observer(
+                self.flicker_diagnostics.clone(),
+                self.transcript_list.clone(),
+                input_bounds,
+                self.offscreen_prompt.is_some(),
+                cx.entity().entity_id(),
+            ))
             .children(model_picker)
             .children(self.render_image_preview(cx))
             .children(self.render_diff_review(cx))

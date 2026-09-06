@@ -42,6 +42,8 @@ def main():
                         help="exercise native input and controls on the HTML fixture")
     parser.add_argument("--image-interact", action="store_true",
                         help="click an image, verify enlargement, and dismiss by Escape and click")
+    parser.add_argument("--image-cache-interact", action="store_true",
+                        help="verify distinct pasted/transcript images and repeated stable image frames (GTK3 required)")
     parser.add_argument("--mermaid-interact", action="store_true",
                         help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
     parser.add_argument("--history-interact", action="store_true",
@@ -61,6 +63,15 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.image_cache_interact:
+        if (args.transcript != "image" or args.panels != 1 or args.size != "1440x1000"
+                or args.layout_mode != "folder_tabs" or args.theme != "warm-neutral"
+                or args.fresh_interact or args.html_interact or args.image_interact
+                or args.mermaid_interact or args.history_interact
+                or args.learn_stage is not None or args.focus_panel is not None):
+            parser.error("image-cache-interact requires the image transcript, default size/theme/layout, one panel, and no other interaction mode")
+        if not shutil.which("xdotool"):
+            parser.error("image-cache-interact requires xdotool")
     if args.mermaid_interact:
         if (args.transcript != "mermaid" or args.panels != 1
                 or args.fresh_interact or args.html_interact or args.image_interact
@@ -218,6 +229,9 @@ def main():
                     verify(output, env, root)
                 if args.image_interact:
                     from image_preview_acceptance import verify
+                    verify(output, env, root)
+                if args.image_cache_interact:
+                    from image_cache_acceptance import verify
                     verify(output, env, root)
                 if args.mermaid_interact:
                     from mermaid_preview_acceptance import verify
