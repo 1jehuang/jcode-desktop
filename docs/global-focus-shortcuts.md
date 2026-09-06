@@ -85,3 +85,32 @@ was backed up with suffix `.bak-desktop-enter-20260906`. The current live host
 (PID 486587) acknowledged the Ctrl+R-equivalent action and activated UI
 generation 2. The final offline screenshot was inspected at
 `target/ui-review-pinned-enter.png`.
+
+### Measured original-versus-installed helper outcome
+
+The combined path was subsequently tested rather than relying on separate
+helper mocks and direct-key tests. `accept-shortcuts.py` now accepts
+`--global-helper`, `--baseline-helper`, and `--pinned-directory`. In a single
+private native app, it ran the backed-up original helper and the installed
+replacement with an explicit `/home/jeremy/jcode-desktop` pin.
+
+| Invocation | Before → after panels | Keyboard target | Daemon-reported cwd |
+| --- | --- | --- | --- |
+| Original helper, `new` | 1 → 1 (zero created) | Unchanged | No session created |
+| Installed helper, `new` | 1 → 2 (one created) | New panel, slot 1 | `/home/jeremy/jcode-desktop` |
+| Installed helper after restart, `new` | 4 → 5 (one created) | New panel, slot 4 | `/home/jeremy/jcode-desktop` |
+
+The same run verified direct Super+Enter, Ctrl+Alt+Enter, and Super+; before
+and after restart, plus the unchanged home shortcut. All nine creations passed,
+eight in the exact requested repository. The baseline no-op is a separate tenth
+observation. `target/enter-outcome-comparison.json` independently compares panel
+counts, keyboard focus, and actual daemon creation records from
+`target/enter-outcome/acceptance.json`.
+
+The helper's compositor-query executable is replaced by an adapter that checks
+the real private X11 active window and its `jcode-desktop` class. Its virtual
+keyboard executable translates the helper's modifier/key arguments into native
+X11 input. The actual installed shell helper, actual Desktop, and actual SDK
+daemon all execute. No real compositor command, Wayland input, or user-window
+interaction is used. This is concrete application-outcome evidence with an
+adapted transport, not a claim about a physical keypress on the active desktop.

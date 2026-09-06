@@ -24,7 +24,20 @@ def main():
     parser.add_argument('--bridge', type=Path, help='freshly built jcode-harness-api-bridge')
     parser.add_argument('--check-attachments', action='store_true',
                         help='also verify the real companion API cwd and error contracts')
+    parser.add_argument('--pinned-directory', type=Path,
+                        help='explicit pinned directory to verify (sessions remain isolated)')
+    parser.add_argument('--global-helper', type=Path,
+                        help='exercise this installed global shortcut helper with private X11 adapters')
+    parser.add_argument('--baseline-helper', type=Path,
+                        help='also assert an older helper drops Enter before checking the fixed helper')
     args = parser.parse_args()
+    if args.baseline_helper and not args.global_helper:
+        parser.error('--baseline-helper requires --global-helper')
+    for name in ('global_helper', 'baseline_helper', 'pinned_directory'):
+        if value := getattr(args, name):
+            setattr(args, name, value.resolve(strict=True))
+    if args.pinned_directory and not args.pinned_directory.is_dir():
+        parser.error('--pinned-directory must be a directory')
     root = args.output.resolve()
     assert len(str(root / 'runtime/daemon.sock').encode()) < 104
     repo = Path(__file__).resolve().parents[1]
@@ -50,6 +63,10 @@ def main():
     seed('other', other, 1)
     config = root / 'desktop.toml'
     config.write_text('[workspace]\ncoaching_hints = false\nsession_refresh_seconds = 5\n')
+    pinned_directory = args.pinned_directory or favorite
+    if args.pinned_directory:
+        with config.open('a') as output:
+            output.write('pinned_working_dir = ' + json.dumps(str(pinned_directory)) + '\n')
     shim = root / 'shims/jcode'
     if args.bridge:
         args.bridge = args.bridge.resolve(strict=True)
@@ -75,6 +92,41 @@ exec "{jcode}" "$@"
         'JCODE_DESKTOP_CONFIG': str(config),
         'VK_DRIVER_FILES': str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json'))),
     })
+    if args.global_helper:
+        # Exercise the actual helper without querying the user's compositor or
+        # sending Wayland input. Window identity comes from the real private
+        # X11 window. The virtual-keyboard adapter sends actual native keys.
+        adapters = {
+            'niri': '''#!/usr/bin/python3
+import json, subprocess, sys
+assert sys.argv[1:] == ['msg', '-j', 'focused-window']
+active = subprocess.check_output(['xdotool', 'getactivewindow'], text=True).strip()
+desktop = subprocess.check_output(['xdotool', 'search', '--onlyvisible', '--class', '^jcode-desktop$'], text=True).splitlines()
+assert active in desktop, (active, desktop)
+print(json.dumps({'app_id': 'jcode-desktop'}))
+''',
+            'wtype': '''#!/usr/bin/python3
+import subprocess, sys
+args = sys.argv[1:]
+assert len(args) % 2 == 0
+modifiers, chords = [], []
+for flag, value in zip(args[::2], args[1::2]):
+    if flag == '-M':
+        modifiers.append(value)
+    elif flag == '-m':
+        modifiers.remove(value)
+    elif flag == '-k':
+        chords.append('+'.join([*modifiers, value]))
+    else:
+        raise AssertionError((flag, value))
+assert not modifiers and len(chords) == 1, (modifiers, chords)
+subprocess.run(['xdotool', 'key', '--clearmodifiers', chords[0]], check=True, timeout=10)
+''',
+        }
+        for name, source in adapters.items():
+            adapter = root / 'shims' / name
+            adapter.write_text(source)
+            adapter.chmod(0o755)
     wm_config = root / 'openbox.xml'
     wm_config.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>')
     processes, logs, evidence = [], [], []
@@ -129,10 +181,13 @@ exec "{jcode}" "$@"
         subprocess.run(['xdotool', 'key', '--clearmodifiers', chord], env=env,
                        check=True, timeout=10)
 
-    def verify(chord, directory, stage):
+    def verify(chord, directory, stage, helper=None):
         before = panels()
         before_ids = {p['session'] for p in before}
-        key(chord)
+        if helper:
+            subprocess.run(['bash', str(helper), 'new'], env=env, check=True, timeout=10)
+        else:
+            key(chord)
         wait(lambda: len(panels()) == len(before) + 1 and connected(), chord)
         time.sleep(.3)
         after = panels()
@@ -166,10 +221,20 @@ exec "{jcode}" "$@"
             wait(lambda: Path(env['JCODE_API_SOCKET']).exists(), 'private API socket', 90)
         app = launch('app', [str(binary), '--no-hot-reload'])
         wait(connected, 'real runtime attachment', 90)
-        wait(lambda: pinned() == str(favorite), 'initial most-used directory selection')
-        verify('super+Return', favorite, 'enter')
-        verify('ctrl+alt+Return', favorite, 'forwarded-enter')
-        verify('super+semicolon', favorite, 'favorite')
+        wait(lambda: pinned() == str(pinned_directory), 'configured or most-used directory selection')
+        if args.baseline_helper:
+            before = panels()
+            subprocess.run(['bash', str(args.baseline_helper), 'new'], env=env, check=True, timeout=10)
+            time.sleep(.5)
+            assert panels() == before, 'baseline helper unexpectedly created or selected a panel'
+            evidence.append({'stage': 'baseline-helper', 'panels_before': len(before),
+                             'panels_after': len(panels()), 'created': 0})
+            print(json.dumps(evidence[-1]), flush=True)
+        if args.global_helper:
+            verify('global-helper:new', pinned_directory, 'installed-helper', args.global_helper)
+        verify('super+Return', pinned_directory, 'enter')
+        verify('ctrl+alt+Return', pinned_directory, 'forwarded-enter')
+        verify('super+semicolon', pinned_directory, 'favorite')
         verify('super+apostrophe', root / 'home', 'home')
         # Make a different directory overwhelmingly more common, then restart
         # Desktop to exercise disk persistence, not just in-memory stability.
@@ -179,10 +244,12 @@ exec "{jcode}" "$@"
         (root / 'state').unlink(missing_ok=True)
         launch('restarted-app', [str(binary), '--no-hot-reload'])
         wait(connected, 'restarted runtime attachment', 90)
-        assert pinned() == str(favorite)
-        verify('super+semicolon', favorite, 'favorite-after-restart')
-        verify('super+Return', favorite, 'enter-after-restart')
-        verify('ctrl+alt+Return', favorite, 'forwarded-enter-after-restart')
+        assert pinned() == str(pinned_directory)
+        verify('super+semicolon', pinned_directory, 'favorite-after-restart')
+        verify('super+Return', pinned_directory, 'enter-after-restart')
+        verify('ctrl+alt+Return', pinned_directory, 'forwarded-enter-after-restart')
+        if args.global_helper:
+            verify('global-helper:new', pinned_directory, 'installed-helper-after-restart', args.global_helper)
         (root / 'acceptance.json').write_text(json.dumps(evidence, indent=2) + '\n')
         print('PASS: native keys created real sessions in the expected directories; pin survived changed history and restart.', flush=True)
         if args.check_attachments:
