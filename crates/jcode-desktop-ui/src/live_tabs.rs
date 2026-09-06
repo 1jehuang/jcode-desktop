@@ -916,6 +916,16 @@ mod tests {
         for width in [1440., 800., 640., 480., 1000.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
             vcx.run_until_parked();
+            // Resize retargets camera/tab motion. Click settled geometry rather
+            // than bounds from an animation frame that can move before dispatch.
+            workspace.update(vcx, |workspace, cx| {
+                workspace.camera_x[workspace.active_row] =
+                    workspace.camera_target[workspace.active_row];
+                workspace.camera_started[workspace.active_row] = None;
+                workspace.live_tabs.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
             let track = vcx.debug_bounds("live-session-tabs").unwrap();
             // Overflow icons may use an interior gap when a clipped edge
             // panel leaves no usable space beyond its attached tab.
