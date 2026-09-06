@@ -56,7 +56,11 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--binary', type=Path,
                         help='desktop host executable, including an existing live host for compatibility checks')
+    parser.add_argument('--jcode-binary', type=Path,
+                        help='specific daemon executable for cross-repository runtime acceptance')
     parser.add_argument('--reloads', type=int, default=2)
+    parser.add_argument('--extended-shortcuts', action='store_true',
+                        help='also verify arrow/move/width aliases, home creation, and native Quit')
     parser.add_argument('--default-launch', action='store_true',
                         help='verify development hot reload without the --hot-reload flag')
     parser.add_argument('--compact-tabs', action='store_true',
@@ -66,6 +70,10 @@ def main():
     parser.add_argument('--build-timeout', type=int, default=600,
                         help='seconds allowed for startup/reload builds, including Cargo lock waits')
     args = parser.parse_args()
+    if args.jcode_binary:
+        args.jcode_binary = args.jcode_binary.expanduser().absolute()
+        if not args.jcode_binary.is_file() or not os.access(args.jcode_binary, os.X_OK):
+            parser.error('--jcode-binary must name an executable file')
     panel_count = 12 if args.compact_tabs else 4
     screen = '800x700x24' if args.compact_tabs else '1800x1000x24'
     if not 0 <= args.reloads <= 10:
@@ -79,6 +87,8 @@ def main():
     if len(str(root / 'runtime/daemon.sock').encode()) >= 104:
         parser.error('output path is too long for a private Unix socket')
     for name in ('jcode', 'cargo', 'Xvfb', 'openbox', 'xdotool', 'import'):
+        if name == 'jcode' and args.jcode_binary:
+            continue
         if not shutil.which(name):
             parser.error('missing executable: ' + name)
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -89,6 +99,9 @@ def main():
     if not cargo.is_file():
         cargo = Path(shutil.which('cargo'))
     env = isolated_env(root)
+    # Extended service-panel checks must stay on the unconfigured direct
+    # backend. isolated_env never inherits tokens or the user's credential home.
+    env['JCODE_GMAIL_BACKEND'] = 'direct'
     env.pop('JCODE_DESKTOP_SCREENSHOT')
     env.update({
         'JCODE_NO_TELEMETRY': '1',
@@ -110,7 +123,7 @@ def main():
         # this run's disk-backed artifacts, not the user's quota-limited /tmp.
         'TMPDIR': str(root / 'tmp'),
     })
-    jcode = shutil.which('jcode')
+    jcode = str(args.jcode_binary.resolve(strict=True)) if args.jcode_binary else shutil.which('jcode')
     env['PATH'] = ':'.join([str(cargo.parent), str(Path(jcode).parent), '/usr/bin', '/bin'])
     for name in ('home', 'runtime', 'config', 'cache', 'data', 'jcode', 'tmp'):
         (root / name).mkdir(mode=0o700)
@@ -192,7 +205,7 @@ def main():
         wm = root / 'openbox.xml'
         wm.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>')
         launch('wm', ['openbox', '--sm-disable', '--config-file', str(wm)])
-        launch('app', [str(args.binary.absolute() if args.binary else repo / 'target/debug/jcode-desktop')]
+        app = launch('app', [str(args.binary.absolute() if args.binary else repo / 'target/debug/jcode-desktop')]
                + (['--no-hot-reload'] if args.linked_ui else
                   [] if args.default_launch else ['--hot-reload']))
         wait_until(lambda: (s := navigation_state(state_path)) is not None and len(s['rows'][0]['panels']) == 1,
@@ -276,6 +289,10 @@ def main():
                 subprocess.run(['import', '-window', 'root',
                                 str(root / f'compact-tabs-g{generation}.png')],
                                env=env, check=True, timeout=15)
+            if args.extended_shortcuts:
+                from shortcut_behavior_acceptance import verify
+                verify(key, check, wait_until, lambda: navigation_state(state_path),
+                       root, generation, sessions)
         # No per-key settling delay: navigation must skip the dismissed panel
         # while its close animation is still in flight, in either direction.
         key('super+l')
@@ -291,6 +308,11 @@ def main():
         sessions.pop(1)
         check('after-close-right', 0, 1, sessions)
         subprocess.run(['import', '-window', 'root', str(root / 'navigation.png')], env=env, check=True, timeout=15)
+        if args.extended_shortcuts:
+            key('super+shift+q')
+            app.wait(timeout=10)
+            assert app.returncode == 0, app.returncode
+            (root / 'quit.json').write_text(json.dumps({'chord': 'super+shift+q', 'exit_code': app.returncode}) + '\n')
         print(f'PASS: {panel_count} real sessions, {args.reloads} hot reloads, native keys'
               f'{" and all compact tab clicks" if args.compact_tabs else ""}, consistent map/focus state. {root}', flush=True)
     finally:

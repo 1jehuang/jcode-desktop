@@ -159,3 +159,35 @@ behavior. It does not establish connected-service outcomes, untouched platform
 variants, or direct operation on the user's compositor. The offline fixture
 capture problem also remains unresolved and is not described as a passing
 rendering check.
+
+## Expanded action outcomes
+
+The [42-binding behavior matrix](super-key-behavior-matrix.md) separates actual
+outcomes from registration coverage. Nine additional public GPUI keystroke tests
+passed three consecutive runs from both workspace and composer focus. Native
+extension checks additionally exercise movement, width, service-panel reuse,
+real terminal creation, and a new home-directory session.
+
+This broader check found a real close regression: after dismissing a newly
+created panel, the visible and keyboard focus moved to a survivor but the row's
+remembered focus became empty. Commit `05e4886` updates that memory immediately.
+The new close regression and all other closing tests passed, the extended native
+check advanced beyond the formerly failing checkpoint, and all six intercepted
+global shortcuts passed again in `target/extended-global-close` (25 state
+checkpoints, 27 focused-window queries, including a real UI reload). The running
+Desktop was restored and the Ctrl+R rebuild/reload path activated successfully.
+
+The same extended run exposed a separate SDK/daemon boundary bug: Super+Space
+cannot fork a new empty session whose snapshot has never been saved. The UI
+emitted the correct request, but the daemon returned a missing-file error.
+Runtime acceptance for that correction and native Super+Shift+Q remain pending
+in the matrix until a fresh daemon build passes the entire extension.
+
+The native runner's `--extended-shortcuts` opt-in writes additional state
+checkpoints, actual home-session creation records, fork lineage, and a native
+Quit exit-code record. `--jcode-binary` selects an explicit runtime executable
+for cross-repository validation. Missing paths and directories are rejected
+before artifacts or processes are created. The coverage regression checks each
+of the 42 documented chords against its actual registered action, not just a
+count of rows. Service credentials stay isolated, and no provider inference or
+mail/task mutations are requested.
