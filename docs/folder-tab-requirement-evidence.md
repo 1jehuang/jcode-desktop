@@ -42,7 +42,7 @@ The post-audit rerun completed successfully at
 - All nine tab tests passed on the real project library.
 - The complete native sequence passed again: 157 checkpoints, 52 exposed-edge
   clicks, twelve real sessions, and one actual hot reload.
-- Re-analyzing this new native trace independently confirmed 151 applicable
+- Re-analyzing this new native trace independently confirmed 153 applicable
   active-panel attachment samples with a maximum center error of 0.0px.
 - Private temporary plugin directories were again absent after cleanup.
 - No UI implementation changes followed these checks. The only follow-up was
