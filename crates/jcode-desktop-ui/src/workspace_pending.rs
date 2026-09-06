@@ -59,12 +59,22 @@ impl Workspace {
         );
         // The editor must be hit-testable and visible in the very next frame,
         // rather than waiting for either backend creation or an entrance tween.
-        let slot = &mut self.slots[inserted];
-        slot.animated_width = AnimatedValue::new(
-            slot.width_fraction,
-            transition::policy(Transition::PanelOpen).duration,
-        );
+        // Snap sibling demotions too. Otherwise the old full-width panel can
+        // push this full-width editor beyond the clip until its tween finishes.
+        for slot in self
+            .slots
+            .iter_mut()
+            .filter(|slot| slot.row == self.active_row)
+        {
+            slot.animated_width = AnimatedValue::new(
+                slot.width_fraction,
+                transition::policy(Transition::PanelOpen).duration,
+            );
+        }
         self.set_active(inserted, cx);
+        // The viewport width is only known in render_strip. Resolve and snap
+        // its camera there instead of interpolating an offscreen editor in.
+        self.camera_snap_pending[self.active_row] = true;
         self.focus_pending = true;
         self.bridge.send(Command::CreateSession {
             working_dir: directory,

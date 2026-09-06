@@ -505,6 +505,8 @@ pub struct Workspace {
     /// Set when a strip's camera target must be recomputed at render time,
     /// once the viewport width is known.
     camera_dirty: [bool; STRIP_COUNT],
+    /// Newly created local editors must be fully visible on their first frame.
+    camera_snap_pending: [bool; STRIP_COUNT],
     overview: bool,
     overview_progress: AnimatedValue,
     hints_overlay: bool,
@@ -688,6 +690,7 @@ impl Workspace {
             camera_started: [None; STRIP_COUNT],
             camera_touch_pan: [false; STRIP_COUNT],
             camera_dirty: [true; STRIP_COUNT],
+            camera_snap_pending: [false; STRIP_COUNT],
             overview: false,
             overview_progress: AnimatedValue::new(
                 0.0,
@@ -864,6 +867,7 @@ impl Workspace {
             camera_started: [None; STRIP_COUNT],
             camera_touch_pan: [false; STRIP_COUNT],
             camera_dirty: [true; STRIP_COUNT],
+            camera_snap_pending: [false; STRIP_COUNT],
             overview: false,
             overview_progress: AnimatedValue::new(
                 0.0,
@@ -1093,6 +1097,7 @@ impl Workspace {
         self.camera_started = [None; STRIP_COUNT];
         self.camera_touch_pan = [false; STRIP_COUNT];
         self.camera_dirty = [true; STRIP_COUNT];
+        self.camera_snap_pending = [false; STRIP_COUNT];
         self.overview = snapshot.overview;
         self.overview_progress = AnimatedValue::new(
             if snapshot.overview { 1.0 } else { 0.0 },
@@ -2951,6 +2956,12 @@ impl Workspace {
         self.remove_finished_closing_panels(now, window, cx);
         if row == self.active_row && self.camera_dirty[row] {
             self.resolve_camera_target(viewport_w);
+        }
+        if self.camera_snap_pending[row] {
+            self.camera_snap_pending[row] = false;
+            self.camera_started[row] = None;
+            self.camera_touch_pan[row] = false;
+            self.camera_from[row] = self.camera_target[row];
         }
         // Touchpad pans use a much shorter interpolation than navigation. This
         // coalesces irregular input delivery into presentation frames while

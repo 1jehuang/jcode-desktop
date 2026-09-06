@@ -379,3 +379,68 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
     );
     assert!(commands.try_recv().is_err());
 }
+
+#[gpui::test]
+fn pending_editor_is_fully_visible_on_first_frame_from_full_width_and_overflow(
+    cx: &mut gpui::TestAppContext,
+) {
+    for width in [1440.0, 800.0] {
+        for layout in [
+            crate::config::LayoutMode::Normal,
+            crate::config::LayoutMode::FolderTabs,
+        ] {
+            let (workspace, vcx, commands) = setup(cx);
+            vcx.simulate_resize(gpui::size(px(width), px(1000.0)));
+            workspace.update(vcx, |w, cx| {
+                w.layout_mode = layout;
+                w.slots[0].width_fraction = 1.0;
+                w.slots[0].animated_width =
+                    AnimatedValue::new(1.0, transition::policy(Transition::PanelWidth).duration);
+                w.retarget_camera();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            for selector in ["panel-1", "panel-2", "panel-3"] {
+                // Do not advance the clock or deliver any backend reply. The
+                // initial painted frame must already expose the whole editor.
+                vcx.simulate_keystrokes("super-n");
+                vcx.run_until_parked();
+                request(&commands);
+                let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+                let panel = vcx.debug_bounds(selector).unwrap();
+                let input = vcx.debug_bounds("prompt-input").unwrap();
+                assert!(
+                    panel.left() >= canvas.left() - px(1.0),
+                    "{width} {layout:?} {selector}: {panel:?} outside {canvas:?}"
+                );
+                assert!(
+                    panel.right() <= canvas.right() + px(1.0),
+                    "{width} {layout:?} {selector}: {panel:?} outside {canvas:?}"
+                );
+                assert!(
+                    input.left() >= panel.left() && input.right() <= panel.right(),
+                    "focused composer must be inside visible panel: {input:?}, {panel:?}"
+                );
+                assert!(input.size.width >= px(200.0));
+                workspace.read_with(vcx, |w, _| {
+                    assert!(w.camera_started[w.active_row].is_none());
+                    assert!(w.slots.iter().all(|s| !s.animated_width.is_animating()));
+                });
+                vcx.simulate_input("Visible while starting");
+                workspace.read_with(vcx, |w, cx| {
+                    assert_eq!(
+                        w.slots[w.active]
+                            .panel
+                            .read(cx)
+                            .input
+                            .read(cx)
+                            .content
+                            .as_ref(),
+                        "Visible while starting"
+                    );
+                });
+                assert!(commands.try_recv().is_err());
+            }
+        }
+    }
+}
