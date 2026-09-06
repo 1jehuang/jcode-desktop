@@ -3049,15 +3049,6 @@ impl Workspace {
             let focused = index == self.active;
             let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
-            if row == self.active_row {
-                self.live_tabs.panel_bounds.insert(
-                    index,
-                    (
-                        left - self.camera_x[row] + if folders { 0.0 } else { 6.0 },
-                        (width - if folders { 0.0 } else { 12.0 }).max(1.0),
-                    ),
-                );
-            }
             let top = FOLDER_CONTENT_INSET.min(panel_h / 2.0);
             panel_left += width + GAP;
             let surface = div()

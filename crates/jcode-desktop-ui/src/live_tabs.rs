@@ -2,8 +2,8 @@
 use super::*;
 use crate::panel::folder_session_title;
 
-/// Center the stack, expanding the selected folder instead of squeezing all
-/// tabs equally. Crowded siblings expose their outer edges on either side.
+/// Center a joined stack independently of the panel camera. Selection adds
+/// only a 12px width accent and a 4px lift, so the panels do the large slide.
 #[derive(Clone, Copy, Debug)]
 struct TabLayout {
     start: f32,
@@ -30,11 +30,12 @@ impl TabLayout {
             (available * 0.55).min(208.0)
         }
         .floor();
-        let inactive_width = 112.0_f32.min(active_width * 0.7).floor();
+        let inactive_width = (active_width - 12.0).max(active_width * 0.9).floor();
         let step = if count == 1 {
             0.0
         } else {
-            ((available - active_width) / (count - 1) as f32).min(inactive_width + 2.0)
+            ((available - active_width) / (count - 1) as f32)
+                .min(inactive_width - 12.0_f32.min(inactive_width * 0.1))
         };
         let used = active_width + step * (count - 1) as f32;
         Self {
@@ -44,132 +45,6 @@ impl TabLayout {
             step,
             right_step: step,
         }
-    }
-
-    /// Anchor visible folders independently of keyboard focus. A pair meets at
-    /// the panel divider, with a small shared lip. Off-screen folders retain
-    /// their own exposed tabs in the space on either side of that pair.
-    fn anchored(available: f32, panels: &[Option<(f32, f32)>]) -> Option<Vec<TabGeometry>> {
-        let mut geometry: Vec<_> = panels
-            .iter()
-            .map(|panel| {
-                panel.and_then(|(panel_left, width)| {
-                    let left = panel_left.clamp(0.0, available);
-                    let right = (panel_left + width).clamp(left, available);
-                    let visible = right - left;
-                    // A clipped sliver is not a useful visible panel. Treat it
-                    // like an off-screen folder so its tab keeps a real hit
-                    // target instead of shrinking to a fraction of a pixel.
-                    (visible > 0.0 && visible >= 64.0_f32.min(available * 0.25)).then(|| {
-                        let width = 208.0_f32.min(visible * 0.9);
-                        TabGeometry {
-                            left: (left + right - width) / 2.0,
-                            width,
-                            height: FOLDER_CONTENT_INSET,
-                        }
-                    })
-                })
-            })
-            .collect();
-        if geometry.iter().all(Option::is_none) {
-            return None;
-        }
-        let visible: Vec<_> = geometry
-            .iter()
-            .enumerate()
-            .filter_map(|(i, tab)| tab.map(|_| i))
-            .collect();
-        if let [a, b] = visible[..] {
-            let (left, right) = if geometry[a].unwrap().left <= geometry[b].unwrap().left {
-                (a, b)
-            } else {
-                (b, a)
-            };
-            let (panel_left, panel_width) = panels[left].unwrap();
-            let (panel_right, _) = panels[right].unwrap();
-            let seam = ((panel_left + panel_width).clamp(0.0, available)
-                + panel_right.clamp(0.0, available))
-                / 2.0;
-            let mut left_tab = geometry[left].unwrap();
-            let mut right_tab = geometry[right].unwrap();
-            let overlap = 12.0_f32.min(left_tab.width.min(right_tab.width) * 0.1);
-            left_tab.left = seam + overlap / 2.0 - left_tab.width;
-            right_tab.left = seam - overlap / 2.0;
-            geometry[left] = Some(left_tab);
-            geometry[right] = Some(right_tab);
-        }
-        let mut anchors: Vec<_> = geometry.iter().flatten().copied().collect();
-        anchors.sort_by(|a, b| a.left.total_cmp(&b.left));
-        let mut gaps = Vec::new();
-        let mut edge = 0.0_f32;
-        for tab in anchors {
-            if tab.left > edge {
-                gaps.push((edge, tab.left));
-            }
-            edge = edge.max(tab.left + tab.width);
-        }
-        if edge < available {
-            gaps.push((edge, available));
-        }
-        let mut start = 0;
-        while start < geometry.len() {
-            if geometry[start].is_some() {
-                start += 1;
-                continue;
-            }
-            let end = (start..geometry.len())
-                .find(|&i| geometry[i].is_some())
-                .unwrap_or(geometry.len());
-            let left = start
-                .checked_sub(1)
-                .and_then(|i| geometry[i])
-                .map_or(0.0, |tab| tab.left + tab.width);
-            let right = geometry
-                .get(end)
-                .and_then(|tab| *tab)
-                .map_or(available, |tab| tab.left);
-            let count = (end - start) as f32;
-            // A barely visible edge panel can leave less than a pixel beyond
-            // its tab. Use another free gap rather than pile hidden hitboxes
-            // into that sliver. Visible anchors never move to make room.
-            let preferred = gaps.iter().position(|&(a, b)| {
-                a >= left - 0.001 && b <= right + 0.001 && b - a >= count * 8.0
-            });
-            let gap = preferred
-                .or_else(|| {
-                    gaps.iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| (a.1 - a.0).total_cmp(&(b.1 - b.0)))
-                        .map(|(i, _)| i)
-                })
-                .unwrap();
-            let (left, right) = gaps[gap];
-            let step = ((right - left).max(0.0) / count).min(114.0);
-            let width = (step * 0.94).min(112.0);
-            // Pack toward the neighboring visible folder, not the viewport
-            // edge. Panel order then reads naturally outwards from the pair.
-            // Only compact labels when the available side actually fills up.
-            let pack_right = end < geometry.len();
-            let origin = if pack_right {
-                right - step * count
-            } else {
-                left + step - width
-            };
-            for (offset, tab) in geometry[start..end].iter_mut().enumerate() {
-                *tab = Some(TabGeometry {
-                    left: origin + step * offset as f32,
-                    width,
-                    height: FOLDER_CONTENT_INSET - 4.0,
-                });
-            }
-            if pack_right {
-                gaps[gap].1 -= step * count;
-            } else {
-                gaps[gap].0 += step * count;
-            }
-            start = end;
-        }
-        Some(geometry.into_iter().map(Option::unwrap).collect())
     }
 
     fn geometry(self, position: usize, selected: usize) -> TabGeometry {
@@ -254,7 +129,6 @@ impl TabTween {
 pub(super) struct TabMotion {
     tabs: HashMap<u64, TabTween>,
     available: Option<f32>,
-    pub(super) panel_bounds: HashMap<usize, (f32, f32)>,
     pub(super) hit_targets: Vec<(usize, f32)>,
 }
 
@@ -352,13 +226,6 @@ impl Workspace {
             })
             .unwrap_or(0);
         let available = (canvas_width - right).max(0.0);
-        let bounds = std::mem::take(&mut self.live_tabs.panel_bounds);
-        let panels: Vec<_> = entries
-            .iter()
-            .map(|(index, _, _)| index.and_then(|index| bounds.get(&index).copied()))
-            .collect();
-        let anchored = TabLayout::anchored(available, &panels);
-        let attached = anchored.is_some();
         let layout = TabLayout::new(available, entries.len());
         let targets: Vec<_> = entries
             .iter()
@@ -367,25 +234,15 @@ impl Workspace {
                 let key = index
                     .map(|index| self.slots[index].panel.entity_id().as_u64())
                     .unwrap_or(u64::MAX - *row as u64);
-                (
-                    key,
-                    anchored.as_ref().map_or_else(
-                        || layout.geometry(position, selected),
-                        |geometry| geometry[position],
-                    ),
-                )
+                (key, layout.geometry(position, selected))
             })
             .collect();
-        // The strip already animates its camera, widths, and ordering. Follow
-        // that exact geometry instead of adding a second, lagging animation.
+        // Never chase camera coordinates or clipped-panel widths. Focus only
+        // nudges tab geometry, with its own short, continuously retargeted tween.
         let geometry = self.live_tabs.sample(
             &targets,
             available,
-            if attached {
-                Duration::ZERO
-            } else {
-                transition::policy(Transition::Focus).duration
-            },
+            transition::policy(Transition::Focus).duration,
             Instant::now(),
         );
         let mut tabs = div()
@@ -683,109 +540,33 @@ mod tests {
         }
         let crowded = TabLayout::new(512.0, 12);
         assert_eq!(crowded.active_width, 208.0);
-        assert_eq!(crowded.inactive_width, 112.0);
+        assert_eq!(crowded.inactive_width, 196.0);
         assert!(crowded.step < crowded.inactive_width);
         assert!(TabLayout::new(1152.0, 3).start > 0.0);
     }
 
     #[test]
-    fn live_tabs_anchor_all_visible_panels_and_compact_only_hidden_tabs() {
-        for available in [40.0, 192.0, 512.0, 1152.0] {
-            for hidden in [0, 1, 12, 200] {
-                let mut panels = vec![None; hidden];
-                panels.extend([
-                    Some((-80.0, available / 2.0 + 80.0)),
-                    Some((available / 2.0, available)),
-                ]);
-                panels.extend(vec![None; hidden]);
-                let tabs = TabLayout::anchored(available, &panels).unwrap();
-                for (i, tab) in tabs.iter().enumerate() {
-                    assert!(tab.left >= -0.001);
-                    assert!(tab.left + tab.width <= available + 0.001);
-                    assert!(tab.width > 0.0);
-                    if panels[i].is_none() {
-                        assert!(tab.width <= 112.0);
-                        assert_eq!(tab.height, FOLDER_CONTENT_INSET - 4.0);
-                    } else {
-                        let left = if i == hidden { 0.0 } else { available / 2.0 };
-                        assert!(tab.left >= left - 6.001);
-                        assert!(tab.left + tab.width <= left + available / 2.0 + 6.001);
-                        assert_eq!(tab.height, FOLDER_CONTENT_INSET);
-                    }
-                    for (j, other) in tabs.iter().enumerate().take(i) {
-                        if panels[i].is_some() && panels[j].is_some() {
-                            continue; // The two visible tabs deliberately share a lip.
-                        }
-                        assert!(
-                            other.left + other.width <= tab.left + 0.001
-                                || tab.left + tab.width <= other.left + 0.001
-                        );
-                    }
-                }
-                for selected in [0, hidden, hidden + 1, tabs.len() - 1] {
-                    for i in 0..tabs.len() {
-                        let (left, width) = TabLayout::exposed(&tabs, i, selected);
-                        assert!(width > 0.0, "tab {i} must remain exposed");
-                        assert!(left >= -0.001 && left + width <= available + 0.001);
+    fn live_tabs_center_two_and_four_panel_groups_with_subtle_focus_motion() {
+        for available in [40.0, 192.0, 512.0, 1152.0, 1600.0] {
+            for count in [2, 4, 6, 12, 200] {
+                let layout = TabLayout::new(available, count);
+                for selected in 0..count {
+                    let tabs: Vec<_> = (0..count).map(|i| layout.geometry(i, selected)).collect();
+                    let first = tabs[0];
+                    let last = tabs[count - 1];
+                    assert!((first.left + last.left + last.width - available).abs() < 0.001);
+                    for (i, tab) in tabs.iter().enumerate() {
+                        assert!(tab.left >= 0.0);
+                        assert!(tab.left + tab.width <= available + 0.001);
+                        assert!(TabLayout::exposed(&tabs, i, selected).1 > 0.0);
+                        let next = layout.geometry(i, (selected + 1) % count);
+                        assert!((next.left - tab.left).abs() <= 12.001);
+                        assert!((next.width - tab.width).abs() <= 12.001);
+                        assert!((next.height - tab.height).abs() <= 4.001);
                     }
                 }
             }
         }
-    }
-
-    #[test]
-    fn live_tabs_pair_meets_at_the_divider_with_offscreen_tabs_on_each_side() {
-        let panels = [
-            None,
-            None,
-            Some((0.0, 576.0)),
-            Some((576.0, 576.0)),
-            None,
-            None,
-        ];
-        let tabs = TabLayout::anchored(1152.0, &panels).unwrap();
-        assert_eq!(tabs[2].width, 208.0);
-        assert_eq!(tabs[3].width, 208.0);
-        assert_eq!(tabs[2].left + tabs[2].width - tabs[3].left, 12.0);
-        assert_eq!((tabs[2].left + tabs[2].width + tabs[3].left) / 2.0, 576.0);
-        assert!(tabs[1].left + tabs[1].width < tabs[2].left);
-        assert!(tabs[4].left > tabs[3].left + tabs[3].width);
-        for i in [0, 1, 4, 5] {
-            assert!(tabs[i].width >= 100.0, "neighbor titles have room");
-        }
-        let left_gap = tabs[2].left - tabs[1].left - tabs[1].width;
-        let right_gap = tabs[4].left - tabs[3].left - tabs[3].width;
-        assert!(left_gap > 0.0 && left_gap <= 7.0);
-        assert!((left_gap - right_gap).abs() < 0.001);
-        assert!(tabs[0].left > 0.0, "left neighbors stay near the pair");
-        assert!(tabs[5].left + tabs[5].width < 1152.0);
-        for selected in [2, 3] {
-            for i in [2, 3] {
-                let (_, width) = TabLayout::exposed(&tabs, i, selected);
-                assert_eq!(width, if i == selected { 208.0 } else { 196.0 });
-            }
-        }
-    }
-
-    #[test]
-    fn live_tabs_clipped_edge_slivers_keep_usable_tabs() {
-        let panels = [
-            Some((-575.0, 576.0)),
-            Some((1.0, 575.0)),
-            Some((576.0, 575.0)),
-            Some((1151.0, 576.0)),
-            None,
-        ];
-        let tabs = TabLayout::anchored(1152.0, &panels).unwrap();
-        for i in [0, 3, 4] {
-            assert!(tabs[i].width >= 100.0);
-            assert_eq!(tabs[i].height, FOLDER_CONTENT_INSET - 4.0);
-            for selected in 0..tabs.len() {
-                let (_, width) = TabLayout::exposed(&tabs, i, selected);
-                assert!(width > 30.0, "edge sliver {i} must stay clickable");
-            }
-        }
-        assert_eq!(tabs[1].left + tabs[1].width - tabs[2].left, 12.0);
     }
 
     #[gpui::test]
@@ -850,16 +631,61 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_tabs_do_not_move_when_focus_changes_between_visible_panels(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn live_tabs_four_panel_group_stays_centered_when_focus_changes(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_sidebar = false;
-            for i in 0..3 {
+            for i in 0..4 {
                 w.push_test_panel(&format!("panel-{i}"), cx);
-                w.slots[i].width_fraction = 1.0 / 3.0;
-                w.slots[i].animated_width = AnimatedValue::new(1.0 / 3.0, Duration::ZERO);
+                w.slots[i].width_fraction = 0.25;
+                w.slots[i].animated_width = AnimatedValue::new(0.25, Duration::ZERO);
+            }
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1600.0), px(700.0)));
+        vcx.run_until_parked();
+        let selectors = [
+            "live-session-tab-0",
+            "live-session-tab-1",
+            "live-session-tab-2",
+            "live-session-tab-3",
+        ];
+        let initial = selectors.map(|selector| vcx.debug_bounds(selector).unwrap());
+        let track = vcx.debug_bounds("live-session-tabs").unwrap();
+        assert!(
+            ((initial[0].left() + initial[3].right()) / 2.0 - track.center().x).abs() < px(0.01)
+        );
+        for pair in initial.windows(2) {
+            assert_eq!(pair[0].right() - pair[1].left(), px(12.0));
+        }
+        for selected in [1, 2, 3, 0] {
+            vcx.simulate_click(initial[selected].center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            workspace.update(vcx, |w, cx| {
+                w.live_tabs.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert_eq!(workspace.read_with(vcx, |w, _| w.active), selected);
+            for (i, selector) in selectors.iter().enumerate() {
+                let tab = vcx.debug_bounds(*selector).unwrap();
+                assert!((tab.left() - initial[i].left()).abs() <= px(12.01));
+                let panel = vcx
+                    .debug_bounds(["panel-0", "panel-1", "panel-2", "panel-3"][i])
+                    .unwrap();
+                assert_eq!(tab.bottom(), panel.top());
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn live_tabs_stay_still_while_the_panel_camera_moves(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            for i in 0..4 {
+                w.push_test_panel(&format!("panel-{i}"), cx);
             }
             w
         });
@@ -870,76 +696,26 @@ mod tests {
             "live-session-tab-0",
             "live-session-tab-1",
             "live-session-tab-2",
+            "live-session-tab-3",
         ];
         let initial = selectors.map(|selector| vcx.debug_bounds(selector).unwrap());
-        for selected in [1, 2, 0] {
-            vcx.simulate_click(initial[selected].center(), gpui::Modifiers::default());
+        let panel_left = vcx.debug_bounds("panel-1").unwrap().left();
+        for camera in [80.0, 160.0, 480.0] {
+            workspace.update(vcx, |w, cx| {
+                w.camera_x[0] = camera;
+                w.camera_target[0] = camera;
+                w.camera_started[0] = None;
+                w.camera_dirty[0] = false;
+                cx.notify();
+            });
             vcx.run_until_parked();
-            assert_eq!(workspace.read_with(vcx, |w, _| w.active), selected);
             for (i, selector) in selectors.iter().enumerate() {
-                let tab = vcx.debug_bounds(*selector).unwrap();
-                assert_eq!(tab, initial[i], "focus must not rearrange any visible tab");
-                let panel = vcx
-                    .debug_bounds(["panel-0", "panel-1", "panel-2"][i])
-                    .unwrap();
-                assert!(tab.left() >= panel.left());
-                assert!(tab.right() <= panel.right());
-                assert_eq!(tab.bottom(), panel.top());
+                assert_eq!(vcx.debug_bounds(*selector).unwrap(), initial[i]);
             }
-        }
-    }
-
-    #[gpui::test]
-    fn live_tabs_remain_attached_when_panel_camera_moves(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut w = Workspace::for_test(learning::Coach::new(), cx);
-            w.show_sidebar = false;
-            for i in 0..3 {
-                w.push_test_panel(&format!("panel-{i}"), cx);
-            }
-            w
-        });
-        let handle = vcx.update(|window, _| window.window_handle());
-        vcx.simulate_window_resize(handle, gpui::size(px(1200.0), px(700.0)));
-        vcx.run_until_parked();
-        for selected in 0..3 {
-            for camera in [0.0, 80.0, 160.0] {
-                workspace.update(vcx, |w, cx| {
-                    w.active = selected;
-                    w.camera_x[0] = camera;
-                    w.camera_target[0] = camera;
-                    w.camera_started[0] = None;
-                    w.camera_dirty[0] = false;
-                    cx.notify();
-                });
-                vcx.run_until_parked();
-                let panel = vcx
-                    .debug_bounds(Box::leak(format!("panel-{selected}").into_boxed_str()))
-                    .unwrap();
-                let tab = vcx
-                    .debug_bounds(Box::leak(
-                        format!("live-session-tab-{selected}").into_boxed_str(),
-                    ))
-                    .unwrap();
-                let track = vcx.debug_bounds("live-session-tabs").unwrap();
-                let visible = (panel.right().min(track.right()) - panel.left().max(track.left()))
-                    .max(px(0.0));
-                if visible < px(64.0) {
-                    assert!(tab.size.width >= px(30.0), "edge slivers need usable tabs");
-                    assert_eq!(tab.size.height, px(FOLDER_CONTENT_INSET - 4.0));
-                    assert!(tab.left() >= track.left() && tab.right() <= track.right());
-                } else {
-                    assert!(
-                        tab.left() >= panel.left().max(track.left()) - px(6.01),
-                        "{tab:?} {panel:?}"
-                    );
-                    assert!(
-                        tab.right() <= panel.right().min(track.right()) + px(6.01),
-                        "{tab:?} {panel:?}"
-                    );
-                }
-                assert_eq!(tab.bottom(), panel.top());
-            }
+            assert!(
+                (panel_left - vcx.debug_bounds("panel-1").unwrap().left() - px(camera)).abs()
+                    < px(0.01)
+            );
         }
     }
 
@@ -1057,8 +833,7 @@ mod tests {
             "selected={selected:?}, track={track:?}"
         );
         workspace.update(vcx, |w, cx| {
-            // Expansion follows panel visibility, not selection. Finish the
-            // strip camera as well as tab motion before checking the result.
+            // Finish both independent animations before checking selection.
             w.camera_x[w.active_row] = w.camera_target[w.active_row];
             w.camera_started[w.active_row] = None;
             w.live_tabs.settle();
@@ -1072,8 +847,7 @@ mod tests {
         vcx.simulate_keystrokes("super-u");
         vcx.run_until_parked();
         workspace.update(vcx, |w, cx| {
-            // Expansion follows panel visibility, not selection. Finish the
-            // strip camera as well as tab motion before checking the result.
+            // Finish both independent animations before checking selection.
             w.camera_x[w.active_row] = w.camera_target[w.active_row];
             w.camera_started[w.active_row] = None;
             w.live_tabs.settle();
@@ -1101,8 +875,7 @@ mod tests {
             });
             vcx.run_until_parked();
             let track = vcx.debug_bounds("live-session-tabs").unwrap();
-            // Overflow icons may use an interior gap when a clipped edge
-            // panel leaves no usable space beyond its attached tab.
+            // Crowded folders retain exposed edges inside the centered group.
             for index in 0..12 {
                 let tab = vcx
                     .debug_bounds(Box::leak(
@@ -1126,7 +899,15 @@ mod tests {
             let edge = vcx.debug_bounds("edge-new-session").unwrap();
             assert!(edge.top() >= last.bottom());
             let previous = vcx.debug_bounds("live-session-tab-10").unwrap();
-            let x = last.center().x;
+            let x = track.left()
+                + px(workspace.read_with(vcx, |w, _| {
+                    w.live_tabs
+                        .hit_targets
+                        .iter()
+                        .find(|(i, _)| *i == 11)
+                        .unwrap()
+                        .1
+                }));
             vcx.simulate_click(gpui::point(x, last.center().y), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(

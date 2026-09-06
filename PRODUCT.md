@@ -37,6 +37,18 @@ A panel represents one Jcode session. It should eventually support:
 
 Panels should remain responsive when transcripts are long and when several sessions are active simultaneously. Off-screen content and panels should not impose unnecessary rendering or layout work.
 
+### Folder tabs
+
+Folder tabs form one centered, joined group in panel order. The two-panel
+presentation also applies to four panels and larger groups. Tabs do not need to
+sit above their individual panels, and off-screen sessions remain in the group.
+This replaces the earlier per-panel attachment requirement.
+
+The panel camera makes the large navigation movement. Tab positions do not
+follow that camera. Changing focus only makes a small, smooth adjustment:
+at most 12px of horizontal movement or width change, and a 4px lift. Resizing
+snaps the group into its new bounds, and reduced-motion preferences are honored.
+
 ## Performance
 
 High performance is a core product requirement, not a later optimization.

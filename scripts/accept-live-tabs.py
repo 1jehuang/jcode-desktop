@@ -158,16 +158,23 @@ def main():
                            env=env, cwd=root, check=True, timeout=15)
             nav = settled(slot)
             points = tab_targets(nav)
+            assert all(points[i] < points[i + 1] for i in range(5)), points
+            if checkpoints:
+                previous = checkpoints[-1]["screen_tab_targets"]
+                motion = max(abs(points[i] - previous[i]) for i in range(6))
+                # These are exposed-label centers, not tab origins. Jumping
+                # over a tab changes its exposed side as well as its origin:
+                # at most 12px of geometry plus the 12px overlapping lip.
+                assert motion <= 24.1, f"tabs followed the panel camera: {motion}px"
             joined_pair = None
             if label == "middle-right":
                 separation = points[3] - points[2]
                 assert 0 < separation < 220, f"middle tabs are not a joined pair: {points}"
-                assert all(points[i] < points[i + 1] for i in range(5)), points
-                # Hidden neighbors belong beside the pair, not at the canvas
-                # edges. Centers allow for their smaller labeled silhouettes.
+                # Every folder stays in the same centered group, including
+                # panels outside the viewport. Selection only nudges its tabs.
                 for neighbor, anchor in ((1, 2), (4, 3)):
                     distance = abs(points[neighbor] - points[anchor])
-                    assert 100 < distance < 175, (neighbor, anchor, points)
+                    assert 100 < distance < 220, (neighbor, anchor, points)
                 joined_pair = {"slots": [2, 3], "targets": [points[2], points[3]],
                                "separation_px": separation}
             assert len(panels(nav)) == 6 and not any(p["closing"] for p in panels(nav)), nav
