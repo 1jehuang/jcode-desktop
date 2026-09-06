@@ -20,8 +20,20 @@ def chart_pixels(image, top_left=False):
 
 
 def verify(output, env, root):
-    before = Image.open(output).convert("RGB")
-    initial_count, initial_point = chart_pixels(before)
+    # The fixture's state file can be ready before X11 has presented its first
+    # frame, especially during parallel builds. Wait for real chart pixels, not
+    # an arbitrary startup delay, and retain the settled baseline screenshot.
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            initial_count, initial_point = chart_pixels(Image.open(output).convert("RGB"))
+            break
+        except AssertionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(.2)
+            subprocess.run(["import", "-window", "root", "png:" + str(output)],
+                           env=env, cwd=root, check=True, timeout=10)
 
     def click(point):
         subprocess.run(["xdotool", "mousemove", *map(str, point), "click", "1", "mousemove", "100", "100"],
