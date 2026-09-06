@@ -4,7 +4,7 @@ import time
 from PIL import Image
 
 
-def chart_pixels(image):
+def chart_pixels(image, top_left=False):
     """Find the fixture's blue bar, independent of panel or image geometry."""
     points = []
     for y in range(image.height):
@@ -15,7 +15,8 @@ def chart_pixels(image):
     if not points:
         raise AssertionError("Image fixture's blue bar did not paint")
     xs, ys = zip(*points)
-    return len(points), ((min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2)
+    point = (min(xs), min(ys)) if top_left else ((min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2)
+    return len(points), point
 
 
 def verify(output, env, root):
@@ -44,5 +45,24 @@ def verify(output, env, root):
     click(initial_point)
     _, enlarged_point = capture("-reopened", lambda count: count > initial_count * 2)
     click(enlarged_point)
-    capture("-click-closed", lambda count: abs(count - initial_count) < initial_count * .05)
-    print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> {enlarged_count}; Escape and click restore the thumbnail")
+    capture("-click-stays-open", lambda count: abs(count - enlarged_count) < enlarged_count * .05)
+
+    def mouse(*args):
+        subprocess.run(["xdotool", *map(str, args)], env=env, cwd=root, check=True, timeout=10)
+
+    # Ctrl+wheel zooms at the pointer instead of scrolling the transcript.
+    mouse("mousemove", *enlarged_point, "keydown", "ctrl", "click", "4", "keyup", "ctrl")
+    zoomed_count, zoomed_point = capture("-wheel-zoomed", lambda count: count > enlarged_count * 1.1)
+    mouse("mousemove", *zoomed_point, "mousedown", "1", "mousemove_relative", "--", "-35", "-25", "mouseup", "1")
+    _, panned_point = capture("-drag-panned", lambda count: abs(count - zoomed_count) < zoomed_count * .08)
+    # The bottom of the bar can be clipped while zoomed, so its centroid
+    # need not translate by the full drag. Compare the visible top-left edge.
+    edges = [chart_pixels(Image.open(output.with_name(output.stem + suffix + ".png")).convert("RGB"), top_left=True)[1]
+             for suffix in ("-wheel-zoomed", "-drag-panned")]
+    assert abs(edges[1][0] - edges[0][0] + 35) <= 2, edges
+    assert abs(edges[1][1] - edges[0][1] + 25) <= 2, edges
+    mouse("mousemove", *panned_point, "click", "--repeat", "2", "--delay", "80", "1")
+    capture("-double-click-fit", lambda count: abs(count - enlarged_count) < enlarged_count * .05)
+    mouse("key", "Escape")
+    capture("-gesture-closed", lambda count: abs(count - initial_count) < initial_count * .05)
+    print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> {enlarged_count} -> {zoomed_count}; wheel zoom, drag pan, double-click fit, safe clicks, and Escape")
