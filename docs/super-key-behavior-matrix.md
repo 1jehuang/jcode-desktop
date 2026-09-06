@@ -73,15 +73,19 @@ check and is not substituted for any outcome above. User compositor input is
 not driven. Global-grab acceptance uses private Sway with its focus query adapted
 to the installed helper's CLI shape.
 
-## Verified runtime versus live activation
+## Verified runtime and live activation
 
-The native results use the corrected daemon and bridge. The original focus,
-pinned Enter, and close fixes were already delivered to the running Desktop.
-The additional fork/reconnect runtime repairs are **staged, not activated**.
-Two live Desktop sessions still have no persisted snapshot, and the old shared
-daemon cannot checkpoint them across exec. Promoting or reloading now could
-lose their attachment identities. See the activation boundary in
-[shortcut-requirements.md](shortcut-requirements.md).
+The corrected daemon and bridge used by native acceptance are now active in
+the user's session. Non-forced daemon reload preserved all seven connected
+client identities. Bridge replacement preserved all 15 then-open Desktop
+sessions and drafts. The subsequent live Ctrl+R-equivalent activated UI
+generation 2 and preserved all 15 panel identities, order, drafts, and layout,
+with every session reattached.
+
+The earlier activation blocker was based on a stale recovery checkpoint, not
+live unsaved sessions. Fresh process and daemon checks corrected that finding
+before activation. See the evidence and exact executable hashes in
+[shortcut-requirements.md](shortcut-requirements.md#verified-live-activation).
 
 Busy sessions with a saved snapshot can fork without waiting for their Agent
 lock. A busy unsaved session returns an error rather than blocking or guessing

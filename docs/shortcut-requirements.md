@@ -241,17 +241,29 @@ Unknown targets produce correlated API errors.
   tests passed. The six installed-helper regressions, three behavior-map/CLI/
   attachment-oracle tests, and seven navigation-oracle tests also passed.
 
-### Activation safety boundary
+### Verified live activation
 
-The primary focus/Enter/Q changes were rebuilt and reloaded earlier. The
-additional runtime fixes are committed, pushed, built, and verified above, but
-**not active in the user's shared daemon or bridge**. At final preflight the
-running Desktop had four session panels, two without saved snapshots. The old
-shared runtime does not checkpoint idle empty roots during exec. Its new
-in-memory reconnect grace cannot help across process replacement, either.
-Reloading now would risk losing those two live attachment identities.
+The corrected runtime, bridge, and Desktop UI are now active. The earlier
+activation warning mistook an old recovery checkpoint for a live Desktop:
+its owner had exited, and the two referenced sessions were no longer present
+in the daemon. That checkpoint was backed up, not discarded. Fresh preflight
+confirmed all seven actually connected clients had valid saved snapshots and
+no background tasks were running before the non-forced daemon reload.
 
-Both verified executables are staged without promotion under:
+Observed delivery on 2026-09-06 (UTC):
+
+- **08:47:** promoted the verified runtime and completed a non-forced shared
+  daemon reload. All seven original connected clients reconnected with their
+  exact session identities. The running executable matched the accepted hash.
+- **08:52:** replaced the API bridge after checking all 15 panels in the newly
+  running Desktop were idle. The corrected runtime's reconnect grace retained
+  all 15 session identities through the bridge handoff, with drafts unchanged.
+  The running bridge matched the accepted hash.
+- **08:53:** the live Desktop accepted its Ctrl+R-equivalent socket action and
+  activated UI generation 2. All 15 panel identities and their order, drafts,
+  and layout were preserved, and every session reattached successfully.
+
+The immutable accepted executables and updated acceptance manifest are under:
 
 ```text
 ~/.jcode/builds/versions/3fb613468-debug-575bc278a882/
@@ -267,10 +279,10 @@ jcode: 575bc278a8822b803f3eae5883b01321010437c0c109d8e1793e75ba99e4be1f
 bridge: 5384ad72b431d84d21acf0e9fdcb216541058829b0572bc0943d5adfad2ca31f
 ```
 
-No shared-server promotion or exec, bridge replacement, or stable/current
-launcher change was performed. Activation remains pending until the live
-unsaved sessions are saved or closed and no background work would be
-interrupted. The acceptance manifest records exact hashes and the three
-runtime commits, because the development version string can retain an older
-Git hash when build metadata is cached. This is a deliberate safety boundary,
-not a claim that all newly discovered runtime repairs are already live.
+The shared-server channel and Desktop companion links select these artifacts.
+Stable/current launcher channels were not changed. Private activation records
+in `~/.jcode/scratch/shortcut-activation/` contain `daemon-activation.json`,
+`bridge-activation.json`, and `desktop-reload.json`. They retain exact identity
+comparisons without publishing session contents in this repository. Artifact
+hashes establish provenance because development build metadata can retain an
+older Git hash.
