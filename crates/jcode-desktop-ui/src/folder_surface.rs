@@ -62,19 +62,28 @@ pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
                     let Some(canvas) = frame.canvas else { return };
                     let mut regions = vec![];
                     if frame.panel_right > canvas.left() {
-                        regions.push(Rect {
-                            left: f32::from(canvas.left()),
-                            top: f32::from(canvas.top()) + STRIP_PADDING_Y + FOLDER_CONTENT_INSET,
-                            right: f32::from(frame.panel_right.min(canvas.right())),
-                            bottom: f32::from(canvas.bottom()) - STRIP_PADDING_Y,
-                        });
+                        regions.push((
+                            Rect {
+                                left: f32::from(canvas.left()),
+                                top: f32::from(canvas.top())
+                                    + STRIP_PADDING_Y
+                                    + FOLDER_CONTENT_INSET,
+                                right: f32::from(frame.panel_right.min(canvas.right())),
+                                bottom: f32::from(canvas.bottom()) - STRIP_PADDING_Y,
+                            },
+                            Theme::global().panel_background(false),
+                        ));
                     }
                     if let Some(tab) = frame.selected_tab {
-                        regions.push(Rect::from_bounds(tab));
+                        regions.push((Rect::from_bounds(tab), Theme::global().PANEL_BG));
                     }
                     // Paint separately: disconnected navigation should never
                     // require a bridge across the header or another panel.
-                    for region in regions {
+                    // The panel strip is recessed backing, not active paper.
+                    // Otherwise the active pane's rounded cutouts disappear
+                    // into it and the inactive panes look like the top layer.
+                    // The selected sidebar tab remains its own raised sheet.
+                    for (region, color) in regions {
                         let contour = outline(&[region]);
                         if contour.len() < 3 {
                             return;
@@ -102,7 +111,7 @@ pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
                         }
                         builder.close();
                         if let Ok(path) = builder.build() {
-                            window.paint_path(path, Theme::global().PANEL_BG);
+                            window.paint_path(path, color);
                         }
                     }
                 },

@@ -1,5 +1,13 @@
 # Workspace layout modes
 
+The focused panel is painted last within its strip. In folder-tab mode, the
+shared strip backing uses the inactive panel color, so the focused panel's
+rounded corners remain visible above its neighbors. The selected sidebar tab
+keeps its raised paper color. Focus does not change panel bounds or text opacity.
+
+After building Desktop, run `python3 scripts/accept-panel-layers.py target/panel-layers`
+to check the actual corner pixels while clicking between panels on private Xvfb.
+
 Choose **Settings → Workspace layout → Folder tabs / Normal**. The preference is saved as `desktop.appearance.layout_mode` (`folder_tabs` or `normal`) in the shared Jcode configuration, or `appearance.layout_mode` in a standalone desktop config. It also survives Ctrl+R through `WorkspaceSnapshot`. Existing configurations default to Folder tabs.
 
 ## Native Folder tabs
