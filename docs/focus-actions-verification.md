@@ -70,3 +70,24 @@ remaining sessions kept their order. Machine-readable evidence is saved at
 These observations establish improvement for the reproduced failures. They do
 not establish that either failure was the user's exact original symptom, which
 was not described further.
+
+### Native before/after executable comparison
+
+The exact same acceptance script was also run against the retained original
+executable (`/proc/69554/exe`, launched before these fixes) and the rebuilt
+`target/debug/jcode-desktop`. Both used `--linked-ui --reloads 0`, separate
+private displays, and newly created real sessions, so neither could silently
+load a newer plugin.
+
+The original executable failed `after-close-left`: after closing panel 1 and
+immediately pressing left, it selected **slot 2 with no keyboard focus**, rather
+than slot 0. Its final snapshot had `focused_slot=2, keyboard_panel=null` after
+the five-second observation timeout. This was a real native input failure, not
+an inferred problem or a test-only animation fixture.
+
+The rebuilt executable passed the identical sequence with
+**`focused_slot=0, keyboard_panel=0`**, then passed the rightward sequence with
+**`focused_slot=1, keyboard_panel=1`**. The original run exited 1 and the updated
+run exited 0. Logs and states are in `target/focus-native-before-0639` and
+`target/focus-native-after-0639`, with their sibling `.log` files and summary
+`target/focus-native-before-after.json`.
