@@ -6,6 +6,7 @@ mod build_info;
 mod clipboard_image;
 mod commands;
 mod config;
+mod diff;
 mod diff_block;
 mod diff_model;
 mod diff_review_content;
