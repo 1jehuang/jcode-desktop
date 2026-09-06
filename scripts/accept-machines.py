@@ -54,7 +54,7 @@ def main():
                 env["VK_DRIVER_FILES"] = str(drivers[0])
 
             def command(*args):
-                return subprocess.check_output(args, env=env, text=True, stderr=subprocess.DEVNULL)
+                return subprocess.check_output(args, env=env, text=True, stderr=subprocess.DEVNULL, timeout=30)
 
             def capture(name):
                 path = output / (name + ".png")
@@ -138,8 +138,11 @@ def main():
             windows = command("xdotool", "search", "--onlyvisible", "--class", "^jcode-desktop$").splitlines()
             command("xdotool", "windowactivate", "--sync", windows[-1])
             time.sleep(0.3)
-            placeholder = next(w for w in words if w["text"] == "SSH" and w["x"] < 100 and w["y"] > 400)
-            command("xdotool", "mousemove", str(placeholder["x"]), str(placeholder["y"]), "click", "1")
+            # Target the host box immediately above its Connect via SSH
+            # button. Cursor glyphs make placeholder OCR unstable, and matching
+            # "SSH" alone accidentally targets the help paragraph below it.
+            connect = next(w for w in words if w["text"] == "via" and w["x"] < 275)
+            command("xdotool", "mousemove", "132", str(connect["y"] - 50), "click", "1")
             time.sleep(0.5)
             command("xdotool", "type", "--clearmodifiers", "--delay", "50", "builder@lab")
             capture("typed-host")
