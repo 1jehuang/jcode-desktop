@@ -129,3 +129,44 @@ pressure. The final ordinary Cargo test command completed successfully.
 
 Only tests, acceptance scripts and this evidence document changed during this
 audit. The feature itself remains the previously built and hot-reloaded version.
+
+## Consolidated post-mapping rerun (08:05–08:07 UTC)
+
+After the implementation, native acceptance and requirement mapping were complete,
+the complete mapped check set was run again, not inferred from earlier work.
+[The final evidence ledger](remote-final-verification.json) records each of the
+17 requirement rows, its exact named check, fresh log and observed outcome, plus
+all passing check names, native reports and executable SHA-256 hashes.
+
+Fresh results:
+
+- All 31 Desktop remote checks passed, including Settings, both host-entry submit
+  paths, both new-panel shortcuts, default-only semantics, draft/retry behavior,
+  identity/file isolation, bounded discovery and safe preference writes.
+- Local regression subsets again passed: 38 harness tests (one existing ignored),
+  13 startup tests and 9 configuration tests.
+- Full SDK tests and doctests passed again. The opt-in real localhost SSH/native
+  CLI test also passed again, including strict host rejection and lifecycle
+  handling. All 84 native API-server checks passed using its final real project
+  test executable. The initial Cargo package spelling was corrected from
+  `jcode-api-server` to the actual `jcode-harness-api-server`; it was not a code
+  failure and is not reported as a successful Cargo API-server invocation.
+- All five native picker checks passed again: open picker, persist remote default,
+  restore it after process restart, type a custom host and submit with Enter,
+  and persist the local default again.
+- The ordinary Desktop-to-OpenSSH test passed again. Native Connect created a real
+  remote panel. Super+N followed the remote default before and after restart.
+  Both original remote IDs actually reattached and retained their names/context.
+  Local Connect added a local panel without replacing existing remote panels.
+  Switching the default to local and back to remote produced the corresponding
+  real new panels. The final state again contained five remote and two local
+  unique IDs, including the original two restored remote IDs. No inference ran.
+- The fresh restored screenshot was visually inspected: both native remote
+  panels displayed `SSH · jcode-test`, saved titles and persisted context.
+  The unchanged local terminal-construction boundary was reinspected separately.
+
+All logs and native reports for this pass are under `target/remote-final-pass`.
+The original feature sources in `workspace_remotes`, harness/namespace,
+preferences/discovery, shared SDK and native API bridge were unchanged during
+this pass. Unrelated concurrent work was left alone. The external-host and
+terminal-inspection limitations above still apply.
