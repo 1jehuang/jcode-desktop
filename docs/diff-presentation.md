@@ -52,3 +52,25 @@ content, context reveal, parent click isolation, narrow panels, and Markdown
 state retention across repaint. Parser tests cover multi-file Codex/unified
 patches, batch wrappers, binary/metadata changes, malformed input, newline-only
 edits, Unicode, and bounded computation on large edits.
+
+### Measured before and after
+
+The same `assets/previews/change-review.diff` fixture contains two files, two
+hunks, seven context lines, five additions, and three removals. On 2026-09-06,
+the unmodified `patch_preview` function extracted from pre-task commit
+`eb2960c88ad1458711d00007cbaa92e3efe5003c` was compiled and executed in isolation:
+it produced one file label (`src/session.rs`), zero context lines, and ten body
+lines. The second file's changes were grouped under the first file's name.
+
+The new real-app native acceptance displayed both file identities and copied
+exactly 668 bytes matching the full expected review text, including all seven
+context lines and both hunks. The clipboard still matched after collapsing a
+file. This establishes concrete gains in file attribution, context preservation,
+and copying hidden content, rather than relying only on appearance. The old
+parser measurement is an isolated baseline, not a full old-app acceptance run.
+
+Separate native clicks verified split/unified switching, wrapping, folding,
+file-tree navigation, and returning to chat. All 103 diff tests passed, with
+three integration/state-retention tests independently rerun afterward. These
+checks establish functional improvements, not a measured human reading-speed
+or preference result.
