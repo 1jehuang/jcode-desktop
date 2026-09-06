@@ -53,4 +53,9 @@ The native test requires the screenshot harness's Xvfb, Openbox, lavapipe, Image
 | Expose repeatable isolated verification without accepting incompatible modes | `test_image_cache_probe_requires_its_isolated_fixture_geometry` and actual one/two-panel CLI runs | Invalid size, three panels, conflicting interaction mode, and wrong layout are rejected before app launch. Supported one/two-panel native workflows pass. |
 | Deliver the change to the running application | Real live Ctrl+R-equivalent action, watching only newly appended application log data | Rebuild/reload succeeded and activated UI generation 4. New `desktop-image paint-state` events were observed. Production fix and diagnostics were pushed in `193c8d6`. |
 
+## Remaining hypothesis probes
+
+- **Preview teardown/recreation after zoom and drag:** `python3 scripts/screenshot.py target/image-flicker-lifecycle.png --transcript image --image-interact` passed real wheel zoom, drag pan, double-click fit, and Escape. Four further open/close cycles produced 32 captured frames with identical blue-bar coordinates within each state. The existing asset decoded exactly once, with no image-state or geometry warnings. See `target/image-flicker-lifecycle.log` and `.preview-diagnostics.log`. This did not reproduce a preview-lifecycle flicker.
+- **Live recurrence while investigating:** the 08:06:40 UTC check on 2026-09-06 observed eleven image-state events and zero instrumented anomalies since the deployment baseline. See `target/image-flicker-hypothesis-followup.json`. Uninstrumented GPU-only flicker remains outside this negative evidence.
+
 The feedback loop is closed for the reproduced cache defect and the tested rendering workflows. It remains open for the original intermittent symptom until it is captured or identified from an actual diagnostic occurrence. Absence of warnings is not proof that a GPU-only or otherwise uninstrumented flicker cannot occur.

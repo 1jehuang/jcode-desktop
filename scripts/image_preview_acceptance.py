@@ -78,3 +78,5 @@ def verify(output, env, root):
     mouse("key", "Escape")
     capture("-gesture-closed", lambda count: abs(count - initial_count) < initial_count * .05)
     print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> {enlarged_count} -> {zoomed_count}; wheel zoom, drag pan, double-click fit, safe clicks, and Escape")
+    from image_flicker_acceptance import verify_repeated_preview
+    verify_repeated_preview(output, env, root, initial_point)
