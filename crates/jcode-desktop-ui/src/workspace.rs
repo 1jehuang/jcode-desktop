@@ -142,7 +142,7 @@ const HELP_SESSION_PROMPT: &str = r#"Act as the in-app Jcode guide. Use the bund
 The jcode-desktop shortcuts are:
 - Super+H/J/K/L: navigate panels
 - Super+Shift+H/J/K/L: move panels
-- Super+N: open a session to the right
+- Super+Enter: open a session to the right
 - Ctrl+O: choose a folder and open a session there
 - Super+Tab: return to the previous panel
 - Super+R: cycle panel width
@@ -2066,7 +2066,7 @@ impl Workspace {
     }
 
     fn new_panel(&mut self, _: &NewPanel, _: &mut Window, cx: &mut Context<Self>) {
-        self.tutorial_cue("N", "New session", "new", cx);
+        self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_new_session(cx);
     }
@@ -2782,7 +2782,7 @@ impl Workspace {
                     },
                 ))
                 .child(if self.connected {
-                    format!("strip {} is empty - super-n opens a session here", row + 1)
+                    format!("strip {} is empty - super-enter opens a session here", row + 1)
                 } else {
                     "connecting to jcode...".into()
                 })
@@ -4387,7 +4387,7 @@ impl Workspace {
                                             .id("sidebar-new-session")
                                             // Tagged so a render test can click the real button
                                             // and confirm it counts as a slow path, not as
-                                            // knowledge of super-n.
+                                            // knowledge of super-enter.
                                             .debug_selector(|| "sidebar-new-session".into())
                                             .flex_none()
                                             .border_1()
@@ -8960,6 +8960,7 @@ mod tests {
         vcx.run_until_parked();
         for (chord, expected) in [
             ("super-enter", default_working_dir()),
+            ("super-n", default_working_dir()),
             ("super-;", Some(favorite.to_string_lossy().into_owned())),
             ("super-'", default_working_dir()),
         ] {
@@ -9666,7 +9667,7 @@ mod tests {
         // Ordering matters only in that each sequence must leave enough panels
         // to work with; the assertions are per-skill.
         let cases: &[(&str, &str)] = &[
-            ("new_panel", "super-n"),
+            ("new_panel", "super-enter"),
             ("focus_left_right", "super-h"),
             ("focus_first_last", "super-end"),
             ("focus_previous", "super-tab"),
@@ -9777,7 +9778,7 @@ mod tests {
             ("width_presets", "super-2", Box::new(WidthPreset2)),
             ("width_presets", "super-3", Box::new(WidthPreset3)),
             ("width_presets", "super-4", Box::new(WidthPreset4)),
-            ("new_panel", "super-n", Box::new(NewPanel)),
+            ("new_panel", "super-enter", Box::new(NewPanel)),
             ("close_panel", CLOSE_PANEL_CHORD, Box::new(ClosePanel)),
         ];
 
@@ -9912,7 +9913,7 @@ mod tests {
     }
 
     /// Clicking the sidebar's "+" opens a session, but must never be mistaken
-    /// for knowing super-n. Without this check, routing the button through the
+    /// for knowing super-enter. Without this check, routing the button through the
     /// keyboard handler would silently teach the coach that the user is fluent
     /// in a shortcut they have never pressed.
     #[gpui::test]
@@ -9951,7 +9952,7 @@ mod tests {
             let trace = coach.trace("new_panel");
             assert_eq!(
                 trace.recalled, 0,
-                "clicking the button must not count as recalling super-n"
+                "clicking the button must not count as recalling super-enter"
             );
             assert!(
                 trace.slow_paths > 0,
@@ -10886,7 +10887,7 @@ mod tests {
             "super-r",
             "super-f",
             "super-1 .. super-4",
-            "super-n",
+            "super-enter",
             CLOSE_PANEL_CHORD,
         ] {
             assert!(taught.contains(&keys), "{keys} is bound but never taught");

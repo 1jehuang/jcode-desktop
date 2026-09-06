@@ -195,7 +195,7 @@ pub const SKILLS: &[Skill] = &[
     },
     Skill {
         id: "new_panel",
-        keys: "super-n",
+        keys: "super-enter",
         label: "open a session right of this one",
         instead_of: "clicking the new session card",
         area: Area::Sessions,
@@ -1459,12 +1459,12 @@ mod tests {
         let mut coach = Coach::new();
         let mut when = 1_000_000;
 
-        // Day one: they do not know super-n, so they click the new-session
+        // Day one: they do not know super-enter, so they click the new-session
         // card. The coach notices and teaches.
         coach.used_slow_path("new_panel", when);
-        let hint = coach.active_hint(when).expect("should teach super-n");
+        let hint = coach.active_hint(when).expect("should teach super-enter");
         assert_eq!(hint.skill_id, "new_panel");
-        assert_eq!(hint.keys, "super-n");
+        assert_eq!(hint.keys, "super-enter");
 
         // They take the advice immediately. That earns weak credit only, so the
         // coach must not yet consider the skill learned.

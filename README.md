@@ -6,7 +6,8 @@ See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
 ## New panel shortcuts
 
-- **Super+Enter** opens a new session panel (Super+N still works).
+- **Super+Enter** is the default shortcut to open a new session panel, with no
+  configuration needed. Hints and the tutorial teach it. Super+N still works.
 - **Super+;** opens a session in your fixed most-used directory.
 - **Super+'** opens a session in your home directory.
 - **Super+T** opens a terminal panel.

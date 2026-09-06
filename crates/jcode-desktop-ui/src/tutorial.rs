@@ -104,7 +104,7 @@ impl Workspace {
                 (
                     "tutorial-new",
                     "New session",
-                    "N",
+                    "Enter",
                     "new_panel",
                     Some(|this, w, cx| this.new_panel(&NewPanel, w, cx)),
                 ),
