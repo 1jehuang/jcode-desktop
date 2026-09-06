@@ -228,7 +228,8 @@ enum SidebarView {
 // Minimap: a compact card in the top right that maps every strip to
 // scale, preserving the canvas aspect ratio so panels taller than wide on
 // screen stay taller than wide on the map.
-const MINIMAP_WIDTH: f32 = 112.0;
+const MINIMAP_LABEL_WIDTH: f32 = 22.0;
+const MINIMAP_WIDTH: f32 = 112.0 + MINIMAP_LABEL_WIDTH;
 const MINIMAP_HEIGHT: f32 = 96.0;
 const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
@@ -5110,7 +5111,7 @@ impl Workspace {
         viewport_h: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let track_w = MINIMAP_WIDTH - MINIMAP_PADDING * 2.0;
+        let track_w = MINIMAP_WIDTH - MINIMAP_PADDING * 2.0 - MINIMAP_LABEL_WIDTH;
         let panel_track_h = MINIMAP_ROW_HEIGHT - MINIMAP_PANEL_INSET * 2.0;
         let widest = (0..STRIP_COUNT)
             .map(|row| {
@@ -5131,6 +5132,7 @@ impl Workspace {
             .w(px(MINIMAP_WIDTH))
             .h(px(MINIMAP_HEIGHT))
             .p(px(MINIMAP_PADDING))
+            .pl(px(MINIMAP_PADDING + MINIMAP_LABEL_WIDTH))
             .flex()
             .flex_col()
             .gap(px(MINIMAP_ROW_GAP))
@@ -5171,6 +5173,7 @@ impl Workspace {
 
         for row in 0..STRIP_COUNT {
             let active_row = row == self.active_row;
+            let accent = Theme::global().workspace_accent(row);
             let mut track = div()
                 .id(("minimap-row", row))
                 .debug_selector(move || format!("minimap-row-{row}"))
@@ -5178,12 +5181,60 @@ impl Workspace {
                 .h(px(MINIMAP_ROW_HEIGHT))
                 .rounded(px(3.0))
                 .cursor_pointer()
-                .bg(if active_row {
+                .bg((if active_row {
                     Theme::global().MINIMAP_TRACK_ACTIVE
                 } else {
                     Theme::global().MINIMAP_TRACK
                 })
-                .hover(|el| el.bg(Theme::global().MINIMAP_TRACK_ACTIVE))
+                .blend(accent.opacity(if active_row { 0.16 } else { 0.06 })))
+                .hover(|el| {
+                    el.bg(Theme::global()
+                        .MINIMAP_TRACK_ACTIVE
+                        .blend(accent.opacity(0.20)))
+                })
+                .child(
+                    div()
+                        .id(("workspace-map-badge", row))
+                        .debug_selector(move || format!("workspace-map-badge-{row}"))
+                        .absolute()
+                        .left(px(-MINIMAP_LABEL_WIDTH))
+                        .top_0()
+                        .w(px(MINIMAP_LABEL_WIDTH - 4.0))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(3.0))
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                let position = this.active_position_in_row();
+                                this.select_row(row, position);
+                                this.focus_active(window, cx);
+                                cx.notify();
+                            }),
+                        )
+                        .bg(if active_row {
+                            accent
+                        } else {
+                            Theme::global().MINIMAP_BG
+                        })
+                        .text_color(if active_row {
+                            Theme::global().PANEL_BG
+                        } else {
+                            accent
+                        })
+                        .child(format!("{}", row + 1))
+                        .when(active_row, |el| {
+                            el.child(div().absolute().inset_0().debug_selector(move || {
+                                format!("workspace-map-badge-{row}-active")
+                            }))
+                        }),
+                )
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {
@@ -5301,7 +5352,7 @@ impl Workspace {
                         .h(px(MINIMAP_ROW_HEIGHT))
                         .rounded(px(3.0))
                         .border_1()
-                        .border_color(Theme::global().MINIMAP_VIEWPORT),
+                        .border_color(accent),
                 );
 
                 // A persistent pin marks the exact focused panel. Unlike the

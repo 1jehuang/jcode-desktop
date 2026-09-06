@@ -68,6 +68,19 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Stable spatial identities, separate from session status colors. Darker
+    /// inks on light palettes keep the small workspace numbers readable.
+    pub fn workspace_accent(&self, row: usize) -> Rgba {
+        let light =
+            self.PANEL_BG.r * 0.2126 + self.PANEL_BG.g * 0.7152 + self.PANEL_BG.b * 0.0722 > 0.5;
+        let colors = if light {
+            [0x245b9c, 0x19685e, 0x805210, 0x7540a2]
+        } else {
+            [0x8ab4f8, 0x80cbc4, 0xe8b86d, 0xc4a1ed]
+        };
+        rgb(colors[row % colors.len()])
+    }
+
     /// Raised paper for the active pane, recessed backing for its neighbors.
     /// Use palette roles rather than dimming the entire pane so transcript text,
     /// code, images, and controls retain their original contrast and opacity.
@@ -595,6 +608,29 @@ mod tests {
             (luminance(b), luminance(a))
         };
         (bright + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn workspace_identities_are_distinct_and_readable_in_every_palette() {
+        for theme in themes() {
+            for row in 0..4 {
+                let accent = theme.workspace_accent(row);
+                for other in 0..row {
+                    assert_ne!(accent, theme.workspace_accent(other));
+                }
+                for background in [
+                    theme.PANEL_BG,
+                    theme.MINIMAP_BG,
+                    theme.HEADER_BG.blend(accent.opacity(0.05)),
+                ] {
+                    assert!(
+                        contrast(accent, background) >= 4.5,
+                        "workspace {row}: contrast {} against {background:?}",
+                        contrast(accent, background)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

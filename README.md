@@ -86,6 +86,10 @@ This writes a requirement-by-requirement `api-attachment-acceptance.json` report
 
 ## Configuration
 
+Workspaces 1–4 have consistent blue, teal, amber, and purple accents. Session
+tabs carry their workspace number, and the selected tab has a filled badge and
+stronger border. The optional minimap uses the same colors and clickable numbers.
+
 The sidebar's **Theme** tab selects a palette and saves it automatically.
 Choose from Warm neutral, Warm studio, Neutral dark, Neutral light, Midnight
 (ink blue), Ocean (teal), Forest (sage), Plum (mauve), Rose dawn (blush paper),

@@ -253,13 +253,14 @@ impl Workspace {
             .left_0()
             .right(px(right))
             .h(px(FOLDER_CONTENT_INSET));
-        let populated_rows = (0..STRIP_COUNT)
-            .filter(|row| self.row_indices(*row).next().is_some())
-            .count();
         self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
-            let (index, row, row_position) = entries[position];
+            let (index, row, _) = entries[position];
             let focused = position == selected;
+            let accent = Theme::global().workspace_accent(row);
+            let background = Theme::global()
+                .panel_background(focused)
+                .blend(accent.opacity(if focused { 0.16 } else { 0.05 }));
             let current = geometry[position];
             let (exposed_left, visible) = TabLayout::exposed(&geometry, position, selected);
             if let Some(index) = index {
@@ -316,17 +317,26 @@ impl Workspace {
                             None => div().child(emoji).into_any_element(),
                         }),
                 )
-                .when(
-                    visible >= 64.0 && populated_rows > 1 && row_position == 0,
-                    |el| {
-                        el.child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(Theme::global().TEXT_FAINT)
-                                .child(format!("{}", row + 1)),
-                        )
-                    },
-                )
+                .when(visible >= 64.0, |el| {
+                    el.child(
+                        div()
+                            .debug_selector(move || {
+                                format!("workspace-tab-badge-{position}-row-{row}")
+                            })
+                            .flex_none()
+                            .px(px(4.0))
+                            .rounded(px(3.0))
+                            .text_size(px(10.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .bg(if focused { accent } else { background })
+                            .text_color(if focused {
+                                Theme::global().PANEL_BG
+                            } else {
+                                accent
+                            })
+                            .child(format!("{}", row + 1)),
+                    )
+                })
                 .when(focused || visible >= 52.0, |el| {
                     el.child(
                         div()
@@ -361,16 +371,13 @@ impl Workspace {
                     .border(px((current.width / 2.0).min(1.0)))
                     .border_b_0()
                     .border_color(if focused {
-                        Theme::global().PANEL_BORDER_FOCUS.opacity(0.50)
+                        accent
                     } else {
-                        Theme::global().PANEL_BORDER.opacity(0.45)
+                        accent.opacity(0.35)
                     })
-                    .bg(if focused {
-                        Theme::global().PANEL_BG
-                    } else {
-                        Theme::global().HEADER_BG
-                    })
+                    .bg(background)
                     .text_size(px(11.0))
+                    .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
                     .text_color(if focused {
                         Theme::global().TEXT
                     } else {
@@ -379,13 +386,26 @@ impl Workspace {
                     .occlude()
                     .cursor_pointer()
                     .tooltip({
-                        let title: gpui::SharedString = title.into();
+                        let title: gpui::SharedString =
+                            format!("Workspace {} · {title}", row + 1).into();
                         move |_, cx| cx.new(|_| TabTooltip(title.clone())).into()
                     })
                     .hover(|el| {
-                        el.bg(Theme::global().PANEL_BG)
+                        el.bg(Theme::global().PANEL_BG.blend(accent.opacity(0.20)))
                             .text_color(Theme::global().TEXT)
                     })
+                    .child(
+                        div()
+                            .debug_selector(move || {
+                                format!("workspace-tab-accent-{position}-row-{row}")
+                            })
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(if focused { 3.0 } else { 2.0 }))
+                            .bg(accent.opacity(if focused { 1.0 } else { 0.65 })),
+                    )
                     .when(focused && index.is_some(), |el| {
                         el.child(div().absolute().inset_0().debug_selector(move || {
                             format!("live-session-tab-{}-focused", index.unwrap())
@@ -448,6 +468,74 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn workspace_identity_follows_rows_and_number_badges_navigate(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.show_sidebar = false;
+            workspace.enable_test_minimap();
+            for row in 0..STRIP_COUNT {
+                workspace.push_test_panel(&format!("identity-{row}"), cx);
+                workspace.slots[row].row = row;
+            }
+            workspace
+        });
+        vcx.run_until_parked();
+        for row in 0..STRIP_COUNT {
+            assert!(
+                vcx.debug_bounds(format!("workspace-tab-badge-{row}-row-{row}").leak())
+                    .is_some()
+            );
+            assert!(
+                vcx.debug_bounds(format!("workspace-tab-accent-{row}-row-{row}").leak())
+                    .is_some()
+            );
+        }
+        for row in [1, 3, 2, 0] {
+            let badge = vcx
+                .debug_bounds(format!("workspace-map-badge-{row}").leak())
+                .unwrap();
+            let track = vcx
+                .debug_bounds(format!("minimap-row-{row}").leak())
+                .unwrap();
+            assert!(
+                badge.right() < track.left(),
+                "numbers must not obscure the map"
+            );
+            vcx.simulate_click(badge.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(
+                workspace.read_with(vcx, |workspace, _| workspace.active_row),
+                row
+            );
+            assert!(
+                vcx.debug_bounds(format!("workspace-map-badge-{row}-active").leak())
+                    .is_some()
+            );
+        }
+        workspace.update(vcx, |workspace, cx| {
+            workspace.slots[0].row = 1;
+            workspace.set_active(0, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("workspace-tab-accent-0-row-1").is_some());
+        assert!(vcx.debug_bounds("workspace-tab-accent-0-row-0").is_none());
+        let empty = vcx.debug_bounds("workspace-map-badge-0").unwrap();
+        vcx.simulate_click(empty.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("live-session-empty-tab-title").is_some());
+        assert!(vcx.debug_bounds("workspace-map-badge-0-active").is_some());
+        assert!(vcx.debug_bounds("workspace-tab-badge-0-row-0").is_some());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.show_minimap = false;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("workspace-tab-badge-0-row-0").is_some());
+        assert!(vcx.debug_bounds("minimap").is_none());
+    }
 
     #[gpui::test]
     fn live_tabs_animate_the_working_emoji_without_shifting_the_title(
