@@ -55,7 +55,8 @@ fn open_picker(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext)
         });
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+    assert!(vcx.debug_bounds("default-directory-panel").is_some());
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
     workspace.read_with(vcx, |workspace, _| {
         assert!(workspace.folder_picker_sets_default);
     });
@@ -98,6 +99,124 @@ fn assert_created_in(commands: &Receiver<Command>, directory: &Path) {
 }
 
 #[gpui::test]
+fn default_directory_panel_can_focus_move_resize_and_close_like_chat(
+    cx: &mut gpui::TestAppContext,
+) {
+    let prior = tempfile::tempdir().unwrap();
+    let (workspace, vcx, commands) = setup(cx, prior.path());
+    open_picker(&workspace, vcx);
+    vcx.simulate_keystrokes("u n f i n i s h e d");
+    vcx.run_until_parked();
+    let picker_id = workspace.read_with(vcx, |w, cx| {
+        let slot = &w.slots[w.active];
+        assert!(slot.panel.read(cx).is_default_directory());
+        assert!(!slot.panel.read(cx).can_fork());
+        slot.panel.entity_id()
+    });
+    vcx.simulate_keystrokes(&platform_chord("super-left"));
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        let w = workspace.read(cx);
+        assert_ne!(w.slots[w.active].panel.entity_id(), picker_id);
+        assert!(
+            w.slots[w.active]
+                .panel
+                .read(cx)
+                .input_focus_handle(cx)
+                .is_focused(window)
+        );
+    });
+    // The picker stays mounted and does not block another chat's input.
+    assert!(vcx.debug_bounds("default-directory-panel").is_some());
+    vcx.simulate_keystrokes("c h a t");
+    vcx.simulate_keystrokes(&platform_chord("super-right"));
+    vcx.run_until_parked();
+    click(vcx, "default-directory-button");
+    vcx.update(|window, cx| {
+        let w = workspace.read(cx);
+        assert_eq!(w.slots.len(), 3, "reopening must not duplicate the picker");
+        assert_eq!(w.slots[w.active].panel.entity_id(), picker_id);
+        assert_eq!(
+            w.folder_search.as_ref().unwrap().read(cx).content,
+            "unfinished"
+        );
+        assert!(
+            w.slots[w.active]
+                .panel
+                .read(cx)
+                .input_focus_handle(cx)
+                .is_focused(window)
+        );
+    });
+    vcx.update(|window, cx| {
+        window.dispatch_action(Box::new(WidthPreset3), cx);
+        window.dispatch_action(Box::new(MovePanelDown), cx);
+    });
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.slots[w.active].panel.entity_id(), picker_id);
+        assert_eq!(w.slots[w.active].row, 1);
+        assert_eq!(w.slots[w.active].width_fraction, 0.75);
+    });
+    vcx.simulate_keystrokes(&platform_chord("super-q"));
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 2);
+        assert!(w.default_directory_panel_index(cx).is_none());
+        assert!(w.folder_search.is_none());
+        assert_eq!(w.pinned_working_dir.as_deref(), prior.path().to_str());
+    });
+    assert!(vcx.debug_bounds("default-directory-panel").is_none());
+    assert_no_command(&commands);
+}
+
+#[gpui::test]
+fn default_directory_panel_snapshot_restores_search_and_focus_without_watching_settings(
+    cx: &mut gpui::TestAppContext,
+) {
+    let prior = tempfile::tempdir().unwrap();
+    let (workspace, vcx, commands) = setup(cx, prior.path());
+    open_picker(&workspace, vcx);
+    vcx.simulate_keystrokes("d r a f t");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            let snapshot = w.snapshot(window, cx).unwrap();
+            let snapshot = WorkspaceSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
+            w.apply_snapshot(snapshot, cx);
+            w.restore_focus(window, cx);
+            cx.notify();
+        });
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        let w = workspace.read(cx);
+        assert_eq!(w.slots.len(), 3);
+        assert!(w.slots[w.active].panel.read(cx).is_default_directory());
+        let search = w.folder_search.as_ref().unwrap();
+        assert_eq!(search.read(cx).content, "draft");
+        assert!(search.read(cx).focus_handle.is_focused(window));
+        assert_eq!(
+            w.slots[w.active].panel.read(cx).input.entity_id(),
+            search.entity_id()
+        );
+    });
+    for expected in ["existing-session", "neighbor-session"] {
+        match commands.try_recv().unwrap() {
+            Command::Watch { session_id } => assert_eq!(session_id, expected),
+            _ => panic!("only chat sessions should be watched after reload"),
+        }
+    }
+    assert_no_command(&commands);
+    assert!(vcx.debug_bounds("default-directory-panel").is_some());
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("default-directory-panel").is_none());
+    assert_no_command(&commands);
+}
+
+#[gpui::test]
 fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppContext) {
     let prior = tempfile::tempdir().unwrap();
     let (workspace, vcx, commands) = setup(cx, prior.path());
@@ -112,7 +231,8 @@ fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppCon
         });
         vcx.run_until_parked();
         click(vcx, "default-directory-button");
-        assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+        assert!(vcx.debug_bounds("default-directory-panel").is_some());
+        assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
         vcx.update(|window, cx| {
             let workspace = workspace.read(cx);
             assert!(workspace.folder_picker_sets_default);
@@ -130,7 +250,7 @@ fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppCon
                 workspace.pinned_working_dir.as_deref(),
                 prior.path().to_str()
             );
-            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(workspace.slots.len(), 3);
         });
         assert_no_command(&commands);
         click(vcx, "folder-picker-cancel");
@@ -242,9 +362,10 @@ fn invalid_default_directory_preserves_prior_and_displays_error(cx: &mut gpui::T
                     .as_ref()
                     .is_some_and(|error| !error.is_empty())
             );
-            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(workspace.slots.len(), 3);
         });
-        assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+        assert!(vcx.debug_bounds("default-directory-panel").is_some());
+        assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
         assert!(vcx.debug_bounds("folder-picker-error").is_some());
         assert_no_command(&commands);
     }
@@ -352,7 +473,7 @@ fn typed_invalid_default_path_does_not_fall_back_to_parent_or_fuzzy_match(
                 prior.path().to_str()
             );
             assert!(workspace.folder_picker_error.is_some());
-            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(workspace.slots.len(), 3);
         });
         assert!(vcx.debug_bounds("folder-picker-error").is_some());
         assert_no_command(&commands);
@@ -392,13 +513,14 @@ fn invalid_typed_default_path_confirm_click_keeps_escape_working(cx: &mut gpui::
     vcx.run_until_parked();
     click(vcx, "folder-picker-open");
     assert!(vcx.debug_bounds("folder-picker-error").is_some());
-    assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+    assert!(vcx.debug_bounds("default-directory-panel").is_some());
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
     workspace.read_with(vcx, |workspace, _| {
         assert_eq!(
             workspace.pinned_working_dir.as_deref(),
             prior.path().to_str()
         );
-        assert_eq!(workspace.slots.len(), 2);
+        assert_eq!(workspace.slots.len(), 3);
     });
     assert_no_command(&commands);
 

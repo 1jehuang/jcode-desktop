@@ -56,10 +56,13 @@ For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead.
 ### Local pinned directory
 
 Use Cmd instead of Super on macOS. Click **Default directory** at the top left
-to see and change the local directory used by **Super+Enter** and **Super+;**.
+to open a regular, focusable panel for the local directory used by
+**Super+Enter** and **Super+;**. Switch between it and chats with the usual panel
+shortcuts or tabs. Clicking the control again returns to the same picker, keeping
+your unfinished search. The panel can also be moved, resized, or closed like a chat.
 Click a directory in the usage-ranked list to select it immediately, or browse
 or type a path and click **Set as default**. This saves the preference without
-opening a panel or changing existing sessions. Cancel leaves
+creating a session or changing existing sessions. Saving closes the picker. Cancel leaves
 the current default unchanged. Missing paths and files cannot be saved as a
 default directory. Ordinary **Open folder** still opens a new session instead
 of changing this preference.

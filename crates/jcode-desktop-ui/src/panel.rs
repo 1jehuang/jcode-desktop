@@ -486,7 +486,8 @@ impl Panel {
     /// a vertical scroll. Workspace gesture routing uses this to let an empty
     /// panel behave like bare canvas and move between strips instead.
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
-        self.code_file.is_some()
+        self.is_default_directory()
+            || self.code_file.is_some()
             || self.gmail_inbox.is_some()
             || self.gmail_message.is_some()
             || self.todoist.is_some()
@@ -494,6 +495,12 @@ impl Panel {
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
             || !self.streaming_reasoning.is_empty()
+    }
+
+    pub const DEFAULT_DIRECTORY_SESSION_ID: &str = "settings://default-directory";
+
+    pub(crate) fn is_default_directory(&self) -> bool {
+        self.session_id == Self::DEFAULT_DIRECTORY_SESSION_ID
     }
 
     pub const STARTUP_SESSION_ID: &str = "startup://draft";
@@ -1712,7 +1719,8 @@ impl Panel {
     }
 
     pub(crate) fn can_fork(&self) -> bool {
-        self.terminal.is_none()
+        !self.is_default_directory()
+            && self.terminal.is_none()
             && self.code_file.is_none()
             && self.session_id != "unfinished-work"
             && !self.is_pending_session()

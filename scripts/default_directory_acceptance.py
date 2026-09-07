@@ -20,6 +20,51 @@ from PIL import Image
 from model_picker_acceptance import normalized, parse_words, phrase_bounds
 
 
+DEFAULT_DIRECTORY_SESSION = "settings://default-directory"
+
+
+def panels(state):
+    return [panel for row in state["rows"] for panel in row["panels"]]
+
+
+def default_panel(state):
+    matches = [panel for panel in panels(state)
+               if panel["session"] == DEFAULT_DIRECTORY_SESSION]
+    assert len(matches) == 1, "Expected exactly one default-directory slot: " + json.dumps(state)
+    assert not matches[0].get("closing"), "Default-directory slot is closing"
+    return matches[0]
+
+
+def panel_bounds(state, panel, image_size):
+    """Settled folder-tab geometry, located by identity rather than slot number.
+
+    screenshot.py fixes the sidebar/canvas insets for this acceptance mode. Row
+    order, panel widths, camera scrolling and image height come from live output.
+    OCR below locates the controls inside this crop, not fixed modal coordinates.
+    """
+    width, height = image_size
+    canvas_left, canvas_right = 276, width - 12
+    viewport = canvas_right - canvas_left
+    row = next(row for row in state["rows"] if row["row"] == state["active_row"])
+    assert not state.get("camera_motion"), "Wait for workspace camera to settle"
+    left = canvas_left - row["camera"]
+    for candidate in row["panels"]:
+        panel_width = max(320, (viewport - 2 * .58) * candidate["width"])
+        if candidate["id"] == panel["id"]:
+            bounds = (round(max(canvas_left, left)), 48,
+                      round(min(canvas_right, left + panel_width)), height - 16)
+            assert bounds[2] - bounds[0] > 250, "Panel is clipped or offscreen"
+            return bounds
+        left += panel_width
+    raise AssertionError("Panel is not in the active row")
+
+
+def assert_focused(state, panel_id):
+    focused = [panel for panel in panels(state) if panel["focused"]]
+    assert len(focused) == 1 and focused[0]["id"] == panel_id, state
+    assert state["keyboard_panel"] == focused[0]["slot"], "Input focus differs from workspace focus: " + json.dumps(state)
+
+
 class NativeUI:
     def __init__(self, output, env, root):
         assert env.get("JCODE_DESKTOP_SCREENSHOT") == "1", "Offline fixture required"
@@ -44,6 +89,8 @@ class NativeUI:
         path = self.artifact(label + ".png")
         subprocess.run(["import", "-window", "root", "png:" + str(path)],
                        env=self.env, cwd=self.root, check=True, timeout=15)
+        if (self.root / "state").exists():
+            shutil.copyfile(self.root / "state", self.artifact(label + "-state.txt"))
         with Image.open(path) as image:
             return image.convert("RGB")
 
@@ -111,33 +158,45 @@ def verify(output, env, root):
     report = {"checks": {}, "failures": [], "scope": "native offline UI, persisted preference, and local draft",
               "frequent_list_fixture": str(frequent), "custom_directory": str(custom)}
     stage = "initial"
-    # Default size is enforced by screenshot.py. Crop excludes the sidebar label,
-    # ensuring a visible modal title cannot be confused with the launcher.
-    modal = (370, 210, 1070, 790)
 
     def pinned():
         return tomllib.loads(config.read_text()).get("workspace", {}).get("pinned_working_dir")
 
-    def modal_words(image, label):
-        words = ui.words(image, modal, label)
-        phrase_bounds(words, "Default directory")
+    def picker_words(image, label):
+        state = navigation()
+        panel = default_panel(state)
+        bounds = panel_bounds(state, panel, image.size)
+        words = ui.words(image, bounds, label)
+        title = phrase_bounds(words, "Default directory")
+        assert title[1] < image.height * .25, "Picker must start at the workspace top, not in a modal"
         # Block OCR sometimes drops the isolated bottom button after a large
         # empty list. Read that rendered control independently, not heuristically.
-        footer = ui.words(image, (880, 720, 1055, 775), label + "-footer", psm=7)
-        phrase_bounds(footer, "Set as default")
-        return [word for word in words if word["y"] <= 720] + footer
+        footer_top = bounds[3] - 65
+        footer = ui.words(image, (bounds[0], footer_top, bounds[2], bounds[3]),
+                          label + "-footer", psm=6)
+        button = phrase_bounds(footer, "Set as default")
+        assert button[1] > image.height * .8, "Picker footer must be at the workspace bottom"
+        return [word for word in words if word["y"] < footer_top] + footer
 
     def closed(image):
-        # The same title in the sidebar remains visible when the overlay closes.
+        assert not any(panel["session"] == DEFAULT_DIRECTORY_SESSION
+                       for panel in panels(navigation())), "Utility slot stayed open"
+        # The launcher remains visible after the utility slot is removed.
         phrase_bounds(ui.words(image, (0, 48, 264, 110), stage + "-sidebar"), "Default directory")
-        words = ui.words(image, modal, stage + "-closed")
-        assert "defaultdirectory" not in normalized(" ".join(w["text"] for w in words)), "Modal stayed open"
+        words = ui.words(image, (276, 48, image.width - 12, image.height - 16), stage + "-closed")
+        assert "defaultdirectory" not in normalized(" ".join(w["text"] for w in words)), "Picker stayed rendered"
 
-    def open_modal(label):
+    def open_picker(label):
         bounds = ui.wait_frame(label + "-button", lambda image: phrase_bounds(
             ui.words(image, (0, 48, 264, 110), label + "-button"), "Default directory"))
         ui.click(bounds)
-        return ui.wait_frame(label, lambda image: modal_words(image, label))
+        def opened(image):
+            state = navigation()
+            panel = default_panel(state)
+            assert_focused(state, panel["id"])
+            assert abs(panel["width"] - .5) < .001, "Default utility width must be one half"
+            return picker_words(image, label)
+        return ui.wait_frame(label, opened)
 
     def type_path(text):
         # Opening focuses the input. Use actual native editing, not app state.
@@ -145,9 +204,10 @@ def verify(output, env, root):
         ui.native("type", "--clearmodifiers", "--delay", "15", text)
 
     def save_typed(label):
-        words = ui.wait_frame(label + "-typed", lambda image: modal_words(image, label + "-typed"))
+        words = ui.wait_frame(label + "-typed", lambda image: picker_words(image, label + "-typed"))
         # Footer is the last occurrence, since unfiltered rows have the same CTA.
-        footer = [word for word in words if word["y"] > 720]
+        last_y = max(word["y"] for word in words)
+        footer = [word for word in words if word["y"] > last_y - 18]
         ui.click(phrase_bounds(footer, "Set as default"))
 
     def assert_saved(directory, label):
@@ -167,17 +227,121 @@ def verify(output, env, root):
             try:
                 lines = (root / "state").read_text().splitlines()
                 return json.loads(next(line.split("=", 1)[1] for line in lines if line.startswith("navigation=")))
-            except (StopIteration, json.JSONDecodeError):
+            except (FileNotFoundError, StopIteration, json.JSONDecodeError):
                 # The opt-in state file is rewritten during painting.
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.05)
 
+    def record(label, evidence=True):
+        report["checks"][label] = evidence
+        print(f"Default-directory check passed: {label}", flush=True)
+
+    def focus_key(key, panel_id, label):
+        ui.native("key", "--clearmodifiers", key)
+        ui.wait_frame(label, lambda image: assert_focused(navigation(), panel_id))
+
+    def assert_query(query, label):
+        def visible(image):
+            words = picker_words(image, label)
+            # Only search below the actual home/computer controls and above the
+            # list. A matching directory row must not impersonate the input.
+            computer = phrase_bounds(words, "computer")
+            state = navigation()
+            bounds = panel_bounds(state, default_panel(state), image.size)
+            search = ui.words(image, (bounds[0], round(computer[3] + 5),
+                                     bounds[2], round(computer[3] + 75)),
+                              label + "-search")
+            phrase_bounds(search, query)
+        ui.wait_frame(label, visible)
+
     try:
+        stage = "inline-slot-and-native-focus"
+        before = navigation()
+        chat = next(panel for panel in panels(before) if panel["focused"])
+        original_ids = {panel["id"] for panel in panels(before)}
+        # Keep chat and the new half-width utility visible together. This is a
+        # real workspace width shortcut, not fixture state mutation.
+        ui.native("key", "--clearmodifiers", "super+2")
+        open_picker("inline-open")
+        picker = default_panel(navigation())
+        assert {panel["id"] for panel in panels(navigation())} == original_ids | {picker["id"]}
+        # A trailing space separates the native caret from the last word for OCR.
+        type_path("picker editing retained ")
+        assert_query("picker editing retained", "picker-editing")
+        focus_key("super+Left", chat["id"], "chat-focused-left")
+        # Do not submit any prompt. Actual composer editing proves that focus
+        # moved beyond the navigation diagnostic to a usable chat input.
+        ui.native("type", "--clearmodifiers", "chat editing retained ")
+
+        def chat_editing(image):
+            state = navigation()
+            assert_focused(state, chat["id"])
+            bounds = panel_bounds(state, chat, image.size)
+            words = ui.words(image, (bounds[0], round(image.height * .6),
+                                    bounds[2], bounds[3]), "chat-editing")
+            phrase_bounds(words, "chat editing retained")
+        ui.wait_frame("chat-editing", chat_editing)
+        assert_query("picker editing retained", "picker-retained-while-away")
+        focus_key("super+Right", picker["id"], "picker-focused-right")
+        ui.native("key", "--clearmodifiers", "ctrl+End")
+        ui.native("type", "--clearmodifiers", "again ")
+        assert_query("picker editing retained again", "picker-editing-restored")
+        record(stage, {"chat_id": chat["id"], "picker_id": picker["id"], "width": picker["width"]})
+
+        stage = "repeated-launch-focuses-same-panel-preserves-search"
+        focus_key("super+h", chat["id"], "chat-focused-before-reopen")
+        ui.wait_frame("chat-retained", chat_editing)
+        for attempt in range(2):
+            open_picker(f"reopen-{attempt}")
+            state = navigation()
+            assert default_panel(state)["id"] == picker["id"], "Reopening replaced the utility"
+            assert {panel["id"] for panel in panels(state)} == original_ids | {picker["id"]}, "Reopening added a duplicate panel"
+            assert_query("picker editing retained again", f"reopen-{attempt}-retained")
+        record(stage)
+
+        stage = "close-shortcut-removes-utility-not-chat"
+        ui.native("key", "--clearmodifiers", "super+q")
+        ui.wait_frame("shortcut-closed", closed)
+        state = navigation()
+        assert {panel["id"] for panel in panels(state)} == original_ids, "Close shortcut removed a chat"
+        assert_focused(state, chat["id"])
+        assert config.read_bytes() == original_config, "Close shortcut persisted an unsaved search"
+        ui.wait_frame("chat-after-picker-close", chat_editing)
+        ui.native("key", "--clearmodifiers", "ctrl+a", "BackSpace")
+        record(stage)
+
+        stage = "ordinary-open-folder-remains-overlay"
+        open_picker("before-open-folder")
+        ui.native("key", "--clearmodifiers", "ctrl+o")
+
+        def ordinary_overlay(image):
+            state = navigation()
+            assert {panel["id"] for panel in panels(state)} == original_ids, "OpenFolder must remove the default utility, not add another slot"
+            bounds = ((image.width - 680) // 2, (image.height - 560) // 2,
+                      (image.width + 680) // 2, (image.height + 560) // 2)
+            words = ui.words(image, bounds, "ordinary-overlay")
+            title = phrase_bounds(words, "open folder")
+            phrase_bounds(words, "cancel")
+            assert image.height * .15 < title[1] < image.height * .5, "Ordinary OpenFolder is no longer centered"
+        ui.wait_frame("ordinary-overlay", ordinary_overlay)
+        ui.native("key", "Escape")
+        ui.wait_frame("ordinary-overlay-closed", closed)
+        assert config.read_bytes() == original_config
+        record(stage)
+
+        stage = "cancel-button-removes-utility"
+        words = open_picker("cancel-button-open")
+        type_path("unsaved editing")
+        ui.click(phrase_bounds(words, "cancel"))
+        ui.wait_frame("cancel-button-closed", closed)
+        assert config.read_bytes() == original_config, "Cancel persisted an unsaved search"
+        record(stage)
+
         stage = "open-and-escape-cancels"
-        words = open_modal("modal-open")
+        words = open_picker("picker-open")
         phrase_bounds(words, "Choose a frequent folder")
-        shutil.copyfile(ui.artifact("modal-open.png"), output)
+        shutil.copyfile(ui.artifact("picker-open.png"), output)
         type_path("~/Custom Directory")
         ui.native("key", "Escape")
         ui.wait_frame("escape-cancelled", closed)
@@ -186,18 +350,19 @@ def verify(output, env, root):
         print(f"Default-directory check passed: {stage}", flush=True)
 
         stage = "frequent-row-saves-immediately"
-        words = open_modal("frequent-open")
+        words = open_picker("frequent-open")
         # The path label is in the list, below the search field, not the header.
-        row_words = [word for word in words if 410 < word["y"] < 710]
+        home = phrase_bounds(words, "computer")
+        row_words = [word for word in words if word["y"] > home[3] + 55]
         matches = [word for word in row_words
-                   if normalized(word["text"]) in ("frequent", normalized(str(frequent)))]
+                   if normalized(word["text"]) in ("frequent", normalized("~/frequent"), normalized(str(frequent)))]
         assert len(matches) == 1, "Frequent directory row missing: " + " ".join(w["text"] for w in row_words)
         word = matches[0]
         ui.click((word["x"], word["y"], word["x"] + word["width"], word["y"] + word["height"]))
         assert_saved(frequent, "frequent-saved")
 
         stage = "typed-custom-path-persists"
-        open_modal("custom-open")
+        open_picker("custom-open")
         type_path("~/Custom Directory")
         save_typed("custom")
         assert_saved(custom, "custom-saved")
@@ -205,12 +370,12 @@ def verify(output, env, root):
 
         for label, value in (("regular-file", invalid_file), ("missing-path", missing)):
             stage = label + "-rejected"
-            open_modal(label + "-open")
+            open_picker(label + "-open")
             type_path(str(value))
             save_typed(label)
 
             def rejected(image):
-                words = modal_words(image, label + "-error")
+                words = picker_words(image, label + "-error")
                 phrase_bounds(words, "Not an existing directory")
             ui.wait_frame(label + "-error", rejected)
             assert config.read_bytes() == saved_config, "Invalid path altered the saved preference"
@@ -226,7 +391,7 @@ def verify(output, env, root):
                 # cancel control to collect evidence for the remaining cases.
                 report["checks"][stage] = False
                 report["failures"].append({"step": stage, "error": str(error)})
-                words = modal_words(ui.capture(label + "-escape-failed"), label + "-escape-failed")
+                words = picker_words(ui.capture(label + "-escape-failed"), label + "-escape-failed")
                 ui.click(phrase_bounds(words, "cancel"))
                 ui.wait_frame(label + "-recovery-cancel", closed)
             assert config.read_bytes() == saved_config, "Escape changed the saved preference"

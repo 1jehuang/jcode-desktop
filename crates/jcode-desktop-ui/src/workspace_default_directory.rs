@@ -7,15 +7,118 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_folder(&OpenFolder, window, cx);
+        if let Some(index) = self.default_directory_panel_index(cx) {
+            self.set_active(index, cx);
+            self.overview = false;
+            self.overview_progress.set(0.0, Instant::now());
+            self.focus_active(window, cx);
+            self.focus_pending = true;
+            return;
+        }
         self.folder_picker_sets_default = true;
+        self.folder_picker_error = None;
         self.folder_search = Some(self.create_folder_search(cx));
-        self.folder_picker_dir = self
-            .pinned_working_dir
-            .clone()
-            .or_else(default_working_dir)
-            .map(PathBuf::from);
+        self.folder_picker_dir = Some(
+            self.pinned_working_dir
+                .clone()
+                .or_else(default_working_dir)
+                .map(PathBuf::from)
+                .unwrap_or_else(filesystem_root),
+        );
+        let panel = cx.new(|cx| {
+            let mut panel = Panel::new(
+                Panel::DEFAULT_DIRECTORY_SESSION_ID.into(),
+                Some("Default directory".into()),
+                None,
+                self.bridge.clone(),
+                cx,
+            );
+            // Use the panel's actual input handle for every existing focus path,
+            // including live tabs, overview, navigation diagnostics and reload.
+            panel.input = self.folder_search.as_ref().unwrap().clone();
+            panel
+        });
+        let width_fraction = 0.5;
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
+                restore_fraction: None,
+            },
+        );
+        self.set_active(insert_at, cx);
+        self.overview = false;
+        self.overview_progress.set(0.0, Instant::now());
+        self.focus_pending = true;
         cx.notify();
+    }
+
+    pub(super) fn default_directory_panel_index(&self, cx: &App) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|slot| slot.panel.read(cx).is_default_directory())
+    }
+
+    /// Remove only the preference panel, preserving the identities and focus of
+    /// every conversation, including when saving after moving it to another row.
+    pub(super) fn remove_default_directory_panel(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.default_directory_panel_index(cx) else {
+            return;
+        };
+        let active_id = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+        let removed = self.slots.remove(index);
+        let removed_id = removed.panel.entity_id();
+        if self.previous == Some(removed_id) {
+            self.previous = None;
+        }
+        for remembered in &mut self.row_focus {
+            if *remembered == Some(removed_id) {
+                *remembered = None;
+            }
+        }
+        self.active = active_id
+            .filter(|id| *id != removed_id)
+            .and_then(|id| {
+                self.slots
+                    .iter()
+                    .position(|slot| slot.panel.entity_id() == id)
+            })
+            .unwrap_or_else(|| {
+                let remaining: Vec<_> = self.row_indices(self.active_row).collect();
+                focus_after_close(index, &remaining)
+            });
+        if let Some(slot) = self
+            .slots
+            .get(self.active)
+            .filter(|slot| slot.row == self.active_row)
+        {
+            self.row_focus[self.active_row] = Some(slot.panel.entity_id());
+        }
+        self.retarget_camera();
     }
 
     pub(super) fn set_searched_default_directory(&mut self, query: &str, cx: &mut Context<Self>) {

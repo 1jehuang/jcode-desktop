@@ -1072,12 +1072,14 @@ impl Workspace {
                         cx,
                     )
                 });
-                if !Panel::is_pending_session_id(&session_id) {
+                if !Panel::is_pending_session_id(&session_id) && session_id != Panel::DEFAULT_DIRECTORY_SESSION_ID {
                     self.bridge.send(Command::Watch { session_id });
                 }
                 panel
             };
-            Panel::connect_input(&panel, cx);
+            if !panel.read(cx).is_default_directory() {
+                Panel::connect_input(&panel, cx);
+            }
             panel.update(cx, |panel, cx| panel.restore_snapshot(panel_state, cx));
             self.slots.push(Slot {
                 panel,
@@ -1132,6 +1134,9 @@ impl Workspace {
         if let Some(search_state) = snapshot.folder_search {
             let search = self.create_folder_search(cx);
             search.update(cx, |search, cx| search.restore(search_state, cx));
+            if let Some(index) = self.default_directory_panel_index(cx) {
+                self.slots[index].panel.update(cx, |panel, _| panel.input = search.clone());
+            }
             self.folder_search = Some(search);
         }
     }
@@ -2441,6 +2446,7 @@ impl Workspace {
     /// different folder intentionally opens a new session instead of silently
     /// changing the meaning of an existing transcript.
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
         self.folder_picker_dir = Some(
             default_working_dir()
@@ -2530,6 +2536,7 @@ impl Workspace {
     }
 
     fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
+        self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
         self.folder_picker_dir = None;
         self.folder_picker_error = None;
@@ -2550,6 +2557,11 @@ impl Workspace {
             .get(self.active)
             .is_none_or(|slot| slot.row != self.active_row || slot.closing)
         {
+            return;
+        }
+        if self.slots[self.active].panel.read(cx).is_default_directory() {
+            self.close_folder_picker(cx);
+            self.focus_active(window, cx);
             return;
         }
         self.learned("close_panel", cx);
@@ -3150,7 +3162,11 @@ impl Workspace {
                     .absolute()
                     .size_full(),
                 )
-                .child(slot.panel.clone());
+                .child(if slot.panel.read(cx).is_default_directory() {
+                    self.render_folder_picker(cx)
+                } else {
+                    slot.panel.clone().into_any_element()
+                });
             if focused {
                 active_surface = Some(surface);
             } else {
@@ -5884,38 +5900,36 @@ impl Workspace {
             );
         }
 
+        let inline = self.folder_picker_sets_default;
         div()
-            .id("folder-picker-overlay")
-            .debug_selector(|| "folder-picker-overlay".into())
+            .id(if inline { "default-directory-panel" } else { "folder-picker-overlay" })
+            .debug_selector(move || if inline { "default-directory-panel".into() } else { "folder-picker-overlay".into() })
             // Clicking a modal control must not let the workspace ancestor
             // steal the search focus. In particular, a rejected save needs to
             // keep accepting edits and Escape without an extra input click.
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
+                if this.folder_picker_sets_default {
+                    if let Some(index) = this.default_directory_panel_index(cx) {
+                        this.set_active(index, cx);
+                    }
+                }
                 if let Some(search) = &this.folder_search {
                     this.focus_pending = false;
                     window.focus(&search.read(cx).focus_handle.clone(), cx);
                 }
             }))
-            .absolute()
-            .inset_0()
+            .when(inline, |el| el.size_full())
+            .when(!inline, |el| el.absolute().inset_0().items_center().justify_center().bg(gpui::rgba(0x000000cc)))
             .flex()
-            .items_center()
-            .justify_center()
-            .bg(gpui::rgba(0x000000cc))
             .child(
                 div()
-                    .w(px(680.0))
-                    .h(px(560.0))
-                    .max_w(relative(0.9))
-                    .max_h(relative(0.85))
+                    .when(inline, |el| el.size_full().min_w_0())
+                    .when(!inline, |el| el.w(px(680.0)).h(px(560.0)).max_w(relative(0.9)).max_h(relative(0.85)))
                     .flex()
                     .flex_col()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                    .bg(Theme::global().PANEL_BG)
+                    .when(!inline, |el| el.rounded_lg().border_1().border_color(Theme::global().PANEL_BORDER_FOCUS).bg(Theme::global().PANEL_BG))
                     .child(
                         div()
                             .px_4()
@@ -6371,7 +6385,7 @@ impl Render for Workspace {
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
-            .when(self.folder_picker_dir.is_some(), |root| {
+            .when(self.folder_picker_dir.is_some() && !self.folder_picker_sets_default, |root| {
                 root.child(self.render_folder_picker(cx))
             });
         self.dump_state(window, cx);
