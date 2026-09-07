@@ -68,10 +68,46 @@ def offscreen_slots(navigation):
     return result
 
 
+def measure_grouped_tabs(image, navigation):
+    """Measure actual tab-group silhouettes, not just internal layout state."""
+    background = image.getpixel((CANVAS_LEFT, 27))
+    occupied = [x for x in range(CANVAS_LEFT, 1428)
+                if image.getpixel((x, 27)) != background]
+    groups = []
+    for x in occupied:
+        if not groups or x - groups[-1][1] > 4:
+            groups.append([x, x])
+        else:
+            groups[-1][1] = x
+    groups = [group for group in groups if group[1] - group[0] >= 10]
+    rows = [row for row in navigation["rows"] if row["panels"]]
+    assert len(groups) == len(rows) == 3, ("three separated workspace groups", groups)
+    targets = tab_targets(navigation)
+    for group, row in zip(groups, rows):
+        assert all(group[0] <= targets[p["slot"]] <= group[1]
+                   for p in row["panels"]), ("workspace groups must be in numerical order", groups, rows)
+    gaps = [right[0] - left[1] - 1 for left, right in zip(groups, groups[1:])]
+    assert min(gaps) >= 12, ("workspace groups need visible breathing room", gaps)
+    widths = [right - left + 1 for left, right in groups]
+    active = navigation["active_row"]
+    assert all(widths[active] > width * 1.5 for row, width in enumerate(widths)
+               if row != active), ("current workspace must dominate compact neighbors", widths, active)
+    # The focused tab is lifted to y=16. Its outline must not acquire a second
+    # solid accent strip underneath the one-pixel stroke.
+    x = round(targets[navigation["focused_slot"]])
+    ink = image.getpixel((x, 16))
+    assert ink != image.getpixel((x, 15)), "focused tab outline must be visible"
+    assert all(image.getpixel((x, y)) != ink for y in range(17, 20)), "heavy tab top stripe returned"
+    return {"groups": groups, "gaps": gaps, "widths": widths, "active_row": active,
+            "focused_outline_px": 1}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="new evidence directory, never overwritten")
     parser.add_argument("--binary", type=Path, help="current binary (default: target/debug/jcode-desktop)")
+    parser.add_argument("--theme", choices=("warm-neutral", "neutral-light", "parchment"),
+                        default="warm-neutral")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     binary = (args.binary or repo / "target/debug/jcode-desktop").resolve()
@@ -95,7 +131,7 @@ def main():
         "VK_DRIVER_FILES": str(drivers[0]),
     })
     (root / "desktop.toml").write_text(
-        '[appearance]\nlayout_mode = "folder_tabs"\ntheme = "warm-neutral"\n'
+        f'[appearance]\nlayout_mode = "folder_tabs"\ntheme = "{args.theme}"\n'
         '[workspace]\ncoaching_hints = false\n'
     )
     wm_config = root / "openbox.xml"
@@ -259,8 +295,36 @@ def main():
             item["after"] = after
             capture(f"click-{step}-tab-{slot}", slot, repeat=2)
         assert {0, 5}.issubset({item["slot"] for item in clicks if item["was_offscreen"]})
+        # Two sessions per workspace: current tabs stay prominent, other rows
+        # form smaller groups on the numerically correct side with real gaps.
+        for slot, row in ((4, 2), (5, 2), (2, 1), (3, 1)):
+            x = round(tab_targets(settled())[slot])
+            native("mousemove", str(x), str(TAB_Y), "click", "1")
+            settled(slot)
+            for _ in range(row):
+                native("key", "--clearmodifiers", "Super_L+shift+j")
+                settled(slot)
+            assert settled(slot)["active_row"] == row
+        grouped = []
+        for slot in (2, 0, 4, 3):
+            x = round(tab_targets(settled())[slot])
+            native("mousemove", str(x), str(TAB_Y), "click", "1")
+            nav = settled(slot)
+            time.sleep(.45)
+            # Move hover off the header before comparing raster colors.
+            native("mousemove", "280", "500")
+            time.sleep(.45)
+            image_path = root / f"workspace-group-focus-{slot}.png"
+            subprocess.run(["import", "-window", "root", "png:" + str(image_path)],
+                           env=env, cwd=root, check=True, timeout=15)
+            with Image.open(image_path) as source:
+                metrics = measure_grouped_tabs(source.convert("RGB"), nav)
+            assert sorted((p["slot"], p["id"], p["session"]) for p in panels(nav)) == identities
+            grouped.append({"navigation": nav, "pixels": metrics, "screenshot": image_path.name})
+            print(f"workspace groups: focus={slot}, measured {metrics}", flush=True)
+        summary["workspace_groups"] = grouped
         summary["passed"] = True
-        print(f"PASS: six half-width tabs clickable, including offscreen panels. Evidence: {root}")
+        print(f"PASS: six tabs clickable, thin outlines and separated workspace groups. Evidence: {root}")
     except Exception as error:
         summary["error"] = str(error)
         summary["last_navigation"] = navigation_state(state_path)

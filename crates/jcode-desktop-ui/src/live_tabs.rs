@@ -2,7 +2,7 @@
 use super::*;
 use crate::panel::folder_session_title;
 
-/// Center a joined stack independently of the panel camera. Selection adds
+/// Center one workspace's joined stack independently of the panel camera. Selection adds
 /// only a 12px width accent and a 4px lift, so the panels do the large slide.
 #[derive(Clone, Copy, Debug)]
 struct TabLayout {
@@ -21,6 +21,83 @@ struct TabGeometry {
 }
 
 impl TabLayout {
+    /// Keep each workspace together, with the active workspace taking priority.
+    /// `rows` is in workspace/session navigation order, including an empty
+    /// active workspace's placeholder. Geometry never changes that order.
+    fn grouped(available: f32, rows: &[usize], selected: usize) -> Vec<TabGeometry> {
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        let available = available.max(0.0);
+        let mut groups = Vec::new();
+        let mut start = 0;
+        while start < rows.len() {
+            let end = start + rows[start..].partition_point(|row| *row == rows[start]);
+            groups.push(start..end);
+            start = end;
+        }
+        let active_group = groups
+            .iter()
+            .position(|group| group.contains(&selected))
+            .unwrap();
+        // At normal sizes there is real air between workspaces, not merely an
+        // outline. On tiny tracks reserve most of the width for actual tabs.
+        let gap = 16.0_f32.min(available / (groups.len() as f32 * 4.0));
+        let content = (available - gap * (groups.len() - 1) as f32).max(0.0);
+        let compact_ideal = |count: usize| (56.0 + 32.0 * (count - 1) as f32).min(144.0);
+        let compact_total: f32 = groups
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != active_group)
+            .map(|(_, group)| compact_ideal(group.len()))
+            .sum();
+        // Even hundreds of remote sessions must not squeeze the current row
+        // down to the same tiny tabs. Every remote session still gets a lip.
+        let compact_budget = compact_total.min(content * 0.35);
+        let active = &groups[active_group];
+        let active_layout = Self::new(content - compact_budget, active.len());
+        let active_used =
+            active_layout.active_width + active_layout.step * (active.len() - 1) as f32;
+        let used = active_used + compact_budget + gap * (groups.len() - 1) as f32;
+        let mut left = ((available - used) / 2.0).max(0.0);
+        let mut tabs = Vec::with_capacity(rows.len());
+        for (group_index, group) in groups.iter().enumerate() {
+            let width = if group_index == active_group {
+                active_used
+            } else {
+                compact_budget * compact_ideal(group.len()) / compact_total
+            };
+            if group_index == active_group {
+                for position in 0..group.len() {
+                    let mut tab = active_layout.geometry(position, selected - group.start);
+                    tab.left += left - active_layout.start;
+                    tabs.push(tab);
+                }
+            } else {
+                let tab_width = if group.len() == 1 {
+                    width
+                } else {
+                    width * 0.65
+                }
+                .min(56.0);
+                let step = if group.len() == 1 {
+                    0.0
+                } else {
+                    (width - tab_width) / (group.len() - 1) as f32
+                };
+                for position in 0..group.len() {
+                    tabs.push(TabGeometry {
+                        left: left + step * position as f32,
+                        width: tab_width,
+                        height: FOLDER_CONTENT_INSET - 4.0,
+                    });
+                }
+            }
+            left += width + gap;
+        }
+        tabs
+    }
+
     fn new(available: f32, count: usize) -> Self {
         let available = available.max(0.0);
         let count = count.max(1);
@@ -226,7 +303,8 @@ impl Workspace {
             })
             .unwrap_or(0);
         let available = (canvas_width - right).max(0.0);
-        let layout = TabLayout::new(available, entries.len());
+        let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
+        let layout = TabLayout::grouped(available, &rows, selected);
         let targets: Vec<_> = entries
             .iter()
             .enumerate()
@@ -234,7 +312,7 @@ impl Workspace {
                 let key = index
                     .map(|index| self.slots[index].panel.entity_id().as_u64())
                     .unwrap_or(u64::MAX - *row as u64);
-                (key, layout.geometry(position, selected))
+                (key, layout[position])
             })
             .collect();
         // Never chase camera coordinates or clipped-panel widths. Focus only
@@ -257,6 +335,7 @@ impl Workspace {
         for position in TabLayout::paint_order(entries.len(), selected) {
             let (index, row, _) = entries[position];
             let focused = position == selected;
+            let compact = row != self.active_row;
             let accent = Theme::global().workspace_accent(row);
             let background = Theme::global()
                 .panel_background(focused)
@@ -317,7 +396,7 @@ impl Workspace {
                             None => div().child(emoji).into_any_element(),
                         }),
                 )
-                .when(visible >= 64.0, |el| {
+                .when(visible >= if compact { 44.0 } else { 64.0 }, |el| {
                     el.child(
                         div()
                             .debug_selector(move || {
@@ -337,7 +416,7 @@ impl Workspace {
                             .child(format!("{}", row + 1)),
                     )
                 })
-                .when(focused || visible >= 52.0, |el| {
+                .when(!compact && (focused || visible >= 52.0), |el| {
                     el.child(
                         div()
                             .debug_selector(move || match index {
@@ -368,6 +447,8 @@ impl Workspace {
                     .rounded_t_md()
                     // Crowded off-screen tabs can be narrower than two pixels.
                     // Their border must not force the layout wider than its slot.
+                    // Use this single outline on every edge. An extra accent
+                    // stripe makes the top heavier and squares off the corners.
                     .border(px((current.width / 2.0).min(1.0)))
                     .border_b_0()
                     .border_color(if focused {
@@ -394,18 +475,6 @@ impl Workspace {
                         el.bg(Theme::global().PANEL_BG.blend(accent.opacity(0.20)))
                             .text_color(Theme::global().TEXT)
                     })
-                    .child(
-                        div()
-                            .debug_selector(move || {
-                                format!("workspace-tab-accent-{position}-row-{row}")
-                            })
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w_full()
-                            .h(px(if focused { 3.0 } else { 2.0 }))
-                            .bg(accent.opacity(if focused { 1.0 } else { 0.65 })),
-                    )
                     .when(focused && index.is_some(), |el| {
                         el.child(div().absolute().inset_0().debug_selector(move || {
                             format!("live-session-tab-{}-focused", index.unwrap())
@@ -469,6 +538,214 @@ impl Workspace {
 mod tests {
     use super::*;
 
+    #[test]
+    fn workspace_tab_groups_prioritize_current_row_and_keep_number_order() {
+        let rows = [0, 0, 1, 1, 1, 3, 3];
+        for selected in 0..rows.len() {
+            let tabs = TabLayout::grouped(1400.0, &rows, selected);
+            for (i, tab) in tabs.iter().enumerate() {
+                assert_eq!(
+                    tab.width,
+                    if i == selected {
+                        208.0
+                    } else if rows[i] == rows[selected] {
+                        196.0
+                    } else {
+                        56.0
+                    }
+                );
+                assert_eq!(
+                    tab.height,
+                    FOLDER_CONTENT_INSET - if i == selected { 0.0 } else { 4.0 }
+                );
+                if i > 0 && rows[i - 1] != rows[i] {
+                    assert!((tab.left - tabs[i - 1].left - tabs[i - 1].width - 16.0).abs() < 0.001);
+                }
+            }
+            assert!(
+                (tabs[0].left + tabs.last().unwrap().left + tabs.last().unwrap().width - 1400.0)
+                    .abs()
+                    < 0.001
+            );
+        }
+        // The existing single-workspace focus motion is deliberately unchanged.
+        let old = TabLayout::new(512.0, 12);
+        for selected in 0..12 {
+            assert_eq!(
+                TabLayout::grouped(512.0, &[2; 12], selected),
+                (0..12)
+                    .map(|i| old.geometry(i, selected))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_tab_groups_keep_crowded_sessions_exposed_and_resize_in_bounds() {
+        assert!(TabLayout::grouped(0.0, &[], 0).is_empty());
+        for counts in [
+            [1, 1, 1, 1],
+            [1, 200, 1, 1],
+            [80, 2, 100, 40],
+            [20, 30, 40, 50],
+        ] {
+            let rows: Vec<_> = counts
+                .iter()
+                .enumerate()
+                .flat_map(|(row, count)| std::iter::repeat_n(row, *count))
+                .collect();
+            for available in [0.0, 40.0, 100.0, 352.0, 512.0, 800.0, 1600.0] {
+                for selected in [0, counts[0], counts[0] + counts[1], rows.len() - 1] {
+                    let tabs = TabLayout::grouped(available, &rows, selected);
+                    for (i, tab) in tabs.iter().enumerate() {
+                        assert!(tab.left.is_finite() && tab.width.is_finite());
+                        assert!(
+                            tab.left >= 0.0 && tab.left + tab.width <= available + 0.001,
+                            "available={available}, selected={selected}, i={i}, tab={tab:?}"
+                        );
+                        if available > 0.0 {
+                            assert!(
+                                TabLayout::exposed(&tabs, i, selected).1 > 0.0,
+                                "every session must retain a click target: available={available}, selected={selected}, i={i}"
+                            );
+                            if i > 0 && rows[i - 1] != rows[i] {
+                                assert!(tab.left > tabs[i - 1].left + tabs[i - 1].width);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_tab_groups_animate_focus_and_snap_safely_on_resize() {
+        let now = Instant::now();
+        let duration = Duration::from_millis(150);
+        let rows = [0, 0, 1, 1, 2, 2];
+        let targets = |available, selected| {
+            TabLayout::grouped(available, &rows, selected)
+                .into_iter()
+                .enumerate()
+                .map(|(i, tab)| (i as u64, tab))
+                .collect::<Vec<_>>()
+        };
+        let mut motion = TabMotion::default();
+        let first = motion.sample(&targets(1200.0, 0), 1200.0, duration, now);
+        assert_eq!(
+            first,
+            motion.sample(&targets(1200.0, 3), 1200.0, duration, now)
+        );
+        let middle = motion.sample(
+            &targets(1200.0, 3),
+            1200.0,
+            duration,
+            now + Duration::from_millis(50),
+        );
+        assert!(middle[3].width > first[3].width && middle[3].width < 208.0);
+        for i in [2, 4] {
+            assert!(
+                (middle[i].left - middle[i - 1].left - middle[i - 1].width - 16.0).abs() < 0.001
+            );
+        }
+        assert_eq!(
+            middle,
+            motion.sample(
+                &targets(1200.0, 5),
+                1200.0,
+                duration,
+                now + Duration::from_millis(50)
+            ),
+            "retargeting must not jump"
+        );
+        let resized = motion.sample(
+            &targets(120.0, 5),
+            120.0,
+            duration,
+            now + Duration::from_millis(60),
+        );
+        assert!(!motion.is_animating());
+        assert_eq!(resized, TabLayout::grouped(120.0, &rows, 5));
+        assert!(
+            resized
+                .iter()
+                .all(|tab| tab.left >= 0.0 && tab.left + tab.width <= 120.001)
+        );
+        let reduced = motion.sample(&targets(120.0, 0), 120.0, Duration::ZERO, now);
+        assert_eq!(reduced, TabLayout::grouped(120.0, &rows, 0));
+        assert!(!motion.is_animating());
+    }
+
+    #[gpui::test]
+    fn workspace_tab_groups_preserve_click_keyboard_and_empty_row_navigation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            for i in 0..9 {
+                w.push_test_panel(&format!("group-session-{i}"), cx);
+                w.slots[i].row = i / 3;
+            }
+            w
+        });
+        let handle = vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+            window.window_handle()
+        });
+        for width in [1400.0, 640.0, 360.0, 1000.0] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.0)));
+            vcx.run_until_parked();
+            for selected in [4, 8, 0, 7, 3, 2, 6, 5, 1] {
+                workspace.update(vcx, |w, cx| {
+                    w.live_tabs.settle();
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let track = vcx.debug_bounds("live-session-tabs").unwrap();
+                let targets = workspace.read_with(vcx, |w, _| w.live_tabs.hit_targets.clone());
+                assert_eq!(targets.len(), 9);
+                for &(index, _) in &targets {
+                    let tab = vcx
+                        .debug_bounds(format!("live-session-tab-{index}").leak())
+                        .unwrap();
+                    assert!(tab.left() >= track.left() - px(0.01));
+                    assert!(tab.right() <= track.right() + px(0.01));
+                }
+                let x = targets
+                    .iter()
+                    .find(|(index, _)| *index == selected)
+                    .unwrap()
+                    .1;
+                vcx.simulate_click(
+                    gpui::point(track.left() + px(x), track.bottom() - px(12.0)),
+                    gpui::Modifiers::default(),
+                );
+                vcx.run_until_parked();
+                workspace.update_in(vcx, |w, window, cx| {
+                    assert_eq!(w.active, selected, "width={width}");
+                    assert_eq!(w.active_row, selected / 3);
+                    assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], selected);
+                    assert!(!w.overview);
+                });
+            }
+        }
+        // Workspace keys still select remembered sessions and the empty row
+        // receives its own full-size placeholder rather than false focus.
+        vcx.simulate_keystrokes("super-j super-j super-j");
+        vcx.run_until_parked();
+        assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 3);
+        assert!(vcx.debug_bounds("live-session-empty-tab-title").is_some());
+        vcx.simulate_keystrokes("super-k");
+        vcx.run_until_parked();
+        assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 2);
+        assert!(vcx.debug_bounds("live-session-empty-tab").is_none());
+        vcx.simulate_keystrokes("super-p");
+        vcx.run_until_parked();
+        assert_eq!(workspace.read_with(vcx, |w, _| w.active), 8);
+    }
+
     #[gpui::test]
     fn workspace_identity_follows_rows_and_number_badges_navigate(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -489,7 +766,8 @@ mod tests {
             );
             assert!(
                 vcx.debug_bounds(format!("workspace-tab-accent-{row}-row-{row}").leak())
-                    .is_some()
+                    .is_none(),
+                "workspace identity must not add a heavy stripe over the tab outline"
             );
         }
         for row in [1, 3, 2, 0] {
@@ -520,8 +798,8 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("workspace-tab-accent-0-row-1").is_some());
-        assert!(vcx.debug_bounds("workspace-tab-accent-0-row-0").is_none());
+        assert!(vcx.debug_bounds("workspace-tab-badge-0-row-1").is_some());
+        assert!(vcx.debug_bounds("workspace-tab-badge-0-row-0").is_none());
         let empty = vcx.debug_bounds("workspace-map-badge-0").unwrap();
         vcx.simulate_click(empty.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
