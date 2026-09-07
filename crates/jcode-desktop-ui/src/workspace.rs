@@ -1327,27 +1327,30 @@ impl Workspace {
                     self.pinned_working_dir = Some(directory);
                 }
                 for session in &sessions {
-                    let Some(title) = session.title.as_ref() else {
-                        continue;
-                    };
                     for slot in &self.slots {
-                        let (same_session, same_title) = {
-                            let panel = slot.panel.read(cx);
-                            (
-                                panel.session_id == session.session_id,
-                                panel.title.as_ref() == title,
-                            )
-                        };
-                        if same_session {
-                            if same_title {
-                                break;
-                            }
+                        let panel = slot.panel.read(cx);
+                        if panel.session_id != session.session_id {
+                            continue;
+                        }
+                        let title = session.title.as_ref().filter(|title| panel.title.as_ref() != *title);
+                        // Restored panels can predate directory metadata. Refresh it
+                        // along with the title so the identity footer stays current.
+                        // Missing catalog metadata must not erase a known directory.
+                        let directory = session.working_dir.as_ref().filter(|dir| {
+                            !dir.trim().is_empty() && panel.working_dir.as_ref() != Some(*dir)
+                        });
+                        if title.is_some() || directory.is_some() {
                             slot.panel.update(cx, |panel, cx| {
-                                panel.title = title.clone().into();
+                                if let Some(title) = title {
+                                    panel.title = title.clone().into();
+                                }
+                                if let Some(directory) = directory {
+                                    panel.working_dir = Some(directory.clone());
+                                }
                                 cx.notify();
                             });
-                            break;
                         }
+                        break;
                     }
                 }
                 self.sessions = sessions;
@@ -7447,6 +7450,29 @@ mod tests {
                 cx,
             ));
             assert!(!workspace.apply(Update::Sessions { sessions }, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn session_refresh_updates_the_footer_directory_without_a_title(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(cx, |workspace, cx| {
+            let mut session = session_info("session_fox_1234567890_deadbeef", None);
+            session.working_dir = None;
+            let slot = workspace.open_session(session.clone(), cx);
+            for directory in ["/srv/project", "/srv/other"] {
+                session.working_dir = Some(directory.into());
+                workspace.apply(Update::Sessions { sessions: vec![session.clone()] }, cx);
+                assert_eq!(workspace.slots[slot].panel.read(cx).working_dir.as_deref(), Some(directory));
+            }
+            for directory in [None, Some("   ")] {
+                session.working_dir = directory.map(str::to_owned);
+                workspace.apply(Update::Sessions { sessions: vec![session.clone()] }, cx);
+                assert_eq!(workspace.slots[slot].panel.read(cx).working_dir.as_deref(), Some("/srv/other"));
+            }
         });
     }
 
