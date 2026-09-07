@@ -152,6 +152,11 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 cx.notify();
             });
             vcx.run_until_parked();
+            // GPUI's cached paint reuses the visible scene, but this pinned
+            // version does not copy debug_bounds for reused subtrees. Repaint
+            // once to collect selectors before measuring unchanged geometry.
+            vcx.update(|window, _| window.refresh());
+            vcx.run_until_parked();
             let guide = vcx.debug_bounds("tutorial-guides").unwrap();
             let content = vcx.debug_bounds("tutorial-content").unwrap();
             let panel = vcx.debug_bounds("panel-0").unwrap();

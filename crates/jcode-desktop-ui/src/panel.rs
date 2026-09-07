@@ -3164,6 +3164,8 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::workspace::panel_cache_tests::record_render(cx.entity_id());
         if let Some(terminal) = &self.terminal {
             return div()
                 .size_full()

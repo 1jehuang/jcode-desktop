@@ -41,6 +41,9 @@ mod closing_navigation_tests;
 #[path = "fps_header_tests.rs"]
 mod fps_header_tests;
 #[cfg(test)]
+#[path = "panel_cache_tests.rs"]
+pub(crate) mod panel_cache_tests;
+#[cfg(test)]
 #[path = "super_action_behavior_tests.rs"]
 mod super_action_behavior_tests;
 #[cfg(test)]
@@ -3192,7 +3195,25 @@ impl Workspace {
                 .child(if slot.panel.read(cx).is_default_directory() {
                     self.render_folder_picker(cx)
                 } else {
-                    slot.panel.clone().into_any_element()
+                    // Unrelated workspace chrome updates must not rebuild every
+                    // visible transcript. GPUI invalidates this definite-size
+                    // cache on panel/descendant notify, bounds, style or refresh.
+                    static UNCACHED_FIXTURE: std::sync::LazyLock<bool> =
+                        std::sync::LazyLock::new(|| {
+                            (harness::screenshot_mode() || cfg!(test))
+                                && std::env::var("JCODE_DESKTOP_SCREENSHOT_UNCACHED_PANELS")
+                                    .as_deref()
+                                    == Ok("1")
+                        });
+                    if *UNCACHED_FIXTURE {
+                        // Same-binary performance control, offline fixtures only.
+                        slot.panel.clone().into_any_element()
+                    } else {
+                        slot.panel
+                            .clone()
+                            .cached(gpui::StyleRefinement::default().size_full())
+                            .into_any_element()
+                    }
                 });
             if focused {
                 active_surface = Some(surface);
