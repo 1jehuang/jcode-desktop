@@ -106,3 +106,33 @@ A separate linked-UI navigation probe was stopped before a visible window or
 state frame appeared and its private processes were cleaned up. It supplies no
 passing evidence. Native Wayland acceptance could not run because headless Sway
 is not installed. Neither probe touched the user's compositor or live sessions.
+
+## Native Wayland integration verified
+
+The missing-tool blocker was subsequently resolved without installing system
+packages: Arch's Sway and missing runtime dependencies were extracted into
+`target/headless-sway-tools`. The acceptance harness now accepts `--sway-prefix`,
+uses `jcode api-bridge` when a standalone bridge binary is absent, and supports
+`--linked-ui --held-keys` to avoid an unrelated development hot reload.
+
+The full native Wayland held-key run passed in 32 seconds. It used a private
+headless Sway compositor, real Super key-down/up and autorepeat, the installed
+shortcut helper, real wtype injection, the production Desktop UI, and real
+isolated daemon sessions. Only the helper's compositor-specific focus-query
+shape was translated to actual private Sway IPC. No key injection or session API
+was mocked. Eight real panes were created. Holding Super+Q dismissed multiple
+panes, release stopped dismissal, a subsequent hold emptied the workspace, and
+Super+Enter reopened a focused session in the configured directory. Further
+checks verified no stale repeats and held navigation/creation behavior.
+
+```sh
+python3 scripts/accept-wayland-shortcuts.py target/held-close-wayland \
+  --helper ~/.config/niri/firefox-tab-shortcut.sh \
+  --directory target/held-close-wayland-directory --held-keys --linked-ui \
+  --sway-prefix target/headless-sway-tools
+```
+
+`target/held-close-wayland/acceptance.json`, `focus-queries.jsonl`, and
+`empty-reopen-creation.json` preserve the observations. This closes the native
+Wayland forwarding integration check, but does not claim testing on the user's
+live Niri compositor or replacing their running packaged app.

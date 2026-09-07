@@ -29,11 +29,19 @@ def main():
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--pinned-launch-command', type=Path)
     parser.add_argument('--home-launch-command', type=Path)
+    parser.add_argument('--sway-prefix', type=Path,
+                        help='private extracted Sway prefix containing usr/bin and usr/lib')
+    parser.add_argument('--linked-ui', action='store_true',
+                        help='test the built linked UI without hot reload (requires --held-keys)')
     parser.add_argument('--held-keys', action='store_true',
                         help='test actual key repeats, release, and empty reopen without UI reload')
     parser.add_argument('--build-timeout', type=int, default=180,
                         help='seconds allowed for initial/reload builds, including Cargo lock waits')
     args = parser.parse_args()
+    if args.linked_ui and not args.held_keys:
+        parser.error('--linked-ui requires --held-keys')
+    sway_prefix = args.sway_prefix.resolve(strict=True) if args.sway_prefix else None
+    tool_path = (str(sway_prefix / 'usr/bin') + ':' if sway_prefix else '') + os.environ.get('PATH', '')
     if args.build_timeout <= 0:
         parser.error('--build-timeout must be positive')
     if args.held_keys and (args.baseline_helper or args.pinned_launch_command or args.home_launch_command):
@@ -51,7 +59,7 @@ def main():
     assert directory.is_dir()
     assert len(str(root / 'runtime/daemon.sock').encode()) < 104
     for tool in ['sway', 'swaymsg', 'wtype', 'jcode', 'cargo', 'jq']:
-        assert shutil.which(tool), tool
+        assert shutil.which(tool, path=tool_path), tool
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
     for name in ['home', 'runtime', 'config', 'cache', 'data', 'logs', 'jcode', 'shims', 'tmp']:
         (root / name).mkdir(mode=0o700)
@@ -60,7 +68,7 @@ def main():
     cargo_home = Path(os.environ.get('CARGO_HOME', str(Path.home() / '.cargo')))
     jcode = Path(shutil.which('jcode')).resolve()
     env.update({
-        'PATH': str(root / 'shims') + ':' + str(cargo_home / 'bin') + ':/usr/bin:/bin',
+        'PATH': str(root / 'shims') + ':' + (str(sway_prefix / 'usr/bin') + ':' if sway_prefix else '') + str(cargo_home / 'bin') + ':/usr/bin:/bin',
         'WLR_BACKENDS': 'headless', 'WLR_RENDERER': 'pixman',
         'WLR_LIBINPUT_NO_DEVICES': '1', 'XDG_SESSION_TYPE': 'wayland',
         'JCODE_NO_TELEMETRY': '1', 'JCODE_RUNTIME_DIR': str(root / 'runtime'),
@@ -75,6 +83,8 @@ def main():
         'VK_DRIVER_FILES': str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json'))),
         'FOCUS_QUERY_LOG': str(root / 'focus-queries.jsonl'),
     })
+    if sway_prefix:
+        env['LD_LIBRARY_PATH'] = str(sway_prefix / 'usr/lib')
     (root / 'desktop.toml').write_text('[workspace]\ncoaching_hints = false\npinned_working_dir = '
                                       + json.dumps(str(directory)) + '\n')
     # No real `niri` executable is ever invoked. Resolve focus from actual
@@ -241,12 +251,14 @@ print(json.dumps(result))
                                                   if p.is_socket()), None), 'private Wayland socket')
         launch('daemon', [str(jcode), '--no-update', '--no-selfdev', '--provider', 'jcode', 'serve'])
         wait(lambda: Path(env['JCODE_SOCKET']).exists(), 'private daemon')
-        launch('bridge', [str(repo / 'target/debug/jcode-harness-api-bridge')])
+        bridge = repo / 'target/debug/jcode-harness-api-bridge'
+        launch('bridge', [str(bridge)] if bridge.exists() else [str(jcode), '--no-update', '--no-selfdev', 'api-bridge'])
         wait(lambda: Path(env['JCODE_API_SOCKET']).exists(), 'private bridge')
-        launch('app', [str(repo / 'target/debug/jcode-desktop'), '--hot-reload'])
+        launch('app', [str(repo / 'target/debug/jcode-desktop'), '--no-hot-reload' if args.linked_ui else '--hot-reload'])
         diagnostics = root / 'logs/jcode-desktop/jcode-desktop.log'
-        wait(lambda: diagnostics.exists() and 'activated UI generation' in diagnostics.read_text(),
-             'initial UI activation', args.build_timeout)
+        if not args.linked_ui:
+            wait(lambda: diagnostics.exists() and 'activated UI generation' in diagnostics.read_text(),
+                 'initial UI activation', args.build_timeout)
         wait(lambda: len(panels()) == 1 and panels()[0]['session'].startswith('session_'), 'first session')
         # Plugin activation logs before the new root's first frame is mounted.
         # Do not send setup input into that deliberately suspended interval.
