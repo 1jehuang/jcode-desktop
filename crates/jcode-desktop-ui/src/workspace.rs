@@ -3939,6 +3939,18 @@ impl Workspace {
         let selection_order = open_sessions.iter().map(|s| s.session_id.clone()).collect::<Vec<_>>();
         self.sidebar_selection.retain(&selection_order);
         let open_session_count = open_sessions.len();
+        let session_workspaces = self
+            .slots
+            .iter()
+            .map(|slot| (slot.panel.read(cx).session_id.clone(), slot.row))
+            .collect::<HashMap<_, _>>();
+        let mut workspace_counts = HashMap::<usize, usize>::new();
+        for session in &open_sessions {
+            if let Some(row) = session_workspaces.get(&session.session_id) {
+                *workspace_counts.entry(*row).or_default() += 1;
+            }
+        }
+        let active_row = self.active_row;
         let other_session_count = other_sessions.len();
         let ordered_sessions = open_sessions
             .into_iter()
@@ -3953,6 +3965,7 @@ impl Workspace {
             .map(|(is_open, session)| SidebarSessionLayout {
                 session_id: session.session_id.clone(),
                 open: *is_open,
+                workspace_row: session_workspaces.get(&session.session_id).copied(),
                 selected: active_id.as_deref() == Some(session.session_id.as_str()),
                 saved: session.saved,
                 details: session
@@ -4004,6 +4017,10 @@ impl Workspace {
                             .map(|index| &ordered_sessions[index]);
                         let previous_section = previous.map(|(open, _)| *open);
                         let previous_saved = previous.map(|(_, session)| session.saved);
+                        let workspace_row = session_workspaces.get(&session.session_id).copied();
+                        let previous_workspace = previous.and_then(|(_, session)| {
+                            session_workspaces.get(&session.session_id).copied()
+                        });
                         workspace.update(cx, |this, cx| {
                             let mut list = div()
                                 .w_full()
@@ -4062,7 +4079,35 @@ impl Workspace {
                                         ),
                                 );
                             }
-                            if previous_section == Some(is_open)
+                            if is_open && workspace_row != previous_workspace
+                                && let Some(row) = workspace_row
+                            {
+                                let count = workspace_counts[&row];
+                                let accent = Theme::global().workspace_accent(row);
+                                list = list.child(
+                                    div()
+                                        .id(("sidebar-workspace-heading", row))
+                                        .debug_selector(move || format!("sidebar-workspace-heading-{row}"))
+                                        .mx_2().mt_1().mb_1().px_2().py_1()
+                                        .flex().items_center().gap_2()
+                                        .rounded_md().cursor_pointer()
+                                        .text_size(px(10.0))
+                                        .text_color(accent)
+                                        .when(row == active_row, |el| el.bg(Theme::global().HEADER_BG))
+                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                            window.prevent_default();
+                                            cx.stop_propagation();
+                                            let position = this.active_position_in_row();
+                                            this.select_row(row, position);
+                                            this.focus_active(window, cx);
+                                            cx.notify();
+                                        }))
+                                        .child(div().flex_1().font_weight(gpui::FontWeight::MEDIUM)
+                                            .child(format!("Workspace {}", row + 1)))
+                                        .child(count.to_string()),
+                                );
+                            }
+                            if !is_open && previous_section == Some(is_open)
                                 && previous_saved == Some(true)
                                 && !session.saved
                             {
@@ -4118,6 +4163,7 @@ impl Workspace {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
+                                    .when(is_open, |el| el.ml_4())
                                     .mr_2()
                                     .mb_1()
                                     .relative()
@@ -6644,6 +6690,7 @@ fn ranked_folder_matches_for_sessions(
 struct SidebarSessionLayout {
     session_id: String,
     open: bool,
+    workspace_row: Option<usize>,
     selected: bool,
     saved: bool,
     details: bool,
@@ -8317,6 +8364,15 @@ mod tests {
         });
         vcx.run_until_parked();
 
+        let upper = vcx.debug_bounds("sidebar-workspace-heading-0").unwrap();
+        let lower = vcx.debug_bounds("sidebar-workspace-heading-1").unwrap();
+        assert!(upper.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
+        assert!(vcx.debug_bounds("sidebar-session-1").unwrap().bottom() <= lower.top());
+        assert!(lower.bottom() <= vcx.debug_bounds("sidebar-session-2").unwrap().top());
+        assert!(vcx.debug_bounds("sidebar-session-0").unwrap().left() > upper.left());
+        vcx.simulate_click(lower.center(), gpui::Modifiers::default());
+        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 1));
+
         for (selector, expected_session) in [
             ("sidebar-session-0", "session_owl_upper_left"),
             ("sidebar-session-1", "session_hare_upper_right"),
@@ -8331,8 +8387,28 @@ mod tests {
                     workspace.slots[workspace.active].panel.read(cx).session_id,
                     expected_session
                 );
+                assert_eq!(workspace.active_row, workspace.slots[workspace.active].row);
             });
         }
+
+        // A move can change heading boundaries without changing session order.
+        // The virtual list must invalidate its cached row heights in that case.
+        workspace.update(vcx, |workspace, cx| {
+            workspace.slots[0].row = 0;
+            workspace.active_row = 0;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-workspace-heading-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-workspace-heading-1").is_none());
+        workspace.read_with(vcx, |workspace, _| {
+            assert!(
+                workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .all(|item| item.workspace_row == Some(0))
+            );
+        });
     }
 
     #[gpui::test]
