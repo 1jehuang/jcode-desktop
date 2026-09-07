@@ -87,3 +87,22 @@ and app logs. The native build and these checks passed locally. The user's
 packaged running host had hot reload disabled, so it was not restarted or
 replaced during this investigation. These local checks do not claim live
 Wayland forwarding or deployment to that already-running process.
+
+## Public session integration acceptance
+
+`accept-shortcuts.py --global-helper <installed-helper>` additionally invokes
+that helper's `close` operation repeatedly against real isolated daemon sessions.
+Each close must select a surviving pane with matching keyboard focus. All slots
+must retire, then the same helper must create one new focused session through the
+real session API in the pinned directory. A later observation verifies that the
+new session remains open. The harness records each close in `acceptance.json`.
+This passed with ten real panes closed to zero and one new session reopened.
+
+The private X11 adapters replace only the compositor identity query and Wayland
+key injector. The installed shell helper, production UI, native alias events,
+SDK bridge, daemon, session creation and preference persistence are real.
+The successful run is `target/held-close-public-close/acceptance.json`.
+A separate linked-UI navigation probe was stopped before a visible window or
+state frame appeared and its private processes were cleaned up. It supplies no
+passing evidence. Native Wayland acceptance could not run because headless Sway
+is not installed. Neither probe touched the user's compositor or live sessions.

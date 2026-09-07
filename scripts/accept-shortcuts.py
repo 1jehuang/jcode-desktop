@@ -250,6 +250,32 @@ subprocess.run(['xdotool', 'key', '--clearmodifiers', chords[0]], check=True, ti
         verify('ctrl+alt+Return', pinned_directory, 'forwarded-enter-after-restart')
         if args.global_helper:
             verify('global-helper:new', pinned_directory, 'installed-helper-after-restart', args.global_helper)
+            # Real helper -> native alias -> workspace -> live session bridge.
+            # Start on the right, where a fading successor used to strand focus.
+            before_close = len(panels())
+            for remaining in range(before_close - 1, -1, -1):
+                subprocess.run(['bash', str(args.global_helper), 'close'], env=env,
+                               check=True, timeout=10)
+                def closed_one():
+                    current = state()
+                    if not current:
+                        return False
+                    live = [p for row in current['rows'] for p in row['panels']
+                            if not p.get('closing')]
+                    return (len(live) == remaining and
+                            (not live or any(p['slot'] == current['keyboard_panel']
+                                             == current['focused_slot'] for p in live)))
+                wait(closed_one, 'helper closes to ' + str(remaining))
+                evidence.append({'stage': 'installed-helper-close-step',
+                                 'remaining': remaining, 'state': state()})
+            wait(lambda: state() and not panels(), 'all closed slots retire')
+            evidence.append({'stage': 'installed-helper-close-all',
+                             'panels_before': before_close, 'panels_after': 0,
+                             'keyboard_panel': state()['keyboard_panel']})
+            print(json.dumps(evidence[-1]), flush=True)
+            verify('global-helper:new', pinned_directory, 'installed-helper-reopen-after-close', args.global_helper)
+            time.sleep(.5)
+            assert len(panels()) == 1, 'new session closed after helper stopped'
         (root / 'acceptance.json').write_text(json.dumps(evidence, indent=2) + '\n')
         print('PASS: native keys created real sessions in the expected directories; pin survived changed history and restart.', flush=True)
         if args.check_attachments:
