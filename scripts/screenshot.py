@@ -52,6 +52,8 @@ def main():
                         help="measure four workspace identities and verify numbered map navigation")
     parser.add_argument("--model-interact", action="store_true",
                         help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
+    parser.add_argument("--default-directory-interact", action="store_true",
+                        help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens", "diff", "diff-rich"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--size", default="1440x1000")
@@ -67,6 +69,17 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.default_directory_interact:
+        if (args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript not in ("all", "empty")
+                or args.learn_stage is not None or args.focus_panel is not None
+                or any((args.fresh_interact, args.html_interact, args.image_interact,
+                        args.image_cache_interact, args.mermaid_interact,
+                        args.history_interact, args.workspace_interact, args.model_interact))):
+            parser.error("default-directory-interact requires one panel, default size/theme/layout, all or empty transcript, and no other interaction mode")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("default-directory-interact requires xdotool and tesseract")
     if args.model_interact:
         if (args.panels != 1 or args.size != "1440x1000"
                 or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
@@ -123,8 +136,8 @@ def main():
         parser.error("image-interact requires xdotool")
     if args.history_interact and (args.panels != 1 or args.size != "1440x1000" or args.learn_stage is not None or args.focus_panel is not None or args.html_interact):
         parser.error("history-interact requires default size, one panel, and no other interaction mode")
-    if args.history_interact and not shutil.which("xdotool"):
-        parser.error("history-interact requires xdotool")
+    if args.history_interact and (not shutil.which("xdotool") or not shutil.which("tesseract")):
+        parser.error("history-interact requires xdotool and tesseract")
     if args.html_interact and (args.transcript != "html" or args.size != "1440x1000" or args.theme != "warm-neutral" or args.panels != 1):
         parser.error("html-interact requires the html transcript, default size/theme, and one panel")
     if args.html_interact and not shutil.which("xdotool"):
@@ -214,11 +227,14 @@ def main():
                 # Allow opening animation and font rasterization to settle.
                 time.sleep(2)
                 if args.history_interact:
-                    # These are visible title coordinates in the fixed-size
-                    # offline fixture. Never send input to the user's display.
-                    for y, session_id in [(488, "screenshot-history-06"), (105, "screenshot-fixture"), (153, "screenshot-history-06")]:
-                        subprocess.run(["xdotool", "mousemove", "100", str(y), "click", "1"],
-                                       env=env, cwd=root, check=True, timeout=10)
+                    # Locate rendered titles so header rows (such as Default
+                    # directory) can grow without silently clicking another session.
+                    from default_directory_acceptance import click_sidebar_text
+                    for step, (title, session_id) in enumerate([
+                            ("History session 06", "screenshot-history-06"),
+                            ("Review markdown", "screenshot-fixture"),
+                            ("History session 06", "screenshot-history-06")]):
+                        click_sidebar_text(output, env, root, title, f"history-click-{step}")
                         deadline = time.monotonic() + 10
                         while True:
                             text = state.read_text()
@@ -254,6 +270,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.default_directory_interact:
+                    from default_directory_acceptance import verify
+                    verify(output, env, root)
                 if args.model_interact:
                     from model_picker_acceptance import verify
                     verify(output, env, root)

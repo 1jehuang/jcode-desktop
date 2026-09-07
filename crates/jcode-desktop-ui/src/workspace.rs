@@ -53,6 +53,12 @@ mod remotes;
 #[path = "workspace_remote_tests.rs"]
 mod remote_tests;
 
+#[path = "workspace_default_directory.rs"]
+mod default_directory;
+#[cfg(test)]
+#[path = "workspace_default_directory_tests.rs"]
+mod default_directory_tests;
+
 actions!(
     workspace,
     [
@@ -435,6 +441,8 @@ pub struct WorkspaceSnapshot {
     camera_target: [f32; STRIP_COUNT],
     overview: bool,
     hints_overlay: bool,
+    #[serde(default)]
+    folder_picker_sets_default: bool,
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
     folder_search: Option<PromptInputSnapshot>,
@@ -556,6 +564,8 @@ pub struct Workspace {
     /// When the last precise delta of any axis arrived, so a stale gesture
     /// can be ended by silence when no Ended phase is delivered.
     gesture_seen: Option<Instant>,
+    /// Saving a preference rather than opening a new session.
+    folder_picker_sets_default: bool,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
@@ -731,6 +741,7 @@ impl Workspace {
             gesture_last: None,
             gesture: StripGesture::default(),
             gesture_seen: None,
+            folder_picker_sets_default: false,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -908,6 +919,7 @@ impl Workspace {
             gesture_last: None,
             gesture: StripGesture::default(),
             gesture_seen: None,
+            folder_picker_sets_default: false,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -978,6 +990,7 @@ impl Workspace {
             camera_target: self.camera_target,
             overview: self.overview,
             hints_overlay: self.hints_overlay,
+            folder_picker_sets_default: self.folder_picker_sets_default,
             folder_picker_dir: self.folder_picker_dir.clone(),
             folder_picker_error: self.folder_picker_error.clone(),
             folder_search,
@@ -1112,6 +1125,7 @@ impl Workspace {
             if snapshot.hints_overlay { 1.0 } else { 0.0 },
             transition::policy(Transition::Hints).duration,
         );
+        self.folder_picker_sets_default = snapshot.folder_picker_sets_default;
         self.folder_picker_dir = snapshot.folder_picker_dir;
         self.folder_picker_error = snapshot.folder_picker_error;
         self.focus_restore = snapshot.focus;
@@ -1125,14 +1139,23 @@ impl Workspace {
     fn create_folder_search(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
         let weak = cx.weak_entity();
         let change_weak = weak.clone();
+        let cancel = weak.clone();
         cx.new(|cx| {
             PromptInput::new(
                 cx,
-                "type a folder name or path, then press enter",
+                if self.folder_picker_sets_default {
+                    "enter a directory path, then press enter to set default"
+                } else {
+                    "type a folder name or path, then press enter"
+                },
                 move |query, _, _, app| {
                     let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
                 },
             )
+            .with_on_overlay_cancel(move |app| {
+                let _ = cancel.update(app, |this, cx| this.close_folder_picker(cx));
+                true
+            })
             .with_on_change(move |_, app| {
                 let _ = change_weak.update(app, |_, cx| cx.notify());
             })
@@ -2418,27 +2441,14 @@ impl Workspace {
     /// different folder intentionally opens a new session instead of silently
     /// changing the meaning of an existing transcript.
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.folder_picker_sets_default = false;
         self.folder_picker_dir = Some(
             default_working_dir()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/")),
         );
         self.folder_picker_error = None;
-        let weak = cx.weak_entity();
-        let change_weak = weak.clone();
-        let search = cx.new(|cx| {
-            PromptInput::new(
-                cx,
-                "type a folder name or path, then press enter",
-                move |query, _, _, app| {
-                    let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
-                },
-            )
-            .with_on_change(move |_, app| {
-                let _ = change_weak.update(app, |_, cx| cx.notify());
-            })
-        });
-        self.folder_search = Some(search);
+        self.folder_search = Some(self.create_folder_search(cx));
         cx.defer_in(window, |this, window, cx| {
             if let Some(search) = &this.folder_search {
                 let focus_handle = search.read(cx).focus_handle.clone();
@@ -2449,6 +2459,10 @@ impl Workspace {
     }
 
     fn open_searched_folder(&mut self, query: &str, cx: &mut Context<Self>) {
+        if self.folder_picker_sets_default {
+            self.set_searched_default_directory(query, cx);
+            return;
+        }
         let Some(base) = self.folder_picker_dir.as_deref() else {
             return;
         };
@@ -2496,6 +2510,12 @@ impl Workspace {
     }
 
     fn choose_browsed_folder(&mut self, cx: &mut Context<Self>) {
+        if self.folder_picker_sets_default {
+            if let Some(path) = self.folder_picker_dir.clone() {
+                self.set_default_directory(path, cx);
+            }
+            return;
+        }
         let Some(path) = self.folder_picker_dir.take() else {
             return;
         };
@@ -2510,6 +2530,7 @@ impl Workspace {
     }
 
     fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
+        self.folder_picker_sets_default = false;
         self.folder_picker_dir = None;
         self.folder_picker_error = None;
         self.folder_search = None;
@@ -4512,6 +4533,7 @@ impl Workspace {
                     .when(self.sidebar_view == SidebarView::Files, |el| {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
+                    .child(self.render_default_directory_button(cx))
                     .child(self.render_machine_switcher(cx))
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
@@ -5773,7 +5795,11 @@ impl Workspace {
             .as_ref()
             .map(|search| search.read(cx).content.trim().to_lowercase())
             .unwrap_or_default();
-        let entries = self.ranked_folder_matches(&directory, &query);
+        let entries = if self.folder_picker_sets_default {
+            default_directory::ranked_directories(&self.sessions, &directory, &query)
+        } else {
+            self.ranked_folder_matches(&directory, &query)
+        };
         let mut list = div()
             .id("folder-picker-list")
             .debug_selector(|| "folder-picker-list".into())
@@ -5807,10 +5833,19 @@ impl Workspace {
             );
         }
         for (index, (path, reason)) in entries.into_iter().enumerate() {
-            let label = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
+            let label = if self.folder_picker_sets_default {
+                default_directory::compact_path(&path.to_string_lossy())
+            } else {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
+            };
+            let sets_default = self.folder_picker_sets_default;
+            let reason = if sets_default && self.pinned_working_dir.as_deref() == path.to_str() {
+                "current default".into()
+            } else {
+                reason
+            };
             list = list.child(
                 div()
                     .id(("folder-picker-entry", index))
@@ -5819,18 +5854,21 @@ impl Workspace {
                     .py_2()
                     .cursor_pointer()
                     .hover(|el| el.bg(Theme::global().HEADER_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        cx.stop_propagation();
+                        if sets_default {
+                            this.set_default_directory(path.clone(), cx);
+                        } else {
                             this.browse_to(path.clone(), cx);
-                        }),
-                    )
+                        }
+                    }))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(format!("▸  {label}"))
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().truncate().child(format!("▸  {label}")))
                             .when(!reason.is_empty(), |el| {
                                 el.child(
                                     div()
@@ -5846,6 +5884,17 @@ impl Workspace {
         div()
             .id("folder-picker-overlay")
             .debug_selector(|| "folder-picker-overlay".into())
+            // Clicking a modal control must not let the workspace ancestor
+            // steal the search focus. In particular, a rejected save needs to
+            // keep accepting edits and Escape without an extra input click.
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                if let Some(search) = &this.folder_search {
+                    this.focus_pending = false;
+                    window.focus(&search.read(cx).focus_handle.clone(), cx);
+                }
+            }))
             .absolute()
             .inset_0()
             .flex()
@@ -5871,7 +5920,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_size(px(14.0)).child("open folder"))
+                            .child(div().text_size(px(14.0)).child(if self.folder_picker_sets_default { "Default directory" } else { "open folder" }))
                             .child(
                                 div()
                                     .id("folder-picker-cancel")
@@ -5879,12 +5928,10 @@ impl Workspace {
                                     .cursor_pointer()
                                     .text_color(Theme::global().TEXT_DIM)
                                     .hover(|el| el.text_color(Theme::global().TEXT))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.close_folder_picker(cx);
-                                        }),
-                                    )
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_folder_picker(cx);
+                                    }))
                                     .child("cancel"),
                             ),
                     )
@@ -5894,7 +5941,9 @@ impl Workspace {
                             .pb_3()
                             .text_size(px(11.0))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(directory.display().to_string()),
+                            .child(if self.folder_picker_sets_default {
+                                self.default_directory_description(&directory)
+                            } else { directory.display().to_string() }),
                     )
                     .child(
                         div()
@@ -5961,6 +6010,7 @@ impl Workspace {
                     .when_some(self.folder_picker_error.clone(), |el, error| {
                         el.child(
                             div()
+                                .debug_selector(|| "folder-picker-error".into())
                                 .px_4()
                                 .py_2()
                                 .text_color(Theme::global().ERROR)
@@ -5983,9 +6033,14 @@ impl Workspace {
                                 // newly repositioned strip and steal draft focus.
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     cx.stop_propagation();
-                                    this.choose_browsed_folder(cx);
+                                    let query = this.folder_search.as_ref().map(|s| s.read(cx).content.trim().to_string()).unwrap_or_default();
+                                    if this.folder_picker_sets_default && !query.is_empty() {
+                                        this.set_searched_default_directory(&query, cx);
+                                    } else {
+                                        this.choose_browsed_folder(cx);
+                                    }
                                 }))
-                                .child("open this folder"),
+                                .child(if self.folder_picker_sets_default { "Set as default" } else { "open this folder" }),
                         ),
                     ),
             )
@@ -7258,6 +7313,7 @@ mod tests {
             camera_target: [1.0, 11.0, 21.0, 31.0],
             overview: true,
             hints_overlay: true,
+            folder_picker_sets_default: false,
             folder_picker_dir: Some(PathBuf::from("/workspace/src")),
             folder_picker_error: Some("example".into()),
             folder_search: None,
@@ -7417,6 +7473,7 @@ mod tests {
                     camera_target: [0.0; STRIP_COUNT],
                     overview: false,
                     hints_overlay: false,
+                    folder_picker_sets_default: false,
                     folder_picker_dir: None,
                     folder_picker_error: None,
                     folder_search: None,

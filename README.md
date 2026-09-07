@@ -55,11 +55,21 @@ For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead.
 
 ### Local pinned directory
 
-Use Cmd instead of Super on macOS. The most-used directory is chosen once
-from session history and saved as `pinned_working_dir` in `[desktop.workspace]`.
-It stays fixed across usage changes, reloads, and restarts. Edit that setting to
-change it, or remove it and restart to choose again. Until usable history arrives,
-Super+Enter and Super+; use home without pinning that fallback. For example:
+Use Cmd instead of Super on macOS. Click **Default directory** at the top left
+to see and change the local directory used by **Super+Enter** and **Super+;**.
+Click a directory in the usage-ranked list to select it immediately, or browse
+or type a path and click **Set as default**. This saves the preference without
+opening a panel or changing existing sessions. Cancel leaves
+the current default unchanged. Missing paths and files cannot be saved as a
+default directory. Ordinary **Open folder** still opens a new session instead
+of changing this preference.
+
+The directory is saved as `pinned_working_dir` in `[desktop.workspace]` and stays
+fixed across usage changes, reloads, and restarts. If you have not selected one,
+it is chosen once from usable session history. Until that history arrives,
+Super+Enter and Super+; use home without pinning that fallback. You can also edit
+the setting directly, or remove it and restart to choose from history again.
+For a standalone `JCODE_DESKTOP_CONFIG`, use `[workspace]` instead. For example:
 
 ```toml
 [desktop.workspace]
