@@ -52,3 +52,38 @@ Each run writes a `.close-panel.json` report and survivor, empty, and reopened
 PNG artifacts alongside the initial screenshot. This uses an isolated Xvfb
 display and offline fixture panels, never the active compositor. Native Wayland
 shortcut forwarding is outside this check. No compositor configuration changed.
+
+## Independent reproduction and picker follow-up
+
+A second private-Xvfb probe reproduced the original bug with six offline panes,
+starting in the middle and holding Super+Q at 25 Hz. Three panes closed, then
+`keyboard_panel` became null while three live panes remained. The trace and
+screenshot are in `target/held-close-baseline-middle-2/`.
+
+After merging the upstream fix, an independent regression exposed the same
+successor-selection error in immediate default-directory picker removal. With
+`[left, picker, right]`, closing right then picker selected the fading right
+slot after indices shifted. Picker removal now filters closing successors too.
+The picker-only regression failed against the merged upstream code and passed
+after this narrow follow-up. All nine close/navigation tests and all fifteen
+`default_directory` tests passed.
+
+The independent native probe then passed all five scenarios at 25 Hz: left,
+middle, right, right-to-left through the picker, and Ctrl+Shift+W (the forwarded
+close alias). Every scenario emptied the workspace, reopened one focused pane,
+and confirmed that release stopped closing. It uses real X11 autorepeat, the
+production linked UI, offline data, and private display/config/runtime paths.
+
+```sh
+python3 scripts/accept-held-close.py target/close-middle
+python3 scripts/accept-held-close.py target/close-right --start last
+python3 scripts/accept-held-close.py target/close-left --start first
+python3 scripts/accept-held-close.py target/close-picker --picker
+python3 scripts/accept-held-close.py target/close-alias --alias
+```
+
+Each output directory must be new. It retains `trace.json`, before/after PNGs,
+and app logs. The native build and these checks passed locally. The user's
+packaged running host had hot reload disabled, so it was not restarted or
+replaced during this investigation. These local checks do not claim live
+Wayland forwarding or deployment to that already-running process.

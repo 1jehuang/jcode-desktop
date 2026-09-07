@@ -108,13 +108,18 @@ impl Workspace {
                     .position(|slot| slot.panel.entity_id() == id)
             })
             .unwrap_or_else(|| {
-                let remaining: Vec<_> = self.row_indices(self.active_row).collect();
+                // Conversation surfaces can still be fading when a held close
+                // reaches this immediately removed preference panel.
+                let remaining: Vec<_> = self
+                    .row_indices(self.active_row)
+                    .filter(|&index| !self.slots[index].closing)
+                    .collect();
                 focus_after_close(index, &remaining)
             });
         if let Some(slot) = self
             .slots
             .get(self.active)
-            .filter(|slot| slot.row == self.active_row)
+            .filter(|slot| slot.row == self.active_row && !slot.closing)
         {
             self.row_focus[self.active_row] = Some(slot.panel.entity_id());
         }

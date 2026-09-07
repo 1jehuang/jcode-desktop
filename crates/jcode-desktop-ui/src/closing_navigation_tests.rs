@@ -1,6 +1,72 @@
 //! Keyboard navigation must ignore dismissed panels while their surfaces fade.
 use super::*;
 
+/// The picker is removed immediately, unlike fading conversations. Its
+/// successor search must skip a closing right neighbor after indices shift.
+#[gpui::test]
+fn held_close_through_picker_ignores_fading_right_neighbor(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let directory = tempfile::tempdir().unwrap();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.pinned_working_dir = Some(directory.path().to_string_lossy().into_owned());
+        workspace.push_test_panel("left", cx);
+        workspace.push_test_panel("right", cx);
+        workspace
+    });
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_active(0, cx);
+            workspace.open_default_directory_picker(window, cx);
+            // [left, picker, right], with right initially focused.
+            for slot in &mut workspace.slots {
+                slot.close_progress = AnimatedValue::new(1.0, Duration::from_secs(60));
+            }
+            workspace.set_active(2, cx);
+            workspace.focus_active(window, cx);
+        });
+    });
+    vcx.run_until_parked();
+    let keystroke = gpui::Keystroke::parse(&platform_chord("super-q")).unwrap();
+    for repeat in 0..3 {
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: repeat > 0,
+            prefer_character_input: false,
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let workspace = workspace.read(cx);
+            assert_eq!(
+                workspace.slots.iter().filter(|slot| !slot.closing).count(),
+                2 - repeat
+            );
+            if repeat < 2 {
+                assert!(
+                    !workspace.slots[workspace.active].closing,
+                    "picker removal must not focus its still-fading right neighbor"
+                );
+                assert!(
+                    workspace.slots[workspace.active]
+                        .panel
+                        .read(cx)
+                        .input_focus_handle(cx)
+                        .is_focused(window)
+                );
+                assert_eq!(
+                    workspace.row_focus[0],
+                    Some(workspace.slots[workspace.active].panel.entity_id())
+                );
+            } else {
+                assert!(workspace.focus_handle.is_focused(window));
+                assert!(workspace.default_directory_panel_index(cx).is_none());
+                assert!(workspace.folder_search.is_none());
+            }
+        });
+    }
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+}
+
 /// Platform repeats have no intervening key-up. Focus changes during dismissal
 /// must not swallow the next repeat or target a still-fading panel.
 #[gpui::test]

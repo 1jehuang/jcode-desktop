@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "sidebar_selection.rs"]
+mod sidebar_selection;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -550,6 +553,7 @@ pub struct Workspace {
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
+    sidebar_selection: sidebar_selection::Selection,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
@@ -742,6 +746,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_selection: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -920,6 +925,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_selection: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -3928,6 +3934,10 @@ impl Workspace {
                 .copied()
                 .unwrap_or(usize::MAX)
         });
+        open_sessions.retain(|session| self.slots.iter().any(|slot|
+            !slot.closing && slot.panel.read(cx).session_id == session.session_id));
+        let selection_order = open_sessions.iter().map(|s| s.session_id.clone()).collect::<Vec<_>>();
+        self.sidebar_selection.retain(&selection_order);
         let open_session_count = open_sessions.len();
         let other_session_count = other_sessions.len();
         let ordered_sessions = open_sessions
@@ -3967,6 +3977,21 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .overflow_hidden();
+        list = list.flex().flex_col();
+        if !self.sidebar_selection.ids.is_empty() {
+            list = list.child(div().flex_none().px_3().py_2().flex().items_center().gap_2()
+                .text_size(px(11.0))
+                .child(format!("{} selected", self.sidebar_selection.ids.len()))
+                .child(div().id("sidebar-close-selected").debug_selector(|| "sidebar-close-selected".into())
+                    .px_2().py_1().rounded_md().bg(Theme::global().ACCENT_DIM).cursor_pointer()
+                    .child("Close selected")
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        let ids = this.sidebar_session_layout.iter().filter(|s| this.sidebar_selection.contains(&s.session_id)).map(|s| s.session_id.clone()).collect();
+                        this.close_sidebar_sessions(ids, window, cx);
+                    }))));
+        }
         if !ordered_sessions.is_empty() {
             list = list.child(
                 gpui::list(
@@ -3979,7 +4004,7 @@ impl Workspace {
                             .map(|index| &ordered_sessions[index]);
                         let previous_section = previous.map(|(open, _)| *open);
                         let previous_saved = previous.map(|(_, session)| session.saved);
-                        workspace.update(cx, |_, cx| {
+                        workspace.update(cx, |this, cx| {
                             let mut list = div()
                                 .w_full()
                                 .flex()
@@ -4082,6 +4107,9 @@ impl Workspace {
                                 .cloned()
                                 .flatten();
 
+                            let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
+                            let close_id = session.session_id.clone();
+                            let selection_order = selection_order.clone();
                             let session = session.clone();
                             list = list.child(
                                 div()
@@ -4112,15 +4140,25 @@ impl Workspace {
                                     .border_t_1()
                                     .border_b_1()
                                     .border_color(gpui::rgba(0x00000000))
+                                    .when(group_selected, |el| el.bg(Theme::global().ACCENT_DIM).border_color(Theme::global().ACCENT))
                                     .pr(px(crate::scrollbar::GUTTER + 8.0))
                                     .when(!selected, |el| el.hover(move |el| el.bg(Theme::global().PANEL_BG)))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
-                                        cx.listener(move |this, _event, window, cx| {
+                                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                             // We explicitly focus the session's composer below.
                                             // Otherwise the focusable workspace ancestor handles
                                             // this same press afterward and steals focus back.
                                             window.prevent_default();
+                                            if is_open {
+                                                this.sidebar_selection.click(&session.session_id, &selection_order, event.modifiers.shift, event.modifiers.control || event.modifiers.platform);
+                                                if event.modifiers.shift || event.modifiers.control || event.modifiers.platform {
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                            } else {
+                                                this.sidebar_selection = Default::default();
+                                            }
                                             this.activate_session(session.clone(), window, cx);
                                         }),
                                     )
@@ -4153,6 +4191,16 @@ impl Workspace {
                                                     .line_height(relative(1.5))
                                                     .child(title),
                                             )
+                                            .when(is_open, |row| row.child(
+                                                div().id(("sidebar-close", sidebar_index))
+                                                    .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
+                                                    .px_1().cursor_pointer().child("×")
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                        window.prevent_default();
+                                                        cx.stop_propagation();
+                                                        this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
+                                                    }))
+                                            ))
                                             .when_some(activity, |row, spinner| {
                                                 row.child(
                                                     div()
