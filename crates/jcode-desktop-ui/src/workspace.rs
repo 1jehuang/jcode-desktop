@@ -1788,21 +1788,33 @@ impl Workspace {
     /// edge rather than centering it.
     fn resolve_camera_target(&mut self, viewport: f32) {
         self.camera_dirty[self.active_row] = false;
-        if self.row_indices(self.active_row).next().is_none() {
+        // Target the settled layout, not the fading slot's old width. Closing
+        // the left panel should pull its successor into place, not pan right
+        // toward it and then reverse once the closing slot is removed.
+        let surviving: Vec<_> = self
+            .row_indices(self.active_row)
+            .filter(|&index| !self.slots[index].closing)
+            .collect();
+        if surviving.is_empty() {
             self.camera_target[self.active_row] = 0.0;
             return;
         }
         let active = self
             .slots
             .get(self.active)
-            .filter(|slot| slot.row == self.active_row)
+            .filter(|slot| slot.row == self.active_row && !slot.closing)
             .map(|_| self.active)
-            .unwrap_or_else(|| self.row_indices(self.active_row).next().unwrap());
-        let left = self.slot_left(active, viewport);
+            .unwrap_or(surviving[0]);
+        let left = STRUT
+            + surviving
+                .iter()
+                .take_while(|&&index| index != active)
+                .map(|&index| self.slot_width(index, viewport) + GAP)
+                .sum::<f32>();
         let width = self.slot_width(active, viewport);
-        let total = self
-            .row_indices(self.active_row)
-            .map(|index| self.slot_width(index, viewport) + GAP)
+        let total = surviving
+            .iter()
+            .map(|&index| self.slot_width(index, viewport) + GAP)
             .sum::<f32>()
             + STRUT * 2.0;
         let current = self.camera_target[self.active_row];

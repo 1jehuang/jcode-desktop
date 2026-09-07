@@ -288,7 +288,13 @@ impl Workspace {
         };
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
-            let indices: Vec<_> = self.row_indices(row).collect();
+            // Closing surfaces stay mounted for their fade, but their tabs
+            // must leave now. Otherwise selection first animates right in the
+            // old group, then reverses when the dismissed slot is retired.
+            let indices: Vec<_> = self
+                .row_indices(row)
+                .filter(|&index| !self.slots[index].closing)
+                .collect();
             if indices.is_empty() && row == self.active_row {
                 entries.push((None, row, 0));
             }
@@ -1043,6 +1049,97 @@ mod tests {
                 assert_eq!(tab.bottom(), panel.top());
             }
         }
+    }
+
+    /// Tab and camera targets must already be final while the closing surface
+    /// is still mounted. Retirement must not trigger a second layout move.
+    #[gpui::test]
+    fn closing_tabs_target_survivors_before_surface_retirement(cx: &mut gpui::TestAppContext) {
+        for initial in [0, 2, 4] {
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut w = Workspace::for_test(learning::Coach::new(), cx);
+                w.show_sidebar = false;
+                w.show_minimap = false;
+                for i in 0..5 {
+                    w.push_test_panel(&format!("panel-{i}"), cx);
+                    w.slots[i].width_fraction = 1.0;
+                    w.slots[i].close_progress = AnimatedValue::new(1.0, Duration::from_secs(60));
+                }
+                w.set_active(initial, cx);
+                w
+            });
+            vcx.update(|window, cx| {
+                workspace.update(cx, |w, cx| {
+                    w.resolve_camera_target(1200.0);
+                    w.camera_x[0] = w.camera_target[0];
+                    let before_camera = w.camera_target[0];
+                    let _ = w.render_workspace_bar(1200.0, cx);
+                    w.live_tabs.settle();
+                    let closed_id = w.slots[initial].panel.entity_id().as_u64();
+                    w.close_panel(&ClosePanel, window, cx);
+                    w.resolve_camera_target(1200.0);
+                    let _ = w.render_workspace_bar(1200.0, cx);
+                    assert_eq!(w.slots.len(), 5, "surface is still fading");
+                    assert_eq!(w.live_tabs.tabs.len(), 4);
+                    assert!(!w.live_tabs.tabs.contains_key(&closed_id));
+                    assert!(w.live_tabs.hit_targets.iter().all(|(i, _)| *i != initial));
+                    assert!(
+                        w.camera_target[0] <= before_camera + 0.01,
+                        "closing must not pan right toward the successor's old position"
+                    );
+                    let targets: HashMap<_, _> = w
+                        .live_tabs
+                        .tabs
+                        .iter()
+                        .map(|(id, tab)| (*id, tab.target))
+                        .collect();
+                    let camera = w.camera_target[0];
+                    w.remove_finished_closing_panels(
+                        Instant::now() + Duration::from_secs(61),
+                        window,
+                        cx,
+                    );
+                    w.resolve_camera_target(1200.0);
+                    let _ = w.render_workspace_bar(1200.0, cx);
+                    assert_eq!(w.slots.len(), 4);
+                    assert_eq!(w.camera_target[0], camera, "no second camera move");
+                    for (id, tab) in &w.live_tabs.tabs {
+                        assert_eq!(tab.target, targets[id], "no second tab move");
+                    }
+                    assert!(!w.slots[w.active].closing);
+                    assert!(
+                        w.slots[w.active]
+                            .panel
+                            .read(cx)
+                            .input_focus_handle(cx)
+                            .is_focused(window)
+                    );
+                });
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn closing_final_tab_shows_empty_workspace_before_surface_retirement(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("last", cx);
+            w.slots[0].close_progress = AnimatedValue::new(1.0, Duration::from_secs(60));
+            w
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.close_panel(&ClosePanel, window, cx);
+                let _ = w.render_workspace_bar(1200.0, cx);
+                assert_eq!(w.slots.len(), 1);
+                assert!(w.live_tabs.hit_targets.is_empty());
+                assert_eq!(w.live_tabs.tabs.len(), 1);
+                assert!(w.live_tabs.tabs.contains_key(&u64::MAX));
+                assert!(w.focus_handle.is_focused(window));
+            });
+        });
     }
 
     #[gpui::test]
