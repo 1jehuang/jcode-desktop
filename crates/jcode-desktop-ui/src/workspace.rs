@@ -1564,7 +1564,7 @@ impl Workspace {
     /// mirroring niri's "new column opens right of the focused column".
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
-        let width_fraction = spawned_panel_width(self.slots.len());
+        let width_fraction = spawned_panel_width(self.row_indices(self.active_row).count());
         let bridge = self.bridge.clone();
         let session_id = session.session_id.clone();
         let panel = cx.new(|cx| {
@@ -2936,14 +2936,17 @@ impl Workspace {
                         cx.notify();
                     },
                 ))
-                .child(if self.connected {
-                    format!(
-                        "strip {} is empty - super-enter opens a session here",
-                        row + 1
-                    )
-                } else {
-                    "connecting to jcode...".into()
-                })
+                .child(
+                    div()
+                        .debug_selector(|| "empty-strip-hint".into())
+                        .text_color(Theme::global().TEXT)
+                        .child(format!("Workspace {} is empty", row + 1)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "empty-strip-shortcut".into())
+                        .child("Press Super+Enter to start a new session here"),
+                )
                 .child(div().text_size(px(12.0)).child(self.status.clone()))
                 .into_any_element()
         }

@@ -547,3 +547,39 @@ fn pending_editor_accepts_input_during_motion_and_settles_visible_from_full_widt
         }
     }
 }
+
+#[gpui::test]
+fn empty_strip_shows_hint_offline_and_spawns_full_then_half_width(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.connected = false;
+        w.active_row = 1;
+        w.focus_pending = true;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("empty-strip-hint").is_some());
+    assert!(vcx.debug_bounds("empty-strip-shortcut").is_some());
+    vcx.simulate_keystrokes("super-enter");
+    vcx.run_until_parked();
+    request(&commands);
+    workspace.update(vcx, |w, _| {
+        let indices = w.row_indices(1).collect::<Vec<_>>();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(w.slots[indices[0]].width_fraction, 1.0);
+        assert_eq!(w.slots[w.active].row, 1);
+        assert_eq!(w.row_indices(0).count(), 1);
+    });
+    assert!(vcx.debug_bounds("empty-strip-hint").is_none());
+    vcx.simulate_keystrokes("super-enter");
+    vcx.run_until_parked();
+    request(&commands);
+    workspace.update(vcx, |w, _| {
+        let widths = w
+            .row_indices(1)
+            .map(|i| w.slots[i].width_fraction)
+            .collect::<Vec<_>>();
+        assert_eq!(widths, vec![0.5, 0.5]);
+        assert_eq!(w.slots[0].width_fraction, DEFAULT_WIDTH);
+    });
+}
