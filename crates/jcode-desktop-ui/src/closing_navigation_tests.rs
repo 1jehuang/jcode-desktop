@@ -5,16 +5,36 @@ use super::*;
 /// must not swallow the next repeat or target a still-fading panel.
 #[gpui::test]
 fn held_close_dismisses_each_live_panel_once(cx: &mut gpui::TestAppContext) {
+    check_held_close(cx, 0, false);
+}
+
+#[gpui::test]
+fn held_close_from_right_never_focuses_a_dismissed_panel(cx: &mut gpui::TestAppContext) {
+    check_held_close(cx, 11, false);
+}
+
+#[gpui::test]
+fn held_close_from_middle_never_focuses_a_dismissed_panel(cx: &mut gpui::TestAppContext) {
+    check_held_close(cx, 5, false);
+}
+
+#[gpui::test]
+fn held_close_keeps_focus_when_finished_animations_remove_slots(cx: &mut gpui::TestAppContext) {
+    check_held_close(cx, 11, true);
+}
+
+fn check_held_close(cx: &mut gpui::TestAppContext, initial: usize, retire: bool) {
+    const COUNT: usize = 12;
     cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-        for name in ["first", "second", "third", "fourth"] {
-            workspace.push_test_panel(name, cx);
+        for index in 0..COUNT {
+            workspace.push_test_panel(&format!("panel-{index}"), cx);
         }
         for slot in &mut workspace.slots {
             slot.close_progress = AnimatedValue::new(1.0, Duration::from_secs(60));
         }
-        workspace.set_active(0, cx);
+        workspace.set_active(initial, cx);
         workspace
     });
     vcx.update(|window, cx| {
@@ -22,28 +42,72 @@ fn held_close_dismisses_each_live_panel_once(cx: &mut gpui::TestAppContext) {
     });
     vcx.run_until_parked();
     let keystroke = gpui::Keystroke::parse("super-q").unwrap();
-    for repeat in 0..6 {
+    for repeat in 0..COUNT + 2 {
         vcx.simulate_event(gpui::KeyDownEvent {
             keystroke: keystroke.clone(),
             is_held: repeat > 0,
             prefer_character_input: false,
         });
         vcx.run_until_parked();
-        workspace.read_with(vcx, |workspace, _| {
+        if retire && repeat % 3 == 2 {
+            vcx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.remove_finished_closing_panels(
+                        Instant::now() + Duration::from_secs(61),
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                });
+            });
+            vcx.run_until_parked();
+        }
+        vcx.update(|window, cx| {
+            let workspace = workspace.read(cx);
             assert_eq!(
-                workspace.slots.iter().filter(|slot| slot.closing).count(),
-                (repeat + 1).min(4),
+                workspace.slots.iter().filter(|slot| !slot.closing).count(),
+                COUNT.saturating_sub(repeat + 1),
                 "one live panel per keydown, including repeats after focus changes"
             );
+            if repeat + 1 < COUNT {
+                assert!(
+                    !workspace.slots[workspace.active].closing,
+                    "repeat {repeat} from {initial} selected a dismissed panel"
+                );
+                assert_eq!(
+                    workspace.navigation_state(window, cx)["keyboard_panel"],
+                    workspace.active
+                );
+            } else {
+                assert!(
+                    workspace.focus_handle.is_focused(window),
+                    "an empty row must retain workspace shortcut focus"
+                );
+            }
         });
     }
     vcx.simulate_event(gpui::KeyUpEvent { keystroke });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.remove_finished_closing_panels(
+                Instant::now() + Duration::from_secs(61),
+                window,
+                cx,
+            );
+            assert!(workspace.slots.is_empty());
+            assert!(workspace.focus_handle.is_focused(window));
+        });
+    });
     vcx.run_until_parked();
     // Closing the final panel must leave a functional workspace, not quit it.
     vcx.simulate_keystrokes("super-n");
     vcx.run_until_parked();
     workspace.read_with(vcx, |workspace, _| {
-        assert_eq!(workspace.slots.iter().filter(|slot| !slot.closing).count(), 1);
+        assert_eq!(
+            workspace.slots.iter().filter(|slot| !slot.closing).count(),
+            1
+        );
         assert!(!workspace.slots[workspace.active].closing);
     });
 }

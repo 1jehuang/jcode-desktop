@@ -2589,7 +2589,10 @@ impl Workspace {
         }
         let remaining: Vec<_> = self
             .row_indices(self.active_row)
-            .filter(|&index| index != closed)
+            // Dismissed slots remain mounted for their fade. In particular,
+            // closing from the right must not return to the fading neighbour
+            // on the next key repeat.
+            .filter(|&index| !self.slots[index].closing)
             .collect();
         self.active = focus_after_close(closed, &remaining);
         self.row_focus[self.active_row] = self
@@ -2832,7 +2835,7 @@ impl Workspace {
         if let Some(slot) = self
             .slots
             .get(self.active)
-            .filter(|slot| slot.row == self.active_row)
+            .filter(|slot| slot.row == self.active_row && !slot.closing)
         {
             let panel = slot.panel.clone();
             let handle = panel.read(cx).input_focus_handle(cx);

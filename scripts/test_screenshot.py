@@ -58,6 +58,13 @@ class ScreenshotArgumentTests(unittest.TestCase):
     def test_unknown_transcript_is_rejected_before_launch(self):
         self.assert_rejected(["--transcript", "unknown"], "invalid choice")
 
+    def test_close_probe_requires_six_panels_and_exclusive_input(self):
+        self.assert_rejected(["--close-interact"], "close-interact requires six panels")
+        for extra in (["--workspace-interact"], ["--focus-panel", "5"], ["--learn-stage", "1"]):
+            with self.subTest(extra=extra):
+                self.assert_rejected(["--close-interact", "--panels", "6", *extra],
+                                     "close-interact requires six panels")
+
     def test_image_cache_probe_requires_its_isolated_fixture_geometry(self):
         self.assert_rejected(["--image-cache-interact"], "image-cache-interact requires")
         for extra in (["--panels", "3"], ["--size", "800x600"],
