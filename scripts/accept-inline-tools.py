@@ -70,7 +70,13 @@ def verify(output, env, root, run):
     difference = ImageChops.difference(before.crop(crop), expanded.crop(crop))
     changed = changed_pixels(difference)
     assert changed > 500, "native header click did not reveal tool details"
-    assert expanded_y < y - 30, "expanded detail did not increase row height"
+    # Compact transcripts may fit without scrolling, leaving the header fixed.
+    # Verify that detail content paints below it rather than requiring an upward
+    # scroll that only occurred when the taller transcript filled the viewport.
+    detail_box = (310, expanded_y + 12, 700, expanded_y + 150)
+    detail_changed = changed_pixels(ImageChops.difference(
+        before.crop(detail_box), expanded.crop(detail_box)))
+    assert detail_changed > 500, "expanded detail did not paint below the header"
     checked += same_surface(expanded, expanded_y - 10, y + 40)
     click(expanded_y)
     collapsed = capture("-collapsed")
@@ -80,7 +86,7 @@ def verify(output, env, root, run):
     assert remaining == 0, f"collapse failed to restore the original transcript: {remaining} pixels"
     print(f"Inline tools acceptance passed: {checked} surface/edge pixels match "
           f"transcript RGB {background}; native expansion changes {changed} pixels "
-          f"and moves the header {y - expanded_y}px; collapse restores all transcript pixels.")
+          f"with {detail_changed} changed detail pixels; collapse restores all transcript pixels.")
 
 
 def main():

@@ -3164,7 +3164,7 @@ impl Panel {
                             .gap_2()
                             .items_center()
                             .px_1()
-                            .py_1()
+                            .py(px(2.0))
                             .text_size(px(11.5))
                             .child(status)
                             .child(
@@ -3209,20 +3209,9 @@ impl Panel {
                                         .text_color(token_color)
                                         .child(token_label),
                                 )
-                            })
-                            .when(has_detail, |el| {
-                                el.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(px(10.0))
-                                        .text_color(Theme::global().TEXT_FAINT)
-                                        .child(if expanded { "▾" } else { "▸" }),
-                                )
                             }),
                     )
-                    .when_some(edit_preview, |el, preview| {
-                        el.child(preview)
-                    })
+                    .when_some(edit_preview, |el, preview| el.child(preview))
                     .when(expanded && has_detail, |el| {
                         el.child(
                             div()
@@ -3689,6 +3678,23 @@ impl Render for Panel {
                                     TranscriptRowSource::Settled(index) => &panel.items[*index],
                                     TranscriptRowSource::Owned(item) => item,
                                 };
+                                // Keep message boundaries airy, but pack consecutive tool calls.
+                                let follows_tool =
+                                    row_index.checked_sub(1).is_some_and(|previous| {
+                                        let previous = match &list_rows[previous].source {
+                                            TranscriptRowSource::Settled(index) => {
+                                                &panel.items[*index]
+                                            }
+                                            TranscriptRowSource::Owned(item) => item,
+                                        };
+                                        matches!(previous, Item::Tool { .. })
+                                    });
+                                let top_padding =
+                                    if matches!(item, Item::Tool { .. }) && follows_tool {
+                                        2.0
+                                    } else {
+                                        10.0
+                                    };
                                 let element = panel.render_item(row.index, item, window, cx);
                                 let element = if row.show_label {
                                     role_caption(row.role.unwrap_or(""), element)
@@ -3701,7 +3707,7 @@ impl Render for Panel {
                                     })
                                     .relative()
                                     .px_3()
-                                    .pt_2p5()
+                                    .pt(px(top_padding))
                                     .child(element)
                                     .when(
                                         prompt_row.is_some_and(|(_, row)| row == row_index),
@@ -6514,6 +6520,48 @@ mod tests {
             .debug_bounds("tool-summary")
             .expect("the intent summary paints in the tool header");
         assert!(rendered.size.width > px(0.) && rendered.size.height > px(0.));
+    }
+
+    #[gpui::test]
+    fn consecutive_tool_rows_use_compact_spacing(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .expect("panel exists");
+        panel.update(vcx, |panel, cx| {
+            panel.items = (0..2)
+                .map(|index| Item::Tool {
+                    call_id: format!("call-{index}"),
+                    name: "bash".into(),
+                    input: r#"{"command":"echo hello"}"#.into(),
+                    output: "hello".into(),
+                    done: true,
+                    error: None,
+                })
+                .collect();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let first = vcx
+            .debug_bounds("transcript-row-0")
+            .expect("first tool row");
+        let second = vcx
+            .debug_bounds("transcript-row-1")
+            .expect("second tool row");
+        assert_eq!(
+            first.size.height - second.size.height,
+            px(8.0),
+            "adjacent tools use 2px padding instead of the 10px message boundary"
+        );
+        let header = vcx.debug_bounds("tool-header").expect("tool header");
+        assert!(header.size.height < px(24.0), "tool header stays compact");
     }
 
     /// Inline tools must retain their intrinsic row height when enough of them
