@@ -70,3 +70,34 @@ scene dimensions across narrow, wide, and resized transcript layouts.
 - Upstream scene-only unit, integration, and doctests pass. Its broader existing
   suite has a separately reproduced layout-cycle fixture failure without scene
   enabled, so this change does not claim a clean upstream full-suite run.
+
+### Quantitative acceptance follow-up
+
+```sh
+python3 scripts/accept-native-mermaid.py \
+  target/mermaid-native-light-final.png target/mermaid-native-dark-final.png --self-test
+cargo test -p jcode-desktop-ui --lib native_mermaid_integration_tests \
+  -- --test-threads=1 --nocapture
+```
+
+The OCR/pixel oracle found **6/6 visible node labels in each real screenshot**,
+including the previously clipped final nodes. Empty diagram canvas pixels exactly
+match the surrounding transcript: light `(248,247,244)` and dark `(29,32,35)`.
+All four negative controls were rejected: hiding the bottom nodes and substituting
+a wrong canvas color, independently in both themes. This is fixture-specific
+pixel acceptance, not a general-purpose screenshot recognizer.
+
+The repeated production GPUI resize run passed all three tests and measured:
+
+| Case | Natural diagram | Actual native canvas |
+| --- | --- | --- |
+| Original TD, narrow | 354.3×597.87 | 288×486 |
+| Original TD, wide | 354.3×597.87 | 308×520 |
+| Small TD, three window widths | 100.8×75 | 101×75 in all three |
+| Wide LR, narrow then wide | 1036.4×75 | 288×21 then 623.5×45 |
+
+Resizing back restores identical bounds. Every canvas is inside its response,
+preserves aspect ratio within one layout pixel, and reserves exactly its rendered
+height. Evidence artifacts are `target/native-mermaid-pixel-acceptance.json` and
+`target/native-mermaid-sizing-evidence.log`. The remote rebuild request was
+followed by activation of UI generation 7 in the running desktop log.
