@@ -62,6 +62,8 @@ def main():
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens", "diff", "diff-rich"), default="all",
                         help="choose the isolated transcript fixture")
+    parser.add_argument("--mermaid-source", type=Path,
+                        help="custom Mermaid source file for the mermaid transcript fixture")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
                         help="show the staged tutorial in the top-left Learn tab")
@@ -75,6 +77,8 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.mermaid_source is not None and args.transcript != "mermaid":
+        parser.error("mermaid-source requires --transcript mermaid")
     if args.sidebar_interact:
         if (args.panels != 2 or args.size != "1440x1000" or args.theme != "warm-neutral"
                 or args.layout_mode != "folder_tabs" or args.learn_stage is not None
@@ -202,6 +206,8 @@ def main():
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n')
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.mermaid_source is not None:
+            env["JCODE_DESKTOP_SCREENSHOT_MERMAID_SOURCE"] = args.mermaid_source.read_text()
         if args.learn_stage is not None:
             env["JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE"] = str(args.learn_stage)
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)

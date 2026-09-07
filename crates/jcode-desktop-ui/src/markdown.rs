@@ -6,8 +6,8 @@
 //! self-contained, but shaped so a half-finished response still reads well.
 
 use gpui::{
-    FontWeight, HighlightStyle, InteractiveText, ObjectFit, SharedString, StrikethroughStyle,
-    StyledText, UnderlineStyle, div, prelude::*, px, relative,
+    FontWeight, HighlightStyle, InteractiveText, SharedString, StrikethroughStyle, StyledText,
+    UnderlineStyle, div, prelude::*, px, relative,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -1247,17 +1247,60 @@ pub(crate) fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui:
 
 #[derive(Clone)]
 struct RenderedMermaid {
-    svg: Arc<[u8]>,
-    width: f32,
-    height: f32,
+    native: Arc<crate::native_mermaid::NativeMermaid>,
 }
 
 const MERMAID_CACHE_CAPACITY: usize = 64;
 static MERMAID_CACHE: LazyLock<Mutex<VecDeque<(u64, RenderedMermaid)>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 
-fn render_mermaid_svg(body: &str) -> Result<RenderedMermaid, String> {
-    let key = hash(body);
+fn mermaid_theme(theme: &Theme) -> mermaid_rs_renderer::Theme {
+    fn hex(color: gpui::Rgba) -> String {
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            (color.r * 255.0).round() as u8,
+            (color.g * 255.0).round() as u8,
+            (color.b * 255.0).round() as u8
+        )
+    }
+    let mut diagram = if theme.PANEL_BG.r + theme.PANEL_BG.g + theme.PANEL_BG.b < 1.5 {
+        mermaid_rs_renderer::Theme::dark()
+    } else {
+        mermaid_rs_renderer::Theme::modern()
+    };
+    diagram.font_family = theme.FONT_UI.to_owned();
+    diagram.font_size = 14.0;
+    diagram.background = hex(theme.PANEL_BG);
+    diagram.primary_color = hex(theme.USER_BG);
+    diagram.primary_text_color = hex(theme.TEXT);
+    diagram.primary_border_color = hex(theme.TEXT_DIM);
+    diagram.text_color = hex(theme.TEXT);
+    diagram.line_color = hex(theme.TEXT_DIM);
+    diagram.secondary_color = hex(theme.TOOL_BG);
+    diagram.tertiary_color = hex(theme.PANEL_BG);
+    diagram.edge_label_background = hex(theme.PANEL_BG);
+    diagram.cluster_background = hex(theme.QUOTE_BG);
+    diagram.cluster_border = hex(theme.PANEL_BORDER);
+    diagram.sequence_actor_fill = diagram.primary_color.clone();
+    diagram.sequence_actor_border = diagram.primary_border_color.clone();
+    diagram.sequence_actor_line = diagram.line_color.clone();
+    diagram.sequence_note_fill = diagram.secondary_color.clone();
+    diagram.sequence_note_border = diagram.primary_border_color.clone();
+    diagram.sequence_activation_fill = diagram.secondary_color.clone();
+    diagram.sequence_activation_border = diagram.primary_border_color.clone();
+    diagram.pie_title_text_color = diagram.text_color.clone();
+    diagram.pie_section_text_color = diagram.text_color.clone();
+    diagram.pie_legend_text_color = diagram.text_color.clone();
+    diagram
+}
+
+fn render_mermaid_scene(
+    body: &str,
+    theme: mermaid_rs_renderer::Theme,
+) -> Result<RenderedMermaid, String> {
+    // Include the effective palette, not just source. Switching desktop themes
+    // must never reuse paths filled with colors from the previous theme.
+    let key = hash(&format!("{body}\0{theme:?}"));
     if let Ok(mut cache) = MERMAID_CACHE.lock()
         && let Some(index) = cache.iter().position(|(cached_key, _)| *cached_key == key)
     {
@@ -1267,23 +1310,17 @@ fn render_mermaid_svg(body: &str) -> Result<RenderedMermaid, String> {
         return Ok(rendered);
     }
 
-    // mmdr does all parsing and layout locally. Catching a renderer panic keeps
-    // malformed, partially streamed model output from taking down the desktop.
+    // Incomplete streamed model output must not take down the desktop.
     let source = body.to_owned();
     let rendered = std::panic::catch_unwind(move || {
         let options = mermaid_rs_renderer::RenderOptions {
-            theme: mermaid_rs_renderer::Theme::dark(),
+            theme,
             ..Default::default()
         };
-        let dimensions = mermaid_rs_renderer::measure(&source, options.clone())
+        let scene = mermaid_rs_renderer::render_scene(&source, options)
             .map_err(|error| error.to_string())?;
-        let svg = mermaid_rs_renderer::render_with_options(&source, options)
-            .map_err(|error| error.to_string())?;
-        Ok::<_, String>(RenderedMermaid {
-            svg: Arc::from(svg.into_bytes()),
-            width: dimensions.width.max(1.0),
-            height: dimensions.height.max(1.0),
-        })
+        let native = Arc::new(crate::native_mermaid::NativeMermaid::new(&scene)?);
+        Ok::<_, String>(RenderedMermaid { native })
     })
     .map_err(|_| "Mermaid renderer panicked".to_string())??;
 
@@ -1296,10 +1333,17 @@ fn render_mermaid_svg(body: &str) -> Result<RenderedMermaid, String> {
     Ok(rendered)
 }
 
+#[cfg(test)]
+pub(crate) fn mermaid_natural_size(body: &str) -> (f32, f32) {
+    let rendered = render_mermaid_scene(body, mermaid_theme(Theme::selected()))
+        .expect("valid regression diagram");
+    (rendered.native.width(), rendered.native.height())
+}
+
 pub(crate) type MediaPreviewHandler =
     std::rc::Rc<dyn Fn(Arc<gpui::Image>, &mut gpui::Window, &mut gpui::App)>;
 
-/// Render Mermaid source through mmdr as a real SVG. Incomplete streamed
+/// Paint mmdr vector primitives directly into the native transcript. Incomplete streamed
 /// diagrams retain the lightweight text representation until they become
 /// valid, rather than flashing an error into the transcript.
 fn mermaid_diagram(
@@ -1307,42 +1351,36 @@ fn mermaid_diagram(
     key: SharedString,
     on_preview: Option<MediaPreviewHandler>,
 ) -> gpui::AnyElement {
-    if let Ok(rendered) = render_mermaid_svg(body) {
-        let display_height = (640.0 * rendered.height / rendered.width).clamp(120.0, 520.0);
-        // `gpui::svg` is an icon primitive: it rasterizes the SVG to an alpha
-        // mask and tints every opaque pixel with `text_color`. Mermaid SVGs are
-        // full-color illustrations with an opaque canvas, so that path turns
-        // the entire diagram into a solid rectangle. The image primitive keeps
-        // the SVG's fills, strokes, and text colors intact.
-        let image = Arc::new(gpui::Image::from_bytes(
-            gpui::ImageFormat::Svg,
-            rendered.svg.to_vec(),
-        ));
+    let theme = mermaid_theme(Theme::selected());
+    if let Ok(rendered) = render_mermaid_scene(body, theme.clone()) {
         return div()
             .id(key)
             .debug_selector(|| "md-mermaid".into())
             .when_some(on_preview, |el, on_preview| {
-                let image = image.clone();
+                // The existing media viewer accepts an SVG. Generate that only
+                // on explicit enlargement. Inline chat never creates an image.
+                let source = body.to_owned();
                 el.cursor_pointer().on_click(move |_, window, cx| {
-                    on_preview(image.clone(), window, cx);
+                    let options = mermaid_rs_renderer::RenderOptions {
+                        theme: theme.clone(),
+                        ..Default::default()
+                    };
+                    if let Ok(Ok(svg)) = std::panic::catch_unwind(|| {
+                        mermaid_rs_renderer::render_with_options(&source, options)
+                    }) {
+                        let image = Arc::new(gpui::Image::from_bytes(
+                            gpui::ImageFormat::Svg,
+                            svg.into_bytes(),
+                        ));
+                        on_preview(image, window, cx);
+                    }
                     cx.stop_propagation();
                 })
             })
             .my_1()
             .w_full()
-            .h(px(display_height))
-            .p_2()
-            .overflow_hidden()
-            .rounded_md()
-            .border_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .bg(Theme::global().QUOTE_BG)
-            .child(
-                gpui::img(crate::image_cache::source(image))
-                    .w_full()
-                    .h_full()
-                    .object_fit(ObjectFit::Contain),
-            )
+            .min_w_0()
+            .child(rendered.native.element())
             .into_any_element();
     }
 
@@ -1874,14 +1912,30 @@ mod tests {
     }
 
     #[test]
-    fn renders_mermaid_with_mmdr_as_svg() {
-        let rendered = render_mermaid_svg("flowchart LR\nA[Start] --> B[Done]")
-            .expect("valid Mermaid should render");
-        let svg = std::str::from_utf8(rendered.svg.as_ref()).expect("mmdr emits UTF-8 SVG");
-        assert!(svg.contains("<svg"));
-        assert!(svg.contains("Start"));
-        assert!(svg.contains("fill=\"#333333\""));
-        assert!(rendered.width > 0.0 && rendered.height > 0.0);
+    fn renders_mermaid_as_cached_native_scene() {
+        let source = "flowchart TD\nA[Start] --> B[Done]";
+        let light = mermaid_rs_renderer::Theme::modern();
+        let first = render_mermaid_scene(source, light.clone()).expect("valid diagram");
+        let second = render_mermaid_scene(source, light).expect("cached diagram");
+        assert!(Arc::ptr_eq(&first.native, &second.native));
+        assert!(first.native.width() > 0.0 && first.native.height() > 0.0);
+        let dark =
+            render_mermaid_scene(source, mermaid_rs_renderer::Theme::dark()).expect("dark diagram");
+        assert!(
+            !Arc::ptr_eq(&first.native, &dark.native),
+            "palette is part of cache identity"
+        );
+    }
+
+    #[test]
+    fn mermaid_uses_semantic_desktop_palette() {
+        let desktop = Theme::global();
+        let diagram = mermaid_theme(desktop);
+        assert_eq!(diagram.font_family, desktop.FONT_UI);
+        assert_eq!(diagram.font_size, 14.0);
+        assert_eq!(diagram.text_color, diagram.primary_text_color);
+        assert_eq!(diagram.background, diagram.edge_label_background);
+        assert_ne!(diagram.text_color, diagram.background);
     }
 
     #[test]

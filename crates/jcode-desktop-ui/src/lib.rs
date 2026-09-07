@@ -19,6 +19,9 @@ mod input;
 mod learning;
 mod live_profile;
 mod markdown;
+mod native_mermaid;
+#[cfg(test)]
+mod native_mermaid_integration_tests;
 mod panel;
 mod performance;
 mod platform;

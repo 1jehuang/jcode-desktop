@@ -7353,9 +7353,12 @@ fn demo_items() -> Vec<Item> {
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mermaid")
     {
+        let source = std::env::var("JCODE_DESKTOP_SCREENSHOT_MERMAID_SOURCE").unwrap_or_else(|_| {
+            "flowchart LR\n    A[Idea] --> B[Build]\n    B --> C[Test]\n    C -->|Pass| D[Ship]\n    C -->|Needs work| B".into()
+        });
         return vec![
             Item::User("Can you render a Mermaid diagram?".into()),
-            Item::Assistant("Here is a Mermaid diagram:\n\n```mermaid\nflowchart LR\n    A[Idea] --> B[Build]\n    B --> C[Test]\n    C -->|Pass| D[Ship]\n    C -->|Needs work| B\n```".into()),
+            Item::Assistant(format!("Here is a Mermaid diagram:\n\n```mermaid\n{source}\n```")),
         ];
     }
     if crate::harness::screenshot_mode()

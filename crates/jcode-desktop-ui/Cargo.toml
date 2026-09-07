@@ -29,7 +29,7 @@ arboard = "3"
 async-channel = "2"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
-mermaid-rs-renderer = { git = "https://github.com/1jehuang/mermaid-rs-renderer.git", tag = "v0.3.1" }
+mermaid-rs-renderer = { git = "https://github.com/1jehuang/mermaid-rs-renderer.git", rev = "3726ccbffe0e8032361eb9668694b24f77858060", default-features = false, features = ["scene"] }
 ratex-layout = "0.1.14"
 ratex-parser = "0.1.14"
 ratex-svg = { version = "0.1.14", features = ["standalone", "embed-fonts"] }

@@ -99,6 +99,13 @@ impl Theme {
         &themes()[target]
     }
 
+    /// Final palette for expensive cached artwork. Transition frames should not
+    /// trigger repeated diagram layout and path tessellation while fading UI.
+    pub(crate) fn selected() -> &'static Self {
+        let _ = themes();
+        &themes()[ACTIVE_THEME.load(Ordering::Relaxed)]
+    }
+
     pub fn active_preset() -> ThemePreset {
         let _ = themes();
         ThemePreset::ALL[ACTIVE_THEME.load(Ordering::Relaxed)]
