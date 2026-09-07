@@ -3976,8 +3976,7 @@ impl Workspace {
             .absolute()
             .top_0()
             .bottom_0()
-            .when(sessions, |el| el.left_0())
-            .when(!sessions, |el| el.right_0())
+            .right_0()
             .w(px(crate::scrollbar::GUTTER))
             // The gutter is a sibling overlay, not part of the scrollable
             // content. Handle its wheel input just like the folder-tab strip,
@@ -8430,9 +8429,13 @@ mod tests {
             .debug_bounds("sidebar-scrollbar")
             .expect("overflowing session history should paint a scrollbar");
         assert!(
-            scrollbar.right() <= list.left() + px(8.0),
-            "scrollbar stays in the outer gutter, away from the folder-tab join"
+            scrollbar.right() == list.right() - px(4.0),
+            "the thin scrollbar is inset from the right edge of the session list"
         );
+        assert_eq!(scrollbar.size.width, px(4.0));
+        let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
+        assert_eq!(gutter.right(), list.right());
+        assert_eq!(gutter.size.width, px(crate::scrollbar::GUTTER));
     }
 
     #[gpui::test]
