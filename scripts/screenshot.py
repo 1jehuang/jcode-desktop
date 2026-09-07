@@ -50,6 +50,8 @@ def main():
                         help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--workspace-interact", action="store_true",
                         help="measure four workspace identities and verify numbered map navigation")
+    parser.add_argument("--close-interact", action="store_true",
+                        help="hold Super+Q from the right edge of six panels and verify focus through retirement and reopen")
     parser.add_argument("--model-interact", action="store_true",
                         help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
     parser.add_argument("--default-directory-interact", action="store_true",
@@ -69,6 +71,14 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.close_interact:
+        if (args.panels != 6 or args.learn_stage is not None or args.focus_panel is not None
+                or any((args.fresh_interact, args.html_interact, args.image_interact,
+                        args.image_cache_interact, args.mermaid_interact, args.history_interact,
+                        args.workspace_interact, args.model_interact, args.default_directory_interact))):
+            parser.error("close-interact requires six panels and no other interaction mode")
+        if not shutil.which("xdotool") or not shutil.which("xset"):
+            parser.error("close-interact requires xdotool and xset")
     if args.default_directory_interact:
         if (args.panels != 1 or args.size != "1440x1000"
                 or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
@@ -270,6 +280,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.close_interact:
+                    from close_panel_acceptance import verify
+                    verify(output, env, root, layout_mode=args.layout_mode)
                 if args.default_directory_interact:
                     from default_directory_acceptance import verify
                     verify(output, env, root)
