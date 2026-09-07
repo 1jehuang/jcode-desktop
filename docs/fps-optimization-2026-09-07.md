@@ -140,3 +140,34 @@ The verified UI was rebuilt and the running host's Ctrl+R rebuild-and-reload
 path was invoked through its instance socket. Successful UI generation
 activation was confirmed in the desktop diagnostics. Only task changes were
 committed, leaving unrelated concurrent edits intact.
+
+
+## Requirement-to-acceptance map
+
+The user requested profiling and optimization, without specifying a numeric FPS
+threshold. The checks below cover that request and every behavior changed by
+this patch. They do not convert the separate unresolved live-sampler issue into
+a claim of an overall hardware FPS gain.
+
+| Requirement or changed public behavior | Concrete public-interface/acceptance check | Observed result |
+| --- | --- | --- |
+| Profile the real desktop rather than guess at hotspots | Passive `profile-live.py` capture of the running process, plus userspace perf sampling | 13.50 ms maximum draw, 20.55 ms maximum input-to-frame, 1,313 CPU samples. Duplicate sampler output identified and excluded from FPS totals. |
+| Reduce actual rendering work | Same-binary real app, native focus changes, scalar/bulk controls, reversed execution order | Median window draw p95 fell 10.12→8.36 ms and 9.00→8.45 ms. Each arm verified 27 input-bearing actions and actual focus changes. |
+| Stop hidden animation work without removing visible animation | Real native resize then overview, followed by no input | 141→1 and 143→1 post-transition draws. Width changed 0.25→0.5, overview changed state, and both arms retained 8–9 intended animation presentation samples. |
+| Preserve markdown text, formatting, links, math, and streaming prefixes | Differential parser test at every UTF-8 boundary and 1,000 mixed malformed-syntax inputs, plus real rendered screenshot | All plain text, byte ranges, highlight styles and links match the scalar parser. Rich markdown/code/math screenshot visually passed. |
+| Keep visible/outgoing panels and camera endpoints correct | `hidden_strip_sampling_preserves_visible_rows_and_natural_deadlines` and native panel moves | Test passed for ongoing hidden deadlines, final width/order/camera positions, and unchanged visible/outgoing sampling. Native moves and focus across four workspace rows passed. |
+| Preserve cache boundaries and descendant input/stream invalidation | Three `panel_cache_tests`: descendant composer notifications, streaming/resize, unrelated workspace notifications | All three passed in the full serial UI suite. |
+| Preserve scroll routing | Four `hover_scroll_tests`, covering wheel/touchpad and empty/populated active panels | All four passed, including scrolling only the hovered panel. These are actual GPUI integration regressions, not native X11 scroll captures. |
+| Preserve user keyboard focus and rendered FPS-header geometry | `screenshot.py --fps-header-interact --panels 4` on the pinned final binary | Native tab clicks, panel moves and keyboard row navigation passed. All four rendered headers had centered unclipped text, height20, and matching keyboard-panel/workspace IDs. |
+| Preserve session selection and composer editing | `screenshot.py --history-interact`, followed by inspection of the actual screenshot | Repeated native history selections retained session and keyboard focus. Typed `history click typing works` is visibly present in the selected History session06 composer and absent from the other composer. |
+| Do not add idle redraws | Idle phase in every controlled native capture | Zero draws in all eight initial/reverse-order phases. |
+| Deliver the verified changes without stale UI | Real host Ctrl+R rebuild-and-reload through instance socket, persisted activation diagnostic, Git remote check | Final UI generation4 activated successfully. Optimization/report commits were pushed; unrelated concurrent edits remain uncommitted. |
+
+Additional native acceptance artifacts are
+`target/fps-sep7-native-header-final.fps-header.json`, its four workspace PNGs,
+`target/fps-sep7-native-history-final.png`, and matching `.log` files. The binary
+was copied before these tests to avoid concurrent build replacement, SHA-256
+`e366f4c9147a28f0fdb4921ac12958255ee94368a9d3e1ee04c3b46e50380d47`.
+These later native checks validate integration/correctness, not a timing
+comparison against the earlier profiling binary. Test code does not replace
+live GPU acceptance, and no such performance claim is made.
