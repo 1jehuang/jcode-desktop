@@ -2854,10 +2854,10 @@ impl Workspace {
                         if dy == 0.0 {
                             return;
                         }
-                        let now = Instant::now();
+                        let now = cx.background_executor().now();
                         if this
                             .gesture_seen
-                            .is_none_or(|seen| seen.elapsed() > GESTURE_RESET)
+                            .is_none_or(|seen| now.duration_since(seen) > GESTURE_RESET)
                         {
                             this.gesture.reset();
                         }
@@ -3171,7 +3171,7 @@ impl Workspace {
             .sum::<f32>()
             + STRUT * 2.0;
         let reticle_alpha = (row == self.active_row)
-            .then(|| self.gesture_reticle_alpha())
+            .then(|| self.gesture_reticle_alpha(cx))
             .flatten();
         if reticle_alpha.is_some() {
             // Keep painting so the reticle's hold and fade actually play out
@@ -3280,9 +3280,9 @@ impl Workspace {
 
     /// Opacity of the gesture reticle right now, or `None` once it has fully
     /// faded. Held bright while deltas keep arriving, then a short fade.
-    fn gesture_reticle_alpha(&self) -> Option<f32> {
+    fn gesture_reticle_alpha(&self, cx: &App) -> Option<f32> {
         self.gesture_last
-            .and_then(|last| gesture_alpha(last.elapsed()))
+            .and_then(|last| gesture_alpha(cx.background_executor().now().duration_since(last)))
     }
 
     /// Route one scroll event over the strip through the sticky axis lock.
@@ -3312,10 +3312,14 @@ impl Workspace {
             .and_then(|index| self.slots.get(index))
             .filter(|slot| slot.row == row)
             .is_some_and(|slot| !slot.panel.read(cx).has_scrollable_conversation());
+        // Use the platform clock for both gesture continuity and presentation.
+        // In tests it advances explicitly, so a busy test runner cannot turn
+        // consecutive touchpad events into a new gesture or expire the reticle.
+        let now = cx.background_executor().now();
         let horizontally_locked = self.gesture.axis == GestureAxis::Horizontal
             && self
                 .gesture_seen
-                .is_some_and(|seen| seen.elapsed() <= GESTURE_RESET);
+                .is_some_and(|seen| now.duration_since(seen) <= GESTURE_RESET);
         if empty_panel && !horizontally_locked && dx == 0.0 && dy != 0.0 {
             // With no conversation beneath the pointer, vertical scrolling is
             // workspace navigation. A wheel notch moves one row immediately;
@@ -3368,10 +3372,9 @@ impl Workspace {
         }
         // Not every platform delivers an Ended phase, so silence also ends
         // the gesture: a fresh burst of deltas starts a fresh axis decision.
-        let now = Instant::now();
         if self
             .gesture_seen
-            .is_none_or(|seen| seen.elapsed() > GESTURE_RESET)
+            .is_none_or(|seen| now.duration_since(seen) > GESTURE_RESET)
         {
             self.gesture.reset();
         }
@@ -5413,7 +5416,7 @@ impl Workspace {
                 // marks, mirrored onto the map at the lens center so the eye
                 // can track the swipe in either place. The dark ring keeps it
                 // legible even over the lit focused-panel rectangle.
-                if let Some(alpha) = self.gesture_reticle_alpha() {
+                if let Some(alpha) = self.gesture_reticle_alpha(cx) {
                     let dot_left = lens_left + lens_width / 2.0 - MINIMAP_GESTURE_DOT / 2.0;
                     track = track.child(
                         div()
@@ -9594,6 +9597,18 @@ mod tests {
             cx.run_until_parked();
         };
 
+        // A gap resets a horizontal lock without an Ended event. Exercise it
+        // over a transcript, not the empty destination strip where vertical
+        // scrolling intentionally navigates rows.
+        swipe(cx, -40.0, 0.0, gpui::TouchPhase::Started);
+        cx.background_executor
+            .advance_clock(GESTURE_RESET + Duration::from_millis(1));
+        swipe(cx, 0.0, -STRIP_BREAK * 2.0, gpui::TouchPhase::Moved);
+        workspace.read_with(cx, |workspace, _| {
+            assert_eq!(workspace.active_row, 0);
+            assert_eq!(workspace.gesture.axis, GestureAxis::Vertical);
+        });
+
         // Commit the gesture horizontally, then pull up past the threshold.
         swipe(cx, -40.0, 0.0, gpui::TouchPhase::Started);
         let scroll_before = panel.read_with(cx, |panel, _| panel.test_scroll_offset_y());
@@ -9616,20 +9631,6 @@ mod tests {
             scroll_before, scroll_after,
             "a committed pan must consume its vertical deltas, not scroll the transcript"
         );
-
-        // A fresh vertical gesture, after the reset gap, stays with the
-        // panel: no further strip hop.
-        workspace.update(cx, |workspace, _| {
-            workspace.gesture.reset();
-            workspace.gesture_seen = None;
-        });
-        swipe(cx, 0.0, -STRIP_BREAK * 2.0, gpui::TouchPhase::Started);
-        workspace.read_with(cx, |workspace, _| {
-            assert_eq!(
-                workspace.active_row, 1,
-                "a vertical-first gesture must never hop strips"
-            );
-        });
     }
 
     #[gpui::test]
@@ -9765,10 +9766,8 @@ mod tests {
              reticle={reticle:?}, panel={focused_panel:?}"
         );
 
-        workspace.update(cx, |workspace, _| {
-            workspace.gesture_last =
-                Some(Instant::now() - GESTURE_HOLD - GESTURE_FADE - Duration::from_millis(50));
-        });
+        cx.background_executor
+            .advance_clock(GESTURE_HOLD + GESTURE_FADE + Duration::from_millis(50));
         cx.run_until_parked();
         cx.draw(
             gpui::point(px(0.), px(0.)),
@@ -11667,17 +11666,33 @@ mod tests {
         let canvas = cx
             .debug_bounds("workspace-canvas")
             .expect("workspace canvas");
-        let camera_before = workspace.update(cx, |workspace, _| workspace.camera_x[0]);
+        let camera_before = workspace.update(cx, |workspace, _| workspace.camera_target[0]);
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: canvas.center(),
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(-100.0), px(0.0))),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });
-        workspace.update(cx, |workspace, _| {
+        workspace.update(cx, |workspace, cx| {
+            assert!(
+                workspace.camera_target[0] > camera_before,
+                "the Learn panel must leave canvas touchpad gestures working"
+            );
+            // Precise scrolling interpolates camera_x over frames. Present a
+            // settled frame without relying on wall-clock scheduling latency.
+            workspace.camera_started[0] = Some(Instant::now() - TOUCH_PAN_DURATION);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| gpui::div(),
+        );
+        workspace.read_with(cx, |workspace, _| {
             assert!(
                 workspace.camera_x[0] > camera_before,
-                "the Learn panel must leave canvas touchpad gestures working"
+                "the Learn panel must leave the canvas visibly panned"
             );
         });
 

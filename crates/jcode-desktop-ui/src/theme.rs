@@ -470,7 +470,9 @@ fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
         light.HEADER_BG = rgb_c(0xe2dfda);
         light.TEXT = rgb_c(0x292724);
         light.TEXT_USER = rgb_c(0x201e1b);
-        light.TEXT_DIM = rgb_c(0x67625b);
+        // Small workspace labels also sit on the tinted, recessed header.
+        // Keep their contrast above 4.5:1 there, not just on the panel paper.
+        light.TEXT_DIM = rgb_c(0x625d56);
         light.REASONING = light.TEXT_DIM;
         light.TEXT_FAINT = rgb_c(0x777169);
         light.ACCENT = rgb_c(0x665f57);
@@ -605,7 +607,7 @@ mod tests {
 
     #[test]
     fn workspace_identities_are_neutral_and_readable_in_every_palette() {
-        for theme in themes() {
+        for (preset, theme) in ThemePreset::ALL.iter().zip(themes()) {
             for row in 0..4 {
                 let accent = theme.workspace_accent(row);
                 assert_eq!(accent, theme.TEXT_DIM);
@@ -619,7 +621,7 @@ mod tests {
                 ] {
                     assert!(
                         contrast(accent, background) >= 4.5,
-                        "workspace {row}: contrast {} against {background:?}",
+                        "{preset:?} workspace {row}: contrast {} against {background:?}",
                         contrast(accent, background)
                     );
                 }

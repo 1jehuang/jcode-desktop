@@ -178,7 +178,8 @@ pub(super) const PARCHMENT: Palette = Palette {
     raised: 0xefe5cf,
     border: 0xc6b797,
     text: 0x3e3528,
-    muted: 0x71634c,
+    // Includes small workspace labels on the tinted raised surface.
+    muted: 0x6e6049,
     accent: 0x85602d,
     secondary: 0x49655f,
     keyword: 0x80506a,
