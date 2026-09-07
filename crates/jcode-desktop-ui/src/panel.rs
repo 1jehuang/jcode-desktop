@@ -4007,6 +4007,8 @@ fn role_of(item: &Item) -> Option<&'static str> {
 /// A labelled role row: a small caption above the message body, so a long
 /// transcript stays scannable without heavyweight avatars.
 fn role_caption(label: impl Into<SharedString>, body: gpui::AnyElement) -> gpui::AnyElement {
+    let label = label.into();
+    let selector = format!("role-caption-{label}");
     div()
         .flex()
         // Restored history alternates labelled user and assistant rows. If
@@ -4017,10 +4019,11 @@ fn role_caption(label: impl Into<SharedString>, body: gpui::AnyElement) -> gpui:
         .gap_1()
         .child(
             div()
+                .debug_selector(move || selector.clone().into())
                 .text_size(px(10.0))
                 .text_color(Theme::global().TEXT_FAINT)
                 .font_family(Theme::global().FONT_MONO)
-                .child(label.into()),
+                .child(label),
         )
         .child(body)
         .into_any_element()

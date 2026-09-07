@@ -117,6 +117,115 @@ mod tests {
     }
 
     #[gpui::test]
+    fn native_scroll_paints_historical_numbered_prompt_cards(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "native-prompt-acceptance".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
+        panel.update(vcx, |panel, cx| {
+            for number in 1..=13 {
+                panel
+                    .items
+                    .push(Item::User(format!("Distinct prompt {number}")));
+                for line in 0..40 {
+                    panel.items.push(Item::Assistant(format!(
+                        "Answer {number}, paragraph {line}"
+                    )));
+                }
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let pinned = vcx
+            .debug_bounds("pinned-latest-prompt")
+            .expect("tail prompt paints");
+        let caption = vcx
+            .debug_bounds("role-caption-you, 13")
+            .expect("exact requested numbered label paints");
+        assert!(caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom());
+        println!("ACCEPTANCE: live-end pinned card paints you, 13");
+
+        // Enter through the actual scroll event handler, not ListState mutation.
+        let mut found_historical = false;
+        for _ in 0..80 {
+            let position = vcx.debug_bounds("transcript").unwrap().center();
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(180.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+            if let (Some(pinned), Some(caption)) = (
+                vcx.debug_bounds("pinned-latest-prompt"),
+                vcx.debug_bounds("role-caption-you, 12"),
+            ) {
+                assert!(caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom());
+                assert!(
+                    vcx.debug_bounds("role-caption-you, 13").is_none(),
+                    "newest prompt must not replace historical context"
+                );
+                found_historical = true;
+                break;
+            }
+        }
+        assert!(
+            found_historical,
+            "native upward scrolling must paint the twelfth prompt"
+        );
+        println!("ACCEPTANCE: native upward scrolling replaces pinned you, 13 with you, 12");
+        panel.update(vcx, |panel, cx| {
+            assert!(!panel.stick_to_bottom);
+            panel
+                .items
+                .push(Item::User("A newer prompt arrives".into()));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("role-caption-you, 12").is_some());
+        assert!(vcx.debug_bounds("role-caption-you, 14").is_none());
+        println!("ACCEPTANCE: arrival of prompt 14 leaves viewed prompt 12 pinned");
+        for (delta, label) in [
+            (180., "role-caption-you, 1"),
+            (-180., "role-caption-you, 14"),
+        ] {
+            for _ in 0..250 {
+                let position = vcx.debug_bounds("transcript").unwrap().center();
+                vcx.simulate_event(gpui::ScrollWheelEvent {
+                    position,
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(delta))),
+                    modifiers: gpui::Modifiers::default(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                });
+                vcx.run_until_parked();
+                if vcx.debug_bounds(label).is_some()
+                    && vcx.debug_bounds("pinned-latest-prompt").is_none()
+                {
+                    break;
+                }
+            }
+            assert!(
+                vcx.debug_bounds(label).is_some(),
+                "numbered transcript card {label} paints"
+            );
+            assert!(
+                vcx.debug_bounds("pinned-latest-prompt").is_none(),
+                "visible user card must not be duplicated"
+            );
+        }
+        println!(
+            "ACCEPTANCE: native top/bottom scrolling paints you, 1 and you, 14 without duplicate pinned cards"
+        );
+    }
+
+    #[gpui::test]
     fn scrolling_history_pins_the_historical_turn(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
