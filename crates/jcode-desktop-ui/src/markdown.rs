@@ -887,13 +887,9 @@ fn math_block(
     let shell = div()
         .debug_selector(|| "md-math".into())
         .w_full()
-        .my_0p5()
-        .px_2()
-        .py_1p5()
-        .rounded_md()
-        .border_1()
-        .border_color(Theme::global().CODE_BORDER)
-        .bg(Theme::global().CODE_BG)
+        // Equations are transcript content, not code cards. Keep the SVG
+        // transparent and let ordinary block spacing separate display math.
+        .my_2()
         .text_color(Theme::global().TEXT);
 
     match render_math_svg(source) {
