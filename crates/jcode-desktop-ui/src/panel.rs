@@ -2167,6 +2167,7 @@ impl Panel {
             if let Some(response) = messages
                 .iter()
                 .rev()
+                .take_while(|message| message.role != "user")
                 .find(|message| message.role == "assistant" && !message.content.trim().is_empty())
                 .map(|message| message.content.as_str())
             {
@@ -2388,8 +2389,16 @@ impl Panel {
             ApiEvent::TurnDone { .. } => {
                 self.finish_response();
             }
+            ApiEvent::SessionStatus { status, .. } if status == "attached" => {
+                // Transport bookkeeping is not a turn transition. In particular,
+                // a late attach notification must not resurrect a completed turn.
+            }
             ApiEvent::SessionStatus { status, .. } => {
-                self.status = status.clone();
+                self.status = if status == "processing" {
+                    "running".into()
+                } else {
+                    status.clone()
+                };
                 if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
                     self.flush_reasoning();
                     self.flush_streaming();
@@ -4708,6 +4717,9 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
     kept
 }
 
+#[cfg(test)]
+#[path = "panel_turn_completion_tests.rs"]
+mod turn_completion_tests;
 #[cfg(test)]
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;

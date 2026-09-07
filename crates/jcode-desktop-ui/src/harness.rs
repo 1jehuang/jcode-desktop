@@ -1535,15 +1535,31 @@ fn recover_async_busy(
 
 fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
     match event {
-        ApiEvent::MessageAccepted { .. } => *turn_active = true,
-        ApiEvent::TurnDone { .. } => *turn_active = false,
+        ApiEvent::MessageAccepted { .. }
+        | ApiEvent::TextDelta { .. }
+        | ApiEvent::ReasoningDelta { .. }
+        | ApiEvent::ToolStart { .. } => *turn_active = true,
+        ApiEvent::TurnDone { .. } | ApiEvent::Error { .. } => *turn_active = false,
         // `attached` describes the transport, not a model turn. Treating every
         // non-idle status as active routed the first prompt in a fresh desktop
         // panel through `soft_interrupt`; with no turn to interrupt, the prompt
         // stayed queued forever and the panel showed only its local echo.
-        ApiEvent::SessionStatus { status, .. } if status == "idle" => *turn_active = false,
         ApiEvent::SessionStatus { status, .. }
-            if matches!(status.as_str(), "generating" | "running") =>
+            if matches!(status.as_str(), "idle" | "cancelled" | "canceled") =>
+        {
+            *turn_active = false;
+        }
+        ApiEvent::SessionStatus { status, .. }
+            if matches!(
+                status.as_str(),
+                "generating"
+                    | "running"
+                    | "processing"
+                    | "busy"
+                    | "thinking"
+                    | "streaming"
+                    | "running_tools"
+            ) =>
         {
             *turn_active = true;
         }
@@ -2112,5 +2128,44 @@ mod tests {
             "request failed: ALREADY PROCESSING A MESSAGE"
         ));
         assert!(!is_already_processing_error("daemon connection closed"));
+    }
+
+    #[test]
+    fn observer_activity_and_reconnect_status_control_worker_steering() {
+        let mut active = false;
+        update_turn_activity(
+            &ApiEvent::TextDelta {
+                session_id: "s1".into(),
+                text: "observed".into(),
+            },
+            &mut active,
+        );
+        assert!(active);
+        for status in ["idle", "cancelled", "canceled"] {
+            update_turn_activity(
+                &ApiEvent::SessionStatus {
+                    session_id: "s1".into(),
+                    status: "processing".into(),
+                },
+                &mut active,
+            );
+            assert!(active);
+            update_turn_activity(
+                &ApiEvent::SessionStatus {
+                    session_id: "s1".into(),
+                    status: "attached".into(),
+                },
+                &mut active,
+            );
+            assert!(active, "transport notification must not change steering");
+            update_turn_activity(
+                &ApiEvent::SessionStatus {
+                    session_id: "s1".into(),
+                    status: status.into(),
+                },
+                &mut active,
+            );
+            assert!(!active);
+        }
     }
 }
