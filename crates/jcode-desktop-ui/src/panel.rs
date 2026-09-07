@@ -1137,6 +1137,16 @@ impl Panel {
 
     fn refresh_gmail(&mut self, cx: &mut Context<Self>) {
         self.gmail_message = None;
+        // Unit UI tests must not access real credentials/network or leave an OS
+        // worker waking GPUI after its deterministic test scheduler is dropped.
+        // Tests that need inbox contents install their own explicit fixtures.
+        if cfg!(test) {
+            self.gmail_inbox = Some(GmailInboxState::Error(
+                "Gmail network access is disabled in UI unit tests".into(),
+            ));
+            cx.notify();
+            return;
+        }
         self.gmail_inbox = Some(GmailInboxState::Loading);
         cx.notify();
         let (tx, rx) = async_channel::bounded(1);
@@ -1166,6 +1176,15 @@ impl Panel {
     }
 
     fn open_gmail_message(&mut self, summary: GmailMessageSummary, cx: &mut Context<Self>) {
+        // Isolate detail/retry requests as well as the initial inbox refresh.
+        if cfg!(test) {
+            self.gmail_message = Some(GmailMessageState::Error(
+                summary,
+                "Gmail network access is disabled in UI unit tests".into(),
+            ));
+            cx.notify();
+            return;
+        }
         self.gmail_message = Some(GmailMessageState::Loading(summary.clone()));
         cx.notify();
         let (tx, rx) = async_channel::bounded(1);
@@ -1971,7 +1990,8 @@ impl Panel {
                 }
                 "/model" | "/models" => self.open_model_picker(cx),
                 "/update" => {
-                    let message = match crate::updates::request_now() {
+                    let request = crate::updates::request_now();
+                    let message = match request {
                         crate::updates::UpdateRequest::Checking =>
                             "Checking for Jcode Desktop updates…",
                         crate::updates::UpdateRequest::AlreadyChecking =>
@@ -1984,6 +2004,33 @@ impl Panel {
                             "Automatic updates are unavailable in this build of Jcode Desktop.",
                     };
                     self.items.push(Item::Assistant(message.into()));
+                    #[cfg(target_os = "linux")]
+                    if request == crate::updates::UpdateRequest::Checking {
+                        cx.spawn(async move |this, cx| {
+                            loop {
+                                // The worker owns IO, never the UI thread. Surface
+                                // its terminal result even if the user is idle.
+                                let result = match crate::updates::current() {
+                                    crate::updates::UpdateState::Finished { message } => Some(Ok(message)),
+                                    crate::updates::UpdateState::Failed { message } => Some(Err(message)),
+                                    crate::updates::UpdateState::Idle => break,
+                                    _ => None,
+                                };
+                                if let Some(result) = result {
+                                    let _ = this.update(cx, |panel, cx| {
+                                        panel.items.push(match result {
+                                            Ok(message) => Item::Assistant(message),
+                                            Err(message) => Item::Error(message),
+                                        });
+                                        cx.notify();
+                                    });
+                                    break;
+                                }
+                                if this.upgrade().is_none() { break; }
+                                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                            }
+                        }).detach();
+                    }
                 }
                 "/effort" => self.items.push(Item::Assistant(
                     "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
@@ -4866,6 +4913,49 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn gmail_requests_are_isolated_from_network_and_worker_teardown(cx: &mut gpui::TestAppContext) {
+        let panel = cx.update(|cx| {
+            cx.new(|cx| Panel::new_gmail(crate::harness::spawn_inert(), cx))
+        });
+        panel.update(cx, |panel, cx| {
+            let disabled = "Gmail network access is disabled in UI unit tests";
+            assert!(matches!(
+                &panel.gmail_inbox,
+                Some(GmailInboxState::Error(error)) if error == disabled
+            ));
+            let summary = GmailMessageSummary {
+                id: "offline-message".into(),
+                from: "Fixture sender".into(),
+                subject: "Fixture subject".into(),
+                date: String::new(),
+                snippet: "Fixture preview".into(),
+                unread: false,
+                important: false,
+                starred: false,
+                category: None,
+            };
+            for _ in 0..2 {
+                panel.open_gmail_message(summary.clone(), cx);
+                assert!(matches!(
+                    &panel.gmail_message,
+                    Some(GmailMessageState::Error(message, error))
+                        if message.id == summary.id && error == disabled
+                ));
+            }
+            panel.refresh_gmail(cx);
+            assert!(panel.gmail_message.is_none());
+            assert!(matches!(
+                &panel.gmail_inbox,
+                Some(GmailInboxState::Error(error)) if error == disabled
+            ));
+        });
+        let weak = panel.downgrade();
+        drop(panel);
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[gpui::test]
     fn transcript_scroll_handler_does_not_keep_closed_panel_alive(cx: &mut gpui::TestAppContext) {
         let panel = cx.update(|cx| {
             cx.new(|cx| {
@@ -7076,6 +7166,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| crate::input::bind_keys(cx));
+        let _update_guard = crate::updates::test_lock();
         crate::updates::set(crate::updates::UpdateState::Idle);
         let (bridge, commands) = crate::harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -7109,6 +7200,40 @@ mod tests {
             .debug_bounds("assistant-response")
             .expect("the update result should paint in the transcript");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+
+        #[cfg(target_os = "linux")]
+        {
+            // Exercise the production slash-command and asynchronous completion
+            // path, with a deterministic platform callback rather than network IO.
+            extern "C" fn current() {
+                crate::updates::set(crate::updates::UpdateState::Finished {
+                    message: "Jcode Desktop is already current.".into(),
+                });
+            }
+            extern "C" fn failed() {
+                crate::updates::set(crate::updates::UpdateState::Failed {
+                    message: "Update failed: checksum mismatch.".into(),
+                });
+            }
+            unsafe { crate::updates::jcode_update_register_actions(current, current) };
+            vcx.simulate_input("/update");
+            vcx.simulate_keystrokes("enter");
+            vcx.run_until_parked();
+            panel.read_with(vcx, |panel, _| {
+                assert!(matches!(panel.items.last(), Some(Item::Assistant(message))
+                    if message == "Jcode Desktop is already current."));
+            });
+            unsafe { crate::updates::jcode_update_register_actions(failed, failed) };
+            vcx.simulate_input("/update");
+            vcx.simulate_keystrokes("enter");
+            vcx.run_until_parked();
+            panel.read_with(vcx, |panel, _| {
+                assert!(matches!(panel.items.last(), Some(Item::Error(message))
+                    if message == "Update failed: checksum mismatch."));
+            });
+            assert!(commands.try_recv().is_err(), "Linux updater never invokes the model or CLI updater");
+            crate::updates::clear_test_actions();
+        }
     }
 
     #[gpui::test]

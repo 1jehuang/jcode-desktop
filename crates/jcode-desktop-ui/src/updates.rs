@@ -1,15 +1,10 @@
-//! Automatic-update status, surfaced to the user instead of happening silently.
-//!
-//! Sparkle already downloads and installs betas on a daily schedule, but it did
-//! so invisibly: a user on a broken build had no way to know a fix existed, and
-//! no way to ask for it now. This module is the shared state between the macOS
-//! updater bootstrap and the workspace chrome.
-//!
-//! The direction of the dependency matters. Objective-C calls *into* Rust
-//! through [`jcode_update_report`], and registers its "check now" entry point
-//! through [`jcode_update_register_actions`]. Nothing here links against
-//! Sparkle, so this crate still builds, links, and tests on its own, and the
-//! render tests below drive exactly the states the delegate reports.
+//! Shared desktop updater state. macOS registers Sparkle callbacks. Linux
+//! rebuilds source checkouts through the host or updates managed user bundles.
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+mod linux_package;
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -21,6 +16,10 @@ pub enum UpdateState {
     /// Nothing to say: the app is current, or has not looked yet.
     #[default]
     Idle,
+    /// A Linux request completed without forcibly restarting the user's work.
+    Finished { message: String },
+    /// A recoverable error. A subsequent `/update` retries the operation.
+    Failed { message: String },
     /// A scheduled or user-requested check is in flight.
     Checking,
     /// A newer build exists and Sparkle is fetching it.
@@ -35,6 +34,8 @@ impl UpdateState {
     pub fn label(&self) -> Option<String> {
         match self {
             Self::Idle => None,
+            Self::Finished { .. } => Some("desktop update status · see result".into()),
+            Self::Failed { .. } => Some("desktop update failed · see /update result".into()),
             Self::Checking => Some("checking for updates".to_owned()),
             Self::Available { version } => Some(format!("downloading {version}")),
             Self::ReadyToRestart { version } => Some(format!("{version} ready · restart")),
@@ -157,24 +158,37 @@ fn call_action(action: &AtomicPtr<c_void>) -> bool {
 /// Check for an update, continue an active download, or install a staged build.
 /// This is the single entry point used by `/update`.
 pub fn request_now() -> UpdateRequest {
-    match current() {
-        UpdateState::Idle => {
-            if call_action(&CHECK_NOW) {
-                set(UpdateState::Checking);
-                UpdateRequest::Checking
-            } else {
-                UpdateRequest::Unavailable
+    // Claim the request before calling the platform. Callbacks may complete
+    // synchronously, so setting Checking afterwards loses their final result.
+    let previous = {
+        let mut state = state().lock().unwrap_or_else(|error| error.into_inner());
+        match &*state {
+            UpdateState::Checking => return UpdateRequest::AlreadyChecking,
+            UpdateState::Available { .. } => return UpdateRequest::Downloading,
+            UpdateState::ReadyToRestart { .. } => {
+                drop(state);
+                return if install_now() {
+                    UpdateRequest::Restarting
+                } else {
+                    UpdateRequest::Unavailable
+                };
             }
+            _ => std::mem::replace(&mut *state, UpdateState::Checking),
         }
-        UpdateState::Checking => UpdateRequest::AlreadyChecking,
-        UpdateState::Available { .. } => UpdateRequest::Downloading,
-        UpdateState::ReadyToRestart { .. } => {
-            if install_now() {
-                UpdateRequest::Restarting
-            } else {
-                UpdateRequest::Unavailable
-            }
-        }
+    };
+    if call_action(&CHECK_NOW) {
+        return UpdateRequest::Checking;
+    }
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        let _ = previous;
+        linux::start();
+        UpdateRequest::Checking
+    }
+    #[cfg(any(not(target_os = "linux"), test))]
+    {
+        set(previous);
+        UpdateRequest::Unavailable
     }
 }
 
@@ -185,8 +199,54 @@ pub fn install_now() -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn clear_test_actions() {
+    CHECK_NOW.store(std::ptr::null_mut(), Ordering::Release);
+    INSTALL_NOW.store(std::ptr::null_mut(), Ordering::Release);
+    set(UpdateState::Idle);
+}
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synchronous_check_completion_is_not_overwritten() {
+        let _guard = test_lock();
+        extern "C" fn complete() {
+            set(UpdateState::Finished {
+                message: "Already current".into(),
+            });
+        }
+        unsafe { jcode_update_register_actions(complete, complete) };
+        set(UpdateState::Idle);
+        assert_eq!(request_now(), UpdateRequest::Checking);
+        assert!(matches!(current(), UpdateState::Finished { .. }));
+        CHECK_NOW.store(std::ptr::null_mut(), Ordering::Release);
+        INSTALL_NOW.store(std::ptr::null_mut(), Ordering::Release);
+        set(UpdateState::Idle);
+    }
+
+    #[test]
+    fn terminal_linux_states_are_visible_and_not_actionable() {
+        for state in [
+            UpdateState::Finished {
+                message: "Restart when ready".into(),
+            },
+            UpdateState::Failed {
+                message: "Network unavailable".into(),
+            },
+        ] {
+            assert!(state.label().is_some());
+            assert!(!state.is_busy());
+            assert!(!state.is_actionable());
+        }
+    }
 
     #[test]
     fn a_quiet_updater_paints_nothing() {
@@ -260,6 +320,7 @@ mod tests {
 
     #[test]
     fn reporting_through_the_c_abi_updates_what_the_ui_reads() {
+        let _guard = test_lock();
         let version = std::ffi::CString::new("0.1.0-beta.15").unwrap();
         unsafe { jcode_update_report(STATE_READY, version.as_ptr()) };
         assert_eq!(
@@ -274,6 +335,7 @@ mod tests {
 
     #[test]
     fn a_registered_installer_is_invoked_and_reported() {
+        let _guard = test_lock();
         // Source builds and tests have no Sparkle framework, so the chip must
         // report "nothing to run" rather than crashing. Once the platform
         // registers an entry point, clicking must actually reach it.
@@ -298,6 +360,7 @@ mod tests {
 
     #[test]
     fn update_request_checks_when_idle_and_installs_when_ready() {
+        let _guard = test_lock();
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         extern "C" fn action() {
             CALLS.fetch_add(1, Ordering::AcqRel);

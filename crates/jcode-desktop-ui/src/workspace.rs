@@ -621,8 +621,16 @@ impl Workspace {
         let session_refresh_interval = crate::config::get().session_refresh_interval();
         let housekeeping_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
+            let mut last_update_state = updates::current();
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
+                let update_state = updates::current();
+                if update_state != last_update_state {
+                    last_update_state = update_state;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
                 let accounts = accounts_feed.latest();
                 if last_session_refresh.elapsed() >= session_refresh_interval {
                     housekeeping_bridge.send(Command::RefreshSessions);
@@ -10525,6 +10533,7 @@ mod tests {
             cx.run_until_parked();
         };
 
+        let _update_guard = updates::test_lock();
         // A current app says nothing at all.
         updates::set(updates::UpdateState::Idle);
         draw(cx);

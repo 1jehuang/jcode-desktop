@@ -195,6 +195,18 @@ The fixture renders production UI, but is not a capture of the live window or
 evidence of live compositor performance. `JCODE_DESKTOP_SCREENSHOT=1` selects
 the offline fixture internally. Prefer the script, which also supplies isolation.
 
+## Updating on Linux
+
+Type `/update` in Desktop to check and update a managed x86_64 archive install
+under `~/.local/opt/jcode-desktop`, including its bundled runtime. Downloads are
+SHA-256 checked and installed into a new version directory. The launcher changes
+atomically, old versions are retained, and the app asks you to quit and reopen
+when ready. It does not terminate active work or update a separate CLI install.
+System/`.deb` installs must use their original installer. In a source checkout,
+`/update` requests the same current-checkout rebuild as Ctrl+R, without changing
+Git files. See [Linux updates](docs/linux-updates.md) for supported layouts,
+security boundaries, error recovery, and verification.
+
 ## Native UI hot reload
 
 The executable is a small, stable GPUI host. The application UI lives in the
