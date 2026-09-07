@@ -7,7 +7,7 @@
 #[cfg(test)]
 use jcode_desktop_motion::POLICIES;
 pub use jcode_desktop_motion::{
-    AnimatedValue, MODAL_DURATION, Policy, STANDARD_DURATION, Transition, arrival_motion,
+    AnimatedValue, Policy, STANDARD_DURATION, Transition, arrival_motion,
     ease_out_cubic,
 };
 

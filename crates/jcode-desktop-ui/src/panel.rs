@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use gpui::{
-    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, FontWeight,
+    App, Context, Entity, FocusHandle, Focusable, FontWeight,
     ListAlignment, ListState, ScrollHandle, SharedString, StyledImage, Task, Window, div, img,
     list, point, prelude::*, px, relative,
 };
@@ -1860,8 +1860,11 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
-                            if content == "/model" && !this.is_pending_session() {
-                                this.open_model_picker(cx);
+                            if (content == "/model" || content.starts_with("/model "))
+                                && !this.is_pending_session()
+                            {
+                                this.model_picker_open = true;
+                                cx.notify();
                             } else if this.model_picker_open && !content.starts_with("/model ") {
                                 this.close_model_picker(cx);
                             }
@@ -1869,6 +1872,10 @@ impl Panel {
                     }
                 })
                 .with_on_overlay_cancel(move |app| {
+                                let input = this.input.clone();
+                                cx.defer(move |cx| {
+                                    input.update(cx, |input, cx| input.set_content(String::new(), cx));
+                                });
                     let mut handled = false;
                     if let Some(panel) = cancel_weak.upgrade() {
                         panel.update(app, |this, cx| {
@@ -1888,6 +1895,30 @@ impl Panel {
                                 handled = true;
                             }
                             cx.notify();
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
+            {
+                let names = ["anthropic:sonnet-review".to_string(), "google:gemini-review".to_string()]
+                    .into_iter()
+                    .chain((1..=12).map(|index| format!("openai:atlas-{index:02}")));
+                let routes = names.map(|model| {
+                    let provider = model.split(':').next().unwrap().to_string();
+                    jcode_sdk::ModelRouteInfo {
+                        api_method: format!("{provider}-api-key"),
+                        model,
+                        provider,
+                        available: true,
+                        detail: String::new(),
+                    }
+                }).collect();
+                this.apply(&ApiEvent::RuntimeInfo {
+                    session_id: this.session_id.clone(),
+                    provider: Some("openai".into()),
+                    model: Some("openai:atlas-01".into()),
+                    reasoning_effort: None,
+                    routes,
+                }, cx);
+            }
                         });
                     }
                     handled
@@ -2086,210 +2117,13 @@ impl Panel {
         cx.defer(move |cx| {
             input.update(cx, |input, cx| {
                 input.set_content("/model ".to_string(), cx);
-                input.set_command_palette_visible(false, cx);
             });
         });
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {
         self.model_picker_open = false;
-        let input = self.input.clone();
-        cx.defer(move |cx| {
-            input.update(cx, |input, cx| input.set_command_palette_visible(true, cx));
-        });
-    }
-
-    fn select_model(&mut self, model: String, cx: &mut Context<Self>) {
-        self.close_model_picker(cx);
-        let input = self.input.clone();
-        cx.defer(move |cx| {
-            input.update(cx, |input, cx| input.set_content(String::new(), cx));
-        });
-        self.bridge.send(Command::SetModel {
-            session_id: self.session_id.clone(),
-            model: model.clone(),
-        });
-        self.items
-            .push(Item::Assistant(format!("Switching model to `{model}`…")));
-        self.stick_to_bottom = true;
-        self.transcript_list.scroll_to_end();
         cx.notify();
-    }
-
-    fn render_model_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let rows = self.input.read(cx).model_picker_rows();
-        let list = div()
-            .id("model-picker-list")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .children(
-                rows.into_iter()
-                    .enumerate()
-                    .map(|(index, (model, selected))| {
-                        let chosen = model.clone();
-                        let provider = self
-                            .model_logo_providers
-                            .get(&model)
-                            .map(String::as_str)
-                            .unwrap_or_else(|| model_logo_provider(&model, ""));
-                        let logo: gpui::AnyElement = match crate::accounts::logo(provider) {
-                            Some(bytes) => gpui::svg()
-                                .data(bytes)
-                                .size(px(18.0))
-                                .flex_none()
-                                .text_color(if selected {
-                                    Theme::global().TEXT
-                                } else {
-                                    Theme::global().TEXT_DIM
-                                })
-                                .into_any_element(),
-                            None => div()
-                                .size(px(18.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .bg(Theme::global().INLINE_CODE_BG)
-                                .text_size(px(10.0))
-                                .text_color(if selected {
-                                    Theme::global().TEXT
-                                } else {
-                                    Theme::global().TEXT_DIM
-                                })
-                                .child(crate::accounts::lettermark(&model))
-                                .into_any_element(),
-                        };
-                        div()
-                            .id(("model-picker-row", index))
-                            .debug_selector(move || format!("model-picker-row-{index}").into())
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_4()
-                            .py_2()
-                            .cursor_pointer()
-                            .bg(if selected {
-                                Theme::global().USER_BG
-                            } else {
-                                Theme::global().PANEL_BG
-                            })
-                            .text_color(if selected {
-                                Theme::global().TEXT
-                            } else {
-                                Theme::global().TEXT_DIM
-                            })
-                            .hover(|el| {
-                                el.bg(Theme::global().HEADER_BG)
-                                    .text_color(Theme::global().TEXT)
-                            })
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.select_model(chosen.clone(), cx);
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .debug_selector(move || {
-                                                format!("model-picker-logo-{index}")
-                                            })
-                                            .child(logo),
-                                    )
-                                    .child(
-                                        div().font_family(Theme::global().FONT_MONO).child(model),
-                                    ),
-                            )
-                            .when(selected, |el| {
-                                el.child(div().text_color(Theme::global().ACCENT).child("●"))
-                            })
-                    }),
-            );
-
-        div()
-            .id("model-picker-overlay")
-            .debug_selector(|| "model-picker-overlay".into())
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(gpui::rgba(0x080b10d9))
-            .occlude()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .overflow_hidden()
-                    .with_animation(
-                        "model-picker-dialog",
-                        Animation::new(crate::transition::MODAL_DURATION),
-                        |el, delta| el.opacity(delta),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "model-picker-dialog".into())
-                            .w(px(620.0))
-                            .max_w(relative(0.88))
-                            .h(px(410.0))
-                            .flex()
-                            .flex_col()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                            .bg(Theme::global().PANEL_BG)
-                            .shadow_lg()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .px_4()
-                                    .py_3()
-                                    .border_b_1()
-                                    .border_color(Theme::global().PANEL_BORDER)
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .child(div().text_size(px(15.0)).child("Choose a model"))
-                                            .child(
-                                                div()
-                                                    .text_size(px(10.5))
-                                                    .text_color(Theme::global().TEXT_FAINT)
-                                                    .child("type to filter  ·  ↑↓ move  ·  enter select"),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .cursor_pointer()
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| el.text_color(Theme::global().TEXT))
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _event, _window, cx| {
-                                                    this.close_model_picker(cx);
-                                                    this.input.update(cx, |input, cx| {
-                                                        input.set_content(String::new(), cx)
-                                                    });
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("esc"),
-                                    ),
-                            )
-                            .child(list),
-                    ),
-            )
-            .into_any_element()
     }
 
     fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
@@ -2593,8 +2427,10 @@ impl Panel {
                 let models = available_model_names(routes);
                 self.model_logo_providers = available_model_logo_providers(routes);
                 self.available_models = models.clone();
-                self.input
-                    .update(cx, |input, cx| input.set_command_models(models, cx));
+                self.input.update(cx, |input, cx| {
+                    input.set_command_models(models, cx);
+                    input.set_model_logo_providers(self.model_logo_providers.clone(), cx);
+                });
             }
             ApiEvent::TokenUsage {
                 input,
@@ -3770,7 +3606,6 @@ impl Render for Panel {
         .unwrap_or_default();
 
         let show_jump_chip = !self.stick_to_bottom;
-        let model_picker = self.model_picker_open.then(|| self.render_model_picker(cx));
 
         div()
             .flex()
@@ -4070,7 +3905,6 @@ impl Render for Panel {
                 self.offscreen_prompt.is_some(),
                 cx.entity().entity_id(),
             ))
-            .children(model_picker)
             .children(self.render_image_preview(cx))
             .children(self.render_diff_review(cx))
             .into_any_element()
@@ -7269,7 +7103,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn model_command_opens_center_picker_and_enter_switches_selection(
+    fn model_command_replaces_suggestions_above_input_and_enter_switches_selection(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| crate::input::bind_keys(cx));
@@ -7308,19 +7142,24 @@ mod tests {
 
         vcx.simulate_input("/model");
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("model-picker-overlay").is_some());
-        let overlay = vcx
-            .debug_bounds("model-picker-overlay")
-            .expect("picker overlay is rendered in the active panel");
-        let dialog = vcx
-            .debug_bounds("model-picker-dialog")
-            .expect("picker dialog is rendered");
-        assert!((dialog.center().x - overlay.center().x).abs() < px(1.0));
-        assert!((dialog.center().y - overlay.center().y).abs() < px(1.0));
+        assert!(vcx.debug_bounds("model-picker-overlay").is_none());
+        assert!(vcx.debug_bounds("model-picker-dialog").is_none());
+        let suggestions = vcx
+            .debug_bounds("slash-command-overlay")
+            .expect("model suggestions replace command suggestions");
+        let input = vcx
+            .debug_bounds("prompt-input")
+            .expect("composer remains rendered");
+        assert!(
+            suggestions.bottom() <= input.top(),
+            "model suggestions are above the composer"
+        );
+        assert!((suggestions.left() - input.left()).abs() <= px(1.0));
+        assert!((suggestions.size.width - input.size.width).abs() <= px(2.0));
         assert!(vcx.debug_bounds("model-picker-logo-0").is_some());
         assert!(vcx.debug_bounds("model-picker-logo-1").is_some());
         vcx.update(|_, cx| {
-            assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model ");
+            assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model");
             assert_eq!(panel.read(cx).input.read(cx).model_picker_rows().len(), 2);
         });
 
@@ -7332,6 +7171,23 @@ mod tests {
                 vec![
                     ("claude-fable-5".into(), false),
                     ("gpt-5.6-sol".into(), true)
+        vcx.simulate_input("/mod");
+        vcx.run_until_parked();
+        let command = vcx
+            .debug_bounds("slash-command-row-0")
+            .expect("model command suggestion exists");
+        vcx.simulate_click(command.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "clicking /model opens choices without selecting a model"
+        );
+        vcx.update(|_, cx| assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model "));
+        assert!(vcx.debug_bounds("model-picker-logo-0").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+
                 ]
             );
         });
@@ -7372,6 +7228,49 @@ Goals: []"#,
         assert_eq!(payload.todos[0].content, "Build the card");
         assert_eq!(payload.todos[0].group.as_deref(), Some("Desktop"));
         assert_eq!(
+        assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+
+        vcx.simulate_input("/model claude");
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                panel.read(cx).input.read(cx).model_picker_rows(),
+                vec![("claude-fable-5".into(), true)]
+            );
+        });
+        vcx.simulate_keystrokes("ctrl-a");
+        vcx.simulate_input("/model missing-route");
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "no matches must not send an invalid model"
+        );
+        assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+        vcx.simulate_input("/models");
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+        vcx.simulate_keystrokes("down up");
+        let row = vcx
+            .debug_bounds("slash-command-row-0")
+            .expect("model suggestion is clickable");
+        vcx.simulate_click(row.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "claude-fable-5")
+        );
+        assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+        vcx.simulate_input("composer focus retained");
+        vcx.update(|_, cx| {
+            assert_eq!(
+                panel.read(cx).input.read(cx).content.as_ref(),
+                "composer focus retained"
+            )
+        });
             payload.plan.user_intention.as_deref(),
             Some("See progress at a glance")
         );

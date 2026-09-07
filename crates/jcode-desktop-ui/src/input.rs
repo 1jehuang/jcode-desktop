@@ -1,6 +1,7 @@
 //! Prompt input with full IME support, adapted from gpui's input example.
 //! Long prompts soft-wrap and grow vertically. Enter submits via a callback.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -142,7 +143,8 @@ pub struct PromptInput {
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
     command_selection: usize,
-    show_command_palette: bool,
+    model_logo_providers: HashMap<String, String>,
+    command_scroll: gpui::ScrollHandle,
     submission_enabled: bool,
     spacious: bool,
 }
@@ -158,10 +160,9 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
     if !trimmed.starts_with('/') || trimmed.contains('\n') {
         return Vec::new();
     }
-    // The bare `/model` command belongs to the slash-command palette. Its
-    // dedicated picker is activated by the panel as soon as the command is
-    // fully typed. Only text after the inserted space filters model rows.
-    if trimmed.starts_with("/model ") {
+    // Keep the command in the composer, so typing `/models` remains possible.
+    // Model rows replace the command rows in the same suggestion area.
+    if trimmed == "/model" || trimmed.starts_with("/model ") {
         let query = trimmed
             .split_once(' ')
             .map(|(_, query)| query.trim().to_ascii_lowercase())
@@ -169,7 +170,6 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
         return models
             .iter()
             .filter(|model| query.is_empty() || model.to_ascii_lowercase().contains(&query))
-            .take(8)
             .map(|model| CommandSuggestion {
                 value: format!("/model {model}"),
                 help: "Switch this session".into(),
@@ -219,7 +219,8 @@ fn accepted_command_submission(
 ) -> Option<String> {
     let suggestion = suggestions.get(selection.min(suggestions.len().saturating_sub(1)))?;
     let trimmed = content.trim();
-    (content.trim_start().starts_with("/model ")
+    (trimmed == "/model"
+        || content.trim_start().starts_with("/model ")
         || trimmed == "/effort"
         || trimmed.starts_with("/effort ")
         || (!matches!(trimmed, "/model" | "/models")
@@ -368,7 +369,8 @@ impl PromptInput {
             on_overlay_cancel: None,
             command_models: Vec::new(),
             command_selection: 0,
-            show_command_palette: true,
+            model_logo_providers: HashMap::new(),
+            command_scroll: gpui::ScrollHandle::new(),
             submission_enabled: true,
             spacious: false,
         }
@@ -406,13 +408,18 @@ impl PromptInput {
         }
     }
 
-    pub fn set_command_palette_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.show_command_palette != visible {
-            self.show_command_palette = visible;
+    pub fn set_model_logo_providers(
+        &mut self,
+        providers: HashMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model_logo_providers != providers {
+            self.model_logo_providers = providers;
             cx.notify();
         }
     }
 
+    #[cfg(test)]
     pub fn model_picker_rows(&self) -> Vec<(String, bool)> {
         self.command_suggestions()
             .into_iter()
@@ -446,6 +453,9 @@ impl PromptInput {
         }
         if self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
+            if raw_content.trim_start().starts_with("/model ") && suggestions.is_empty() {
+                return;
+            }
             if let Some(accepted) =
                 accepted_command_submission(&raw_content, &suggestions, self.command_selection)
             {
@@ -654,6 +664,7 @@ impl PromptInput {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = self.command_selection.saturating_sub(1);
+            self.command_scroll.scroll_to_item(self.command_selection);
             cx.notify();
             return;
         }
@@ -675,6 +686,7 @@ impl PromptInput {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
+            self.command_scroll.scroll_to_item(self.command_selection);
             cx.notify();
             return;
         }
@@ -703,6 +715,8 @@ impl PromptInput {
 
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content.into();
+        self.command_selection = 0;
+        self.command_scroll.scroll_to_item(0);
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         cx.notify();
@@ -932,6 +946,8 @@ impl EntityInputHandler for PromptInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        self.command_selection = 0;
+        self.command_scroll.scroll_to_item(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
         }
@@ -966,6 +982,8 @@ impl EntityInputHandler for PromptInput {
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
+        self.command_selection = 0;
+        self.command_scroll.scroll_to_item(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
         }
@@ -1309,70 +1327,133 @@ impl Render for PromptInput {
             .key_context("PromptInput")
             .track_focus(&self.focus_handle(cx))
             .relative()
-            .when(self.show_command_palette && !suggestions.is_empty(), |el| {
-                el.child(
-                    div()
-                        .debug_selector(|| "slash-command-overlay".into())
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom(px(42.0))
-                        .when(self.spacious, |el| el.bottom_full())
-                        .mb_1()
-                        .flex()
-                        .flex_col()
-                        .overflow_hidden()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                        .bg(Theme::global().HEADER_BG)
-                        .shadow_lg()
-                        .occlude()
-                        .children(suggestions.into_iter().enumerate().map(
-                            |(index, suggestion)| {
-                                let selected = index == command_selection;
-                                div()
-                                    .id(("slash-command", index))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap_3()
-                                    .px_3()
-                                    .py_1p5()
-                                    .bg(if selected {
-                                        Theme::global().USER_BG
-                                    } else {
-                                        Theme::global().HEADER_BG
-                                    })
-                                    .text_size(px(12.0))
-                                    .cursor_pointer()
-                                    .child(
+            .when(
+                !suggestions.is_empty() || self.content.trim_start().starts_with("/model "),
+                |el| {
+                    el.child(
+                        div()
+                            .id("slash-command-suggestions")
+                            .debug_selector(|| "slash-command-overlay".into())
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_full()
+                            .mb_1()
+                            .flex()
+                            .flex_col()
+                            .max_h(px(280.0))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.command_scroll)
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                            .bg(Theme::global().HEADER_BG)
+                            .shadow_lg()
+                            .occlude()
+                            .when(suggestions.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .px_3()
+                                        .py_2()
+                                        .text_size(px(12.0))
+                                        .text_color(Theme::global().TEXT_FAINT)
+                                        .child("No models match"),
+                                )
+                            })
+                            .children(suggestions.into_iter().enumerate().map(
+                                |(index, suggestion)| {
+                                    let selected = index == command_selection;
+                                    let model = suggestion.value.strip_prefix("/model ");
+                                    let logo = model.map(|model| {
+                                        let provider = self
+                                            .model_logo_providers
+                                            .get(model)
+                                            .map(String::as_str)
+                                            .unwrap_or("");
+                                        let logo: gpui::AnyElement =
+                                            match crate::accounts::logo(provider) {
+                                                Some(bytes) => gpui::svg()
+                                                    .data(bytes)
+                                                    .size(px(18.0))
+                                                    .flex_none()
+                                                    .text_color(Theme::global().TEXT_DIM)
+                                                    .into_any_element(),
+                                                None => div()
+                                                    .size(px(18.0))
+                                                    .flex_none()
+                                                    .text_size(px(10.0))
+                                                    .child(crate::accounts::lettermark(model))
+                                                    .into_any_element(),
+                                            };
                                         div()
-                                            .font_family(Theme::global().FONT_MONO)
-                                            .text_color(if selected {
-                                                Theme::global().TEXT
-                                            } else {
-                                                Theme::global().TEXT_DIM
+                                            .debug_selector(move || {
+                                                format!("model-picker-logo-{index}")
                                             })
-                                            .child(suggestion.value.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(Theme::global().TEXT_FAINT)
-                                            .child(suggestion.help),
-                                    )
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, window, cx| {
-                                            this.set_content(suggestion.value.clone(), cx);
-                                            this.command_selection = 0;
-                                            this.submit(&Submit, window, cx);
-                                        }),
-                                    )
-                            },
-                        )),
-                )
-            })
+                                            .child(logo)
+                                    });
+                                    let label = model.unwrap_or(&suggestion.value).to_string();
+                                    div()
+                                        .id(("slash-command", index))
+                                        .debug_selector(move || {
+                                            format!("slash-command-row-{index}")
+                                        })
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap_3()
+                                        .px_3()
+                                        .py_1p5()
+                                        .bg(if selected {
+                                            Theme::global().USER_BG
+                                        } else {
+                                            Theme::global().HEADER_BG
+                                        })
+                                        .text_size(px(12.0))
+                                        .cursor_pointer()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_3()
+                                                .children(logo)
+                                                .font_family(Theme::global().FONT_MONO)
+                                                .text_color(if selected {
+                                                    Theme::global().TEXT
+                                                } else {
+                                                    Theme::global().TEXT_DIM
+                                                })
+                                                .child(label),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_color(Theme::global().TEXT_FAINT)
+                                                .child(suggestion.help),
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                window.focus(&this.focus_handle, cx);
+                                                if matches!(
+                                                    suggestion.value.as_str(),
+                                                    "/model" | "/models"
+                                                ) {
+                                                    this.set_content("/model ".into(), cx);
+                                                    if let Some(on_change) = &this.on_change {
+                                                        on_change(&this.content, cx);
+                                                    }
+                                                } else {
+                                                    this.set_content(suggestion.value.clone(), cx);
+                                                    this.submit(&Submit, window, cx);
+                                                }
+                                            }),
+                                        )
+                                },
+                            )),
+                    )
+                },
+            )
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))

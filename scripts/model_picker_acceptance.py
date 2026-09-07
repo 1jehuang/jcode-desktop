@@ -32,16 +32,18 @@ def normalized(text):
 
 
 def dialog_bounds(image):
-    """Find the warm-neutral modal border, not dimmed background content."""
+    """Find suggestions immediately above the still-visible focused composer."""
     edges = []
-    for y in range(100, image.height - 60):
+    for y in range(100, image.height - 20):
         xs = [x for x in range(280, image.width - 12)
               if image.getpixel((x, y))[:3] == (135, 121, 107)]
         if len(xs) >= 250:
             edges.append((y, min(xs), max(xs)))
-    assert len(edges) == 2, f"Expected a visible model-dialog border, found {edges}"
-    top, bottom = edges
-    assert bottom[0] - top[0] >= 250, ("Dialog is too short", edges)
+    assert len(edges) == 4, f"Expected suggestion and composer borders, found {edges}"
+    top, bottom, composer_top, composer_bottom = edges
+    assert 0 < composer_top[0] - bottom[0] <= 8, ("Suggestions must be above input", edges)
+    assert abs(top[1] - composer_top[1]) <= 2, ("Suggestions must align with input", edges)
+    assert abs(top[2] - composer_top[2]) <= 2, ("Suggestions must match input width", edges)
     assert abs(top[1] - bottom[1]) <= 2 and abs(top[2] - bottom[2]) <= 2, edges
     return (top[1], top[0], top[2] + 1, bottom[0] + 1)
 
@@ -136,7 +138,6 @@ def verify(output, env, root):
     def picker(image, label, expected=None):
         bounds = dialog_bounds(image)
         words = ocr(image, bounds, label)
-        phrase_bounds(words, "Choose a model")
         if expected:
             phrase_bounds(words, expected)
         return bounds, words
@@ -147,13 +148,13 @@ def verify(output, env, root):
         # already visible dialog, since that would select a route instead.
         _, image = capture(label + "-typed")
         try:
-            dialog_bounds(image)
+            picker(image, label + "-typed", FILTER_ROUTE)
             trigger = "typing"
         except AssertionError:
             native("key", "Return")
             trigger = "Return"
         report.setdefault("open_actions", {})[label] = trigger
-        return wait_frame(label, lambda image: picker(image, label, "Search models"))
+        return wait_frame(label, lambda image: picker(image, label, FILTER_ROUTE))
 
     def closed(image):
         # A restored composer border proves the backdrop disappeared. The
@@ -191,12 +192,11 @@ def verify(output, env, root):
         report["checks"][stage] = True
 
         stage = "focused-filter-and-scroll-reset"
-        type_text(FILTER)
+        type_text(" " + FILTER + " ")
         def filtered(image):
             bounds, words = picker(image, stage, FILTER_ROUTE)
-            # Require typed query above its result, not just text in the row.
-            route = phrase_bounds(words, FILTER_ROUTE)
-            query_words = [word for word in words if word["y"] + word["height"] < route[1]]
+            # The query remains in the real composer below the suggestions.
+            query_words = ocr(image, (bounds[0], bounds[3] + 1, bounds[2], min(image.height, bounds[3] + 160)), stage + "-query")
             phrase_bounds(query_words, FILTER)
             assert normalized(LAST_ROUTE) not in normalized(" ".join(word["text"] for word in words)), "Filtering kept unrelated routes"
             return bounds, words
@@ -205,7 +205,7 @@ def verify(output, env, root):
 
         stage = "no-matches-and-enter-does-not-submit"
         native("key", "ctrl+a")
-        type_text(NO_MATCH)
+        type_text("/model " + NO_MATCH)
         wait_frame("model-no-matches", lambda image: picker(image, stage, "No models match"))
         native("key", "Return")
         wait_frame("model-no-matches-enter", lambda image: picker(image, stage, "No models match"))
@@ -214,7 +214,7 @@ def verify(output, env, root):
         stage = "escape-restores-native-composer-focus"
         native("key", "Escape")
         _, _, bounds = wait_frame("model-escaped", closed)
-        type_text("Composer focus restored")
+        type_text("Composer focus restored ")
         wait_frame("model-focus-restored", lambda image: phrase_bounds(
             ocr(image, bounds, stage), "Composer focus restored"))
         native("key", "ctrl+a", "BackSpace")
@@ -225,7 +225,7 @@ def verify(output, env, root):
         report["checks"][stage] = True
 
         stage = "keyboard-selection"
-        type_text(FILTER)
+        type_text(" " + FILTER + " ")
         wait_frame("model-keyboard-filter", filtered)
         native("key", "Return")
         def selected(image, route):
@@ -237,16 +237,9 @@ def verify(output, env, root):
         wait_frame("model-keyboard-selected", lambda image: selected(image, FILTER_ROUTE))
         report["checks"][stage] = FILTER_ROUTE
 
-        stage = "mouse-dismissal"
-        _, _, (_, words) = open_picker("/model", "model-close-open")
-        x1, y1, x2, y2 = phrase_bounds(words, "esc")
-        native("mousemove", round((x1 + x2) / 2), round((y1 + y2) / 2), "click", "1")
-        wait_frame("model-mouse-dismissed", closed)
-        report["checks"][stage] = True
-
         stage = "mouse-selection"
         open_picker("/model", "model-mouse-open")
-        type_text(LAST_ROUTE.split(":")[-1])
+        type_text(" " + LAST_ROUTE.split(":")[-1])
         _, _, (_, words) = wait_frame("model-mouse-filter", lambda image: picker(image, stage, LAST_ROUTE))
         x1, y1, x2, y2 = phrase_bounds(words, LAST_ROUTE)
         native("mousemove", round((x1 + x2) / 2), round((y1 + y2) / 2), "click", "1")

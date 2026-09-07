@@ -10,9 +10,11 @@ import model_picker_acceptance as acceptance
 import screenshot
 
 
-def fixture(bounds=(540, 260, 1160, 720)):
+def fixture(bounds=(540, 430, 1160, 710)):
     image = Image.new("RGB", (1440, 1000), (12, 12, 12))
-    ImageDraw.Draw(image).rectangle(bounds, outline=(135, 121, 107))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle(bounds, outline=(135, 121, 107))
+    draw.rectangle((bounds[0], bounds[3] + 5, bounds[2], bounds[3] + 115), outline=(135, 121, 107))
     return image
 
 
@@ -22,33 +24,35 @@ def word(text, x=20, y=30, width=50, height=12):
 
 class ModelPickerPixelTests(unittest.TestCase):
     def test_dialog_bounds_come_from_visible_border(self):
-        self.assertEqual(acceptance.dialog_bounds(fixture()), (540, 260, 1161, 721))
+        self.assertEqual(acceptance.dialog_bounds(fixture()), (540, 430, 1161, 711))
 
     def test_sidebar_and_tab_borders_do_not_move_dialog(self):
         image = fixture()
         draw = ImageDraw.Draw(image)
         draw.rectangle((0, 0, 250, 999), outline=(135, 121, 107))
         draw.rectangle((280, 1, 1428, 60), outline=(135, 121, 107))
-        self.assertEqual(acceptance.dialog_bounds(image), (540, 260, 1161, 721))
+        self.assertEqual(acceptance.dialog_bounds(image), (540, 430, 1161, 711))
 
     def test_absent_or_short_composer_border_is_not_a_dialog(self):
-        for image in (Image.new("RGB", (1440, 1000)), fixture((300, 700, 1100, 810))):
+        modal = Image.new("RGB", (1440, 1000))
+        ImageDraw.Draw(modal).rectangle((540, 260, 1160, 720), outline=(135, 121, 107))
+        for image in (Image.new("RGB", (1440, 1000)), modal):
             with self.subTest(image=image), self.assertRaises(AssertionError):
                 acceptance.dialog_bounds(image)
 
     def test_extra_border_does_not_silently_choose_background(self):
         image = fixture()
         ImageDraw.Draw(image).line((500, 800, 1100, 800), fill=(135, 121, 107))
-        with self.assertRaisesRegex(AssertionError, "visible model-dialog border"):
+        with self.assertRaisesRegex(AssertionError, "suggestion and composer borders"):
             acceptance.dialog_bounds(image)
 
     def test_keyboard_evidence_requires_route_highlight_not_only_visible_text(self):
         image = fixture()
         bounds = acceptance.dialog_bounds(image)
-        words = [word("openai:atlas-10", x=600, y=400)]
+        words = [word("openai:atlas-10", x=600, y=500)]
         with self.assertRaisesRegex(AssertionError, "visibly highlighted"):
             acceptance.selected_row(image, bounds, words, "openai:atlas-10")
-        ImageDraw.Draw(image).rectangle((541, 390, 1159, 425), fill=(48, 43, 39))
+        ImageDraw.Draw(image).rectangle((541, 490, 1159, 525), fill=(48, 43, 39))
         acceptance.selected_row(image, bounds, words, "openai:atlas-10")
 
     def test_other_highlighted_row_does_not_satisfy_keyboard_selection(self):
@@ -56,7 +60,7 @@ class ModelPickerPixelTests(unittest.TestCase):
         ImageDraw.Draw(image).rectangle((541, 450, 1159, 480), fill=(48, 43, 39))
         with self.assertRaisesRegex(AssertionError, "visibly highlighted"):
             acceptance.selected_row(image, acceptance.dialog_bounds(image),
-                                    [word("openai:atlas-10", x=600, y=400)], "openai:atlas-10")
+                                    [word("openai:atlas-10", x=600, y=500)], "openai:atlas-10")
 
 
 class ModelPickerOCRTests(unittest.TestCase):
