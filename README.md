@@ -117,11 +117,17 @@ is set). `JCODE_DESKTOP_CONFIG` can point to a standalone file containing the
 same settings without the outer `[desktop]` prefix. Restart Desktop after
 editing it.
 
-All settings are optional and retain the current UI defaults when omitted:
+All settings are optional and retain the current UI defaults when omitted.
+`ai_font` applies to assistant responses and thinking text, including streaming
+output. It does not change interface labels, user messages, or the composer.
+Inline code, fenced code, and terminal text retain `mono_font`. Font families
+must be installed on your system. Omit `ui_font` to retain the original interface
+and input font while choosing an independent `ai_font`:
 
 ```toml
 [desktop.appearance]
-ui_font = "Inter"
+ui_font = "Inter"               # Interface, user messages, and input
+ai_font = "Urbanist"            # Assistant prose only (defaults to ui_font)
 mono_font = "JetBrainsMono Nerd Font"
 text_scale = 1.0                 # 0.75 through 2.0
 reduce_motion = false

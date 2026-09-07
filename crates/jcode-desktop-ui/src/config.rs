@@ -20,6 +20,8 @@ pub struct AppearanceConfig {
     pub theme: String,
     /// UI font family. The platform-specific built-in remains the default.
     pub ui_font: Option<String>,
+    /// Assistant prose font. Defaults to the UI font, never changes code or input.
+    pub ai_font: Option<String>,
     /// Monospace font used by code and terminal panels.
     pub mono_font: Option<String>,
     /// Global text scale. Values outside 0.75..=2.0 fall back to 1.0.
@@ -75,6 +77,7 @@ impl Default for AppearanceConfig {
             layout_mode: LayoutMode::default(),
             theme: "warm-neutral".into(),
             ui_font: None,
+            ai_font: None,
             mono_font: None,
             text_scale: 1.0,
             reduce_motion: false,
@@ -561,6 +564,20 @@ mod tests {
             );
             assert_eq!(config.appearance.theme, "neutral-light");
         }
+    }
+
+    #[test]
+    fn ai_font_parses_in_shared_and_standalone_config_without_ui_override() {
+        for (text, standalone) in [
+            ("[desktop.appearance]\nai_font = \"Urbanist\"", false),
+            ("[appearance]\nai_font = \"Urbanist\"", true),
+        ] {
+            let config = parse(text, standalone).unwrap();
+            assert_eq!(config.appearance.ai_font.as_deref(), Some("Urbanist"));
+            assert!(config.appearance.ui_font.is_none());
+            assert!(config.appearance.mono_font.is_none());
+        }
+        assert!(DesktopConfig::default().appearance.ai_font.is_none());
     }
 
     #[test]

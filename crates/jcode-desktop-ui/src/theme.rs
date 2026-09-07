@@ -64,6 +64,7 @@ pub struct Theme {
     pub MINIMAP_PANEL_BUSY: Rgba,
     pub MINIMAP_BG: Rgba,
     pub FONT_UI: &'static str,
+    pub FONT_AI: &'static str,
     pub FONT_MONO: &'static str,
 }
 
@@ -128,12 +129,7 @@ impl Theme {
 
     fn configured(mut theme: Self) -> Self {
         let config = crate::config::get();
-        if let Some(font) = config.appearance.ui_font.as_deref() {
-            theme.FONT_UI = Box::leak(font.to_owned().into_boxed_str());
-        }
-        if let Some(font) = config.appearance.mono_font.as_deref() {
-            theme.FONT_MONO = Box::leak(font.to_owned().into_boxed_str());
-        }
+        theme.apply_fonts(&config.appearance);
         for (role, value) in &config.appearance.colors {
             match parse_color(value) {
                 Some(color) => theme.set_color(role, color),
@@ -141,6 +137,18 @@ impl Theme {
             }
         }
         theme
+    }
+
+    fn apply_fonts(&mut self, appearance: &crate::config::AppearanceConfig) {
+        if let Some(font) = appearance.ui_font.as_deref() {
+            self.FONT_UI = Box::leak(font.to_owned().into_boxed_str());
+        }
+        self.FONT_AI = appearance.ai_font.as_deref().map_or(self.FONT_UI, |font| {
+            Box::leak(font.to_owned().into_boxed_str())
+        });
+        if let Some(font) = appearance.mono_font.as_deref() {
+            self.FONT_MONO = Box::leak(font.to_owned().into_boxed_str());
+        }
     }
 
     // Warm neutral: charcoal and stone surfaces, ivory type, restrained sandstone focus.
@@ -199,6 +207,7 @@ impl Theme {
             MINIMAP_PANEL_BUSY: rgb_c(0x786a5d),
             MINIMAP_BG: rgba_c(0x302b27e6),
             FONT_UI: platform_font(),
+            FONT_AI: platform_font(),
             FONT_MONO: platform_font(),
         }
     }
@@ -585,6 +594,31 @@ pub fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ai_font_is_independent_and_defaults_to_ui_font() {
+        let mut theme = Theme::defaults();
+        let original_ui = theme.FONT_UI;
+        let original_mono = theme.FONT_MONO;
+        let appearance = crate::config::AppearanceConfig {
+            ai_font: Some("Urbanist".into()),
+            ..Default::default()
+        };
+        theme.apply_fonts(&appearance);
+        assert_eq!(theme.FONT_AI, "Urbanist");
+        assert_eq!(theme.FONT_UI, original_ui);
+        assert_eq!(theme.FONT_MONO, original_mono);
+        let mut fallback = Theme::defaults();
+        fallback.apply_fonts(&crate::config::AppearanceConfig {
+            ui_font: Some("Inter".into()),
+            mono_font: Some("Test Mono".into()),
+            ..Default::default()
+        });
+        assert_eq!(fallback.FONT_AI, "Inter");
+        assert_eq!(fallback.FONT_UI, "Inter");
+        assert_eq!(fallback.FONT_MONO, "Test Mono");
+        assert_eq!(interpolate(&theme, &theme, 0.5).FONT_AI, "Urbanist");
+    }
+
     #[test]
     fn colors_accept_rgb_and_rgba_hex() {
         assert_eq!(parse_color("#ff0080").unwrap().a, 1.0);

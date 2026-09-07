@@ -76,6 +76,7 @@ impl Palette {
             MINIMAP_PANEL_BUSY: rgb_c(self.accent),
             MINIMAP_BG: alpha(self.panel, 0xe6),
             FONT_UI: platform_font(),
+            FONT_AI: platform_font(),
             FONT_MONO: platform_font(),
         }
     }

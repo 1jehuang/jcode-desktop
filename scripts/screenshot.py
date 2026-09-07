@@ -76,6 +76,7 @@ def main():
         "warm-neutral", "warm-studio", "neutral-dark", "neutral-light",
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
+    parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
     if args.mermaid_source is not None and args.transcript != "mermaid":
         parser.error("mermaid-source requires --transcript mermaid")
@@ -203,7 +204,8 @@ def main():
         root = Path(temporary)
         env = isolated_env(root)
         config = root / "desktop.toml"
-        config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n')
+        config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
+                          + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
         if args.mermaid_source is not None:
@@ -222,6 +224,10 @@ def main():
 <maximized>yes</maximized></application></applications></openbox_config>''')
         for name in ("home", "runtime", "config", "cache", "data", "jcode"):
             (root / name).mkdir(mode=0o700)
+        if args.ai_font:
+            fonts = Path.home() / ".local/share/fonts"
+            if fonts.is_dir():
+                shutil.copytree(fonts, root / "data/fonts", dirs_exist_ok=True)
         processes = []
         read_fd, write_fd = os.pipe()
         try:

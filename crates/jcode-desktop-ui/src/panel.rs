@@ -2783,6 +2783,7 @@ impl Panel {
             }
             Item::Assistant(text) => div()
                 .debug_selector(|| "assistant-response".into())
+                .font_family(Theme::global().FONT_AI)
                 .px_1()
                 .text_color(Theme::global().TEXT)
                 .child(markdown::render_interactive(
@@ -2811,6 +2812,7 @@ impl Panel {
             // Never truncate it: there is deliberately no disclosure control.
             Item::Reasoning(text) => div()
                 .debug_selector(|| "reasoning-inline".into())
+                .font_family(Theme::global().FONT_AI)
                 .flex_none()
                 .px_1()
                 .text_size(px(12.0))

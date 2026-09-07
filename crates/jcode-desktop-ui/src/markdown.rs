@@ -270,6 +270,7 @@ fn split_numbered(line: &str) -> Option<(String, String)> {
 
 struct Inline {
     plain: String,
+    code_ranges: Vec<std::ops::Range<usize>>,
     highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
     links: Vec<(std::ops::Range<usize>, String)>,
 }
@@ -279,6 +280,7 @@ struct Inline {
 /// text) and any link targets.
 fn inline_spans(source: &str) -> Inline {
     let mut plain = String::with_capacity(source.len());
+    let mut code_ranges = Vec::new();
     let mut highlights = Vec::new();
     let mut links = Vec::new();
     let bytes = source.as_bytes();
@@ -322,6 +324,7 @@ fn inline_spans(source: &str) -> Inline {
                 let content = source[i + ticks..i + ticks + end].trim();
                 let start = plain.len();
                 plain.push_str(content);
+                code_ranges.push(start..plain.len());
                 highlights.push((start..plain.len(), code_style));
                 i += ticks + end + ticks;
                 continue;
@@ -353,6 +356,12 @@ fn inline_spans(source: &str) -> Inline {
                     let nested = inline_spans(label);
                     let start = plain.len();
                     plain.push_str(&nested.plain);
+                    code_ranges.extend(
+                        nested
+                            .code_ranges
+                            .into_iter()
+                            .map(|range| start + range.start..start + range.end),
+                    );
                     for (range, style) in nested.highlights {
                         highlights.push((start + range.start..start + range.end, style));
                     }
@@ -396,6 +405,12 @@ fn inline_spans(source: &str) -> Inline {
                 let nested = inline_spans(&source[i + 2..i + 2 + end]);
                 let start = plain.len();
                 plain.push_str(&nested.plain);
+                code_ranges.extend(
+                    nested
+                        .code_ranges
+                        .into_iter()
+                        .map(|range| start + range.start..start + range.end),
+                );
                 for (range, style) in nested.highlights {
                     highlights.push((start + range.start..start + range.end, style));
                 }
@@ -452,6 +467,12 @@ fn inline_spans(source: &str) -> Inline {
                 let nested = inline_spans(&source[i + marker.len()..i + marker.len() + end]);
                 let start = plain.len();
                 plain.push_str(&nested.plain);
+                code_ranges.extend(
+                    nested
+                        .code_ranges
+                        .into_iter()
+                        .map(|range| start + range.start..start + range.end),
+                );
                 for (range, nested_style) in nested.highlights {
                     highlights.push((start + range.start..start + range.end, nested_style));
                 }
@@ -485,6 +506,12 @@ fn inline_spans(source: &str) -> Inline {
                         let nested = inline_spans(inner);
                         let start = plain.len();
                         plain.push_str(&nested.plain);
+                        code_ranges.extend(
+                            nested
+                                .code_ranges
+                                .into_iter()
+                                .map(|range| start + range.start..start + range.end),
+                        );
                         for (range, style) in nested.highlights {
                             highlights.push((start + range.start..start + range.end, style));
                         }
@@ -511,6 +538,7 @@ fn inline_spans(source: &str) -> Inline {
     }
     Inline {
         plain,
+        code_ranges,
         highlights,
         links,
     }
@@ -786,8 +814,15 @@ fn styled_line(
     // Resolve the base style during layout, inside the surrounding element.
     // Capturing window.text_style() here bypasses the dimmed reasoning color
     // (and heading weight), since the parent has not been laid out yet.
-    let text =
-        StyledText::new(inline.plain.clone()).with_highlights(flatten_highlights(&highlights));
+    let text = StyledText::new(inline.plain.clone())
+        .with_highlights(flatten_highlights(&highlights))
+        .with_font_family_overrides(
+            inline
+                .code_ranges
+                .iter()
+                .cloned()
+                .map(|range| (range, Theme::global().FONT_MONO.into())),
+        );
     let layout = text.layout().clone();
     let child = if inline.links.is_empty() {
         text.into_any_element()
@@ -1946,6 +1981,38 @@ mod tests {
                 Block::Heading(1, "Primary".into()),
                 Block::Heading(2, "Secondary".into())
             ]
+        );
+    }
+
+    #[test]
+    fn inline_code_font_ranges_survive_nested_styles_links_and_unicode() {
+        let inline =
+            inline_spans("é `one` **`two`** *`three`* ~~`four`~~ [`five`](https://example.com)");
+        let code: Vec<_> = inline
+            .code_ranges
+            .iter()
+            .map(|range| &inline.plain[range.clone()])
+            .collect();
+        assert_eq!(code, ["one", "two", "three", "four", "five"]);
+        // GPUI overrides whole runs. Every code boundary must remain a run
+        // boundary even when selection or outer emphasis overlaps it.
+        let mut highlights = inline.highlights.clone();
+        highlights.push((
+            0..inline.plain.len(),
+            HighlightStyle {
+                background_color: Some(to_hsla(Theme::global().SELECTION)),
+                ..Default::default()
+            },
+        ));
+        let flattened = flatten_highlights(&highlights);
+        for range in &inline.code_ranges {
+            assert!(flattened.iter().any(|(run, _)| run.start == range.start));
+            assert!(flattened.iter().any(|(run, _)| run.end == range.end));
+        }
+        assert!(
+            inline_spans("plain prose and \\`escaped\\`")
+                .code_ranges
+                .is_empty()
         );
     }
 
