@@ -216,6 +216,13 @@ at most four times per second. Deliberate idle gaps do not count as slow frames:
 Sampling only happens on existing redraws, so the counter never creates an idle
 animation loop. The last sample remains visible until the next redraw.
 
+Verify the backing strip, tab clicks, panel moves, and keyboard focus across four
+native workspaces on a private display with:
+
+```sh
+python3 scripts/screenshot.py target/fps-header-review.png --panels 4 --fps-header-interact
+```
+
 ## Native UI hot reload
 
 The executable is a small, stable GPUI host. The application UI lives in the

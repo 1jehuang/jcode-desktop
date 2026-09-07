@@ -53,6 +53,7 @@ impl Workspace {
             .collect();
         serde_json::json!({
             "version": 1,
+            "header_height": FPS_HEADER_HEIGHT,
             "active_row": self.active_row,
             "focused_slot": focused,
             "keyboard_panel": keyboard_panel,

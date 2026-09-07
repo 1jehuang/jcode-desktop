@@ -48,6 +48,8 @@ def main():
                         help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
+    parser.add_argument("--fps-header-interact", action="store_true",
+                        help="verify the integrated FPS header while navigating four native workspaces")
     parser.add_argument("--workspace-interact", action="store_true",
                         help="measure four workspace identities and verify numbered map navigation")
     parser.add_argument("--close-interact", action="store_true",
@@ -101,6 +103,8 @@ def main():
             parser.error("model-interact requires one panel, default size/theme/layout, all or empty transcript, and no other interaction mode")
         if not shutil.which("xdotool") or not shutil.which("tesseract"):
             parser.error("model-interact requires xdotool and tesseract")
+    if args.fps_header_interact and (args.panels != 4 or args.layout_mode != "folder_tabs"):
+        parser.error("fps-header-interact requires four panels and folder_tabs layout")
     if args.workspace_interact:
         if (args.panels != 4 or args.size != "1440x1000"
                 or args.theme not in ("warm-neutral", "neutral-light")
@@ -273,6 +277,9 @@ def main():
                             raise RuntimeError("Native panel click did not update public focus state: " + state.read_text())
                         time.sleep(0.05)
                     time.sleep(0.5)
+                if args.fps_header_interact:
+                    from fps_header_acceptance import verify
+                    verify(output, env, root)
                 if args.workspace_interact:
                     from workspace_identity_acceptance import verify
                     verify(output, env, root, theme=args.theme)
