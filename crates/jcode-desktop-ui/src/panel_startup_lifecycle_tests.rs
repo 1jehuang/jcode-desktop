@@ -143,6 +143,38 @@ fn startup_existing_history_has_identical_layout_before_or_after_welcome_paint(
 }
 
 #[gpui::test]
+fn resumed_transcript_keeps_cards_clear_of_the_composer_footer(cx: &mut gpui::TestAppContext) {
+    for (width, height) in [(800., 600.), (1440., 1000.), (640., 480.)] {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new(
+                "composer-spacing".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            );
+            panel.load_history(history(&"Older message\n\n".repeat(100)), Vec::new(), cx);
+            panel.items.push(Item::Error("Last card".into()));
+            panel
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
+        vcx.run_until_parked();
+        let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        let last_row = vcx.debug_bounds("transcript-row-1").unwrap();
+        let footer = vcx.debug_bounds("panel-meta").unwrap();
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        assert!(last_row.bottom() <= viewport.bottom() + px(1.));
+        assert!(
+            footer.top() - viewport.bottom() >= px(12.),
+            "last card must not crowd the footer: {viewport:?}, {footer:?}"
+        );
+        assert!(input.top() >= footer.bottom());
+        assert!(input.bottom() <= px(height));
+    }
+}
+
+#[gpui::test]
 fn startup_committed_layout_round_trips_reload_and_empty_history_loading_frame(
     cx: &mut gpui::TestAppContext,
 ) {

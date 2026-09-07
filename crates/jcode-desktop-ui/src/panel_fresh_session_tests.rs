@@ -132,6 +132,13 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
                 "growing response pulled input upward"
             );
             assert!(input.bottom() <= px(height));
+            let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+            let last_row = vcx.debug_bounds("transcript-row-1").unwrap();
+            assert!(last_row.bottom() <= viewport.bottom() + px(1.));
+            assert!(
+                input.top() - viewport.bottom() >= px(12.),
+                "transcript must leave breathing room above the composer: {viewport:?}, {input:?}"
+            );
             previous = input.top();
         }
         let grown = vcx.debug_bounds("prompt-input").unwrap();

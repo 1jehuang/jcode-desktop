@@ -93,7 +93,11 @@ impl Panel {
                             let floor = (layout.input_top
                                 - f32::from(body.top() - panel_bounds.top()))
                             .max(0.);
-                            let height = floor.max(measured_content).min(available);
+                            // messages_height includes the non-scrolling gap,
+                            // while the list's measurements contain rows only.
+                            let height = floor
+                                .max(measured_content + TRANSCRIPT_BOTTOM_GAP)
+                                .min(available);
                             if (height - layout.messages_height).abs() > 0.5 {
                                 layout.messages_height = height;
                                 cx.notify();

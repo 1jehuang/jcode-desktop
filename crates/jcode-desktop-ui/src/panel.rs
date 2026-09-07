@@ -41,6 +41,10 @@ mod tab_emoji;
 
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
+// Keep the last message/card clear of the composer and its metadata. This is
+// outside the scrolling list so it remains visible even while reading history.
+const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
+
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
     match registered_command(name) {
@@ -3496,6 +3500,7 @@ impl Render for Panel {
             })
             .size_full()
             .text_size(px(13.5))
+            .pb(px(TRANSCRIPT_BOTTOM_GAP))
             .overflow_hidden();
 
         // Live rows are appended after the settled ones and share the same
