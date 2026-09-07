@@ -1,5 +1,7 @@
 # Desktop FPS profiling and optimization, 2026-09-07
 
+> **Latest whole-result rerun:** hidden-animation redraws again fell143→1 in both orders, and all685 UI tests passed. Parser microbenchmarks improved7.67–9.60×, but final native frame results were mixed (5.68% faster, then2.32% slower). Earlier6–17% observations below are historical measurements, **not a guaranteed or consistently reproduced whole-window gain**. See the final-state section at the end.
+
 ## Delivered changes
 
 1. **Bulk ordinary inline text.** CPU sampling implicated `markdown::inline_spans`
@@ -171,3 +173,35 @@ was copied before these tests to avoid concurrent build replacement, SHA-256
 These later native checks validate integration/correctness, not a timing
 comparison against the earlier profiling binary. Test code does not replace
 live GPU acceptance, and no such performance claim is made.
+
+
+## Final-state rerun of every mapped check (10:00–10:06 UTC)
+
+All mapped checks were executed again, rather than only rereading earlier logs.
+`target/fps-whole-result-final/` contains the complete results and machine-readable
+`acceptance-results.json`. SHA-256 of markdown, hidden-animation tests, and
+workspace source was identical before/after the serial tests and build. All eight
+native performance arms and both native interaction workflows used a pinned
+executable copy with SHA-256
+`ec8227d2fde88ffc7155bd2ab129718c0466de994304d624c5ad95efdd753f97`.
+
+| Mapped requirement/output | Final rerun and observed result |
+| --- | --- |
+| Profiling actual desktop | Fresh passive10-second live capture and userspace perf collection succeeded.654 sampling records,13 draws, zero input-bearing frames. This rerun is inconclusive for input latency and cannot supply aggregate FPS because duplicate samplers remain. Original input-bearing baseline is retained separately. |
+| Parser work reduction | Six paired microbenchmarks:7.67–9.60× faster, with identical parser output tests passing. Native full-rerender pair1:8.937471→8.429567 ms,5.68% lower median window draw p95. Reverse pair2:8.298495→8.491007 ms,2.32% higher. **Final whole-window benefit is mixed, not a consistently proven gain.** Both arms verified27 native input frames and focus changes. |
+| Hidden-animation work reduction |143→1 post-transition draws in both trial orders. Process CPU193.61→13.13% and189.45→12.48%. Both arms verified width0.25→0.5 and overview changes. This is a reliable causal improvement of the finished app. |
+| Markdown text/style/streaming correctness | Full parser differential test and all existing markdown tests passed again. Actual native-history screenshot visibly preserves rich prose, lists, table, code, math and selected-composer text. |
+| Visible/outgoing animations and final endpoints | Both named hidden-animation regressions passed again in the serial suite. |
+| Cache/descendant input/streaming/resize integration | All three named panel-cache regressions passed again. |
+| Wheel/touchpad routing | All four named hovered-panel scroll integration regressions passed again. |
+| Native tabs/moves/keyboard and FPS header | Fresh native-header acceptance passed all four workspaces, matching keyboard focus,20px header, centered unclipped rendered text. |
+| Native history/session selection/composer | Fresh native-history workflow passed repeated selections and session/keyboard-focus assertions. Screenshot directly inspected: typed text appears only in selected composer. |
+| Idle behavior | Zero idle draws in all eight freshly executed performance arms. |
+| Regression suite |685 passed,0 failed,8 ignored. Fifteen Python profiling tests passed. |
+| Build/reload/host integration | Fresh build succeeded. Real Ctrl+R path then rebuilt and activated UI generation7 successfully, recorded in `live-reload.log`. |
+
+The final-state measurement that did not improve is deliberately retained. It
+narrows the claim: faster parser computation and elimination of a persistent
+redraw loop are verified; a fixed percentage improvement in total frame cost or
+hardware presentation FPS is not. No production code was changed during this
+rerun, and no extra benchmark was selected to conceal the contrary sample.
