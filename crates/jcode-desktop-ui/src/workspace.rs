@@ -128,7 +128,7 @@ const STRUT: f32 = 0.58;
 /// Leave the canvas visible around the joined folder surfaces.
 const STRIP_PADDING_Y: f32 = 16.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
-const FOLDER_CONTENT_INSET: f32 = 32.0;
+const FOLDER_CONTENT_INSET: f32 = 40.0;
 const FPS_HEADER_HEIGHT: f32 = 20.0;
 /// Keep the sidebar separate from the session sheet with a canvas gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;

@@ -2,7 +2,11 @@
 use super::*;
 use crate::panel::folder_session_title;
 
-/// Center one workspace's joined stack independently of the panel camera. Selection adds
+/// Canvas air beneath the rounded tabs keeps them detached from the sheets.
+const TAB_FLOAT_GAP: f32 = 8.0;
+const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
+
+/// Center one workspace's floating stack independently of the panel camera. Selection adds
 /// only a 12px width accent and a 4px lift, so the panels do the large slide.
 #[derive(Clone, Copy, Debug)]
 struct TabLayout {
@@ -89,7 +93,7 @@ impl TabLayout {
                     tabs.push(TabGeometry {
                         left: left + step * position as f32,
                         width: tab_width,
-                        height: FOLDER_CONTENT_INSET - 4.0,
+                        height: TAB_HEIGHT - 4.0,
                     });
                 }
             }
@@ -140,9 +144,9 @@ impl TabLayout {
                 self.inactive_width
             },
             height: if position == selected {
-                FOLDER_CONTENT_INSET
+                TAB_HEIGHT
             } else {
-                FOLDER_CONTENT_INSET - 4.0
+                TAB_HEIGHT - 4.0
             },
         }
     }
@@ -443,20 +447,19 @@ impl Workspace {
                     })
                     .absolute()
                     .left(px(current.left))
-                    .bottom_0()
+                    .bottom(px(TAB_FLOAT_GAP))
                     .w(px(current.width))
                     .min_w_0()
                     .overflow_hidden()
                     .h(px(current.height))
                     .flex()
                     .items_center()
-                    .rounded_t_md()
+                    .rounded_md()
                     // Crowded off-screen tabs can be narrower than two pixels.
                     // Their border must not force the layout wider than its slot.
                     // Use this single outline on every edge. An extra accent
                     // stripe makes the top heavier and squares off the corners.
                     .border(px((current.width / 2.0).min(1.0)))
-                    .border_b_0()
                     .border_color(if focused {
                         accent
                     } else {
@@ -562,7 +565,7 @@ mod tests {
                 );
                 assert_eq!(
                     tab.height,
-                    FOLDER_CONTENT_INSET - if i == selected { 0.0 } else { 4.0 }
+                    TAB_HEIGHT - if i == selected { 0.0 } else { 4.0 }
                 );
                 if i > 0 && rows[i - 1] != rows[i] {
                     assert!((tab.left - tabs[i - 1].left - tabs[i - 1].width - 16.0).abs() < 0.001);
@@ -1046,7 +1049,7 @@ mod tests {
                 let panel = vcx
                     .debug_bounds(["panel-0", "panel-1", "panel-2", "panel-3"][i])
                     .unwrap();
-                assert_eq!(tab.bottom(), panel.top());
+                assert_eq!(tab.bottom() + px(TAB_FLOAT_GAP), panel.top());
             }
         }
     }
@@ -1239,7 +1242,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_tabs_switch_rows_and_keep_the_folder_baseline(cx: &mut gpui::TestAppContext) {
+    fn live_tabs_switch_rows_and_stay_detached_from_panels(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.show_sidebar = false;
@@ -1254,7 +1257,10 @@ mod tests {
         let other = vcx.debug_bounds("live-session-tab-2").unwrap();
         assert_eq!(first.bottom(), other.bottom());
         assert_eq!(first.size.height - other.size.height, px(4.0));
-        assert_eq!(first.bottom(), vcx.debug_bounds("panel-0").unwrap().top());
+        assert_eq!(
+            first.bottom() + px(TAB_FLOAT_GAP),
+            vcx.debug_bounds("panel-0").unwrap().top()
+        );
         assert!(vcx.debug_bounds("workspace-bar").is_none());
         vcx.simulate_click(other.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
