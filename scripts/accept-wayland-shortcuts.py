@@ -178,6 +178,7 @@ print(json.dumps(result))
                          'duration_ms': duration_ms, 'samples': samples,
                          'helper_invocations': focus_query_count() - queries_before})
         (root / 'acceptance.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        return focus_query_count() - queries_before
 
     def stable_after_release(label):
         def signature(current):
@@ -212,13 +213,13 @@ print(json.dumps(result))
         print(label, 'focused_slot=', slot, flush=True)
         return current
 
-    def configure(selected_helper):
+    def configure(selected_helper, *, enter_repeat=True):
         config = root / 'sway.config'
         config.write_text('xwayland disable\noutput HEADLESS-1 mode 1600x1000\n'
                           'seat seat0 fallback true\ndefault_border none\n'
                           'focus_follows_mouse no\n'
                           + ('input * {\n repeat_delay 300\n repeat_rate 4\n}\n' if args.held_keys else '')
-                          + ''.join(f'bindsym Mod4+{chord} exec bash {shlex.quote(str(selected_helper))} {action}\n'
+                          + ''.join(f'bindsym {"--no-repeat " if chord == "Return" and not enter_repeat else ""}Mod4+{chord} exec bash {shlex.quote(str(selected_helper))} {action}\n'
                                     for chord, action in [('h', 'previous'), ('l', 'next'), ('Return', 'new'), ('q', 'close')])
                           + ''.join(f'bindsym Mod4+{chord} exec sh {shlex.quote(str(command))}\n'
                                     for chord, command in launch_commands))
@@ -268,7 +269,20 @@ print(json.dumps(result))
             check('direct-held-next-clamps-last', 7)
             assert [p['session'] for p in panels()] == identities
             stable_after_release('direct-next-key-release-stops')
-            held_key('q', 'logo', duration_ms=850)
+            # Exercise the global grab + helper path too. Direct aliases alone
+            # cannot detect a compositor swallowing repeats of Super chords.
+            invocations = held_key('h', 'logo', duration_ms=850)
+            slot = check('global-held-previous-repeated', 7 - invocations)['focused_slot']
+            assert 0 < slot < 6, ('global held previous must repeat', slot)
+            assert slot == 7 - invocations, ('one navigation per helper invocation', slot, invocations)
+            assert [p['session'] for p in panels()] == identities
+            stable_after_release('global-previous-key-release-stops')
+            held_key('l', 'logo', duration_ms=1800)
+            check('global-held-next-clamps-last', 7)
+            assert [p['session'] for p in panels()] == identities
+            stable_after_release('global-next-key-release-stops')
+            invocations = held_key('q', 'logo', duration_ms=850)
+            wait(lambda: len(panels()) == 8 - invocations, 'one close per helper invocation')
             remaining = len(panels())
             assert 0 < remaining < 7, ('held Super+Q must close multiple panels, leaving some for release check', remaining)
             check('held-super-q-closes-multiple', state()['focused_slot'])
@@ -286,10 +300,33 @@ print(json.dumps(result))
             assert record['working_dir'] == str(directory), record
             (root / 'empty-reopen-creation.json').write_text(json.dumps(record, indent=2) + '\n')
             stable_after_release('reopened-panel-not-closed-by-stale-repeat')
+            # Negative control: reproduce the host's former repeat=false
+            # policy on our private compositor before enabling repeats.
+            configure(helper, enter_repeat=False)
+            subprocess.run(['swaymsg', 'reload'], env=env, check=True, timeout=10)
+            invocations = held_key('Return', 'logo', duration_ms=850)
+            assert invocations == 1, ('single-shot Enter must invoke helper once', invocations)
+            wait(lambda: len(panels()) == 2 and all(p['session'].startswith('session_') for p in panels()),
+                 'single-shot Enter creates exactly one panel')
+            check('held-super-enter-single-shot-baseline', 1)
+            stable_after_release('single-shot-enter-release-stable')
+            configure(helper)
+            subprocess.run(['swaymsg', 'reload'], env=env, check=True, timeout=10)
+            invocations = held_key('Return', 'logo', duration_ms=850)
+            assert invocations > 1, ('held Enter must invoke helper multiple times', invocations)
+            count = 2 + invocations
+            wait(lambda: len(panels()) == count and all(p['session'].startswith('session_') for p in panels()),
+                 'held Enter sessions attach')
+            check('held-super-enter-creates-multiple', count - 1)
+            assert len({p['session'] for p in panels()}) == count
+            for panel in panels():
+                record = wait(lambda: creation(panel['session']), 'held Enter session daemon cwd')
+                assert record['working_dir'] == str(directory), record
+            stable_after_release('super-enter-key-release-stops')
             queries = [json.loads(line) for line in (root / 'focus-queries.jsonl').read_text().splitlines()]
             assert len(queries) >= 9, queries
             assert all(q and q['app_id'] == 'jcode-desktop' for q in queries), queries
-            print('PASS: true held Super+Q repeats, key release stops, empty workspace reopens, direct held navigation repeats', flush=True)
+            print('PASS: held direct/global navigation, Super+Q, and Super+Enter repeat and stop on release; empty workspace reopens', flush=True)
             return
         for count in [2, 3]:
             key('t', 'ctrl')

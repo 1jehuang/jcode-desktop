@@ -61,8 +61,41 @@ panel leaves an empty workspace that can open another panel.
 The local close binding was updated in place, with the original configuration
 saved as `~/.config/niri/config.kdl.bak-held-close-20260906`. The compositor
 watches this configuration automatically. This also enables held close for
-Firefox, which shares that global binding. Super+Return remains single-shot.
+Firefox, which shares that global binding. Super+Return was initially left single-shot.
 No compositor commands or input into the user's windows were used to test it.
+
+#### Held creation and global navigation follow-up, 2026-09-07
+
+Desktop already dispatches held platform key events. The remaining host-level
+exception was `Super+Return repeat=false`, which suppressed every creation after
+the first press. Its existing binding now uses `repeat=true`, with the previous
+configuration backed up as `~/.config/niri/config.kdl.bak-held-enter-20260907`.
+No other bindings or repeat timings were changed. This also enables held new-tab
+creation in Firefox because the global binding is shared. Quit remains separate.
+
+The native `--held-keys` acceptance mode now exercises forwarded Super+H/L as
+well as direct Ctrl+PageUp/Down, Super+Q and Super+Enter. It first reproduces the
+single-shot Enter policy using `--no-repeat` on private Sway, then enables repeat
+and checks one distinct new session per helper invocation, the pinned directory,
+and a stable 1.2-second post-injection release interval. Navigation and close
+also check one action per invocation away from a boundary. No application timer
+or synthesized repeat state was added.
+
+The expanded run passed at
+`target/held-keys-verify-20260907/acceptance.json`: an 850ms hold generated one
+Enter invocation with repeat disabled and four with repeat enabled, creating
+exactly four distinct additional sessions in the pinned directory. Super+H
+moved four panels and Super+Q closed four panels for their four invocations.
+All nine 1.2-second stability checks observed 24 unchanged snapshots and zero
+further helper invocations. These observations begin after the injector's
+500ms key-up/modifier-held interval, not at the exact instant of key release.
+
+The desktop build, six forwarding-helper tests, three shortcut-coverage tests,
+and the GPUI held-close regression passed. The first build was terminated by
+the host's low-memory monitor, and a later low-memory termination closed the
+user's Desktop instance. A serialized build succeeded. The attempted Ctrl+R
+socket reload found the closed instance, so Desktop was restored with
+`--hot-reload` and successfully activated UI generation 1 (PID 2194749).
 
 #### Repeat and panel entrance verification
 
