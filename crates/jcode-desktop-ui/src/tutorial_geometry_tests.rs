@@ -153,6 +153,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
             });
             vcx.run_until_parked();
             let guide = vcx.debug_bounds("tutorial-guides").unwrap();
+            let content = vcx.debug_bounds("tutorial-content").unwrap();
             let panel = vcx.debug_bounds("panel-0").unwrap();
             let prompt = vcx.debug_bounds("pinned-latest-prompt")
                 .or_else(|| vcx.debug_bounds("transcript-row-0"))
@@ -186,7 +187,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                         "{id} must fit the Learn panel"
                     );
                     assert_eq!(overlap_area(bounds, panel), 0.0, "{id} covers the session");
-                    regions.push(bounds);
+                    regions.push((id, bounds));
                 }
             }
             assert_eq!(
@@ -194,12 +195,53 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 [8, 7, 4][stage],
                 "every stage control is rendered"
             );
-            for (i, a) in regions.iter().enumerate() {
-                for b in &regions[i + 1..] {
-                    assert_eq!(overlap_area(*a, *b), 0.0, "tutorial rows must not overlap");
+            for (i, (a_id, a)) in regions.iter().enumerate() {
+                for (b_id, b) in &regions[i + 1..] {
+                    // GPUI debug_bounds records unmasked layout bounds, even
+                    // for rows below tutorial-content's overflow_y_scroll
+                    // viewport. The footer is a sibling, not a scroll child.
+                    let painted_a = if *a_id == "tutorial-next" {
+                        *a
+                    } else {
+                        a.intersect(&content)
+                    };
+                    let painted_b = if *b_id == "tutorial-next" {
+                        *b
+                    } else {
+                        b.intersect(&content)
+                    };
+                    if overlap_area(*a, *b) > 0.0 {
+                        println!(
+                            "LEARN_CLIPPING size={width}x{height} stage={stage} pair={a_id}/{b_id} logical_overlap={} painted_overlap={}",
+                            overlap_area(*a, *b), overlap_area(painted_a, painted_b)
+                        );
+                    }
+                    assert_eq!(
+                        overlap_area(painted_a, painted_b),
+                        0.0,
+                        "visible tutorial controls {a_id} and {b_id} overlap at {width}x{height}, stage {stage}"
+                    );
+                    // Keep checking the complete row layout within the same
+                    // scroller, including portions currently scrolled out.
+                    if *a_id != "tutorial-next" && *b_id != "tutorial-next" {
+                        assert_eq!(
+                            overlap_area(*a, *b),
+                            0.0,
+                            "tutorial scroll rows must not overlap"
+                        );
+                    }
                 }
             }
             let next = vcx.debug_bounds("tutorial-next").unwrap();
+            assert!(
+                content.size.height > px(0.0),
+                "tutorial content viewport must remain usable"
+            );
+            assert_eq!(
+                overlap_area(content, next),
+                0.0,
+                "scroll viewport must not cover stage navigation"
+            );
             assert!(
                 next.bottom() <= px(height),
                 "stage navigation remains visible"
