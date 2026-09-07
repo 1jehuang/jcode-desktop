@@ -82,3 +82,20 @@ actual final four-panel scene for independent visual inspection.
 
 The identity-footer baseline-y assertion also failed with caching disabled
 (1038px versus 1041px), so it is not evidence of a cache regression.
+
+## Delivered live validation
+
+The running desktop successfully activated UI generation 4 at 02:29:54 UTC after
+rebuilding the verified cache/header changes. A passive 10-second capture of that
+process (`target/fps-live-after-header-cache`) included input-bearing frames and
+observed maximum draw duration 12.12 ms, maximum input-to-frame latency 19.40 ms,
+and maximum event-loop wake lag 14.93 ms. This is a different uncontrolled
+workload from the initial capture, so it is not a causal before/after benchmark.
+Retained profiling tasks also duplicate samples, so aggregate draw counts are
+not a valid FPS estimate. The same-binary private comparisons above establish
+the optimization's causal effect.
+
+The FPS header additionally passed real native tab clicks, panel moves, keyboard
+focus, and rendered centered-text checks across four separate workspaces in
+`target/fps-native-acceptance.fps-header.json`. Folder and normal layouts, with
+and without the sidebar, passed the reserved-header geometry regression.
