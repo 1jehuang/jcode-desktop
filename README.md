@@ -209,11 +209,12 @@ security boundaries, error recovery, and verification.
 
 ## FPS counter
 
-A small counter at the top center shows the window’s actual draw rate, sampled
-at most twice per second during redraws. It keeps the last reading while idle
-instead of creating extra frames just to update the counter. `— FPS` means the
-first sample is still warming up. This measures app draws, not monitor refresh
-rate or compositor presentation rate.
+The FPS readout is built into the background strip above the tabs, not drawn
+on top of them. It samples the presentation intervals of actual animation frames
+at most four times per second. Deliberate idle gaps do not count as slow frames:
+`FPS · idle` means no new animated frames were presented in the last sample.
+Sampling only happens on existing redraws, so the counter never creates an idle
+animation loop. The last sample remains visible until the next redraw.
 
 ## Native UI hot reload
 

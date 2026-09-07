@@ -38,6 +38,9 @@ pub(crate) mod recovery;
 #[path = "closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[cfg(test)]
+#[path = "fps_header_tests.rs"]
+mod fps_header_tests;
+#[cfg(test)]
 #[path = "super_action_behavior_tests.rs"]
 mod super_action_behavior_tests;
 #[cfg(test)]
@@ -118,6 +121,7 @@ const STRUT: f32 = 0.58;
 const STRIP_PADDING_Y: f32 = 16.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 32.0;
+const FPS_HEADER_HEIGHT: f32 = 20.0;
 /// Keep the sidebar separate from the session sheet with a canvas gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
 const FOLDER_RIGHT_MARGIN: f32 = 12.0;
@@ -6221,7 +6225,8 @@ impl Render for Workspace {
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
         let content_top_inset = content_top_inset(self.show_sidebar, fullscreen);
-        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
+        let viewport_h =
+            (f32::from(viewport.height) - content_top_inset - FPS_HEADER_HEIGHT).max(0.0);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -6380,28 +6385,31 @@ impl Render for Workspace {
 
         // Sample only on existing redraws. The counter never drives animation
         // or wakes an idle window just to measure itself.
-        let fps = self.fps_counter.label(Instant::now(), || {
-            window.frame_duration_snapshot().draw_duration_histogram.len()
-        });
-        let fps_overlay = div()
-            .debug_selector(|| "fps-counter".into())
-            .absolute()
-            .top(px(6.0))
-            .left(px((f32::from(viewport.width) - 80.0).max(0.0) / 2.0))
-            .w(px(80.0))
-            .text_center()
-            .rounded_md()
-            .py(px(2.0))
-            .bg(gpui::rgba(0x111318cc))
-            .font_family(Theme::global().FONT_MONO)
-            .text_size(px(11.0))
-            .text_color(gpui::rgb(0xe5e7eb))
-            .child(fps);
+        let fps = self
+            .fps_counter
+            .label(Instant::now(), || window.frame_duration_snapshot());
+        let fps_header = div()
+            .debug_selector(|| "fps-header".into())
+            .w_full()
+            .h(px(FPS_HEADER_HEIGHT))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(Theme::global().HEADER_BG)
+            .child(
+                div()
+                    .debug_selector(|| "fps-counter".into())
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_size(px(10.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(fps),
+            );
 
         let root = div()
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
             .relative()
             .bg(if folders {
                 Theme::global().HEADER_BG
@@ -6456,63 +6464,86 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &WidthPreset2, _w, cx| this.set_width(0.5, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
-            .when(self.show_sidebar, |root| {
-                root.child(self.render_sidebar(fullscreen, cx))
-            })
+            .child(fps_header)
             .child(
                 div()
+                    .debug_selector(|| "workspace-body".into())
                     .relative()
+                    .w_full()
                     .flex_1()
-                    .min_w_0()
                     .min_h_0()
                     .flex()
-                    .flex_col()
-                    .pt(px(content_top_inset))
-                    .pl(px(connector_width))
-                    .pr(px(right_margin))
+                    .flex_row()
+                    .when(self.show_sidebar, |root| {
+                        root.child(self.render_sidebar(fullscreen, cx))
+                    })
                     .child(
                         div()
-                            .debug_selector(|| "workspace-canvas".into())
                             .relative()
-                            .w_full()
                             .flex_1()
+                            .min_w_0()
                             .min_h_0()
-                            .overflow_hidden()
-                            .when(folders, |el| {
-                                el.child(folder_surface::measure(
-                                    self.folder_frame.clone(),
-                                    folder_surface::Region::Canvas,
-                                ))
-                            })
-                            .child(content)
-                            .child(self.render_workspace_bar(canvas_w, cx))
-                            .when(
-                                self.show_minimap
-                                    && !self.slots.is_empty()
-                                    && overview_progress <= 0.0,
-                                |el| el.child(self.render_minimap(viewport_w, viewport_h, cx)),
-                            )
-                            .when_some(coach_hint.filter(|_| coach_progress > 0.0), |el, hint| {
-                                el.child(self.render_coach_toast(&hint, coach_progress, cx))
-                            })
-                            .when(overview_progress <= 0.0, |el| {
-                                el.child(self.render_edge_new_session(cx))
-                            })
-                            // Paint non-tutorial feedback last so it remains above the
-                            // canvas without covering an animated tutorial control.
-                            .when_some(
-                                self.showcase_cue
-                                    .as_ref()
-                                    .filter(|cue| matches!(cue.tutorial_group, "" | "help")),
-                                |el, cue| el.child(self.render_showcase_cue(cue)),
-                            )
-                            // Update status stays visible in every mode, including
-                            // overview: a user whose build cannot render text still
-                            // needs to see that a fix is on its way.
-                            .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
+                            .flex()
+                            .flex_col()
+                            .pt(px(content_top_inset))
+                            .pl(px(connector_width))
+                            .pr(px(right_margin))
+                            .child(
+                                div()
+                                    .debug_selector(|| "workspace-canvas".into())
+                                    .relative()
+                                    .w_full()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .when(folders, |el| {
+                                        el.child(folder_surface::measure(
+                                            self.folder_frame.clone(),
+                                            folder_surface::Region::Canvas,
+                                        ))
+                                    })
+                                    .child(content)
+                                    .child(self.render_workspace_bar(canvas_w, cx))
+                                    .when(
+                                        self.show_minimap
+                                            && !self.slots.is_empty()
+                                            && overview_progress <= 0.0,
+                                        |el| {
+                                            el.child(
+                                                self.render_minimap(viewport_w, viewport_h, cx),
+                                            )
+                                        },
+                                    )
+                                    .when_some(
+                                        coach_hint.filter(|_| coach_progress > 0.0),
+                                        |el, hint| {
+                                            el.child(self.render_coach_toast(
+                                                &hint,
+                                                coach_progress,
+                                                cx,
+                                            ))
+                                        },
+                                    )
+                                    .when(overview_progress <= 0.0, |el| {
+                                        el.child(self.render_edge_new_session(cx))
+                                    })
+                                    // Paint non-tutorial feedback last so it remains above the
+                                    // canvas without covering an animated tutorial control.
+                                    .when_some(
+                                        self.showcase_cue.as_ref().filter(|cue| {
+                                            matches!(cue.tutorial_group, "" | "help")
+                                        }),
+                                        |el, cue| el.child(self.render_showcase_cue(cue)),
+                                    )
+                                    // Update status stays visible in every mode, including
+                                    // overview: a user whose build cannot render text still
+                                    // needs to see that a fix is on its way.
+                                    .when_some(self.render_update_chip(cx), |el, chip| {
+                                        el.child(chip)
+                                    }),
+                            ),
                     ),
             )
-            .child(fps_overlay)
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
