@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "workspace_notifications.rs"]
+mod notifications;
+
 #[path = "workspace_change_review.rs"]
 pub(crate) mod change_review;
 
@@ -17,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window,
+    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window,
     actions, div, prelude::*, px, relative,
 };
 use jcode_desktop_api::HostHandle;
@@ -265,7 +268,7 @@ const MINIMAP_RIGHT: f32 = 12.0;
 /// out of the reading path but always in view.
 const UPDATE_CHIP_BOTTOM: f32 = 44.0;
 const COACH_TOAST_GAP: f32 = 8.0;
-const COACH_TOAST_WIDTH: f32 = 288.0;
+const COACH_TOAST_WIDTH: f32 = 320.0;
 /// The coach keeps hints for nine seconds. Wake once after that deadline instead
 /// of rebuilding every transcript at display refresh rate for the full lifetime.
 const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(10);
@@ -838,6 +841,13 @@ impl Workspace {
                     session.title = Some(format!("History session {index:02}"));
                     workspace.sessions.push(session);
                 }
+            }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_NOTIFICATION").as_deref() == Ok("1") {
+                workspace.showcase_cue = Some(ShowcaseCue {
+                    shortcut: "Super + Shift + S".into(),
+                    action: "Showcase mode on",
+                    tutorial_group: "",
+                });
             }
             if let Some(stage) = std::env::var("JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE")
                 .ok()
@@ -5749,90 +5759,6 @@ impl Workspace {
         card.into_any_element()
     }
 
-    /// The coach's just-in-time hint. It sits directly below the minimap so the
-    /// workspace's transient navigation aids stay together in the top right.
-    fn render_coach_toast(
-        &self,
-        hint: &learning::Hint,
-        progress: f32,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .absolute()
-            .top(px(MINIMAP_TOP
-                + if self.show_minimap {
-                    MINIMAP_HEIGHT + COACH_TOAST_GAP
-                } else {
-                    0.0
-                }))
-            .right(px(MINIMAP_RIGHT))
-            .w(px(COACH_TOAST_WIDTH))
-            .min_w_0()
-            .overflow_hidden()
-            .opacity(progress)
-            .child(
-                div()
-                    .id("coach-toast")
-                    // Tagged so a render test can assert the toast actually
-                    // painted, rather than only that the coach decided to teach.
-                    .debug_selector(|| "coach-toast".into())
-                    .relative()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .top(px((1.0 - progress) * 10.0))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_3()
-                    .bg(Theme::global().PANEL_BG)
-                    .border_1()
-                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                    .rounded_lg()
-                    .shadow_lg()
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| this.dismiss_coach_hint(cx)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded_md()
-                                    .bg(Theme::global().HEADER_BG)
-                                    .text_size(px(12.0))
-                                    .font_family(Theme::global().FONT_MONO)
-                                    .text_color(Theme::global().TEXT)
-                                    .child(hint.keys),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_size(px(12.0))
-                                    .text_color(Theme::global().TEXT)
-                                    .child(hint.label),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(hint.because.clone()),
-                    ),
-            )
-            .into_any_element()
-    }
-
     /// A single skill row: the keys, what they do, and a bar showing how well
     /// the model believes this shortcut is known right now.
     fn render_skill_row(&self, skill: &learning::Skill, mastery: f32) -> gpui::AnyElement {
@@ -6031,63 +5957,6 @@ impl Workspace {
             .opacity(progress)
             .bg(gpui::rgba(0x000000b8))
             .child(card)
-            .into_any_element()
-    }
-
-    fn render_showcase_cue(&self, cue: &ShowcaseCue) -> gpui::AnyElement {
-        div()
-            .id("showcase-shortcut")
-            .debug_selector(|| "showcase-shortcut".into())
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom(px(56.0))
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .id("showcase-card")
-                    .debug_selector(|| "showcase-card".into())
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .gap_2()
-                    .rounded_lg()
-                    .bg(Theme::global().PANEL_BG)
-                    .border_1()
-                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                    .shadow_lg()
-                    .text_color(Theme::global().TEXT)
-                    .with_animation(
-                        "showcase-cue-in",
-                        Animation::new(Duration::from_millis(180)),
-                        |el, delta| el.opacity(delta),
-                    )
-                    .child(
-                        div()
-                            .id("showcase-action")
-                            .debug_selector(|| "showcase-action".into())
-                            .text_size(px(15.0))
-                            .child(cue.action),
-                    )
-                    .child(
-                        div()
-                            .id("showcase-key")
-                            .debug_selector(|| "showcase-key".into())
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(Theme::global().HEADER_BG)
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_color(Theme::global().ACCENT)
-                            .text_size(px(12.0))
-                            .child(cue.shortcut.clone()),
-                    ),
-            )
             .into_any_element()
     }
 }
@@ -6417,7 +6286,7 @@ impl Render for Workspace {
         let hints_progress = self.hints_progress.sample(now);
         // Expire the hint on a schedule of its own, so a suggestion the user
         // ignores fades without needing another input to clear it.
-        let coach_hint = crate::config::get()
+        let mut coach_hint = crate::config::get()
             .workspace
             .coaching_hints
             .then(|| self.coach.active_hint(learning::now()))
@@ -6425,7 +6294,20 @@ impl Render for Workspace {
         if coach_hint.is_none() {
             self.coach_progress.set(0.0, now);
         }
-        let coach_progress = self.coach_progress.sample(now);
+        let mut coach_progress = self.coach_progress.sample(now);
+        // Stable, offline-only visual fixture. Never extends a real notification.
+        if harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_NOTIFICATION").as_deref() == Ok("1")
+        {
+            coach_hint = Some(learning::Hint {
+                skill_id: "focus_first_last",
+                keys: "super-u / super-p",
+                label: "Jump to either end",
+                because: "Skip the extra steps. Go straight to the first or last panel.".into(),
+                shown_at: learning::now(),
+            });
+            coach_progress = 1.0;
+        }
         let row_progress = self.row_progress.sample(now);
         if !self.row_progress.is_animating() {
             self.outgoing_row = None;
@@ -10989,6 +10871,19 @@ mod tests {
             bounds.origin.x >= px(SIDEBAR_WIDTH),
             "the toast should remain inside the workspace instead of spilling into the sidebar"
         );
+        let title = cx.debug_bounds("coach-title").expect("a readable title");
+        let keys = cx.debug_bounds("coach-keys").expect("dedicated keycap footer");
+        assert!(keys.origin.y >= title.bottom());
+        cx.simulate_click(title.center(), gpui::Modifiers::default());
+        workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.test_coach().active_hint_id().is_some(), "body clicks do not dismiss tips");
+        });
+        let dismiss = cx.debug_bounds("coach-dismiss").expect("explicit close control");
+        assert!(dismiss.size.width >= px(28.0));
+        cx.simulate_click(dismiss.center(), gpui::Modifiers::default());
+        workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.test_coach().active_hint_id().is_none(), "close dismisses the tip");
+        });
     }
 
     /// The update chip must actually paint, and only while the updater has

@@ -36,6 +36,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--fresh-interact", action="store_true",
                         help="measure fresh composer pixels and verify native typing and submission")
     parser.add_argument("--html-interact", action="store_true",
@@ -206,6 +207,8 @@ def main():
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
+        if args.notification:
+            env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
         if args.mermaid_source is not None:
