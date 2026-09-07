@@ -45,7 +45,7 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                 let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
                 assert_eq!(
                     tabs.bottom(),
-                    canvas.top() + px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET)
+                    canvas.top() + px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET)
                 );
                 let expected_left = if sidebar {
                     SIDEBAR_WIDTH + FOLDER_CONNECTOR_WIDTH
@@ -61,7 +61,7 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                 for panel in &panels {
                     let inset = FOLDER_CONTENT_INSET;
                     assert!(
-                        (f32::from(panel.top() - canvas.top()) - STRIP_PADDING_Y - inset).abs()
+                        (f32::from(panel.top() - canvas.top()) - STRIP_PADDING_TOP - inset).abs()
                             < 1.
                     );
                     assert!(
@@ -89,7 +89,7 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                     );
                     assert_eq!(
                         panel.top(),
-                        canvas.top() + px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET)
+                        canvas.top() + px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET)
                     );
                 }
             }

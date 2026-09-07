@@ -4,6 +4,7 @@ use crate::panel::folder_session_title;
 
 /// Canvas air beneath the rounded tabs keeps them detached from the sheets.
 const TAB_FLOAT_GAP: f32 = 8.0;
+const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 
 /// Center one workspace's floating stack independently of the panel camera. Selection adds
@@ -48,7 +49,8 @@ impl TabLayout {
         // outline. On tiny tracks reserve most of the width for actual tabs.
         let gap = 16.0_f32.min(available / (groups.len() as f32 * 4.0));
         let content = (available - gap * (groups.len() - 1) as f32).max(0.0);
-        let compact_ideal = |count: usize| (56.0 + 32.0 * (count - 1) as f32).min(144.0);
+        let compact_ideal =
+            |count: usize| (56.0 + (56.0 + TAB_GAP) * (count - 1) as f32).min(144.0);
         let compact_total: f32 = groups
             .iter()
             .enumerate()
@@ -116,7 +118,8 @@ impl TabLayout {
             0.0
         } else {
             ((available - active_width) / (count - 1) as f32)
-                .min(inactive_width - 12.0_f32.min(inactive_width * 0.1))
+                // Leave a little air at normal widths, compressing only crowded rows.
+                .min(inactive_width + TAB_GAP)
         };
         let used = active_width + step * (count - 1) as f32;
         Self {
@@ -337,7 +340,7 @@ impl Workspace {
             .id("live-session-tabs")
             .debug_selector(|| "live-session-tabs".into())
             .absolute()
-            .top(px(STRIP_PADDING_Y))
+            .top(px(STRIP_PADDING_TOP))
             .left_0()
             .right(px(right))
             .h(px(FOLDER_CONTENT_INSET));
@@ -891,6 +894,22 @@ mod tests {
     }
 
     #[test]
+    fn live_tabs_leave_a_small_gap_between_uncrowded_sessions() {
+        for rows in [vec![0, 0, 0, 0], vec![0, 0, 1, 1]] {
+            for selected in 0..rows.len() {
+                let tabs = TabLayout::grouped(1600.0, &rows, selected);
+                for (i, pair) in tabs.windows(2).enumerate() {
+                    if rows[i] == rows[i + 1] {
+                        assert!(
+                            (pair[1].left - pair[0].left - pair[0].width - TAB_GAP).abs() < 0.001
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn live_tabs_overlap_preserves_folder_width_and_centers_the_stack() {
         for available in [0.0, 40.0, 180.0, 352.0, 800.0, 2400.0] {
             for count in 1..=200 {
@@ -1032,7 +1051,7 @@ mod tests {
             ((initial[0].left() + initial[3].right()) / 2.0 - track.center().x).abs() < px(0.01)
         );
         for pair in initial.windows(2) {
-            assert_eq!(pair[0].right() - pair[1].left(), px(12.0));
+            assert_eq!(pair[1].left() - pair[0].right(), px(TAB_GAP));
         }
         for selected in [1, 2, 3, 0] {
             vcx.simulate_click(initial[selected].center(), gpui::Modifiers::default());

@@ -127,6 +127,8 @@ const GAP: f32 = 0.0;
 const STRUT: f32 = 0.58;
 /// Leave the canvas visible around the joined folder surfaces.
 const STRIP_PADDING_Y: f32 = 16.0;
+/// A tighter header keeps floating tabs close to the top without crowding the footer.
+const STRIP_PADDING_TOP: f32 = 10.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 40.0;
 const FPS_HEADER_HEIGHT: f32 = 20.0;
@@ -3114,7 +3116,7 @@ impl Workspace {
             None => self.camera_x[row] = self.camera_target[row],
         }
 
-        let panel_h = (viewport_h - STRIP_PADDING_Y * 2.0).max(1.0);
+        let panel_h = (viewport_h - STRIP_PADDING_TOP - STRIP_PADDING_Y).max(1.0);
         let indices = self.row_indices(row).collect::<Vec<_>>();
         let mut animated_widths = Vec::with_capacity(indices.len());
         let mut order_offsets = Vec::with_capacity(indices.len());
@@ -3141,7 +3143,7 @@ impl Workspace {
         }
         let mut strip = div()
             .absolute()
-            .top(px(STRIP_PADDING_Y))
+            .top(px(STRIP_PADDING_TOP))
             .left(px(-self.camera_x[row]))
             .w(px(
                 animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
@@ -4846,7 +4848,7 @@ impl Workspace {
             .absolute()
             .right_0()
             // Keep this invisible add-session target below the live tabs.
-            .top(px(STRIP_PADDING_Y + FOLDER_CONTENT_INSET))
+            .top(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET))
             .bottom_0()
             .w(px(32.0))
             .flex()

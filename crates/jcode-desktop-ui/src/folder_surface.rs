@@ -2,7 +2,7 @@
 //! without a wide shoulder or a connector forcing unrelated surfaces together.
 use std::{cell::RefCell, rc::Rc};
 
-use super::{FOLDER_CONTENT_INSET, STRIP_PADDING_Y};
+use super::{FOLDER_CONTENT_INSET, STRIP_PADDING_TOP, STRIP_PADDING_Y};
 use crate::theme::Theme;
 use gpui::{Bounds, PathBuilder, Pixels, canvas, div, point, prelude::*, px};
 
@@ -66,7 +66,7 @@ pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
                             Rect {
                                 left: f32::from(canvas.left()),
                                 top: f32::from(canvas.top())
-                                    + STRIP_PADDING_Y
+                                    + STRIP_PADDING_TOP
                                     + FOLDER_CONTENT_INSET,
                                 right: f32::from(frame.panel_right.min(canvas.right())),
                                 bottom: f32::from(canvas.bottom()) - STRIP_PADDING_Y,
