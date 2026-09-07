@@ -2879,7 +2879,7 @@ impl Panel {
                 if animating {
                     window.request_animation_frame();
                 }
-                div()
+                let card = div()
                     .flex()
                     .flex_col()
                     .ml(px(offset))
@@ -2898,7 +2898,8 @@ impl Panel {
                         false,
                         self.media_preview_handler(cx),
                     ))
-                    .into_any_element()
+                    .into_any_element();
+                role_caption(prompt::user_prompt_label(&self.items, index), card)
             }
             Item::Image(image) => {
                 let preview_image = image.clone();
@@ -3555,23 +3556,14 @@ impl Render for Panel {
         let pinned_todo = self
             .latest_todo_payload()
             .filter(|payload| !payload.todos.is_empty());
-        let latest_prompt =
-            self.items
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(index, item)| match item {
-                    Item::User(prompt) if !prompt.trim().is_empty() => Some((index, item.clone())),
-                    _ => None,
-                });
         let rows = Arc::new(self.transcript_render_rows());
-        let prompt_row = latest_prompt.as_ref().and_then(|(index, _)| {
-            rows.iter()
-                .position(
-                    |row| matches!(row.source, TranscriptRowSource::Settled(i) if i == *index),
-                )
-                .map(|row| (*index, row))
-        });
+        let prompt_rows: Vec<(usize, usize)> = rows.iter().enumerate().filter_map(|(row, entry)| {
+            match entry.source {
+                TranscriptRowSource::Settled(index)
+                    if matches!(&self.items[index], Item::User(text) if !text.trim().is_empty()) => Some((row, index)),
+                _ => None,
+            }
+        }).collect();
         let row_count = rows.len();
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
@@ -3631,8 +3623,8 @@ impl Render for Panel {
         let panel = cx.entity();
         let wheel_panel = panel.clone();
         let list_rows = rows.clone();
-        let prompt_visible = std::rc::Rc::new(std::cell::Cell::new(false));
-        let row_prompt_visible = prompt_visible.clone();
+        let first_visible_row = std::rc::Rc::new(std::cell::Cell::new(None));
+        let row_first_visible = first_visible_row.clone();
         let prompt_list = self.transcript_list.clone();
         let transcript = if fresh_session {
             div()
@@ -3696,7 +3688,7 @@ impl Render for Panel {
                                         10.0
                                     };
                                 let element = panel.render_item(row.index, item, window, cx);
-                                let element = if row.show_label {
+                                let element = if row.show_label && !matches!(item, Item::User(_)) {
                                     role_caption(row.role.unwrap_or(""), element)
                                 } else {
                                     element
@@ -3709,15 +3701,11 @@ impl Render for Panel {
                                     .px_3()
                                     .pt(px(top_padding))
                                     .child(element)
-                                    .when(
-                                        prompt_row.is_some_and(|(_, row)| row == row_index),
-                                        |el| {
-                                            el.child(prompt::visibility_marker(
-                                                row_prompt_visible.clone(),
-                                                prompt_list.clone(),
-                                            ))
-                                        },
-                                    )
+                                    .child(prompt::visibility_marker(
+                                        row_index,
+                                        row_first_visible.clone(),
+                                        prompt_list.clone(),
+                                    ))
                                     .into_any_element()
                             })
                         },
@@ -3882,8 +3870,8 @@ impl Render for Panel {
                     })
             }))
             .children(
-                latest_prompt
-                    .filter(|(index, _)| self.offscreen_prompt == Some(*index))
+                self.offscreen_prompt
+                    .and_then(|index| self.items.get(index).map(|item| (index, item.clone())))
                     .map(|(index, item)| {
                         div()
                             .id("pinned-latest-prompt")
@@ -3953,11 +3941,7 @@ impl Render for Panel {
                     )
                     .child(transcript)
                     .child(startup::input_marker(body_bounds.clone()))
-                    .child(self.prompt_visibility_observer(
-                        prompt_row.map(|(index, _)| index),
-                        prompt_visible,
-                        cx,
-                    ))
+                    .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(crate::scrollbar::vertical_list(
                         &self.transcript_list,
                         "transcript-scrollbar",
@@ -4188,7 +4172,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
 
 /// A labelled role row: a small caption above the message body, so a long
 /// transcript stays scannable without heavyweight avatars.
-fn role_caption(label: &'static str, body: gpui::AnyElement) -> gpui::AnyElement {
+fn role_caption(label: impl Into<SharedString>, body: gpui::AnyElement) -> gpui::AnyElement {
     div()
         .flex()
         // Restored history alternates labelled user and assistant rows. If
@@ -4202,7 +4186,7 @@ fn role_caption(label: &'static str, body: gpui::AnyElement) -> gpui::AnyElement
                 .text_size(px(10.0))
                 .text_color(Theme::global().TEXT_FAINT)
                 .font_family(Theme::global().FONT_MONO)
-                .child(label),
+                .child(label.into()),
         )
         .child(body)
         .into_any_element()
