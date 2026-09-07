@@ -577,6 +577,7 @@ pub struct Workspace {
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
     gpui_performance: GpuiPerformanceSnapshot,
+    fps_counter: crate::fps_counter::FpsCounter,
     action_capture: Option<ActionCapture>,
     animation_tick_task: Option<gpui::Task<()>>,
     _bridge_task: gpui::Task<()>,
@@ -761,6 +762,7 @@ impl Workspace {
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
             gpui_performance: GpuiPerformanceSnapshot::default(),
+            fps_counter: crate::fps_counter::FpsCounter::default(),
             action_capture: ActionCapture::from_env(),
             animation_tick_task: None,
             _bridge_task: bridge_task,
@@ -940,6 +942,7 @@ impl Workspace {
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
             gpui_performance: GpuiPerformanceSnapshot::default(),
+            fps_counter: crate::fps_counter::FpsCounter::default(),
             action_capture: None,
             animation_tick_task: None,
             _bridge_task: cx.spawn(async move |_, _| {}),
@@ -6375,6 +6378,26 @@ impl Render for Workspace {
                 ))
         });
 
+        // Sample only on existing redraws. The counter never drives animation
+        // or wakes an idle window just to measure itself.
+        let fps = self.fps_counter.label(Instant::now(), || {
+            window.frame_duration_snapshot().draw_duration_histogram.len()
+        });
+        let fps_overlay = div()
+            .debug_selector(|| "fps-counter".into())
+            .absolute()
+            .top(px(6.0))
+            .left(px((f32::from(viewport.width) - 80.0).max(0.0) / 2.0))
+            .w(px(80.0))
+            .text_center()
+            .rounded_md()
+            .py(px(2.0))
+            .bg(gpui::rgba(0x111318cc))
+            .font_family(Theme::global().FONT_MONO)
+            .text_size(px(11.0))
+            .text_color(gpui::rgb(0xe5e7eb))
+            .child(fps);
+
         let root = div()
             .size_full()
             .flex()
@@ -6489,6 +6512,7 @@ impl Render for Workspace {
                             .when_some(self.render_update_chip(cx), |el, chip| el.child(chip)),
                     ),
             )
+            .child(fps_overlay)
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))

@@ -11,6 +11,7 @@ mod diff_block;
 mod diff_model;
 mod diff_review_content;
 mod diff_view;
+mod fps_counter;
 mod harness;
 mod html_preview;
 mod image_cache;

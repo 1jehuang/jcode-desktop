@@ -207,6 +207,14 @@ System/`.deb` installs must use their original installer. In a source checkout,
 Git files. See [Linux updates](docs/linux-updates.md) for supported layouts,
 security boundaries, error recovery, and verification.
 
+## FPS counter
+
+A small counter at the top center shows the window’s actual draw rate, sampled
+at most twice per second during redraws. It keeps the last reading while idle
+instead of creating extra frames just to update the counter. `— FPS` means the
+first sample is still warming up. This measures app draws, not monitor refresh
+rate or compositor presentation rate.
+
 ## Native UI hot reload
 
 The executable is a small, stable GPUI host. The application UI lives in the
