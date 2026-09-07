@@ -19,6 +19,7 @@ use crate::theme::{Theme, to_hsla};
 enum Block {
     Heading(u8, String),
     Paragraph(String),
+    Reasoning(String),
     Bullet {
         depth: usize,
         text: String,
@@ -72,7 +73,32 @@ fn parse(source: &str) -> Vec<Block> {
         let trimmed = line.trim_start();
         let depth = indent_depth(line);
 
-        if trimmed == "$$" || trimmed == "\\[" {
+        if let Some(mut content) = jcode_render_core::reasoning_line_content(trimmed) {
+            // Rendered history embeds the terminal's escaped reasoning lines.
+            // Decode only that explicit format, before inline emphasis sees
+            // its escaped asterisks. Fenced code is consumed separately below.
+            flush(&mut paragraph, &mut blocks);
+            loop {
+                let mut ahead = lines.clone();
+                let mut blank_lines = 0;
+                while ahead.peek().is_some_and(|line| line.trim().is_empty()) {
+                    ahead.next();
+                    blank_lines += 1;
+                }
+                let Some(next) = ahead
+                    .next()
+                    .and_then(jcode_render_core::reasoning_line_content)
+                else {
+                    break;
+                };
+                for _ in 0..=blank_lines {
+                    lines.next();
+                    content.push('\n');
+                }
+                content.push_str(&next);
+            }
+            blocks.push(Block::Reasoning(content));
+        } else if trimmed == "$$" || trimmed == "\\[" {
             flush(&mut paragraph, &mut blocks);
             let closing = if trimmed == "$$" { "$$" } else { "\\]" };
             let mut body = String::new();
@@ -1566,12 +1592,34 @@ fn render_with_style(
     reasoning: bool,
     on_preview: Option<MediaPreviewHandler>,
 ) -> impl IntoElement {
+    render_document(
+        source,
+        row,
+        &row.to_string(),
+        selection,
+        window,
+        cx,
+        reasoning,
+        on_preview,
+    )
+}
+
+fn render_document(
+    source: &str,
+    row: usize,
+    key_prefix: &str,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    reasoning: bool,
+    on_preview: Option<MediaPreviewHandler>,
+) -> gpui::AnyElement {
     let blocks = parse(source);
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
 
     for (block_index, block) in blocks.into_iter().enumerate() {
-        let text_key = || -> SharedString { format!("{row}-{block_index}").into() };
+        let text_key = || -> SharedString { format!("{key_prefix}-{block_index}").into() };
         let is_list = matches!(block, Block::Bullet { .. } | Block::Numbered { .. });
         let tight = is_list && previous_was_list;
         previous_was_list = is_list;
@@ -1607,6 +1655,22 @@ fn render_with_style(
                     })
                     .into_any_element()
             }
+            Block::Reasoning(text) => div()
+                .debug_selector(|| "restored-reasoning".into())
+                .text_size(px(12.0))
+                .text_color(Theme::global().REASONING)
+                .line_height(relative(1.55))
+                .child(render_document(
+                    &text,
+                    row,
+                    &format!("{key_prefix}-{block_index}"),
+                    selection,
+                    window,
+                    cx,
+                    true,
+                    on_preview.clone(),
+                ))
+                .into_any_element(),
             Block::Paragraph(text) => div()
                 .line_height(relative(1.55))
                 .child(styled_line(&text, selection, text_key(), window, cx))
@@ -1721,7 +1785,12 @@ fn render_with_style(
         children.push(element);
     }
 
-    div().flex().flex_col().gap_1p5().children(children)
+    div()
+        .flex()
+        .flex_col()
+        .gap_1p5()
+        .children(children)
+        .into_any_element()
 }
 
 fn list_row(
@@ -1831,6 +1900,129 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_reasoning_decodes_before_markdown_emphasis() {
+        let source = format!(
+            "{}{}\nNormal **answer**.",
+            jcode_render_core::reasoning_line_markup("**Checking top live tabs**"),
+            jcode_render_core::reasoning_line_markup("Use `code` and [docs](https://example.com)."),
+        );
+        let blocks = parse(&source);
+        assert_eq!(blocks.len(), 2);
+        let Block::Reasoning(heading) = &blocks[0] else {
+            panic!("missing reasoning")
+        };
+        let inner = parse(heading);
+        let Block::Paragraph(text) = &inner[0] else {
+            panic!("missing paragraph")
+        };
+        let inline = inline_spans(text.split_once(" Use ").unwrap().0);
+        assert_eq!(inline.plain, "Checking top live tabs");
+        assert_eq!(inline.highlights[0].1.font_weight, Some(FontWeight::BOLD));
+        let detail = inline_spans(heading.lines().nth(1).unwrap());
+        assert_eq!(detail.plain, "Use code and docs.");
+        assert_eq!(&detail.plain[detail.code_ranges[0].clone()], "code");
+        assert_eq!(detail.links[0].1, "https://example.com");
+        assert_eq!(blocks[1], Block::Paragraph("Normal **answer**.".into()));
+    }
+
+    #[test]
+    fn restored_reasoning_preserves_intentional_escapes_and_fenced_examples() {
+        let source = jcode_render_core::reasoning_line_markup(r"Keep \*literal\* and C:\work.");
+        let Block::Reasoning(content) = &parse(&source)[0] else {
+            panic!("missing reasoning")
+        };
+        let inline = inline_spans(content);
+        assert_eq!(inline.plain, r"Keep *literal* and C:\work.");
+        assert!(inline.highlights.is_empty());
+        assert_eq!(
+            parse(r"\*literal\*"),
+            vec![Block::Paragraph(r"\*literal\*".into())]
+        );
+        let fenced = format!("```text\n{source}```");
+        assert_eq!(
+            parse(&fenced),
+            vec![Block::Code {
+                lang: "text".into(),
+                body: source.trim_end_matches('\n').into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn restored_reasoning_preserves_multiline_markdown_blocks() {
+        let original = "## Plan\n\n- Read `code`\n- Test\n\n```rust\nlet x = 1;\n```";
+        let encoded: String = original
+            .lines()
+            .map(jcode_render_core::reasoning_line_markup)
+            .collect();
+        let blocks = parse(&format!("{encoded}\nDone."));
+        assert_eq!(blocks.len(), 2);
+        let Block::Reasoning(decoded) = &blocks[0] else {
+            panic!("missing reasoning")
+        };
+        assert_eq!(decoded, original);
+        assert_eq!(parse(decoded), parse(original));
+        assert!(matches!(&parse(decoded)[3], Block::Code { lang, .. } if lang == "rust"));
+        assert_eq!(blocks[1], Block::Paragraph("Done.".into()));
+    }
+
+    struct RestoredReasoningView {
+        selection: gpui::Entity<TextSelection>,
+        source: String,
+    }
+
+    impl gpui::Render for RestoredReasoningView {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div().size_full().child(render_with_style(
+                &self.source,
+                0,
+                &self.selection,
+                window,
+                cx,
+                false,
+                None,
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn restored_reasoning_paints_and_copies_without_transport_markup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, vcx) = cx.add_window_view(|_, cx| RestoredReasoningView {
+            selection: cx.new(TextSelection::new),
+            source: format!(
+                "{}\nThe **answer**.",
+                jcode_render_core::reasoning_line_markup("**Checking top live tabs**")
+            ),
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("restored-reasoning").is_some());
+        let heading = vcx.debug_bounds("selectable-text-0-0-0").unwrap();
+        let answer = vcx.debug_bounds("selectable-text-0-1").unwrap();
+        assert!(answer.top() >= heading.bottom());
+        for (bounds, expected) in [(heading, "Checking top live tabs"), (answer, "The answer.")] {
+            vcx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: bounds.center(),
+                modifiers: gpui::Modifiers::default(),
+                click_count: 4,
+                first_mouse: false,
+            });
+            let selection = view.read_with(vcx, |view, _| view.selection.clone());
+            vcx.update(|_, cx| selection.update(cx, |selection, cx| selection.copy(cx)));
+            let copied = vcx
+                .update(|_, cx| cx.read_from_clipboard())
+                .and_then(|item| item.text());
+            assert_eq!(copied.as_deref(), Some(expected));
+        }
+    }
 
     /// Nested inline spans produce overlapping highlight ranges. GPUI aborts
     /// the whole process in debug builds when highlight ranges overlap or run

@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "workspace_change_review.rs"]
+pub(crate) mod change_review;
+
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
 #[path = "sidebar_selection.rs"]
@@ -965,14 +968,25 @@ impl Workspace {
     }
 
     pub fn snapshot(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
-        // Closing slots may still be animating, but must not be resurrected
-        // by a hot reload or crash checkpoint. All saved indices use live slots.
-        let slots: Vec<_> = self.slots.iter().filter(|slot| !slot.closing).collect();
+        // Closing slots and transient tool snapshots must not be restored as
+        // server sessions. All saved indices refer to persisted slots only.
+        let slots: Vec<_> = self.slots.iter()
+            .filter(|slot| !slot.closing && !slot.panel.read(cx).is_change_review())
+            .collect();
         let index_for_id = |id: gpui::EntityId| {
             slots
                 .iter()
                 .position(|slot| slot.panel.entity_id() == id)
         };
+        let review_source = self.slots.get(self.active).and_then(|slot| {
+            let panel = slot.panel.read(cx);
+            let source_id = panel.session_id.strip_prefix("review://")?;
+            slots.iter().position(|slot| slot.panel.read(cx).session_id == source_id)
+        });
+        let active = self.slots.get(self.active)
+            .and_then(|slot| index_for_id(slot.panel.entity_id()))
+            .or(review_source)
+            .unwrap_or(0);
         let focus = if self
             .folder_search
             .as_ref()
@@ -985,6 +999,8 @@ impl Workspace {
                 .input_focus_handle(cx)
                 .is_focused(window)
         }) {
+            FocusSnapshot::Panel(index)
+        } else if let Some(index) = review_source {
             FocusSnapshot::Panel(index)
         } else {
             FocusSnapshot::Workspace
@@ -1008,11 +1024,12 @@ impl Workspace {
                     restore_fraction: slot.restore_fraction,
                 })
                 .collect(),
-            active: self.slots
-                .get(self.active)
-                .and_then(|slot| index_for_id(slot.panel.entity_id()))
-                .unwrap_or(0),
-            active_row: self.active_row,
+            active,
+            active_row: if review_source.is_some() {
+                slots[active].row
+            } else {
+                self.active_row
+            },
             row_focus: self.row_focus.map(|id| id.and_then(index_for_id)),
             previous: self.previous.and_then(index_for_id),
             camera_x: self.camera_x,
@@ -2614,7 +2631,8 @@ impl Workspace {
         self.slots[closed].closing = true;
         self.slots[closed].close_progress.set(0.0, Instant::now());
         let session_id = self.slots[closed].panel.read(cx).session_id.clone();
-        if session_id != "terminal" && !Panel::is_pending_session_id(&session_id) {
+        if session_id != "terminal" && !Panel::is_pending_session_id(&session_id)
+            && !self.slots[closed].panel.read(cx).is_change_review() {
             self.bridge.send(Command::Unwatch { session_id });
         }
         if self.previous == Some(closed_id) {
@@ -6557,6 +6575,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_panel_down))
             .on_action(cx.listener(Self::move_panel_to_first))
             .on_action(cx.listener(Self::move_panel_to_last))
+            .on_action(cx.listener(Self::open_change_review))
+            .on_action(cx.listener(Self::close_change_review))
             .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::new_panel_in_pinned_directory))
             .on_action(cx.listener(Self::fork_panel))

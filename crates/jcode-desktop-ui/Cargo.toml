@@ -16,6 +16,7 @@ jcode-desktop-motion.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-base = { path = "../../../jcode/crates/jcode-base" }
+jcode-render-core = { path = "../../../jcode/crates/jcode-render-core" }
 anyhow = "1"
 flate2 = "1"
 tar = "0.4"

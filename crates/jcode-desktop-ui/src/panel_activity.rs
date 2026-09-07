@@ -119,6 +119,77 @@ mod tests {
     }
 
     #[gpui::test]
+    fn transcript_activity_follows_output_and_disappears_on_terminal_events(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use jcode_sdk::ApiEvent;
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("tail-test", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        for terminal in ["done", "error", "failed", "idle", "cancelled"] {
+            for event in [
+                ApiEvent::SessionStatus {
+                    session_id: "tail-test".into(),
+                    status: "thinking".into(),
+                },
+                ApiEvent::ReasoningDelta {
+                    session_id: "tail-test".into(),
+                    text: "Checking the result".into(),
+                },
+                ApiEvent::TextDelta {
+                    session_id: "tail-test".into(),
+                    text: "Here is the result".into(),
+                },
+                ApiEvent::ToolStart {
+                    session_id: "tail-test".into(),
+                    call_id: terminal.into(),
+                    name: "read".into(),
+                },
+            ] {
+                panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+                vcx.run_until_parked();
+                let activity = vcx.debug_bounds("transcript-activity").expect("activity paints");
+                let content_rows = panel.read_with(vcx, |panel, _| {
+                    assert_eq!(panel.transcript_row_count, panel.transcript_render_rows().len() + 1);
+                    panel.transcript_render_rows().len()
+                });
+                if content_rows > 0 {
+                    let last = vcx.debug_bounds(format!("transcript-row-{}", content_rows - 1).leak())
+                        .expect("last content row paints");
+                    assert!(activity.top() >= last.bottom(), "spinner needs its own tail line");
+                }
+                assert!(vcx.debug_bounds("panel-status-spinner").is_none());
+            }
+            panel.update(vcx, |panel, cx| match terminal {
+                "done" => panel.apply(&ApiEvent::TurnDone { session_id: "tail-test".into() }, cx),
+                "error" => panel.apply(&ApiEvent::Error {
+                    code: jcode_sdk::api::ErrorCode::Internal,
+                    message: "Provider failed".into(),
+                }, cx),
+                "failed" => panel.message_failed("Send failed".into(), cx),
+                _ => panel.apply(&ApiEvent::SessionStatus {
+                    session_id: "tail-test".into(), status: terminal.into(),
+                }, cx),
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("transcript-activity").is_none(), "{terminal}");
+            assert!(vcx.debug_bounds("panel-activity-spinner").is_none(), "{terminal}");
+            panel.read_with(vcx, |panel, _| {
+                assert!(!panel.activity_active(), "{terminal}");
+                assert!(panel.streaming_reasoning.is_empty());
+                assert!(panel.streaming_text.is_empty());
+                assert_eq!(panel.transcript_row_count, panel.transcript_render_rows().len());
+            });
+        }
+    }
+
+    #[gpui::test]
     fn streaming_activity_paints_and_clears_through_session_lifecycle(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -155,10 +226,11 @@ mod tests {
             assert!(vcx.debug_bounds("panel-activity-spinner").is_some());
             assert!(vcx.debug_bounds("panel-session-title").is_none());
             assert!(vcx.debug_bounds("panel-activity-label").is_none());
-            let spinner = vcx.debug_bounds("panel-status-spinner").unwrap();
-            let footer = vcx.debug_bounds("panel-status").unwrap();
-            assert!(spinner.top() >= footer.top());
-            assert!(spinner.bottom() <= footer.bottom());
+            let spinner = vcx.debug_bounds("transcript-activity").unwrap();
+            let transcript = vcx.debug_bounds("transcript").unwrap();
+            assert!(spinner.top() >= transcript.top());
+            assert!(spinner.bottom() <= transcript.bottom());
+            assert!(vcx.debug_bounds("panel-status-spinner").is_none());
         }
         panel.update(vcx, |panel, cx| {
             panel.apply(
@@ -190,6 +262,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("panel-activity-spinner").is_none());
         assert!(vcx.debug_bounds("panel-status-spinner").is_none());
+        assert!(vcx.debug_bounds("transcript-activity").is_none());
         assert!(vcx.debug_bounds("panel-activity-label").is_none());
         panel.update(vcx, |panel, _| {
             for status in [

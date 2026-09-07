@@ -4397,6 +4397,7 @@ dependencies = [
  "jcode-core",
  "jcode-desktop-api",
  "jcode-desktop-motion",
+ "jcode-render-core",
  "jcode-sdk",
  "libc",
  "mermaid-rs-renderer",

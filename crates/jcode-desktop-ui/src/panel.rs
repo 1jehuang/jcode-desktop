@@ -487,6 +487,7 @@ impl Panel {
     /// panel behave like bare canvas and move between strips instead.
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
         self.is_default_directory()
+            || self.is_change_review()
             || self.code_file.is_some()
             || self.gmail_inbox.is_some()
             || self.gmail_message.is_some()
@@ -1739,6 +1740,7 @@ impl Panel {
 
     pub(crate) fn can_fork(&self) -> bool {
         !self.is_default_directory()
+            && !self.is_change_review()
             && self.terminal.is_none()
             && self.code_file.is_none()
             && self.session_id != "unfinished-work"
@@ -1892,6 +1894,7 @@ impl Panel {
                                 this.bridge.send(Command::Cancel {
                                     session_id: this.session_id.clone(),
                                 });
+                                this.finish_response();
                                 handled = true;
                             }
                             cx.notify();
@@ -1992,6 +1995,7 @@ impl Panel {
                     self.bridge.send(Command::Cancel {
                         session_id: self.session_id.clone(),
                     });
+                    self.finish_response();
                     self.items
                         .push(Item::Assistant("Cancellation requested.".into()));
                 }
@@ -2382,13 +2386,11 @@ impl Panel {
                 }
             }
             ApiEvent::TurnDone { .. } => {
-                self.flush_reasoning();
-                self.flush_streaming();
-                self.connection_phase.clear();
+                self.finish_response();
             }
             ApiEvent::SessionStatus { status, .. } => {
                 self.status = status.clone();
-                if status == "idle" {
+                if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
                     self.flush_reasoning();
                     self.flush_streaming();
                     self.connection_phase.clear();
@@ -2444,7 +2446,7 @@ impl Panel {
                 self.title = display_title.clone().into();
             }
             ApiEvent::Error { message, .. } => {
-                self.flush_streaming();
+                self.finish_response();
                 self.items.push(Item::Error(message.clone()));
             }
             _ => {}
@@ -2453,6 +2455,14 @@ impl Panel {
             self.transcript_list.scroll_to_end();
         }
         cx.notify();
+    }
+
+    /// Settle partial output and stop activity without waiting for a later idle event.
+    fn finish_response(&mut self) {
+        self.flush_reasoning();
+        self.flush_streaming();
+        self.status = "idle".into();
+        self.connection_phase.clear();
     }
 
     fn flush_streaming(&mut self) {
@@ -2601,6 +2611,17 @@ impl Panel {
             ),
             _ => false,
         }
+    }
+
+    fn render_transcript_activity(&self) -> gpui::AnyElement {
+        div()
+            .debug_selector(|| "transcript-activity".into())
+            .flex_none()
+            .px_3()
+            .pt(px(10.0))
+            .pb_2()
+            .child(self.activity_spinner.clone())
+            .into_any_element()
     }
 
     fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
@@ -2795,17 +2816,6 @@ impl Panel {
                     false,
                     self.media_preview_handler(cx),
                 ))
-                // Streaming updates already repaint this row as text arrives. A
-                // repeating GPUI animation here would repaint every settled
-                // markdown row at display rate between chunks.
-                .when(index == usize::MAX, |el| {
-                    el.child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(Theme::global().ACCENT)
-                            .child("▍"),
-                    )
-                })
                 .into_any_element(),
             // Thinking is secondary transcript text, not a separate card. Keep
             // the same presentation while streaming, settled, and restored.
@@ -3168,6 +3178,20 @@ impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
+        if self.is_change_review() {
+            return div()
+                .size_full()
+                .relative()
+                .track_focus(&self.focus_handle)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.close_diff_review(window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .children(self.render_diff_review(cx))
+                .into_any_element();
+        }
         if let Some(terminal) = &self.terminal {
             return div()
                 .size_full()
@@ -3404,7 +3428,9 @@ impl Render for Panel {
                 _ => None,
             }
         }).collect();
-        let row_count = rows.len();
+        // A separate virtual row keeps activity below text, reasoning, and tools.
+        // Only the small Spinner entity ticks, never the transcript itself.
+        let row_count = rows.len() + usize::from(self.activity_active());
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
         let fresh_session = self.items.is_empty()
@@ -3504,6 +3530,9 @@ impl Render for Panel {
                     list(
                         self.transcript_list.clone(),
                         move |row_index, window, cx| {
+                            if row_index == list_rows.len() {
+                                return panel.read(cx).render_transcript_activity();
+                            }
                             let row = &list_rows[row_index];
                             panel.update(cx, |panel, cx| {
                                 let item = match &row.source {
@@ -3823,11 +3852,7 @@ impl Render for Panel {
                             .gap_1p5()
                             .overflow_hidden()
                             .when(active, |el| {
-                                el.text_color(theme.ACCENT).child(
-                                    div()
-                                        .debug_selector(|| "panel-status-spinner".into())
-                                        .child(self.activity_spinner.clone()),
-                                )
+                                el.text_color(theme.ACCENT)
                             })
                             .child(status_line),
                     ),
@@ -3863,7 +3888,7 @@ impl Render for Panel {
                 self.offscreen_prompt.is_some(),
                 cx.entity().entity_id(),
             ))
-            .children(self.render_image_preview(cx))
+            .children(self.render_image_preview(window, cx))
             .children(self.render_diff_review(cx))
             .into_any_element()
     }
@@ -6635,7 +6660,7 @@ mod tests {
         let status = vcx.debug_bounds("panel-status").expect("status paints");
         assert!((f32::from(build.center().x - bounds.center().x)).abs() < 1.0);
         assert_eq!(identity.origin.y, build.origin.y);
-        assert_eq!(status.origin.y, build.origin.y);
+        assert_eq!(status.center().y, build.center().y);
         assert!(identity.right() <= build.left());
         assert!(build.right() <= status.left());
         assert!(vcx.debug_bounds("panel-status-pulse").is_none());
@@ -6836,9 +6861,17 @@ mod tests {
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
         });
-        panel.update(vcx, |panel, _| panel.status = "busy".into());
+        panel.update(vcx, |panel, cx| {
+            panel.status = "busy".into();
+            cx.notify();
+        });
 
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("transcript-activity").is_some());
         vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("transcript-activity").is_none());
+        panel.read_with(vcx, |panel, _| assert!(!panel.activity_active()));
 
         assert!(matches!(
             commands.recv_timeout(std::time::Duration::from_millis(100)),
@@ -7424,7 +7457,11 @@ fn demo_items() -> Vec<Item> {
             Item::User("Can you make the thinking display feel quieter?".into()),
             Item::Reasoning("The content should read like part of the conversation, not another interface to manage. I'll keep it in a **dimmed font**, aligned with the answer, and remove the surrounding labels and controls.".into()),
             Item::Reasoning("## Keep the presentation simple\n\n- No card background or border\n- No thinking label or expand button\n- Preserve the full text and Markdown formatting".into()),
-            Item::Assistant("Thinking now appears as subtle inline text. The answer keeps its normal contrast, so it's easy to tell the two apart.".into()),
+            Item::Assistant(format!(
+                "{}\n{}\nThinking now appears as subtle inline text. The answer keeps its normal contrast, so it's easy to tell the two apart.",
+                jcode_render_core::reasoning_line_markup("**Checking top live tabs**"),
+                jcode_render_core::reasoning_line_markup("**Fixing live camera geometry**"),
+            )),
         ];
     }
     demo_item_fixtures()

@@ -137,7 +137,6 @@ impl Panel {
         if files.is_empty() {
             return None;
         }
-        let source = format!("{name} · {}", source_label(done, failed));
         let rich_arguments = Arc::new((name.to_owned(), input.to_owned()));
         let mut card = div()
             .debug_selector(|| "code-edit-preview".into())
@@ -147,9 +146,7 @@ impl Panel {
             .flex_col()
             .gap_1();
         for (index, file) in files.iter().enumerate() {
-            let open_files = files.clone();
             let rich_arguments = rich_arguments.clone();
-            let source = source.clone();
             let header = div()
                 .id(("diff-file", index))
                 .debug_selector(move || format!("diff-file-{index}").into())
@@ -182,29 +179,22 @@ impl Panel {
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
-                        let mut review = DiffReview::new(open_files.clone(), index, source.clone());
-                        // Parse the full structured comparison only when opened, not on
-                        // every streaming transcript repaint. Never pair mismatched files.
-                        if let Some(preview) = crate::diff_model::from_tool(&rich_arguments.0, &rich_arguments.1)
-                            .filter(|preview| {
-                                preview.files.len() == open_files.len()
-                                    && preview
-                                        .files
-                                        .iter()
-                                        .zip(open_files.iter())
-                                        .all(|(new, old)| new.path == old.path)
-                            })
-                        {
-                            review.rich = Some(crate::diff_review_content::ReviewContent::new(
-                                preview, index, done, failed, cx,
-                            ));
-                        }
-                        this.diff_review = Some(review);
                         this.focus_handle.focus(window, cx);
+                        window.dispatch_action(Box::new(crate::workspace::change_review::OpenChangeReview {
+                            source: cx.entity_id(),
+                            name: rich_arguments.0.clone(),
+                            input: rich_arguments.1.clone(),
+                            selected: index,
+                            done,
+                            failed,
+                        }), cx);
                         cx.stop_propagation();
                         cx.notify();
                     }),
-                );
+                )
+                // The workspace's generic mouse-up focus handler must not
+                // reactivate the source after this click opens its review.
+                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
             let mut snippet = div()
                 .px_2()
                 .font_family(Theme::global().FONT_MONO)
@@ -238,7 +228,51 @@ impl Panel {
         )
     }
 
+    pub(crate) fn is_change_review(&self) -> bool {
+        self.session_id.starts_with("review://")
+    }
+
+    pub(crate) fn new_change_review(
+        session_id: String,
+        working_dir: Option<String>,
+        request: &crate::workspace::change_review::OpenChangeReview,
+        bridge: Bridge,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut panel = Self::new(session_id, Some("Change review".into()), working_dir, bridge, cx);
+        panel.set_change_review(request, cx);
+        panel
+    }
+
+    pub(crate) fn set_change_review(
+        &mut self,
+        request: &crate::workspace::change_review::OpenChangeReview,
+        cx: &mut Context<Self>,
+    ) {
+        let files = Arc::new(tool_diffs(&request.name, &request.input));
+        let source = format!("{} · {}", request.name, source_label(request.done, request.failed));
+        let mut review = DiffReview::new(files.clone(), request.selected, source);
+        // Parse structured comparisons only on open and never pair mismatched files.
+        if let Some(preview) = crate::diff_model::from_tool(&request.name, &request.input)
+            .filter(|preview| preview.files.len() == files.len()
+                && preview.files.iter().zip(files.iter()).all(|(new, old)| new.path == old.path))
+        {
+            review.rich = Some(crate::diff_review_content::ReviewContent::new(
+                preview, request.selected, request.done, request.failed, cx,
+            ));
+        }
+        self.diff_review = Some(review);
+        cx.notify();
+    }
+
     pub(super) fn close_diff_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_change_review() {
+            self.focus_handle.focus(window, cx);
+            window.dispatch_action(Box::new(crate::workspace::change_review::CloseChangeReview {
+                panel: cx.entity_id(),
+            }), cx);
+            return;
+        }
         self.diff_review = None;
         self.focus_input(window, cx);
         cx.notify();
@@ -395,7 +429,8 @@ impl Panel {
                     .child(div().truncate().text_size(px(10.)).text_color(theme.TEXT_DIM).child(review.source.clone())))
                 .child(div().id("diff-close").debug_selector(|| "diff-close".into()).px_2().py_1().rounded_md()
                     .text_size(px(11.)).text_color(theme.TEXT_DIM).cursor_pointer().hover(|s| s.bg(theme.QUOTE_BG))
-                    .child("Back to chat · Esc")
+                    .child(if self.is_change_review() { "Close review · Esc" } else { "Back to chat · Esc" })
+                    .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
                         this.close_diff_review(window, cx); cx.stop_propagation();
                     }))))
@@ -515,8 +550,10 @@ mod tests {
         let header = vcx.debug_bounds("diff-file-0").unwrap();
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        let review_panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
+        assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
         assert_eq!(
-            panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().rows.len()),
+            review_panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().rows.len()),
             500
         );
         let before = panel.read_with(vcx, |p, _| p.test_scroll_offset_y());
@@ -529,7 +566,7 @@ mod tests {
         });
         vcx.run_until_parked();
         assert_ne!(
-            panel.read_with(vcx, |p, _| p
+            review_panel.read_with(vcx, |p, _| p
                 .diff_review
                 .as_ref()
                 .unwrap()
@@ -614,6 +651,8 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("diff-review").is_some());
         assert!(vcx.debug_bounds("diff-file-tree").is_some());
+        let review_panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
+        assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
         assert!(
             panel.read_with(vcx, |p, _| p.expanded_tools.is_empty()),
             "file click must not toggle raw JSON"
@@ -622,7 +661,7 @@ mod tests {
         vcx.simulate_click(file.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(
-            panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().selected),
+            review_panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().selected),
             1
         );
         let copy = vcx.debug_bounds("diff-copy").unwrap();
@@ -654,8 +693,9 @@ mod tests {
         let header = vcx.debug_bounds("diff-file-1").unwrap();
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        let review_panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
         assert_eq!(
-            panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().selected),
+            review_panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().selected),
             1
         );
         let close = vcx.debug_bounds("diff-close").unwrap();
