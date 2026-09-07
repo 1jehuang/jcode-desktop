@@ -4885,7 +4885,7 @@ impl Workspace {
                             .set_offset(gpui::point(px(0.0), px(next)));
                         cx.notify();
                     }
-                    // Keep native pixel scrolling from stopping halfway through a row.
+                    // Keep the compact rows' scrolling cadence, including taller history cards.
                     cx.stop_propagation();
                 }),
             )
@@ -5021,6 +5021,66 @@ impl Workspace {
                 details = details.child(limits);
             }
 
+            if account.shows_oauth_history() {
+                let mut history = div()
+                    .debug_selector(|| format!("account-{}-history", account.id))
+                    .mt_2()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_size(px(10.0))
+                    .line_height(px(15.0))
+                    .text_color(Theme::global().TEXT_DIM);
+                if account.usage_reports.is_empty() {
+                    history = history.child(
+                        div()
+                            .debug_selector(|| "account-openai-history-unavailable".into())
+                            .child("Today / Lifetime: usage history unavailable. No recorded usage has been received."),
+                    );
+                }
+                for (report_index, report) in account.usage_reports.iter().enumerate() {
+                    let mut report_view = div()
+                        .debug_selector(move || {
+                            format!("account-openai-history-report-{report_index}")
+                        })
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().text_color(ink).child(report.title()));
+                    for period in ["Today", "Lifetime"] {
+                        let value = report
+                            .extra_info
+                            .iter()
+                            .find(|(key, _)| key == period)
+                            .map(|(_, value)| value.as_str())
+                            .unwrap_or("Usage history unavailable");
+                        report_view = report_view.child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("account-openai-history-{report_index}-{period}")
+                                })
+                                .child(format!("{period}: {value}")),
+                        );
+                    }
+                    // Retain backend coverage, estimate and pricing caveats verbatim.
+                    for (key, value) in &report.extra_info {
+                        if !matches!(key.as_str(), "Today" | "Lifetime") {
+                            report_view = report_view.child(div().child(format!("{key}: {value}")));
+                        }
+                    }
+                    history = history.child(report_view);
+                }
+                details = details.child(history).child(
+                    div()
+                        .debug_selector(|| "account-openai-estimate-note".into())
+                        .mt_2()
+                        .text_size(px(9.0))
+                        .line_height(px(13.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(accounts::USAGE_ESTIMATE_NOTE),
+                );
+            }
+
             list = list.child(
                 div()
                     .flex_none()
@@ -5028,12 +5088,18 @@ impl Workspace {
                     .debug_selector(|| format!("account-{}", account.id))
                     .mx_2()
                     .px_2()
-                    .h(px(ACCOUNT_ROW_HEIGHT))
+                    .when(account.shows_oauth_history(), |row| {
+                        row.min_h(px(ACCOUNT_ROW_HEIGHT))
+                    })
+                    .when(!account.shows_oauth_history(), |row| {
+                        row.h(px(ACCOUNT_ROW_HEIGHT))
+                    })
                     .py_1()
                     .overflow_hidden()
                     .rounded_md()
                     .flex()
                     .items_center()
+                    .when(account.shows_oauth_history(), |row| row.items_start())
                     .gap_2()
                     .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .child(logo)
@@ -8834,6 +8900,7 @@ mod tests {
                 status: "available".into(),
                 auth_kind: "OAuth".into(),
                 method: "OAuth".into(),
+                usage_reports: Vec::new(),
                 limits: Vec::new(),
             }]);
             cx.notify();
@@ -8872,6 +8939,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn accounts_oauth_history_renders_named_periods_and_unavailable_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            w.accounts = accounts::parse(r#"{"providers":[{"id":"openai","display_name":"OpenAI","status":"available","auth_kind":"OAuth"}]}"#).unwrap();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("account-openai-history-unavailable")
+                .is_some()
+        );
+        workspace.update(vcx, |w, cx| {
+            w.accounts[0].usage_reports = ["personal", "work"].into_iter().map(|label| {
+                accounts::UsageReport {
+                    provider_name: format!("OpenAI (ChatGPT) {label}"),
+                    account_label: Some(label.into()),
+                    extra_info: vec![
+                        ("Today".into(), "12345 input / 456 output tokens (10000 cached input), $0.0200 API-equivalent estimate, not a bill; recorded only; since local midnight".into()),
+                        ("Lifetime".into(), "No recorded usage".into()),
+                    ],
+                }
+            }).collect();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("account-openai-history-unavailable")
+                .is_none()
+        );
+        let row = vcx.debug_bounds("account-openai").unwrap();
+        let first = vcx.debug_bounds("account-openai-history-report-0").unwrap();
+        let second = vcx.debug_bounds("account-openai-history-report-1").unwrap();
+        let today = vcx.debug_bounds("account-openai-history-0-Today").unwrap();
+        let lifetime = vcx
+            .debug_bounds("account-openai-history-0-Lifetime")
+            .unwrap();
+        let note = vcx.debug_bounds("account-openai-estimate-note").unwrap();
+        assert!(row.size.height > px(ACCOUNT_ROW_HEIGHT));
+        assert!(today.top() < lifetime.top());
+        assert!(first.bottom() <= second.top());
+        assert!(second.bottom() <= note.top());
+        assert!(
+            note.bottom() <= row.bottom(),
+            "history must not be clipped by compact row height"
+        );
+        assert!(
+            today.right() <= row.right(),
+            "long token details must wrap inside the sidebar"
+        );
+    }
+
+    #[gpui::test]
     fn accounts_fill_tab_with_mixed_quota_details(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
@@ -8888,6 +9011,7 @@ mod tests {
                             status: "available".into(),
                             auth_kind: "OAuth".into(),
                             method: "OAuth".into(),
+                            usage_reports: Vec::new(),
                             limits: if index % 2 == 0 {
                                 vec![accounts::UsageLimit {
                                     name: "credits".into(),
@@ -8970,6 +9094,7 @@ mod tests {
                     status: "available".into(),
                     auth_kind: "OAuth".into(),
                     method: "OAuth".into(),
+                    usage_reports: Vec::new(),
                     limits: Vec::new(),
                 })
                 .collect();
@@ -9043,6 +9168,7 @@ mod tests {
                     status: "available".into(),
                     auth_kind: "OAuth".into(),
                     method: "OAuth".into(),
+                    usage_reports: Vec::new(),
                     limits: vec![
                         accounts::UsageLimit {
                             name: "5 hour".into(),
@@ -9067,6 +9193,7 @@ mod tests {
                     status: "expired".into(),
                     auth_kind: "API key".into(),
                     method: "API key (`JCODE_API_KEY`)".into(),
+                    usage_reports: Vec::new(),
                     limits: Vec::new(),
                 },
                 accounts::Account {
@@ -9075,6 +9202,7 @@ mod tests {
                     status: "available".into(),
                     auth_kind: "OAuth".into(),
                     method: "OAuth".into(),
+                    usage_reports: Vec::new(),
                     limits: vec![
                         accounts::UsageLimit {
                             name: "Claude".into(),

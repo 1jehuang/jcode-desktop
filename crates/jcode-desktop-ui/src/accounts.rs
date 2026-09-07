@@ -23,6 +23,26 @@ pub struct Account {
     pub method: String,
     /// Every rolling or model-specific limit reported by `jcode usage`.
     pub limits: Vec<UsageLimit>,
+    /// Keep each OAuth account's report separate, never sum unrelated logins.
+    pub usage_reports: Vec<UsageReport>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageReport {
+    pub provider_name: String,
+    pub account_label: Option<String>,
+    pub extra_info: Vec<(String, String)>,
+}
+
+pub const USAGE_ESTIMATE_NOTE: &str = "Recorded by Jcode. API-equivalent estimates, not your ChatGPT bill. Today starts at local midnight. Lifetime covers recorded history only.";
+
+impl UsageReport {
+    pub fn title(&self) -> String {
+        match &self.account_label {
+            Some(label) => format!("{} · {label}", self.provider_name),
+            None => self.provider_name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +56,10 @@ pub struct UsageLimit {
 impl Account {
     pub fn available(&self) -> bool {
         self.status == "available"
+    }
+
+    pub fn shows_oauth_history(&self) -> bool {
+        self.id == "openai"
     }
 }
 
@@ -120,6 +144,18 @@ pub fn spawn() -> Feed {
             status: "available".into(),
             auth_kind: "OAuth".into(),
             method: "Offline fixture".into(),
+            usage_reports: if id == "openai" {
+                vec![UsageReport {
+                    provider_name: "OpenAI (ChatGPT)".into(),
+                    account_label: Some("personal".into()),
+                    extra_info: vec![
+                        ("Today".into(), "120000 input / 8000 output tokens (90000 cached input), $0.4200 API-equivalent estimate, not a bill; recorded only; since local midnight".into()),
+                        ("Lifetime".into(), "2400000 input / 160000 output tokens (1800000 cached input), $8.4000 known + unknown cost (2 unpriced responses) API-equivalent estimate, not a bill; recorded only; partial token counts; since 2026-09-01 10:00 -07:00".into()),
+                    ],
+                }]
+            } else {
+                Vec::new()
+            },
             limits: vec![UsageLimit {
                 name: "5 hour".into(),
                 usage_percent: 25.0,
@@ -189,6 +225,7 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
                 status: text("status"),
                 auth_kind: text("auth_kind"),
                 method: text("method"),
+                usage_reports: Vec::new(),
                 limits: Vec::new(),
             };
             matches!(account.status.as_str(), "available" | "expired").then_some(account)
@@ -221,19 +258,48 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
         else {
             continue;
         };
-        let Some(limits) = provider.get("limits").and_then(|value| value.as_array()) else {
-            continue;
-        };
-        account.limits.extend(limits.iter().filter_map(|limit| {
-            Some(UsageLimit {
-                name: limit.get("name")?.as_str()?.to_owned(),
-                usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
-                reset_in: limit
-                    .get("reset_in")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned),
+        let extra_info: Vec<(String, String)> = provider
+            .get("extra_info")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let pair = entry.as_array()?;
+                Some((
+                    pair.first()?.as_str()?.to_owned(),
+                    pair.get(1)?.as_str()?.to_owned(),
+                ))
             })
-        }));
+            .collect();
+        let account_label = extra_info
+            .iter()
+            .find(|(key, _)| key == "Account label")
+            .map(|(_, value)| value.clone());
+        account.usage_reports.push(UsageReport {
+            provider_name: provider_name.to_owned(),
+            account_label,
+            extra_info: extra_info
+                .into_iter()
+                .filter(|(key, _)| key != "Account label")
+                .collect(),
+        });
+        account.limits.extend(
+            provider
+                .get("limits")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|limit| {
+                    Some(UsageLimit {
+                        name: limit.get("name")?.as_str()?.to_owned(),
+                        usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
+                        reset_in: limit
+                            .get("reset_in")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                    })
+                }),
+        );
     }
 }
 
@@ -242,7 +308,7 @@ fn usage_provider_matches(account: &Account, provider_name: &str) -> bool {
     match account.id.as_str() {
         "claude" => name.starts_with("anthropic (claude)"),
         "anthropic-api" => name.starts_with("anthropic api"),
-        "openai" => name.starts_with("openai (chatgpt)"),
+        "openai" => name.starts_with("openai (chatgpt)") || name.starts_with("openai - "),
         "openai-api" => name.starts_with("openai api"),
         "jcode" => name.starts_with("jcode subscription"),
         id => {
@@ -351,6 +417,7 @@ mod tests {
                 .into(),
                 auth_kind: String::new(),
                 method: String::new(),
+                usage_reports: Vec::new(),
                 limits: Vec::new(),
             })
             .collect();
@@ -401,6 +468,84 @@ mod tests {
     fn parse_rejects_garbage() {
         assert!(parse("not json").is_none());
         assert!(parse("{}").is_none());
+    }
+
+    #[test]
+    fn oauth_history_preserves_each_label_and_report_without_summing() {
+        let mut accounts = parse(SAMPLE).unwrap();
+        accounts.extend(parse(r#"{"providers":[{"id":"openai-api","display_name":"OpenAI API","status":"available","auth_kind":"API key"}]}"#).unwrap());
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+            {"provider_name":"OpenAI - personal (p***l@example.com) ✦","limits":[],"extra_info":[
+                ["Account label","personal"],["Today","10 input · ~$0.01"],["Lifetime","100 input · ~$0.10"]
+            ]},
+            {"provider_name":"OpenAI - work (w***k@example.com)","extra_info":[
+                ["Account label","work"],["Today","20 input · ~$0.02"],["Lifetime","200 input · ~$0.20"],
+                ["Coverage","Recorded history only"], ["invalid"], null, [123,"bad"]
+            ]},
+            {"provider_name":"OpenAI API","extra_info":[["Today","999 API-key tokens"]]}
+        ]}"#,
+        );
+        let openai = accounts
+            .iter()
+            .find(|account| account.id == "openai")
+            .unwrap();
+        assert!(openai.shows_oauth_history());
+        assert_eq!(openai.usage_reports.len(), 2);
+        let personal = &openai.usage_reports[0];
+        let work = &openai.usage_reports[1];
+        assert_eq!(personal.account_label.as_deref(), Some("personal"));
+        assert_eq!(
+            personal.title(),
+            "OpenAI - personal (p***l@example.com) ✦ · personal"
+        );
+        assert_eq!(
+            personal.extra_info[0],
+            ("Today".into(), "10 input · ~$0.01".into())
+        );
+        assert_eq!(work.account_label.as_deref(), Some("work"));
+        assert_eq!(work.extra_info.len(), 3);
+        assert_eq!(
+            work.extra_info[1],
+            ("Lifetime".into(), "200 input · ~$0.20".into())
+        );
+        assert!(
+            accounts
+                .iter()
+                .filter(|account| !matches!(account.id.as_str(), "openai" | "openai-api"))
+                .all(|account| account.usage_reports.is_empty())
+        );
+        let api = accounts
+            .iter()
+            .find(|account| account.id == "openai-api")
+            .unwrap();
+        assert!(!api.shows_oauth_history());
+        assert_eq!(api.usage_reports.len(), 1);
+        assert_eq!(api.usage_reports[0].extra_info[0].1, "999 API-key tokens");
+    }
+
+    #[test]
+    fn oauth_history_retains_no_data_and_accepts_older_reports() {
+        let mut accounts = parse(SAMPLE).unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+            {"provider_name":"OpenAI (ChatGPT) empty","extra_info":[
+                ["Today","No recorded usage"],["Lifetime","No recorded usage"]
+            ]},
+            {"provider_name":"OpenAI (ChatGPT) older","limits":[]}
+        ]}"#,
+        );
+        let openai = accounts
+            .iter()
+            .find(|account| account.id == "openai")
+            .unwrap();
+        assert_eq!(openai.usage_reports[0].extra_info[0].1, "No recorded usage");
+        assert_eq!(openai.usage_reports[0].title(), "OpenAI (ChatGPT) empty");
+        assert!(openai.usage_reports[1].extra_info.is_empty());
+        assert!(USAGE_ESTIMATE_NOTE.contains("not your ChatGPT bill"));
+        assert!(USAGE_ESTIMATE_NOTE.contains("local midnight"));
     }
 
     #[test]
@@ -484,6 +629,7 @@ mod tests {
                 status: "available".into(),
                 auth_kind: "OAuth".into(),
                 method: "OAuth".into(),
+                usage_reports: Vec::new(),
                 limits: Vec::new(),
             }]
         };
