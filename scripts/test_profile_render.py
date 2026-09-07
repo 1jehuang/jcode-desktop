@@ -10,6 +10,16 @@ spec.loader.exec_module(profile)
 
 
 class RenderProfileTests(unittest.TestCase):
+    def test_settled_draws_exclude_transition_and_require_samples(self):
+        frames = [dict(unix_ms=1000, draw_count=20),
+                  dict(unix_ms=2499, draw_count=10),
+                  dict(unix_ms=2500, draw_count=1),
+                  dict(unix_ms=2600, draw_count=0)]
+        self.assertEqual(profile.settled_draw_summary(frames, 1000),
+                         dict(settled_draws=1, settled_sample_windows=2))
+        with self.assertRaisesRegex(RuntimeError, 'No post-transition samples'):
+            profile.settled_draw_summary(frames[:2], 1000)
+
     def frame(self, draws=0):
         return dict(interval_ms=100, draw_count=draws, draw_max_ms=3 if draws else None,
                     draw_p95_ms=2 if draws else None, animation_present_count=draws,

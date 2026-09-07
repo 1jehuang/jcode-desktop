@@ -44,13 +44,24 @@ def summarize(frames, before, after):
                 wake_max_ms=maximum('ui_wake_lag_ms'))
 
 
+def settled_draw_summary(frames, started_unix_ms):
+    # Exclude intended animation and a full sampling interval at its boundary.
+    settled = [f for f in frames if f['unix_ms'] >= started_unix_ms + 1500]
+    if not settled:
+        raise RuntimeError('No post-transition samples')
+    return dict(settled_draws=sum(f['draw_count'] for f in settled),
+                settled_sample_windows=len(settled))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
     parser.add_argument('--binary', type=Path, default=Path('target/debug/jcode-desktop'))
     parser.add_argument('--seconds', type=float, default=8)
     parser.add_argument('--uncached-panels', action='store_true', help='same-binary offline control without the panel cache')
-    parser.add_argument('--scenario', choices=('overview', 'focus-switch'), default='overview')
+    parser.add_argument('--scalar-inline', action='store_true', help='same-binary offline control without bulk inline prose scanning')
+    parser.add_argument('--scenario', choices=('overview', 'focus-switch', 'overview-after-resize'), default='overview')
+    parser.add_argument('--stale-hidden-animations', action='store_true', help='same-binary offline control retaining hidden animation flags')
     parser.add_argument('--panels', type=int, choices=range(2, 7), default=4)
     parser.add_argument('--transcript', choices=('all', 'empty', 'reasoning'), default='all')
     args = parser.parse_args()
@@ -66,6 +77,10 @@ def main():
     env['JCODE_DESKTOP_SCREENSHOT_PANELS'] = str(args.panels)
     if args.uncached_panels:
         env['JCODE_DESKTOP_SCREENSHOT_UNCACHED_PANELS'] = '1'
+    if args.scalar_inline:
+        env['JCODE_DESKTOP_SCREENSHOT_SCALAR_INLINE'] = '1'
+    if args.stale_hidden_animations:
+        env['JCODE_DESKTOP_SCREENSHOT_STALE_HIDDEN_ANIMATIONS'] = '1'
     env['JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT'] = args.transcript
     env['JCODE_DESKTOP_CONFIG'] = str(root / 'desktop.toml')
     (root / 'desktop.toml').write_text('[appearance]\nlayout_mode = "folder_tabs"\n[workspace]\ncoaching_hints = false\n')
@@ -73,6 +88,8 @@ def main():
         binary_hash = hashlib.file_digest(file, 'sha256').hexdigest()
     (root / 'capture.json').write_text(json.dumps(dict(
         binary=str(binary), sha256=binary_hash, uncached_panels=args.uncached_panels,
+        scalar_inline=args.scalar_inline,
+        stale_hidden_animations=args.stale_hidden_animations,
         scenario=args.scenario, seconds=args.seconds, panels=args.panels,
         transcript=args.transcript, renderer=env['VK_DRIVER_FILES']), indent=2) + '\n')
     processes, logs = [], []
@@ -106,22 +123,31 @@ def main():
             started = time.monotonic()
             actions = 0
             observed_states = set()
+            observed_widths = set()
+            def observe_state():
+                try:
+                    state = json.loads(next(line[11:] for line in (root / 'state').read_text().splitlines() if line.startswith('navigation=')))
+                    observed_states.add((state['overview'], state['focused_slot']))
+                    observed_widths.add(tuple(panel['width'] for row in state['rows'] for panel in row['panels']))
+                except (OSError, StopIteration, json.JSONDecodeError):
+                    pass
+            observe_state()
             while time.monotonic() - started < args.seconds:
                 if app.poll() is not None:
                     raise RuntimeError('App exited, see app.log')
-                if scenario != 'idle':
+                if scenario == 'overview-after-resize' and actions == 0:
+                    # Hide the strip before its width transition finishes, then
+                    # stop all input. Expired hidden transitions must go idle.
+                    subprocess.run(['xdotool', 'key', '--clearmodifiers', '--delay', '0', 'super+r', 'super+o'], env=env, check=True, timeout=10)
+                    actions += 2
+                elif scenario not in ('idle', 'overview-after-resize'):
                     # Alternating overview transitions exercise real layout,
                     # painting and text without manufacturing redraw events.
                     chord = 'super+o' if scenario == 'overview' else ('super+h' if actions % 2 == 0 else 'super+l')
                     subprocess.run(['xdotool', 'key', '--clearmodifiers', '--delay', '0', chord], env=env, check=True, timeout=10)
                     actions += 1
                 time.sleep(.3)
-                try:
-                    state = json.loads(next(line[11:] for line in (root / 'state').read_text().splitlines() if line.startswith('navigation=')))
-                    observed_states.add((state['overview'], state['focused_slot']))
-                except (OSError, StopIteration, json.JSONDecodeError):
-                    # The app may be writing the next diagnostic snapshot.
-                    pass
+                observe_state()
             after = profile.process_sample(app.pid)
             control.unlink()
             source = root / f'runtime/jcode-desktop-profile-{app.pid}-{capture}.jsonl'
@@ -131,6 +157,11 @@ def main():
             frames = [f for f in frames if before['unix_ms'] <= f['unix_ms'] <= after['unix_ms']]
             (root / (scenario + '-frames.json')).write_text(json.dumps(frames, indent=2) + '\n')
             results[scenario] = dict(summarize(frames, before, after), native_actions=actions, observed_states=sorted(observed_states))
+            if scenario == 'overview-after-resize':
+                results[scenario].update(settled_draw_summary(frames, before['unix_ms']))
+                results[scenario]['observed_widths'] = sorted(observed_widths)
+                if len(observed_widths) < 2:
+                    raise RuntimeError('Native resize did not change panel width')
             if scenario != 'idle' and not results[scenario]['input_frames']:
                 raise RuntimeError('No input-bearing frames, animation evidence is inconclusive')
             if scenario != 'idle' and len(observed_states) < 2:

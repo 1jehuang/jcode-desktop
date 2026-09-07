@@ -46,6 +46,9 @@ mod closing_navigation_tests;
 #[path = "fps_header_tests.rs"]
 mod fps_header_tests;
 #[cfg(test)]
+#[path = "hidden_animation_tests.rs"]
+mod hidden_animation_tests;
+#[cfg(test)]
 #[path = "panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
 #[cfg(test)]
@@ -3024,6 +3027,47 @@ impl Workspace {
             path,
             format!("{line}\n{coach}\n{appearance}{suffix}\nnavigation={navigation}\n"),
         );
+    }
+
+    /// Strip rendering normally advances these values. Overview and completed
+    /// row switches omit hidden strips, but elapsed animations must still retire
+    /// or animation_active will keep rearming the fallback frame timer forever.
+    fn advance_hidden_strip_animations(&mut self, now: Instant, overview_visible: bool) {
+        static STALE_FIXTURE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+            (harness::screenshot_mode() || cfg!(test))
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_STALE_HIDDEN_ANIMATIONS")
+                    .as_deref()
+                    == Ok("1")
+        });
+        if *STALE_FIXTURE {
+            return;
+        }
+        let active_row = self.active_row;
+        let outgoing_row = self.outgoing_row;
+        let hidden = |row| overview_visible || (row != active_row && Some(row) != outgoing_row);
+        for slot in &mut self.slots {
+            if hidden(slot.row) {
+                slot.animated_width.sample(now);
+                slot.order_offset.sample(now);
+            }
+        }
+        for row in 0..STRIP_COUNT {
+            if !hidden(row) {
+                continue;
+            }
+            let duration = if self.camera_touch_pan[row] {
+                TOUCH_PAN_DURATION
+            } else {
+                CAMERA_DURATION
+            };
+            if self.camera_started[row]
+                .is_some_and(|started| now.saturating_duration_since(started) >= duration)
+            {
+                self.camera_x[row] = self.camera_target[row];
+                self.camera_started[row] = None;
+                self.camera_touch_pan[row] = false;
+            }
+        }
     }
 
     fn animation_active(&self) -> bool {
@@ -6399,6 +6443,7 @@ impl Render for Workspace {
             window.request_animation_frame();
         }
 
+        self.advance_hidden_strip_animations(now, overview_progress > 0.0);
         let content = if overview_progress > 0.0 {
             div()
                 .size_full()

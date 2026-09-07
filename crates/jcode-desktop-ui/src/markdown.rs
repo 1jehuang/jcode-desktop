@@ -294,6 +294,7 @@ fn split_numbered(line: &str) -> Option<(String, String)> {
     Some((line[..dot].to_string(), line[dot + 2..].trim().to_string()))
 }
 
+#[derive(Debug, PartialEq)]
 struct Inline {
     plain: String,
     code_ranges: Vec<std::ops::Range<usize>>,
@@ -305,6 +306,19 @@ struct Inline {
 /// returning plain text plus highlight ranges (byte offsets into the plain
 /// text) and any link targets.
 fn inline_spans(source: &str) -> Inline {
+    // Same-binary control is restricted to offline profiling, never live sessions.
+    static SCALAR: LazyLock<bool> = LazyLock::new(|| {
+        (crate::harness::screenshot_mode() || cfg!(test))
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_SCALAR_INLINE").as_deref() == Ok("1")
+    });
+    if *SCALAR {
+        inline_spans_impl::<false>(source)
+    } else {
+        inline_spans_impl::<true>(source)
+    }
+}
+
+fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
     let mut plain = String::with_capacity(source.len());
     let mut code_ranges = Vec::new();
     let mut highlights = Vec::new();
@@ -319,6 +333,26 @@ fn inline_spans(source: &str) -> Inline {
     };
 
     while i < bytes.len() {
+        if BULK_TEXT {
+            // Only these ASCII bytes can begin syntax handled below (h starts
+            // a bare http(s) URL). Copy ordinary prose in one run instead of
+            // constructing/checking every highlight style for every character.
+            // ASCII delimiters cannot occur inside a UTF-8 continuation byte.
+            let count = bytes[i..]
+                .iter()
+                .position(|byte| {
+                    matches!(
+                        byte,
+                        b'\\' | b'`' | b'$' | b'[' | b'<' | b'h' | b'~' | b'*' | b'_'
+                    )
+                })
+                .unwrap_or(bytes.len() - i);
+            if count > 0 {
+                plain.push_str(&source[i..i + count]);
+                i += count;
+                continue;
+            }
+        }
         // Inline math delimiters \( ... \) come before the generic escape
         // rule, which would otherwise eat the opening parenthesis.
         if source[i..].starts_with("\\(") {
@@ -379,7 +413,7 @@ fn inline_spans(source: &str) -> Inline {
                 if let Some(paren) = source[label_end + 2..].find(')') {
                     let label = &source[i + 1..label_end];
                     let url = source[label_end + 2..label_end + 2 + paren].trim();
-                    let nested = inline_spans(label);
+                    let nested = inline_spans_impl::<BULK_TEXT>(label);
                     let start = plain.len();
                     plain.push_str(&nested.plain);
                     code_ranges.extend(
@@ -428,7 +462,7 @@ fn inline_spans(source: &str) -> Inline {
         }
         if bytes[i..].starts_with(b"~~") {
             if let Some(end) = source[i + 2..].find("~~") {
-                let nested = inline_spans(&source[i + 2..i + 2 + end]);
+                let nested = inline_spans_impl::<BULK_TEXT>(&source[i + 2..i + 2 + end]);
                 let start = plain.len();
                 plain.push_str(&nested.plain);
                 code_ranges.extend(
@@ -490,7 +524,9 @@ fn inline_spans(source: &str) -> Inline {
             // Unterminated emphasis falls through and prints literally, so a
             // response still reads correctly mid-stream.
             if let Some(end) = source[i + marker.len()..].find(marker) {
-                let nested = inline_spans(&source[i + marker.len()..i + marker.len() + end]);
+                let nested = inline_spans_impl::<BULK_TEXT>(
+                    &source[i + marker.len()..i + marker.len() + end],
+                );
                 let start = plain.len();
                 plain.push_str(&nested.plain);
                 code_ranges.extend(
@@ -529,7 +565,7 @@ fn inline_spans(source: &str) -> Inline {
                 if let Some(end) = source[i + 1..].find(marker) {
                     let inner = &source[i + 1..i + 1 + end];
                     if !inner.is_empty() && !inner.starts_with(' ') {
-                        let nested = inline_spans(inner);
+                        let nested = inline_spans_impl::<BULK_TEXT>(inner);
                         let start = plain.len();
                         plain.push_str(&nested.plain);
                         code_ranges.extend(
@@ -1900,6 +1936,78 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_inline_matches_scalar_at_every_streaming_boundary() {
+        let examples = [
+            "ordinary prose without markup. café 日本語 😀 hello",
+            "**bold** *italic* __strong__ snake_case ~~gone~~ ***both***",
+            r"escaped \*literal\* and `code` ``a ` b`` and trailing ",
+            "[**nested** `code`](https://example.com) <https://example.org> http://a.b.",
+            r"math $x_2$ and \(n \to \infty\) plus [broken]( and **unfinished",
+            "h http https hhttp://example.com [link] ~ _ * ` \\ $ < 🦀",
+        ];
+        for source in examples {
+            for end in source.char_indices().map(|(i, _)| i).chain([source.len()]) {
+                let prefix = &source[..end];
+                assert_eq!(
+                    inline_spans_impl::<true>(prefix),
+                    inline_spans_impl::<false>(prefix),
+                    "{prefix:?}"
+                );
+            }
+        }
+        // Deterministic mixed syntax also exercises malformed nested delimiters.
+        let atoms = [
+            "a", "é", "😀", "h", "*", "_", "~", "`", "\\", "$", "[", "]", "(", ")", "<", ">", " ",
+            ":", "/",
+        ];
+        let mut seed = 7u64;
+        for _ in 0..1000 {
+            let mut source = String::new();
+            for _ in 0..48 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                source.push_str(atoms[(seed >> 32) as usize % atoms.len()]);
+            }
+            assert_eq!(
+                inline_spans_impl::<true>(&source),
+                inline_spans_impl::<false>(&source),
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual paired same-binary inline parsing profiler"]
+    fn inline_prose_profile() {
+        use std::{hint::black_box, time::Instant};
+        let source = "The desktop renders a streaming response with **important details**, `code`, and [a link](https://example.com). Unicode café 日本語 🦀 remains intact. ".repeat(128);
+        for trial in 0..6 {
+            let run = |bulk: bool| {
+                let start = Instant::now();
+                for _ in 0..100 {
+                    if bulk {
+                        black_box(inline_spans_impl::<true>(black_box(&source)));
+                    } else {
+                        black_box(inline_spans_impl::<false>(black_box(&source)));
+                    }
+                }
+                start.elapsed().as_secs_f64() * 1000.0
+            };
+            let (bulk, scalar) = if trial % 2 == 0 {
+                let scalar = run(false);
+                (run(true), scalar)
+            } else {
+                let bulk = run(true);
+                (bulk, run(false))
+            };
+            eprintln!(
+                "inline trial={trial} bytes={} iterations=100 scalar_ms={scalar:.3} bulk_ms={bulk:.3} speedup={:.2}",
+                source.len(),
+                scalar / bulk
+            );
+        }
+    }
 
     #[test]
     fn restored_reasoning_decodes_before_markdown_emphasis() {
