@@ -46,6 +46,8 @@ def main():
                         help="verify distinct pasted/transcript images and repeated stable image frames (GTK3 required)")
     parser.add_argument("--mermaid-interact", action="store_true",
                         help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
+    parser.add_argument("--sidebar-interact", action="store_true",
+                        help="verify hover-only close and native safe left-drag dismissal across workspaces")
     parser.add_argument("--history-interact", action="store_true",
                         help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--fps-header-interact", action="store_true",
@@ -73,6 +75,17 @@ def main():
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
     ), help="render a built-in palette with isolated settings")
     args = parser.parse_args()
+    if args.sidebar_interact:
+        if (args.panels != 2 or args.size != "1440x1000" or args.theme != "warm-neutral"
+                or args.layout_mode != "folder_tabs" or args.learn_stage is not None
+                or args.focus_panel is not None
+                or any((args.fresh_interact, args.html_interact, args.image_interact,
+                        args.image_cache_interact, args.mermaid_interact, args.history_interact,
+                        args.workspace_interact, args.close_interact, args.model_interact,
+                        args.default_directory_interact))):
+            parser.error("sidebar-interact requires two panels, default size/theme/layout, and no other interaction mode")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("sidebar-interact requires xdotool and tesseract")
     if args.close_interact:
         if (args.panels != 6 or args.learn_stage is not None or args.focus_panel is not None
                 or any((args.fresh_interact, args.html_interact, args.image_interact,
@@ -287,6 +300,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.sidebar_interact:
+                    from sidebar_gesture_acceptance import verify
+                    verify(output, env, root)
                 if args.close_interact:
                     from close_panel_acceptance import verify
                     verify(output, env, root, layout_mode=args.layout_mode)

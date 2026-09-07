@@ -4,6 +4,8 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "sidebar_gesture.rs"]
+mod sidebar_gesture;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 
@@ -561,6 +563,7 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_selection: sidebar_selection::Selection,
+    sidebar_gesture: Option<sidebar_gesture::Pending>,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
@@ -755,6 +758,7 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_selection: Default::default(),
+            sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -935,6 +939,7 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_selection: Default::default(),
+            sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -4182,11 +4187,14 @@ impl Workspace {
 
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
                             let close_id = session.session_id.clone();
+                            let release_id = session.session_id.clone();
+                            let release_out_id = session.session_id.clone();
                             let selection_order = selection_order.clone();
                             let session = session.clone();
                             list = list.child(
                                 div()
                                     .id(("sidebar-session", sidebar_index))
+                                    .group("sidebar-session-row")
                                     .debug_selector(move || {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
@@ -4219,23 +4227,23 @@ impl Workspace {
                                     .when(!selected, |el| el.hover(move |el| el.bg(Theme::global().PANEL_BG)))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
-                                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                            // We explicitly focus the session's composer below.
+                                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, _cx| {
+                                            // Release will explicitly focus the session's composer.
                                             // Otherwise the focusable workspace ancestor handles
                                             // this same press afterward and steals focus back.
                                             window.prevent_default();
-                                            if is_open {
-                                                this.sidebar_selection.click(&session.session_id, &selection_order, event.modifiers.shift, event.modifiers.control || event.modifiers.platform);
-                                                if event.modifiers.shift || event.modifiers.control || event.modifiers.platform {
-                                                    cx.notify();
-                                                    return;
-                                                }
-                                            } else {
-                                                this.sidebar_selection = Default::default();
-                                            }
-                                            this.activate_session(session.clone(), window, cx);
+                                            this.begin_sidebar_gesture(session.clone(), selection_order.clone(), is_open, event);
                                         }),
                                     )
+                                    .on_mouse_up(gpui::MouseButton::Left, cx.listener(move |this, event, window, cx| {
+                                        this.finish_sidebar_gesture(&release_id, true, event, window, cx);
+                                    }))
+                                    .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(move |this, event, window, cx| {
+                                        this.finish_sidebar_gesture(&release_out_id, false, event, window, cx);
+                                    }))
+                                    .on_scroll_wheel(cx.listener(|this, _, _, _| {
+                                        this.sidebar_gesture = None;
+                                    }))
                                     .child(
                                         div()
                                             .flex()
@@ -4269,9 +4277,12 @@ impl Workspace {
                                                 div().id(("sidebar-close", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
                                                     .px_1().cursor_pointer().child("×")
+                                                    .opacity(0.0)
+                                                    .group_hover("sidebar-session-row", |style| style.opacity(1.0))
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
                                                         window.prevent_default();
                                                         cx.stop_propagation();
+                                                        this.sidebar_gesture = None;
                                                         this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
                                                     }))
                                             ))
@@ -4326,6 +4337,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .debug_selector(|| "sidebar".into())
+            .on_mouse_move(cx.listener(|this, event, _, _| this.move_sidebar_gesture(event)))
             .relative()
             .when(!folders, |el| el.bg(Theme::global().HEADER_BG))
             // Folder mode leaves this transparent: the native path owns its tab.
@@ -8535,6 +8547,39 @@ mod tests {
 
         // A move can change heading boundaries without changing session order.
         // The virtual list must invalidate its cached row heights in that case.
+        let order = workspace.read_with(vcx, |workspace, _| {
+            workspace
+                .sidebar_session_layout
+                .iter()
+                .map(|item| item.session_id.clone())
+                .collect::<Vec<_>>()
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.slots[0].row = 2;
+            workspace.active_row = 2;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-workspace-heading-1").is_none());
+        assert!(vcx.debug_bounds("sidebar-workspace-heading-2").is_some());
+        workspace.read_with(vcx, |workspace, _| {
+            assert_eq!(
+                workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .map(|item| item.session_id.clone())
+                    .collect::<Vec<_>>(),
+                order
+            );
+            assert_eq!(
+                workspace
+                    .sidebar_session_layout
+                    .last()
+                    .unwrap()
+                    .workspace_row,
+                Some(2)
+            );
+        });
         workspace.update(vcx, |workspace, cx| {
             workspace.slots[0].row = 0;
             workspace.active_row = 0;
