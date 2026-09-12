@@ -50,6 +50,8 @@ mod startup;
 pub use startup::StartupLayout;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
+#[path = "panel_tool_streaming.rs"]
+mod tool_streaming;
 #[path = "panel_response_stats.rs"]
 mod response_stats;
 #[path = "panel_usage.rs"]
@@ -2527,6 +2529,7 @@ impl Panel {
                 self.flush_reasoning();
             }
             ApiEvent::ToolStart { call_id, name, .. } => {
+                self.flush_reasoning();
                 self.flush_streaming();
                 self.arriving_tools.insert(call_id.clone(), Instant::now());
                 self.items.push(Item::Tool {
@@ -4966,31 +4969,16 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
 fn tool_summary(input: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
-        return condense(input, 90);
-    };
-    const PREFERRED: &[&str] = &[
-        "intent",
-        "command",
-        "query",
-        "file_path",
-        "path",
-        "pattern",
-        "url",
-        "prompt",
-        "content",
-        "task",
-        "action",
-    ];
-    for key in PREFERRED {
-        if let Some(found) = value.get(*key).and_then(json_scalar) {
-            if !found.trim().is_empty() {
-                let found = condense(&found, 90);
-                return found;
-            }
-        }
+    if let Some(summary) = tool_streaming::summary(input) {
+        return condense(&summary, 90);
     }
-    condense(input, 90)
+    if serde_json::from_str::<serde_json::Value>(input).is_ok() {
+        condense(input, 90)
+    } else {
+        // The name already identifies the tool. Do not fill its header with
+        // unfinished JSON while waiting for a useful argument to complete.
+        String::new()
+    }
 }
 
 fn json_scalar(value: &serde_json::Value) -> Option<String> {
@@ -7783,6 +7771,11 @@ Goals: []"#,
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-streaming")
+    {
+        return tool_streaming::fixture_items();
+    }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("empty")
     {
