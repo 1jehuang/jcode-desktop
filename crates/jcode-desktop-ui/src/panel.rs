@@ -47,6 +47,8 @@ mod startup;
 pub use startup::StartupLayout;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
+#[path = "panel_response_stats.rs"]
+mod response_stats;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
 
@@ -73,6 +75,7 @@ pub enum Item {
     User(String),
     Image(TranscriptImage),
     Assistant(String),
+    ResponseStats(response_stats::ResponseStats),
     Reasoning(String),
     Tool {
         call_id: String,
@@ -207,6 +210,7 @@ pub struct Panel {
     pub reasoning_effort: Option<String>,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
+    response_stats: response_stats::Tracker,
     pub items: Vec<Item>,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
@@ -636,6 +640,7 @@ impl Panel {
             auth_method: usage_fixture.then(|| "oauth".into()),
             reasoning_effort: None,
             context_tokens: usage_fixture.then_some(100_000),
+            response_stats: response_stats::Tracker::default(),
             items: demo_items(),
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
@@ -2111,6 +2116,7 @@ impl Panel {
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
                     self.items.clear();
+                    self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
                     self.streaming_reasoning.clear();
                 }
@@ -2283,9 +2289,19 @@ impl Panel {
                 .rev()
                 .take_while(|message| message.role != "user")
                 .find(|message| message.role == "assistant" && !message.content.trim().is_empty())
-                .map(|message| message.content.as_str())
             {
-                self.recover_response(response);
+                self.recover_response(&response.content);
+                if let Some(stats) = response.response_stats.clone() {
+                    self.finish_response();
+                    let mut restored: response_stats::ResponseStats = stats.into();
+                    if let Some(Item::ResponseStats(existing)) = self.items.last_mut() {
+                        restored.duration_secs = restored.duration_secs.or(existing.duration_secs);
+                        restored.tool_calls = existing.tool_calls;
+                        *existing = restored;
+                    } else if !restored.is_empty() {
+                        self.items.push(Item::ResponseStats(restored));
+                    }
+                }
                 if self.stick_to_bottom {
                     self.transcript_list.scroll_to_end();
                 }
@@ -2333,6 +2349,12 @@ impl Panel {
                 "assistant" => {
                     if !message.content.trim().is_empty() {
                         items.push(Item::Assistant(message.content));
+                    }
+                    if let Some(stats) = message.response_stats {
+                        let stats: response_stats::ResponseStats = stats.into();
+                        if !stats.is_empty() {
+                            items.push(Item::ResponseStats(stats));
+                        }
                     }
                 }
                 _ => {}
@@ -2400,6 +2422,7 @@ impl Panel {
 
     /// Apply a streaming event addressed to this session.
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        self.response_stats.observe(event, self.provider.as_deref());
         if let Some(cue) = self.sound_events.observe(event)
             && self.preview_state.is_none()
         {
@@ -2519,9 +2542,7 @@ impl Panel {
                     status.clone()
                 };
                 if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
-                    self.flush_reasoning();
-                    self.flush_streaming();
-                    self.connection_phase.clear();
+                    self.finish_response();
                 }
             }
             ApiEvent::ConnectionPhase { phase, .. } => {
@@ -2595,6 +2616,9 @@ impl Panel {
     fn finish_response(&mut self) {
         self.flush_reasoning();
         self.flush_streaming();
+        if let Some(stats) = self.response_stats.finish() {
+            self.items.push(Item::ResponseStats(stats));
+        }
         self.status = "idle".into();
         self.connection_phase.clear();
     }
@@ -2707,8 +2731,7 @@ impl Panel {
         if self.preview_state.is_none() {
             crate::sounds::play(crate::sounds::Cue::Error, cx);
         }
-        self.flush_reasoning();
-        self.flush_streaming();
+        self.finish_response();
         self.items.push(Item::Error(message));
         self.status = "idle".into();
         self.connection_phase.clear();
@@ -2862,6 +2885,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match item {
+            Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) => {
                 let now = Instant::now();
                 let pending = self.pending_users.contains(&index);
@@ -3708,7 +3732,9 @@ impl Render for Panel {
                                         matches!(previous, Item::Tool { .. })
                                     });
                                 let top_padding =
-                                    if matches!(item, Item::Tool { .. }) && follows_tool {
+                                    if matches!(item, Item::ResponseStats(_)) {
+                                        2.0
+                                    } else if matches!(item, Item::Tool { .. }) && follows_tool {
                                         2.0
                                     } else {
                                         10.0
@@ -4243,6 +4269,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         Item::User(_) => Some("you"),
         Item::Assistant(_) => Some("jcode"),
         Item::Image(_)
+        | Item::ResponseStats(_)
         | Item::Reasoning(_)
         | Item::Tool { .. }
         | Item::BackgroundTask { .. }
@@ -5405,6 +5432,7 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        response_stats: None,
                         role: "user".into(),
                         content: (0..80)
                             .map(|line| format!("Detailed request line {line}"))
@@ -5412,6 +5440,7 @@ mod tests {
                             .join("\n\n"),
                     },
                     jcode_sdk::HistoryMessage {
+                        response_stats: None,
                         role: "assistant".into(),
                         content: (0..80)
                             .map(|line| format!("Detailed response line {line}"))
@@ -5456,10 +5485,12 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        response_stats: None,
                         role: "user".into(),
                         content: "Fix the rendering".into(),
                     },
                     jcode_sdk::HistoryMessage {
+                        response_stats: None,
                         role: "assistant".into(),
                         content: "Fixed.".into(),
                     },
@@ -5576,6 +5607,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             let history = (0..80)
                 .map(|index| jcode_sdk::HistoryMessage {
+                    response_stats: None,
                     role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
                     content: format!("restored message {index}"),
                 })
@@ -6977,10 +7009,12 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
+                        response_stats: None,
                         role: "user".into(),
                         content: "hello".into(),
                     },
                     jcode_sdk::HistoryMessage {
+                        response_stats: None,
                         role: "assistant".into(),
                         content: "recovered response".into(),
                     },
@@ -6997,6 +7031,7 @@ mod tests {
             panel.streaming_text = "partial".into();
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage {
+                    response_stats: None,
                     role: "assistant".into(),
                     content: "partial response completed".into(),
                 }],
@@ -7068,6 +7103,7 @@ mod tests {
             panel.items.clear();
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage {
+                    response_stats: None,
                     role: "user".into(),
                     content: "what is in this?".into(),
                 }],
@@ -7727,6 +7763,8 @@ fn demo_items() -> Vec<Item> {
                 error: None,
             });
         }
+        items.push(Item::Assistant("The response is complete. Its totals appear below, separate from the context and account meters.".into()));
+        items.push(Item::ResponseStats(response_stats::fixture()));
         return items;
     }
     if crate::harness::screenshot_mode()
@@ -7836,6 +7874,7 @@ fn demo_item_fixtures() -> Vec<Item> {
             "# Heading one\n## Heading two\n\nA paragraph with *italic*, **bold**, `inline code`, and math $e^{i\\pi}+1=0$ plus \\(n \\to \\infty\\).\n\n- top level\n  - nested item\n- [x] finished task\n- [ ] pending task\n\n1. first\n2. second\n\n> A quote line\n> continued here\n\n| block | supported |\n| --- | --- |\n| tables | yes |\n| code | yes |\n\n```rust\nfn main() {\n    // a comment\n    let name = \"world\";\n    println!(\"hello {name}\");\n}\n```\n\n$$\n\\sum_{i=0}^{n} i^2\n$$\n\n\\[ E = mc^2 \\]\n\n---\n\nDone."
                 .into(),
         ),
+        Item::ResponseStats(response_stats::fixture()),
         Item::Error("provider returned 429: rate limited, retrying".into()),
     ]
 }
