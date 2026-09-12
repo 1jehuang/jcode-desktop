@@ -392,6 +392,16 @@ pub struct Hint {
     pub shown_at: Seconds,
 }
 
+impl Hint {
+    pub fn remaining_seconds(&self, now: Seconds) -> Seconds {
+        HINT_LIFETIME.saturating_sub(now.saturating_sub(self.shown_at))
+    }
+
+    pub fn remaining_fraction(&self, now: Seconds) -> f32 {
+        self.remaining_seconds(now) as f32 / HINT_LIFETIME as f32
+    }
+}
+
 /// A hint is only credited as "taken" if the key is used soon after it appears;
 /// past that, using the key counts as unaided recall again.
 const CREDIT_WINDOW: Seconds = 25;
@@ -673,7 +683,7 @@ impl Coach {
     /// hint whose window has closed was not acted on.
     pub fn active_hint(&mut self, now: Seconds) -> Option<Hint> {
         if let Some(hint) = &self.active
-            && now.saturating_sub(hint.shown_at) > HINT_LIFETIME
+            && hint.remaining_seconds(now) == 0
         {
             self.active = None;
         }
@@ -1193,7 +1203,19 @@ mod tests {
         let start = 1_000_000;
         coach.used_slow_path("new_panel", start);
         assert!(coach.active_hint(start + 1).is_some());
-        assert!(coach.active_hint(start + HINT_LIFETIME + 1).is_none());
+        let hint = coach.active_hint(start).unwrap();
+        for elapsed in 0..HINT_LIFETIME {
+            assert_eq!(
+                hint.remaining_seconds(start + elapsed),
+                HINT_LIFETIME - elapsed
+            );
+            assert!(coach.active_hint(start + elapsed).is_some());
+        }
+        assert_eq!(hint.remaining_fraction(start), 1.0);
+        assert_eq!(hint.remaining_seconds(start - 1), HINT_LIFETIME);
+        assert_eq!(hint.remaining_seconds(start + HINT_LIFETIME), 0);
+        assert_eq!(hint.remaining_fraction(start + HINT_LIFETIME + 100), 0.0);
+        assert!(coach.active_hint(start + HINT_LIFETIME).is_none());
     }
 
     #[test]

@@ -282,11 +282,8 @@ const MINIMAP_RIGHT: f32 = 12.0;
 /// The update chip sits above the workspace bar in the bottom-right corner,
 /// out of the reading path but always in view.
 const UPDATE_CHIP_BOTTOM: f32 = 44.0;
-const COACH_TOAST_GAP: f32 = 8.0;
-const COACH_TOAST_WIDTH: f32 = 320.0;
-/// The coach keeps hints for nine seconds. Wake once after that deadline instead
-/// of rebuilding every transcript at display refresh rate for the full lifetime.
-const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(10);
+/// Update the countdown once per second, never at display refresh rate.
+const COACH_EXPIRY_WAKE: Duration = Duration::from_secs(1);
 const SHOWCASE_DURATION: Duration = Duration::from_millis(1800);
 /// The hands-on curriculum in the opt-in Learn tab. Practiced skills persist
 /// across launches, and the completed tutorial remains a shortcut reference.
@@ -2046,6 +2043,7 @@ impl Workspace {
 
     fn dismiss_coach_hint(&mut self, cx: &mut Context<Self>) {
         self.coach.dismiss_hint();
+        self.coach_expiry_task = None;
         self.coach_progress.set(0.0, Instant::now());
         cx.notify();
     }
@@ -6633,6 +6631,16 @@ impl Render for Workspace {
             });
             coach_progress = 1.0;
         }
+        // Reserve actual layout space outside the canvas. Tips cannot occlude
+        // tabs, the minimap, transcript, composer, or workspace navigation.
+        let coach_compact = canvas_w < 620.0;
+        let coach_hint = coach_hint.filter(|_| coach_progress > 0.0);
+        let coach_height = if coach_hint.is_some() {
+            notifications::coach_strip_height(coach_compact)
+        } else {
+            0.0
+        };
+        let viewport_h = (viewport_h - coach_height).max(0.0);
         let row_progress = self.row_progress.sample(now);
         if !self.row_progress.is_animating() {
             self.outgoing_row = None;
@@ -6866,16 +6874,6 @@ impl Render for Workspace {
                                             )
                                         },
                                     )
-                                    .when_some(
-                                        coach_hint.filter(|_| coach_progress > 0.0),
-                                        |el, hint| {
-                                            el.child(self.render_coach_toast(
-                                                &hint,
-                                                coach_progress,
-                                                cx,
-                                            ))
-                                        },
-                                    )
                                     // Paint non-tutorial feedback last so it remains above the
                                     // canvas without covering an animated tutorial control.
                                     .when_some(
@@ -6890,12 +6888,21 @@ impl Render for Workspace {
                                     .when_some(self.render_update_chip(cx), |el, chip| {
                                         el.child(chip)
                                     }),
-                            ),
+                            )
+                            .when_some(coach_hint, |el, hint| {
+                                el.child(self.render_coach_toast(
+                                    &hint,
+                                    coach_progress,
+                                    coach_compact,
+                                    cx,
+                                ))
+                            }),
                     ),
             )
-            .when(compact && self.show_sidebar && self.compact_sidebar_open, |root| {
-                root.child(self.render_compact_sidebar_overlay(fullscreen, cx))
-            })
+            .when(
+                compact && self.show_sidebar && self.compact_sidebar_open,
+                |root| root.child(self.render_compact_sidebar_overlay(fullscreen, cx)),
+            )
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
@@ -11183,20 +11190,25 @@ mod tests {
             bounds.origin.y >= minimap.origin.y + minimap.size.height,
             "the toast should sit below the minimap: toast={bounds:?}, minimap={minimap:?}"
         );
-        assert_eq!(
-            bounds.origin.x + bounds.size.width,
-            minimap.origin.x + minimap.size.width,
-            "the toast and minimap should share their right edge"
-        );
+        let canvas = cx
+            .debug_bounds("workspace-canvas")
+            .expect("workspace canvas");
         assert!(
-            bounds.origin.x >= px(SIDEBAR_WIDTH),
-            "the toast should remain inside the workspace instead of spilling into the sidebar"
+            bounds.top() >= canvas.bottom(),
+            "tip has reserved space outside the canvas"
         );
-        let title = cx.debug_bounds("coach-title").expect("a readable title");
-        let keys = cx
-            .debug_bounds("coach-keys")
-            .expect("dedicated keycap footer");
-        assert!(keys.origin.y >= title.bottom());
+        assert!(bounds.origin.x >= px(SIDEBAR_WIDTH));
+        assert!(bounds.size.height <= px(80.0));
+        let title = cx.debug_bounds("coach-title").expect("short action label");
+        let keys = cx.debug_bounds("coach-keys").expect("visual keycaps");
+        let timer = cx
+            .debug_bounds("coach-countdown")
+            .expect("visible countdown");
+        let diagram = cx.debug_bounds("coach-diagram").expect("action diagram");
+        for child in [title, keys, timer, diagram] {
+            assert!(child.top() >= bounds.top() && child.bottom() <= bounds.bottom());
+            assert!(child.left() >= bounds.left() && child.right() <= bounds.right());
+        }
         cx.simulate_click(title.center(), gpui::Modifiers::default());
         workspace.read_with(cx, |workspace, _| {
             assert!(
@@ -11204,6 +11216,33 @@ mod tests {
                 "body clicks do not dismiss tips"
             );
         });
+        let handle = cx.update(|window, _| window.window_handle());
+        for width in [1200.0, 900.0, 640.0, 480.0] {
+            cx.simulate_window_resize(handle, gpui::size(px(width), px(800.0)));
+            cx.run_until_parked();
+            let tip = cx.debug_bounds("coach-toast").unwrap();
+            let canvas = cx.debug_bounds("workspace-canvas").unwrap();
+            assert!(tip.top() >= canvas.bottom());
+            assert!(tip.right() <= px(width));
+            assert!(tip.bottom() <= px(800.0));
+            for selector in [
+                "coach-diagram",
+                "coach-title",
+                "coach-keys",
+                "coach-countdown",
+                "coach-dismiss",
+            ] {
+                let child = cx.debug_bounds(selector).unwrap();
+                assert!(
+                    child.left() >= tip.left() && child.right() <= tip.right(),
+                    "{selector} outside tip at {width}: {child:?} {tip:?}"
+                );
+                assert!(
+                    child.top() >= tip.top() && child.bottom() <= tip.bottom(),
+                    "{selector} outside tip at {width}: {child:?} {tip:?}"
+                );
+            }
+        }
         let dismiss = cx
             .debug_bounds("coach-dismiss")
             .expect("explicit close control");
