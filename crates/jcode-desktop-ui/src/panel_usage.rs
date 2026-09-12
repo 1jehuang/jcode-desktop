@@ -33,6 +33,9 @@ fn meter(
     let theme = Theme::global();
     let used = percent.filter(|p| p.is_finite()).map(|p| p.clamp(0., 100.));
     let selector = id.clone();
+    let (name, value) = label.rsplit_once(' ').unwrap_or((&label, ""));
+    let name = name.to_owned();
+    let value = value.to_owned();
     div()
         .id(SharedString::from(id))
         .debug_selector(move || selector.clone())
@@ -43,7 +46,8 @@ fn meter(
         .h(px(22.))
         .text_color(theme.TEXT_DIM)
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
-        .child(div().min_w_0().truncate().child(label))
+        .child(div().min_w_0().truncate().child(name))
+        .child(div().flex_none().child(value))
         .children(used.map(|used| {
             let color = if used >= 90. {
                 theme.ERROR
@@ -54,7 +58,7 @@ fn meter(
             };
             div()
                 .flex_none()
-                .w(px(42.))
+                .w(px(24.))
                 .h(px(4.))
                 .rounded_full()
                 .overflow_hidden()
@@ -294,6 +298,16 @@ mod tests {
         for selector in ["panel-context-meter", "panel-limit-0", "panel-limit-1"] {
             let bounds = vcx.debug_bounds(selector).expect(selector);
             assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        }
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
+        vcx.run_until_parked();
+        let context = vcx.debug_bounds("panel-context-meter").unwrap();
+        assert!(vcx.debug_bounds("panel-model").unwrap().size.width > px(20.));
+        for selector in ["panel-limit-0", "panel-limit-1"] {
+            let limit = vcx.debug_bounds(selector).unwrap();
+            assert_eq!(context.center().y, limit.center().y);
+            assert!(limit.right() <= px(640.));
         }
         workspace.update(vcx, |workspace, cx| {
             workspace.test_panel(0).unwrap().update(cx, |panel, cx| {

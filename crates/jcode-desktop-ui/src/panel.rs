@@ -4173,8 +4173,8 @@ impl Render for Panel {
             .when(self.recovery_picker_open, |el| {
                 el.child(self.render_recovery_model_picker(cx))
             })
-            // Keep the footer stable as status and usage change. Narrow panels
-            // truncate horizontally rather than stealing transcript height.
+            // Keep metadata and usage in one stable-height row. The meters share
+            // the right side with activity, leaving model/account controls intact.
             .child(
                 div()
                     .debug_selector(|| "panel-meta".into())
@@ -4243,8 +4243,7 @@ impl Render for Panel {
                                 self.reasoning_effort
                                     .clone()
                                     .map(|effort| div().child(effort)),
-                            )
-                            .children(usage_meters),
+                            ),
                     )
                     .child(
                         div()
@@ -4260,7 +4259,9 @@ impl Render for Panel {
                             .flex()
                             .justify_end()
                             .items_center()
+                            .gap_2()
                             .overflow_hidden()
+                            .children(usage_meters)
                             .when(!active, |el| {
                                 el.child(
                                     div()
