@@ -1,24 +1,33 @@
-//! Time-based wheel momentum. Touchpads and thumb dragging remain direct input.
+//! Frame-paced scrolling. Precise input uses a short filter, not extra inertia.
 use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub(super) struct WheelGlide {
     pub(super) remaining: f32,
+    precise: bool,
 }
 
 impl WheelGlide {
     // About 95% of the travel in 255 ms: responsive without a long, slippery tail.
     const DECAY_SECONDS: f32 = 0.085;
+    // Smooth event bursts over a few frames without fighting native touchpad
+    // inertia. 95% of each delta is delivered within 75 ms.
+    const PRECISE_DECAY_SECONDS: f32 = 0.025;
     pub(super) const SETTLE: f32 = 0.1;
 
     pub(super) fn push(&mut self, pixels: f32) {
+        self.push_input(pixels, false);
+    }
+
+    pub(super) fn push_input(&mut self, pixels: f32, precise: bool) {
         if !pixels.is_finite() || pixels == 0.0 {
             return;
         }
         // A reversal is a brake, not a fight against queued travel.
-        if self.remaining.signum() != pixels.signum() {
+        if self.precise != precise || self.remaining.signum() != pixels.signum() {
             self.remaining = 0.0;
         }
+        self.precise = precise;
         self.remaining += pixels;
     }
 
@@ -26,7 +35,12 @@ impl WheelGlide {
         if self.remaining == 0.0 || elapsed.is_zero() {
             return None;
         }
-        let mut step = self.remaining * -(-elapsed.as_secs_f32() / Self::DECAY_SECONDS).exp_m1();
+        let decay = if self.precise {
+            Self::PRECISE_DECAY_SECONDS
+        } else {
+            Self::DECAY_SECONDS
+        };
+        let mut step = self.remaining * -(-elapsed.as_secs_f32() / decay).exp_m1();
         if (self.remaining - step).abs() <= Self::SETTLE {
             step = self.remaining;
         }
@@ -91,5 +105,44 @@ mod tests {
         assert_eq!(glide.take_step(Duration::ZERO), None);
         assert_eq!(glide.take_step(Duration::from_millis(16)), Some(0.05));
         assert_eq!(glide.take_step(Duration::from_millis(16)), None);
+    }
+
+    #[test]
+    fn precise_scroll_smooths_bursts_with_a_short_tail_and_exact_distance() {
+        let mut glide = WheelGlide::default();
+        glide.push_input(30.0, true);
+        glide.push_input(50.0, true);
+        let first = glide.take_step(Duration::from_millis(16)).unwrap();
+        assert!((35.0..40.0).contains(&first));
+        let next = glide.take_step(Duration::from_millis(59)).unwrap();
+        assert!(glide.remaining < 4.0, "95% delivered within 75 ms");
+        let tail = glide.take_step(Duration::from_millis(200)).unwrap();
+        assert!((first + next + tail - 80.0).abs() < 0.001);
+        assert_eq!(glide.remaining, 0.0);
+    }
+
+    #[test]
+    fn precise_scroll_is_refresh_rate_independent() {
+        for hz in [30, 60, 120, 144, 240] {
+            let mut glide = WheelGlide::default();
+            glide.push_input(120.0, true);
+            for _ in 0..hz / 6 {
+                glide.take_step(Duration::from_secs_f64(1.0 / hz as f64));
+            }
+            let expected = 120.0 * (-1.0 / (6.0 * WheelGlide::PRECISE_DECAY_SECONDS)).exp();
+            assert!((glide.remaining - expected).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn changing_input_source_or_direction_discards_old_travel() {
+        let mut glide = WheelGlide::default();
+        glide.push(120.0);
+        glide.push_input(20.0, true);
+        assert_eq!(glide.remaining, 20.0);
+        glide.push_input(-5.0, true);
+        assert_eq!(glide.remaining, -5.0);
+        glide.push(-40.0);
+        assert_eq!(glide.remaining, -40.0);
     }
 }

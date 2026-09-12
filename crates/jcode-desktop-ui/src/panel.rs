@@ -730,6 +730,10 @@ impl Panel {
     }
 
     fn glide_transcript_wheel(&mut self, pixels: f32, cx: &mut Context<Self>) {
+        self.glide_transcript_input(pixels, false, cx);
+    }
+
+    fn glide_transcript_input(&mut self, pixels: f32, precise: bool, cx: &mut Context<Self>) {
         if !pixels.is_finite() || pixels == 0.0 {
             return;
         }
@@ -746,7 +750,11 @@ impl Panel {
             self.stick_to_bottom = false;
             cx.notify();
         }
-        self.transcript_wheel_glide.push(pixels);
+        if precise {
+            self.transcript_wheel_glide.push_input(pixels, true);
+        } else {
+            self.transcript_wheel_glide.push(pixels);
+        }
         self.transcript_wheel_frame
             .get_or_insert_with(|| cx.background_executor().now());
         cx.notify();
@@ -4054,9 +4062,9 @@ impl Render for Panel {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    // Discrete wheel notches coast on display frames. Precise
-                    // touchpad deltas stay directly mapped, without layering
-                    // a second animation over native gesture control.
+                    // Pace both wheel and touchpad movement on display frames.
+                    // Precise deltas use a much shorter smoothing window so
+                    // native gesture control stays responsive.
                     .child(
                         gpui::canvas(
                             move |bounds, window, _| {
@@ -4103,7 +4111,7 @@ impl Render for Panel {
                                         let precise = event.delta.precise();
                                         let _ = wheel_panel.update(cx, |panel, cx| {
                                             if precise {
-                                                panel.scroll_transcript_direct(y, cx);
+                                                panel.glide_transcript_input(-y, true, cx);
                                             } else {
                                                 panel.glide_transcript_wheel(-y, cx);
                                             }

@@ -37,6 +37,7 @@ fn streaming_chunks_preserve_touchpad_reading_position(cx: &mut gpui::TestAppCon
         touch_phase: gpui::TouchPhase::Moved,
     });
     vcx.run_until_parked();
+    scroll_momentum_tests::settle(vcx);
     let before = panel.read_with(vcx, |panel, _| {
         assert!(!panel.stick_to_bottom);
         panel.transcript_list.logical_scroll_top()
@@ -105,6 +106,7 @@ fn streaming_reasoning_settlement_preserves_history_position(cx: &mut gpui::Test
         touch_phase: gpui::TouchPhase::Moved,
     });
     vcx.run_until_parked();
+    scroll_momentum_tests::settle(vcx);
     let before = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
     panel.update(vcx, |panel, cx| {
         panel.apply(
@@ -181,13 +183,13 @@ fn upward_touchpad_between_chunk_and_paint_moves_from_visible_position(
         );
     });
     vcx.run_until_parked();
+    scroll_momentum_tests::settle(vcx);
     panel.read_with(vcx, |panel, _| {
         let after = panel.transcript_list.logical_scroll_top();
         assert!(!panel.stick_to_bottom);
         assert_eq!(before.item_ix, after.item_ix);
-        assert_eq!(
-            before.offset_in_item - px(40.),
-            after.offset_in_item,
+        assert!(
+            (f32::from(before.offset_in_item - after.offset_in_item) - 40.0).abs() < 0.01,
             "a streamed chunk must not eat an upward touchpad movement"
         );
     });

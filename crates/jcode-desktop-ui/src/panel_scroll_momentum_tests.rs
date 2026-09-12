@@ -44,6 +44,12 @@ fn frame(vcx: &mut gpui::VisualTestContext, millis: u64) {
     vcx.run_until_parked();
 }
 
+pub(super) fn settle(vcx: &mut gpui::VisualTestContext) {
+    for _ in 0..16 {
+        frame(vcx, 16);
+    }
+}
+
 #[gpui::test]
 fn scroll_momentum_coasts_on_frames_then_stops_requesting_frames(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = fixture(cx);
@@ -69,20 +75,22 @@ fn scroll_momentum_coasts_on_frames_then_stops_requesting_frames(cx: &mut gpui::
 }
 
 #[gpui::test]
-fn scroll_momentum_yields_immediately_to_touchpad_and_latest(cx: &mut gpui::TestAppContext) {
+fn scroll_momentum_switches_to_short_touchpad_smoothing_and_latest_cancels(
+    cx: &mut gpui::TestAppContext,
+) {
     let (panel, vcx) = fixture(cx);
     wheel(vcx, false, 3.0);
     frame(vcx, 16);
     wheel(vcx, true, 20.0);
-    let direct = panel.read_with(vcx, |panel, _| {
-        assert!(panel.transcript_wheel_frame.is_none());
+    let start = panel.read_with(vcx, |panel, _| {
+        assert_eq!(panel.transcript_wheel_glide.remaining, -20.0);
         panel.test_scroll_offset_y()
     });
     frame(vcx, 16);
-    assert_eq!(
-        direct,
-        panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y())
-    );
+    let first = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+    assert!(first > start && first < start + px(20.0));
+    frame(vcx, 16);
+    assert!(panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()) > first);
     wheel(vcx, false, 3.0);
     let chip = vcx.debug_bounds("jump-to-latest").unwrap();
     vcx.simulate_click(chip.center(), Default::default());
@@ -119,6 +127,42 @@ fn scroll_momentum_reduced_motion_is_direct(cx: &mut gpui::TestAppContext) {
     panel.read_with(vcx, |panel, _| {
         assert!(panel.test_scroll_offset_y() > before);
         assert!(panel.transcript_wheel_frame.is_none());
+    });
+    // The virtual list's scrollbar estimate may change as new rows are measured.
+    // Assert the actual reading position instead of that estimate.
+    let before = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    wheel(vcx, true, 20.0);
+    panel.read_with(vcx, |panel, _| {
+        let after = panel.transcript_list.logical_scroll_top();
+        assert_eq!(before.item_ix, after.item_ix);
+        assert!((f32::from(before.offset_in_item - after.offset_in_item) - 20.0).abs() < 0.1);
+        assert!(panel.transcript_wheel_frame.is_none());
+    });
+}
+
+#[gpui::test]
+fn precise_scroll_moves_down_smoothly_and_settles_without_drift(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = fixture(cx);
+    // Leave room to scroll down without hitting the live tail.
+    panel.update(vcx, |panel, cx| panel.scroll_transcript_direct(300.0, cx));
+    vcx.run_until_parked();
+    let start = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+    wheel(vcx, true, -80.0);
+    assert_eq!(
+        start,
+        panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y())
+    );
+    let mut previous = start;
+    for _ in 0..16 {
+        frame(vcx, 16);
+        let current = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+        assert!(current <= previous && current >= start - px(80.1));
+        previous = current;
+    }
+    panel.read_with(vcx, |panel, _| {
+        assert!((f32::from(panel.test_scroll_offset_y() - start) + 80.0).abs() < 0.1);
+        assert!(panel.transcript_wheel_frame.is_none());
+        assert!(!panel.transcript_wheel_frame_pending);
     });
 }
 

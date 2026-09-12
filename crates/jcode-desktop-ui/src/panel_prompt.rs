@@ -163,6 +163,7 @@ mod tests {
                 touch_phase: gpui::TouchPhase::Moved,
             });
             vcx.run_until_parked();
+            scroll_momentum_tests::settle(vcx);
             if let (Some(pinned), Some(caption)) = (
                 vcx.debug_bounds("pinned-latest-prompt"),
                 vcx.debug_bounds("role-caption-you, 12"),
@@ -205,6 +206,7 @@ mod tests {
                     touch_phase: gpui::TouchPhase::Moved,
                 });
                 vcx.run_until_parked();
+                scroll_momentum_tests::settle(vcx);
                 if vcx.debug_bounds(label).is_some()
                     && vcx.debug_bounds("pinned-latest-prompt").is_none()
                 {
