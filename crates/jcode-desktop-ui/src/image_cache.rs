@@ -3,11 +3,8 @@
 //! GPUI's RenderImage::new uses a library-local static counter. The host SVG
 //! renderer, linked UI, and each loaded UI generation have separate counters,
 //! but share one GPU atlas. Reusing an ID can paint an unrelated old texture.
-use gpui::{App, Asset, Global, Image, ImageCacheError, ImageId, ImageSource, RenderImage};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use gpui::{App, Asset, Global, Image, ImageCacheError, ImageSource, RenderImage};
+use std::sync::Arc;
 
 /// Encoded assets are keyed by `Image::id`, not by byte equality. Independent
 /// counters for composer and transcript images (or a restarted UI generation)
@@ -17,29 +14,15 @@ pub(crate) fn encoded(format: gpui::ImageFormat, bytes: Vec<u8>) -> Arc<Image> {
     Arc::new(Image::from_bytes(format, bytes))
 }
 
-const FIRST_DESKTOP_IMAGE_ID: usize = 1usize << (usize::BITS - 1);
-
-#[derive(Clone)]
-pub(crate) struct ImageIds(Arc<AtomicUsize>);
-impl Global for ImageIds {}
-impl Default for ImageIds {
-    fn default() -> Self {
-        Self(Arc::new(AtomicUsize::new(FIRST_DESKTOP_IMAGE_ID)))
-    }
-}
+#[derive(Clone, Default)]
+pub(crate) struct ImageIds(jcode_desktop_api::ImageIds);
 impl ImageIds {
     pub(crate) fn get(cx: &mut App) -> Self {
-        cx.default_global::<Self>().clone()
+        Self(jcode_desktop_api::ImageIds::get(cx))
     }
 
-    fn next(&self) -> ImageId {
-        // Reserve the high half for desktop images, away from GPUI's host
-        // counter. Never reset on activation or reuse an ID after eviction.
-        ImageId(
-            self.0
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .expect("desktop image IDs exhausted"),
-        )
+    fn next(&self) -> gpui::ImageId {
+        self.0.next()
     }
 
     pub(crate) fn render(&self, frames: Vec<image::Frame>) -> Arc<RenderImage> {
@@ -541,8 +524,12 @@ mod tests {
         let next_generation = cx.update(ImageIds::get);
         assert_eq!(worker.next().0, first.0 + 1);
         assert_eq!(next_generation.next().0, first.0 + 2);
-        assert!(first.0 >= FIRST_DESKTOP_IMAGE_ID);
-        assert!(RenderImage::new(vec![]).id.0 < FIRST_DESKTOP_IMAGE_ID);
+        // The host/shared dependency and UI wrapper must use the same Global.
+        let host = cx.update(jcode_desktop_api::ImageIds::get);
+        assert_eq!(host.next().0, first.0 + 3);
+        assert_eq!(next_generation.next().0, first.0 + 4);
+        assert!(first.0 >= 3usize << (usize::BITS - 2));
+        assert!(RenderImage::new(vec![]).id.0 < 1usize << (usize::BITS - 1));
     }
 
     #[test]

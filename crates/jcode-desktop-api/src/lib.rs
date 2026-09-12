@@ -5,6 +5,9 @@
 
 use std::ffi::c_void;
 
+mod image_ids;
+pub use image_ids::ImageIds;
+
 pub const ABI_VERSION: u32 = 3;
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const ENTRY_POINT: &[u8] = b"jcode_desktop_ui_plugin\0";

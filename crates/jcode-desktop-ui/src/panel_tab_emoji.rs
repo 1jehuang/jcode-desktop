@@ -116,7 +116,13 @@ fn raster_frames(emoji: &'static str, ids: &crate::image_cache::ImageIds) -> Opt
     // Native color glyphs and RenderImage both use BGRA, no channel swap.
     let source = image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes)?;
     Some(std::array::from_fn(|step| {
-        ids.render(vec![image::Frame::new(rotate(&source, pose_angle(step)))])
+        let frame = ids.render(vec![image::Frame::new(rotate(&source, pose_angle(step)))]);
+        // Once per cached pose, never per animation tick. No session metadata.
+        eprintln!(
+            "desktop-image tab-emoji-frame pose={step} texture={}",
+            frame.id.0
+        );
+        frame
     }))
 }
 
