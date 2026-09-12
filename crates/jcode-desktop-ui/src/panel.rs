@@ -38,6 +38,9 @@ mod preview;
 mod login;
 #[path = "panel_latest.rs"]
 mod latest;
+#[cfg(test)]
+#[path = "panel_stream_scroll_tests.rs"]
+mod stream_scroll_tests;
 #[path = "panel_recovery.rs"]
 mod recovery;
 #[path = "panel_prompt.rs"]
@@ -2606,9 +2609,9 @@ impl Panel {
             }
             _ => {}
         }
-        if self.stick_to_bottom {
-            self.transcript_list.scroll_to_end();
-        }
+        // Follow only during render, after pending user input. Installing an
+        // end sentinel here replaces the painted scroll position before layout,
+        // so an intervening upward wheel delta is clamped back to the bottom.
         cx.notify();
     }
 
@@ -3621,7 +3624,11 @@ impl Render for Panel {
                     row_count - self.transcript_row_count,
                 );
             } else {
-                self.transcript_list.reset(row_count);
+                // Streaming/activity rows can disappear or merge when a chunk
+                // settles. Resetting discards the reader's logical position.
+                // Trim only the tail so the visible history stays anchored.
+                self.transcript_list
+                    .splice(row_count..self.transcript_row_count, 0);
             }
             self.transcript_row_count = row_count;
         } else if row_count > 0 {
