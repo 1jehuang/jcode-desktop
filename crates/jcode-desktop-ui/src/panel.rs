@@ -4111,7 +4111,7 @@ impl Render for Panel {
                                     .clone()
                                     .map(|effort| div().child(effort)),
                             )
-                            .child(usage_meters),
+                            .children(usage_meters),
                     )
                     .child(
                         div()

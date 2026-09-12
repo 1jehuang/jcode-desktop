@@ -87,7 +87,10 @@ fn active_limits<'a>(
 }
 
 impl Panel {
-    pub(super) fn render_usage_meters(&self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn render_usage_meters(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if self.model.is_none() && self.provider.is_none() {
+            return None;
+        }
         let mut row = div()
             .debug_selector(|| "panel-usage".into())
             .flex()
@@ -95,9 +98,6 @@ impl Panel {
             .items_center()
             .gap_2()
             .flex_wrap();
-        if self.model.is_none() && self.provider.is_none() {
-            return row;
-        }
         let window = self.model.as_deref().and_then(context_window_for_model);
         let used = self.context_tokens;
         let percent = used
@@ -152,7 +152,7 @@ impl Panel {
             row = row.child(meter("panel-limits-unavailable".into(), "Limits —".into(), None,
                 "Usage limits are unavailable for the current connection method. Open Accounts for details.".into()));
         }
-        row
+        Some(row)
     }
 }
 
