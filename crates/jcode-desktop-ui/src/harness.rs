@@ -21,6 +21,9 @@ mod spawn_profile;
 #[path = "remote.rs"]
 mod remote;
 
+#[path = "harness_recovery.rs"]
+mod recovery;
+
 /// Decode the host carried by a persisted remote panel ID.
 pub fn remote_host(session_id: &str) -> Option<String> {
     remote::SessionAddress::parse(session_id).ok()?.host
@@ -1142,17 +1145,6 @@ fn session_worker_with_connector(
     };
 
     let mut pending = VecDeque::new();
-    // `send_message` is fire-and-forget at the SDK layer. A bridge-side
-    // validation failure therefore arrives on the event stream rather than as
-    // the return value from `send_message`. Retain submissions until the daemon
-    // accepts them so an attachment mismatch can reconnect and replay the
-    // original prompt instead of painting the asynchronous error.
-    let mut unaccepted_sends = VecDeque::new();
-    // The harness rejects a second SendMessage while a turn is active. Keep the
-    // activity bit in this worker so subsequent composer submissions use the
-    // SDK's urgent soft-interrupt queue instead. That is the same "ASAP"
-    // steering path used by the TUI.
-    let mut turn_active = false;
     let mut reported_disconnected_events = false;
 
     // Reconnect in this same worker. The window and workspace stay resident,
@@ -1191,6 +1183,14 @@ fn session_worker_with_connector(
             session_id: real_id,
             processing: Cell::new(false),
         };
+        // Activity from the dead transport must not suppress recovery on its
+        // replacement. The new attachment supplies its own live state.
+        let mut turn_active = false;
+        let mut recovery = recovery::Recovery::default();
+        // Acceptance and rejection belong to this transport. A lost ack on
+        // the previous connection must not block server-directed recovery.
+        // Explicit attachment-mismatch retries already live in `pending`.
+        let mut unaccepted_sends = VecDeque::new();
         eprintln!("jcode desktop: session {session_id} connected");
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
@@ -1245,6 +1245,7 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::Send { content, images } => {
+                        recovery.supersede();
                         let retry_content = content.clone();
                         let retry_images = images.clone();
                         // Only one ordinary send can await acceptance. An old
@@ -1297,6 +1298,7 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::Cancel => {
+                        recovery.supersede();
                         let _ = client.cancel(real_id);
                     }
                     SessionCommand::Fork => match client.fork_session(real_id) {
@@ -1320,6 +1322,14 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::Operation(operation) => {
+                        if matches!(
+                            operation,
+                            SessionOperation::Clear
+                                | SessionOperation::Rewind(_)
+                                | SessionOperation::RewindUndo
+                        ) {
+                            recovery.supersede();
+                        }
                         let result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
                             SessionOperation::Compact => client.compact(real_id).map(|_| ()),
@@ -1365,6 +1375,45 @@ fn session_worker_with_connector(
                 // through soft_interrupt, where it waits forever because that
                 // new session has no active turn to interrupt.
                 if event_session_id(&event).is_some_and(|id| id != real_id) {
+                    continue;
+                }
+                if let ApiEvent::SessionRecovery {
+                    continuation_message,
+                    ..
+                } = &event
+                {
+                    // This is the same server-owned directive used by the TUI,
+                    // not a guess based on a sidebar's cached crash badge.
+                    if recovery.claim(
+                        continuation_message,
+                        turn_active || !unaccepted_sends.is_empty(),
+                    ) {
+                        if let Err(error) = client.send_system_reminder(real_id, continuation_message)
+                        {
+                            recovery.finish_submission();
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Failed to continue interrupted work: {error}"),
+                            });
+                        } else {
+                            turn_active = true;
+                            _detach.set_processing(true);
+                            let _ = updates.send(Update::Event {
+                                session_id: session_id.clone(),
+                                event: ApiEvent::SessionStatus {
+                                    session_id: session_id.clone(),
+                                    status: "running".into(),
+                                },
+                            });
+                        }
+                    }
+                    continue;
+                }
+                if recovery.observe(&event) {
+                    // Another client already continued the session. Never
+                    // steer a second automatic continuation into that turn.
+                    turn_active = true;
+                    _detach.set_processing(true);
                     continue;
                 }
                 if recover_async_busy(&event, &mut unaccepted_sends, &mut pending) {
@@ -1425,6 +1474,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id }
         | ApiEvent::BackgroundProgress { session_id, .. }
@@ -1460,6 +1510,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
+        | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
         | ApiEvent::TurnDone { session_id }
         | ApiEvent::BackgroundProgress { session_id, .. }

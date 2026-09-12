@@ -54,6 +54,7 @@ fn ordinary_errors_do_not_trigger_busy_recovery() {
 #[cfg(unix)]
 mod socket_tests {
     use super::*;
+    include!("harness_recovery_tests.rs");
     use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;

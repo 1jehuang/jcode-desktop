@@ -1,5 +1,6 @@
 //! Real SDK socket-pair tests for the native SSH address routing boundary.
 use super::*;
+include!("harness_recovery_reconnect_tests.rs");
 use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
