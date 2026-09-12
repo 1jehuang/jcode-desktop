@@ -39,3 +39,12 @@ The broader dirty-worktree UI suite was also attempted: 834 passed, 22 failed,
 and 8 were ignored. Failures concern existing sidebar, panel geometry, activity,
 and motion tests outside the simulator. The complete suite is not green, and
 those concurrent changes are not included in this feature's commit.
+
+Follow-up isolation reproduced 20 of those failures in an exported pre-change
+worktree with the simulator edits removed. The other two (empty-strip navigation
+and moving panels between strips) pass individually in both before and after
+binaries. A clean staged-only export could not compile against the concurrently
+changed SDK because its older image fixtures lack `history_message_index`.
+The simulator's two tests and final native acceptance passed in the real checkout.
+The running application's Ctrl+R path activated UI generation 3 with the final
+code, recorded in `target/onboarding-live-reload-final.log`.
