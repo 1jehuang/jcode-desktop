@@ -23,6 +23,15 @@ def fixture(bounds=(300, 200, 700, 300)):
 
 
 class MermaidPixelsTests(unittest.TestCase):
+    def test_warm_transcript_gutter_does_not_shift_native_click(self):
+        image = Image.new("RGB", (1440, 1000), (48, 43, 39))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((276, 70, 1426, 896), fill=(37, 34, 31))
+        draw.rectangle((302, 206, 889, 256), fill=(48, 43, 39))
+        actual = diagram_pixels(image)
+        self.assertEqual(actual.bounds, (302, 206, 890, 257))
+        self.assertEqual(actual.point, (596, 231))
+
     def test_detects_actual_renderer_palette_and_center(self):
         actual = diagram_pixels(fixture())
         self.assertEqual(actual.bounds, (300, 200, 701, 301))
@@ -50,6 +59,14 @@ class MermaidPixelsTests(unittest.TestCase):
         self.assertTrue(restored(initial, initial))
         self.assertFalse(restored(initial, diagram_pixels(fixture((310, 210, 710, 310)))))
 
+    def test_zoom_accepts_clipped_area_but_requires_taller_changed_nodes(self):
+        fitted = diagram_pixels(fixture((300, 200, 950, 300)))
+        clipped = diagram_pixels(fixture((500, 200, 950, 350)))
+        self.assertFalse(enlarged(fitted, clipped))
+        self.assertTrue(acceptance.zoom_changed(fitted, fitted, clipped))
+        self.assertFalse(acceptance.zoom_changed(fitted, clipped, clipped))
+        self.assertFalse(acceptance.zoom_changed(fitted, fitted, fitted))
+
     def test_close_button_comes_from_new_top_right_ink(self):
         before = fixture()
         # Unchanged text near the top must not move the discovered click point.
@@ -64,6 +81,15 @@ class MermaidPixelsTests(unittest.TestCase):
         image = fixture()
         with self.assertRaisesRegex(AssertionError, "Close button did not paint"):
             close_button_point(image, image, diagram_pixels(image))
+
+    def test_close_locator_excludes_adjacent_escape_hint(self):
+        before = fixture()
+        preview = before.copy()
+        draw = ImageDraw.Draw(preview)
+        draw.rectangle((811, 25, 895, 34), fill=(180, 180, 180))
+        draw.rectangle((922, 25, 969, 34), fill=(180, 180, 180))
+        self.assertEqual(close_button_point(before, preview, diagram_pixels(preview)),
+                         (945, 29))
 
     def test_zoom_buttons_are_located_by_header_text_groups(self):
         image = fixture()

@@ -35,19 +35,28 @@ class Diagram:
 
 
 def diagram_pixels(image):
-    """Find mmdr's dark SVG canvas and node fill, measured from the real fixture.
+    """Measure diagram node fills in the default warm-neutral fixture.
 
-    Unlike the application theme, the renderer always uses its dark palette.
-    Require both fills so missing SVGs and monochrome placeholder boxes fail.
-    Ignore the 264px sidebar shared by both supported layouts.
+    The full-window overlay starts at (0, 0). In the transcript, exclude the
+    sidebar, user prompt, and composer, which share the node fill color.
+    Keep the legacy renderer palette supported for older linked binaries.
     """
     canvas = color_mask(image, (51, 51, 51))
     nodes = color_mask(image, (31, 32, 32))
-    canvas.paste(0, (0, 0, 264, image.height))
-    nodes.paste(0, (0, 0, 264, image.height))
-    if canvas.histogram()[255] < 200 or nodes.histogram()[255] < 200:
-        raise AssertionError("Mermaid fixture's SVG canvas and nodes did not paint")
-    mask = ImageChops.lighter(canvas, nodes)
+    if canvas.histogram()[255] >= 200 and nodes.histogram()[255] >= 200:
+        mask = ImageChops.lighter(canvas, nodes)
+        mask.paste(0, (0, 0, 264, image.height))
+    else:
+        mask = color_mask(image, (48, 43, 39))
+        if image.getpixel((0, 0))[:3] != (37, 34, 31):
+            mask.paste(0, (0, 0, image.width, 190))
+            mask.paste(0, (0, 0, 280, image.height))
+            # The outer window gutter shares the node fill. Including it
+            # stretches the bounds and sends the native click below the SVG.
+            mask.paste(0, (image.width - 24, 0, image.width, image.height))
+            mask.paste(0, (0, image.height - 110, image.width, image.height))
+    if mask.histogram()[255] < 200:
+        raise AssertionError("Mermaid fixture's diagram nodes did not paint")
     return Diagram(mask, mask.histogram()[255], mask.getbbox())
 
 
@@ -62,16 +71,23 @@ def restored(initial, actual):
     return changed < initial.count * .03
 
 
+def zoom_changed(fitted, previous, actual):
+    # A window-wide fitted SVG is already near both horizontal edges. Zooming
+    # clips entire nodes, so visible pixel area need not increase by 25%.
+    # Node height must grow and the actual rendered pixels must change.
+    return actual.height > fitted.height * 1.25 and not restored(previous, actual)
+
+
 def close_button_point(before, preview, diagram):
     """Locate the newly painted Close text at the top right from screenshot ink.
 
-    The panel-sized overlay's rightmost header control is 'Close ×'. Its text
-    occupies the last 110px, above the diagram. Derive its y coordinate from
+    The window-sized overlay's rightmost header control is 'Close ×'. Its text
+    occupies the last 100px, above the diagram. Derive its y coordinate from
     the pixels instead of assuming a particular panel/header height. Excluding
     unchanged pixels avoids mistaking the app's tabs for the close control.
     """
     right = preview.width - 16
-    left = preview.width - 110
+    left = preview.width - 100
     bottom = min(diagram.bounds[1], diagram_pixels(before).bounds[1])
     region = preview.crop((left, 0, right, bottom)).convert("RGB")
     old = before.crop((left, 0, right, bottom)).convert("RGB")
@@ -169,21 +185,27 @@ def verify(output, env, root):
 
     click(initial.point)
     preview, first = capture("-enlarged", enlarged)
+    # The overlay must cover the sidebar and app header, not just grow inside
+    # the right panel. All four window corners belong to its background.
+    for point in ((0, 0), (preview.width - 1, 0),
+                  (0, preview.height - 1), (preview.width - 1, preview.height - 1)):
+        assert preview.getpixel(point) == (37, 34, 31), (
+            f"Preview does not cover window corner {point}: {preview.getpixel(point)}")
     close_point = close_button_point(before, preview, first)
     zoom_point, fit_point = zoom_button_points(preview, close_point)
     click(zoom_point)
-    _, zoomed = capture("-zoomed", enlarged, first)
+    _, zoomed = capture("-zoomed", lambda fitted, actual: zoom_changed(fitted, first, actual), first)
     maximum_zoom = zoomed
     for percent in (200, 250, 300, 350, 400):
         previous = maximum_zoom
         click(zoom_point)
         # Every + click must visibly change the rendered diagram. At high
         # zoom the viewport clips the image, so its total visible area need
-        # not grow each time. Both SVG fills must still be present and the
+        # not grow each time. Diagram nodes must still be present and the
         # diagram must remain larger than Fit instead of moving offscreen.
         _, maximum_zoom = capture(
             f"-zoom-{percent}",
-            lambda fitted, actual: enlarged(fitted, actual) and not restored(previous, actual),
+            lambda fitted, actual: zoom_changed(fitted, previous, actual),
             first,
         )
     click(fit_point)
