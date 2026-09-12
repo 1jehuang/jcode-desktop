@@ -68,6 +68,10 @@ def main():
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens", "diff", "diff-rich"), default="all",
                         help="choose the isolated transcript fixture")
+    parser.add_argument("--preview-state", choices=("empty", "streaming", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
+                        help="render a named self-dev panel state using the real, offline UI")
+    parser.add_argument("--preview-interact", action="store_true",
+                        help="verify the self-dev control API and native recovery actions offline")
     parser.add_argument("--mermaid-source", type=Path,
                         help="custom Mermaid source file for the mermaid transcript fixture")
     parser.add_argument("--size", default="1440x1000")
@@ -84,6 +88,15 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.preview_state is not None:
+        if (args.panels != 1 or args.transcript != "all" or args.swarm
+                or args.notification or args.learn_stage is not None
+                or args.focus_panel is not None
+                or any(value for key, value in vars(args).items()
+                       if key.endswith("_interact") and key != "preview_interact")):
+            parser.error("preview-state requires one panel and no transcript, notification, tutorial, swarm, or interaction options")
+    if args.preview_interact and args.preview_state is None:
+        parser.error("preview-interact requires --preview-state")
     if args.responsive_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "responsive_interact")
@@ -235,6 +248,10 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.preview_state is not None:
+            env["JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE"] = args.preview_state
+        if args.preview_interact:
+            env["JCODE_DESKTOP_SELF_DEV"] = "1"
         if args.mermaid_source is not None:
             env["JCODE_DESKTOP_SCREENSHOT_MERMAID_SOURCE"] = args.mermaid_source.read_text()
         if args.learn_stage is not None:
@@ -341,6 +358,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.preview_interact:
+                    from preview_acceptance import verify
+                    verify(output, env, root)
                 if args.responsive_interact:
                     from responsive_acceptance import verify
                     verify(output, env, root)

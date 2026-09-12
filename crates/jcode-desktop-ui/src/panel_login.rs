@@ -45,7 +45,24 @@ impl Panel {
             binary: crate::platform::companion_executable("jcode"),
             ..Default::default()
         });
-        let providers = client.providers();
+        let providers = if self.preview_state.is_some() {
+            vec![
+                LoginProvider {
+                    id: "openai",
+                    display_name: "OpenAI",
+                    detail: "Offline OAuth preview",
+                    method: LoginMethod::OAuth,
+                },
+                LoginProvider {
+                    id: "openai-api",
+                    display_name: "OpenAI API key",
+                    detail: "Offline credential preview",
+                    method: LoginMethod::ApiKey,
+                },
+            ]
+        } else {
+            client.providers()
+        };
         self.login = Some(LoginState {
             client,
             providers,
@@ -67,6 +84,14 @@ impl Panel {
         cx.notify();
     }
 
+    pub(super) fn set_preview_login_error(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.login.as_mut() {
+            state.error = Some("Sign-in failed: the authorization code has expired. Offline preview: no browser was opened and no credentials were changed.".into());
+            state.busy = false;
+        }
+        cx.notify();
+    }
+
     pub(super) fn close_login_picker(&mut self, cx: &mut Context<Self>) {
         self.login = None;
         cx.notify();
@@ -82,13 +107,14 @@ impl Panel {
             if words.next().is_some() {
                 self.login.as_mut().unwrap().error =
                     Some("Choose a provider below to sign in.".into());
-            } else if let Some(provider) = self
-                .login
-                .as_ref()
-                .unwrap()
-                .client
-                .resolve_provider(provider)
-            {
+            } else if let Some(provider) = {
+                let state = self.login.as_ref().unwrap();
+                if self.preview_state.is_some() {
+                    state.providers.iter().find(|entry| entry.id == provider).copied()
+                } else {
+                    state.client.resolve_provider(provider)
+                }
+            } {
                 self.select_login_provider(provider, cx);
             } else {
                 self.login.as_mut().unwrap().error =
@@ -107,6 +133,13 @@ impl Panel {
         self.open_login_picker(cx);
         let state = self.login.as_mut().unwrap();
         state.provider = Some(provider.clone());
+        if self.preview_state.is_some() {
+            if provider.method == LoginMethod::ApiKey {
+                state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
+            }
+            self.set_preview_login_error(cx);
+            return;
+        }
         if provider.method == LoginMethod::ApiKey {
             state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
         } else {
@@ -133,6 +166,10 @@ impl Panel {
         work: impl FnOnce() -> Result<LoginUpdate, String> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
+        if self.preview_state.is_some() {
+            self.set_preview_login_error(cx);
+            return;
+        }
         let state = self.login.as_mut().unwrap();
         state.busy = true;
         state.error = None;
@@ -169,6 +206,13 @@ impl Panel {
     }
 
     fn submit_login(&mut self, cx: &mut Context<Self>) {
+        if self.preview_state.is_some() {
+            if let Some(state) = self.login.as_mut() {
+                state.input.update(cx, |input, cx| input.clear(cx));
+            }
+            self.set_preview_login_error(cx);
+            return;
+        }
         let Some(state) = self.login.as_mut() else {
             return;
         };
@@ -317,6 +361,7 @@ impl Panel {
                     );
             } else if let Some(prompt) = &state.prompt {
                 let url = prompt.auth_url.clone();
+                let preview = self.preview_state.is_some();
                 body = body
                     .child(
                         div().child(
@@ -326,7 +371,9 @@ impl Panel {
                     .child(
                         login_button("login-open-browser", "Open sign-in page").on_click(
                             move |_, _, cx| {
-                                cx.open_url(&url);
+                                if !preview {
+                                    cx.open_url(&url);
+                                }
                             },
                         ),
                     );
@@ -631,3 +678,7 @@ mod tests {
         assert!(vcx.debug_bounds("login-paste").is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "panel_preview_login_tests.rs"]
+mod preview_tests;

@@ -4,6 +4,15 @@ A native, high-performance spatial desktop client built on the Jcode SDK.
 
 See [PRODUCT.md](PRODUCT.md) for the product vision and requirements.
 
+## Self-dev panel previews
+
+In a self-dev desktop, run `python3 scripts/preview-state.py login-error` to open
+an isolated error-state panel beside your real sessions. Use `--list` for the
+state catalog, or `--reset login-error` to restore that fixture. Previews use the
+real UI without model requests or credential changes. See
+[named panel states](docs/self-dev-states.md) for the API, screenshot workflow,
+and how to add independently testable states.
+
 ## New panel shortcuts
 
 These shortcuts use the default machine selected under **Machines**. When the

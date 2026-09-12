@@ -26,6 +26,8 @@ mod native_mermaid_integration_tests;
 mod panel;
 mod performance;
 mod platform;
+mod preview_control;
+pub mod preview_state;
 mod remote_targets;
 mod scrollbar;
 mod terminal;

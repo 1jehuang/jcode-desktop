@@ -17,10 +17,13 @@ class ScreenshotIsolationTests(unittest.TestCase):
             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/live/bus",
             "JCODE_HOME": "/private/jcode", "JCODE_DESKTOP_UI": "/private/ui.so",
             "OPENAI_API_KEY": "test-secret", "SSH_AUTH_SOCK": "/live/ssh",
+            "JCODE_DESKTOP_SELF_DEV": "1",
+            "JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE": "login-error",
         }):
             env = isolated_env(Path("/isolated"))
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "OPENAI_API_KEY",
-                    "SSH_AUTH_SOCK", "JCODE_DESKTOP_UI"):
+                    "SSH_AUTH_SOCK", "JCODE_DESKTOP_UI", "JCODE_DESKTOP_SELF_DEV",
+                    "JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE"):
             self.assertNotIn(key, env)
         self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/isolated/no-dbus")
         self.assertEqual(env["JCODE_HOME"], "/isolated/jcode")
@@ -57,6 +60,15 @@ class ScreenshotArgumentTests(unittest.TestCase):
 
     def test_unknown_transcript_is_rejected_before_launch(self):
         self.assert_rejected(["--transcript", "unknown"], "invalid choice")
+
+    def test_preview_state_rejects_unknown_states_and_conflicting_fixtures(self):
+        self.assert_rejected(["--preview-state", "unknown"], "invalid choice")
+        self.assert_rejected(["--preview-interact"], "preview-interact requires")
+        for extra in (["--panels", "2"], ["--transcript", "empty"],
+                      ["--login-interact"], ["--swarm"], ["--notification"]):
+            with self.subTest(extra=extra):
+                self.assert_rejected(["--preview-state", "login-error", *extra],
+                                     "preview-state requires one panel")
 
     def test_close_probe_requires_six_panels_and_exclusive_input(self):
         self.assert_rejected(["--close-interact"], "close-interact requires six panels")

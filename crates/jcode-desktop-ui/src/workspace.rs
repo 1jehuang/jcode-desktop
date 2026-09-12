@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "workspace_preview.rs"]
+mod preview;
+
 #[path = "workspace_responsive.rs"]
 mod responsive;
 
@@ -513,6 +516,8 @@ impl WorkspaceSnapshot {
 }
 
 pub struct Workspace {
+    preview_control: Option<crate::preview_control::Server>,
+    preview_task: Option<gpui::Task<()>>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -721,6 +726,8 @@ impl Workspace {
 
         let _ = window;
         let mut workspace = Self {
+            preview_control: None,
+            preview_task: None,
             bridge,
             host,
             show_minimap: false,
@@ -805,6 +812,12 @@ impl Workspace {
         };
         if let Some(snapshot) = snapshot {
             workspace.apply_snapshot(snapshot, cx);
+        } else if harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").is_ok()
+        {
+            if let Ok(state) = std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").unwrap().parse() {
+                workspace.open_preview_unchecked(state, cx);
+            }
         } else if harness::screenshot_mode() {
             let session = jcode_sdk::SessionInfo {
                 session_id: "screenshot-fixture".into(),
@@ -894,6 +907,7 @@ impl Workspace {
         if workspace.remotes.default_host.is_some() {
             workspace.start_default_startup(cx);
         }
+        workspace.start_preview_control(cx);
         workspace
     }
 
@@ -945,6 +959,8 @@ impl Workspace {
     pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
         crate::input::bind_keys(cx);
         Self {
+            preview_control: None,
+            preview_task: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             show_sidebar: true,
@@ -1032,7 +1048,8 @@ impl Workspace {
         let slots: Vec<_> = self
             .slots
             .iter()
-            .filter(|slot| !slot.closing && !slot.panel.read(cx).is_change_review())
+            .filter(|slot| !slot.closing && !slot.panel.read(cx).is_change_review()
+                && slot.panel.read(cx).preview_state.is_none())
             .collect();
         let index_for_id =
             |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
@@ -1114,6 +1131,8 @@ impl Workspace {
         self.slots.clear();
         for saved in snapshot.slots {
             let mut panel_state = saved.panel;
+            // Preview fixture IDs are never runtime sessions, including old snapshots.
+            if panel_state.session_id.starts_with("preview://") { continue; }
             if panel_state.session_id.starts_with("startup://draft/") {
                 // The previous bridge generation cannot deliver its in-flight
                 // result to this workspace. Restart with a fresh correlation ID
@@ -2328,7 +2347,7 @@ impl Workspace {
     fn fork_panel(&mut self, _: &ForkPanel, _: &mut Window, cx: &mut Context<Self>) {
         let Some(session_id) = self.slots.get(self.active).and_then(|slot| {
             let panel = slot.panel.read(cx);
-            panel.can_fork().then(|| panel.session_id.clone())
+            (panel.preview_state.is_none() && panel.can_fork()).then(|| panel.session_id.clone())
         }) else {
             return;
         };
@@ -2736,6 +2755,7 @@ impl Workspace {
         if session_id != "terminal"
             && !Panel::is_pending_session_id(&session_id)
             && !self.slots[closed].panel.read(cx).is_change_review()
+            && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
             self.bridge.send(Command::Unwatch { session_id });
         }

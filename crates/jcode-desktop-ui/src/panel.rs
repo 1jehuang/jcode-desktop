@@ -18,6 +18,7 @@ use crate::commands::{help_markdown, registered_command};
 use crate::harness::{Bridge, Command, SessionOperation};
 use crate::input::{PromptInput, PromptInputSnapshot};
 use crate::markdown;
+use crate::preview_state::PreviewState;
 use crate::terminal::TerminalPanel;
 use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
@@ -31,6 +32,8 @@ mod diff_review;
 mod flicker;
 #[path = "panel_image_preview.rs"]
 mod image_preview;
+#[path = "panel_preview.rs"]
+mod preview;
 #[path = "panel_login.rs"]
 mod login;
 #[path = "panel_recovery.rs"]
@@ -177,6 +180,7 @@ pub struct PanelSnapshot {
 }
 
 pub struct Panel {
+    pub preview_state: Option<PreviewState>,
     pub session_id: String,
     pub title: SharedString,
     pub working_dir: Option<String>,
@@ -641,6 +645,7 @@ impl Panel {
             stick_to_bottom: true,
             pending_history_scroll: None,
             bridge,
+            preview_state: None,
             history_loaded: false,
             expanded_tools: HashSet::new(),
             pending_users: VecDeque::new(),
@@ -1745,7 +1750,8 @@ impl Panel {
     }
 
     pub(crate) fn can_fork(&self) -> bool {
-        !self.is_default_directory()
+        self.preview_state.is_none()
+            && !self.is_default_directory()
             && !self.is_change_review()
             && self.terminal.is_none()
             && self.code_file.is_none()
@@ -1832,6 +1838,10 @@ impl Panel {
                         let echoed_images = images.clone();
                         if let Some(panel) = weak.upgrade() {
                             panel.update(app, |this, cx| {
+                                if this.preview_state.is_some() {
+                                    this.handle_preview_command(&content, cx);
+                                    return;
+                                }
                                 if images.is_empty() && this.handle_slash_command(&content, cx) {
                                     return;
                                 }
@@ -1899,9 +1909,11 @@ impl Panel {
                                     || !this.streaming_reasoning.is_empty()
                                     || !this.pending_users.is_empty())
                             {
-                                this.bridge.send(Command::Cancel {
-                                    session_id: this.session_id.clone(),
-                                });
+                                if this.preview_state.is_none() {
+                                    this.bridge.send(Command::Cancel {
+                                        session_id: this.session_id.clone(),
+                                    });
+                                }
                                 this.finish_response();
                                 handled = true;
                             }
@@ -1952,6 +1964,9 @@ impl Panel {
     }
 
     fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        if self.preview_state.is_some() {
+            return self.handle_preview_command(content, cx);
+        }
         let trimmed = content.trim();
         if self.login_command(trimmed, cx) {
             return true;
@@ -2148,6 +2163,7 @@ impl Panel {
     }
 
     fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
+        if self.preview_state.is_some() { return; }
         self.bridge.send(Command::SessionOperation {
             session_id: self.session_id.clone(),
             operation,
@@ -2156,6 +2172,7 @@ impl Panel {
     }
 
     fn submit_command_prompt(&mut self, prompt: &str) {
+        if self.preview_state.is_some() { return; }
         self.bridge.send(Command::Send {
             session_id: self.session_id.clone(),
             content: prompt.to_string(),
@@ -3905,6 +3922,7 @@ impl Render for Panel {
                             ),
                     ),
             )
+            .children(self.render_preview_badge(cx))
             // Input
             .when(!fresh_session && self.startup_layout.is_none(), |el| {
                 el.child(

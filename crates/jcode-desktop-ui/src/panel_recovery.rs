@@ -125,14 +125,23 @@ impl Panel {
         if !self.available_models.contains(&model) {
             return;
         }
-        self.bridge.send(Command::SetModel {
-            session_id: self.session_id.clone(),
-            model: model.clone(),
-        });
+        if self.preview_state.is_none() {
+            self.bridge.send(Command::SetModel {
+                session_id: self.session_id.clone(),
+                model: model.clone(),
+            });
+        }
         self.recovery_picker_open = false;
-        self.items.push(Item::Assistant(format!(
-            "Switching model to `{model}`… Your draft is unchanged."
-        )));
+        if self.preview_state.is_some() {
+            self.model = Some(model.clone());
+            self.items.push(Item::Assistant(format!(
+                "Offline preview: selected `{model}` locally. No account or session was changed."
+            )));
+        } else {
+            self.items.push(Item::Assistant(format!(
+                "Switching model to `{model}`… Your draft is unchanged."
+            )));
+        }
         cx.notify();
     }
 
