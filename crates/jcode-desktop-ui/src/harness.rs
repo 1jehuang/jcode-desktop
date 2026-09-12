@@ -196,10 +196,19 @@ impl Bridge {
         let _ = self.commands.send(command);
     }
 
-    /// Drain every pending update without blocking.
+    /// Drain every pending update without blocking (test helpers only).
+    #[cfg(test)]
     pub fn drain(&self) -> Vec<Update> {
+        self.drain_up_to(usize::MAX)
+    }
+
+    /// Leave excess updates queued so a busy producer cannot monopolize the UI.
+    pub fn drain_up_to(&self, limit: usize) -> Vec<Update> {
         let mut out = Vec::new();
-        while let Ok(update) = self.updates.try_recv() {
+        while out.len() < limit {
+            let Ok(update) = self.updates.try_recv() else {
+                break;
+            };
             out.push(update);
         }
         out
@@ -1667,6 +1676,35 @@ mod remote_tests;
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn bounded_bridge_batches_preserve_order_and_leave_backlog_queued() {
+        let (updates, receiver) = async_channel::unbounded();
+        let (commands, _command_rx) = channel();
+        let bridge = Bridge {
+            _lifetime: std::sync::Arc::new(BridgeLifetime(commands.clone())),
+            commands,
+            updates: receiver,
+        };
+        for index in 0..1000 {
+            updates.try_send(Update::Status(index.to_string())).unwrap();
+        }
+        assert!(bridge.drain_up_to(0).is_empty());
+        assert_eq!(bridge.updates.len(), 1000);
+        let mut received = Vec::new();
+        while !bridge.updates.is_empty() {
+            let batch = bridge.drain_up_to(128);
+            assert!(!batch.is_empty() && batch.len() <= 128);
+            received.extend(batch.into_iter().map(|update| match update {
+                Update::Status(value) => value,
+                _ => panic!("unexpected event"),
+            }));
+        }
+        assert_eq!(received, (0..1000).map(|i| i.to_string()).collect::<Vec<_>>());
+        assert!(bridge.drain_up_to(128).is_empty());
+        drop(updates);
+        assert!(bridge.drain_up_to(128).is_empty());
+    }
 
     fn session_info(id: &str) -> SessionInfo {
         SessionInfo {

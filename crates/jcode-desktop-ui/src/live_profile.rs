@@ -132,6 +132,9 @@ fn append(path: PathBuf, sample: Sample) {
 }
 
 pub fn spawn(window: &Window, cx: &App) -> Task<()> {
+    if let Some(gpu) = window.gpu_specs() {
+        eprintln!("desktop graphics: {gpu:?}");
+    }
     let handle = window.window_handle();
     let window_id = format!("{:?}", handle.window_id());
     cx.spawn(async move |cx| {

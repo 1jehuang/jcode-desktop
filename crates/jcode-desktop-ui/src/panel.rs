@@ -231,6 +231,7 @@ pub struct Panel {
     pub focus_handle: FocusHandle,
     transcript_list: ListState,
     transcript_row_count: usize,
+    transcript_measurements: TranscriptMeasurements,
     flicker_diagnostics: std::rc::Rc<std::cell::RefCell<flicker::Detector>>,
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
@@ -273,6 +274,59 @@ pub struct Panel {
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
 }
+
+/// Panel/chrome notifications do not imply that settled message heights changed.
+/// GPUI measures visible rows on every layout and invalidates all rows on width
+/// changes. Only its offscreen measurements need explicit content invalidation.
+#[derive(Default)]
+struct TranscriptMeasurements {
+    dirty: bool,
+    item_count: usize,
+    row_count: usize,
+    streaming_lengths: (usize, usize),
+    fonts: Option<(&'static str, &'static str, &'static str)>,
+    #[cfg(test)]
+    remeasured_rows: usize,
+}
+
+impl TranscriptMeasurements {
+    fn take_range(
+        &mut self,
+        item_count: usize,
+        row_count: usize,
+        streaming_lengths: (usize, usize),
+        fonts: (&'static str, &'static str, &'static str),
+    ) -> Option<std::ops::Range<usize>> {
+        let range = if self.dirty
+            || self.item_count != item_count
+            || self.row_count != row_count
+            || self.fonts != Some(fonts)
+        {
+            Some(0..row_count)
+        } else if self.streaming_lengths != streaming_lengths {
+            // At most reasoning, assistant text, and activity occupy the live
+            // suffix. Settling/merging reasoning explicitly dirties history.
+            Some(row_count.saturating_sub(3)..row_count)
+        } else {
+            None
+        };
+        self.dirty = false;
+        self.item_count = item_count;
+        self.row_count = row_count;
+        self.streaming_lengths = streaming_lengths;
+        self.fonts = Some(fonts);
+        let range = range.filter(|range| !range.is_empty());
+        #[cfg(test)]
+        if let Some(range) = &range {
+            self.remeasured_rows += range.len();
+        }
+        range
+    }
+}
+
+#[cfg(test)]
+#[path = "panel_measurement_tests.rs"]
+mod measurement_tests;
 
 #[cfg(test)]
 #[path = "panel_sound_tests.rs"]
@@ -605,7 +659,10 @@ impl Panel {
             .unwrap_or_else(|| short_id(&session_id));
         let transcript_list = ListState::new(0, ListAlignment::Top, px(600.));
         let transcript_selection = cx.new(TextSelection::new);
-        cx.observe(&transcript_selection, |_, _, cx| cx.notify())
+        cx.observe(&transcript_selection, |panel, _, cx| {
+            panel.transcript_measurements.dirty = true;
+            cx.notify();
+        })
             .detach();
         // The panel owns this ListState. A strong entity in its persistent
         // callback would keep the panel and its transcript alive after close
@@ -664,6 +721,7 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             transcript_list,
             transcript_row_count: 0,
+            transcript_measurements: Default::default(),
             flicker_diagnostics: Default::default(),
             startup_layout: None,
             offscreen_prompt: None,
@@ -2053,6 +2111,7 @@ impl Panel {
     }
 
     fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        self.transcript_measurements.dirty = true;
         if self.preview_state.is_some() {
             return self.handle_preview_command(content, cx);
         }
@@ -2288,6 +2347,7 @@ impl Panel {
         images: Vec<jcode_sdk::RenderedImage>,
         cx: &mut Context<Self>,
     ) {
+        self.transcript_measurements.dirty = true;
         if self.history_loaded {
             // Reattaching a session fetches history again. The runtime may have
             // completed the active turn while its event stream was unavailable,
@@ -2403,6 +2463,7 @@ impl Panel {
     }
 
     fn recover_response(&mut self, response: &str) {
+        self.transcript_measurements.dirty = true;
         if self.streaming_text == response {
             return;
         }
@@ -2431,6 +2492,16 @@ impl Panel {
 
     /// Apply a streaming event addressed to this session.
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        // Streaming appends only affect the live suffix. Keep a conservative
+        // full invalidation for tools, status transitions, images and errors.
+        // Metadata-only events still repaint chrome without discarding heights.
+        if !matches!(event,
+            ApiEvent::TextDelta { .. } | ApiEvent::ReasoningDelta { .. }
+                | ApiEvent::TokenUsage { .. } | ApiEvent::ModelInfo { .. }
+                | ApiEvent::RuntimeInfo { .. } | ApiEvent::SessionRenamed { .. }
+        ) {
+            self.transcript_measurements.dirty = true;
+        }
         self.response_stats.observe(event, self.provider.as_deref());
         if let Some(cue) = self.sound_events.observe(event)
             && self.preview_state.is_none()
@@ -2625,6 +2696,7 @@ impl Panel {
 
     /// Settle partial output and stop activity without waiting for a later idle event.
     fn finish_response(&mut self) {
+        self.transcript_measurements.dirty = true;
         self.flush_reasoning();
         self.flush_streaming();
         if let Some(stats) = self.response_stats.finish() {
@@ -2636,6 +2708,7 @@ impl Panel {
 
     fn flush_streaming(&mut self) {
         if !self.streaming_text.trim().is_empty() {
+            self.transcript_measurements.dirty = true;
             self.items
                 .push(Item::Assistant(std::mem::take(&mut self.streaming_text)));
         } else {
@@ -2684,6 +2757,7 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         if !self.streaming_reasoning.trim().is_empty() {
+            self.transcript_measurements.dirty = true;
             append_reasoning(
                 &mut self.items,
                 std::mem::take(&mut self.streaming_reasoning),
@@ -3182,6 +3256,7 @@ impl Panel {
                                 if !this.expanded_tools.remove(&call_id) {
                                     this.expanded_tools.insert(call_id.clone());
                                 }
+                                this.transcript_measurements.dirty = true;
                                 cx.notify();
                             }),
                         )
@@ -3639,11 +3714,15 @@ impl Render for Panel {
                     .splice(row_count..self.transcript_row_count, 0);
             }
             self.transcript_row_count = row_count;
-        } else if row_count > 0 {
-            // Panel notifications can change a row's height without changing
-            // its count (tool expansion or streaming text).
-            // Invalidate measurements while retaining virtualized painting.
-            self.transcript_list.remeasure_items(0..row_count);
+        }
+        let theme = Theme::global();
+        if let Some(range) = self.transcript_measurements.take_range(
+            self.items.len(),
+            row_count,
+            (self.streaming_reasoning.len(), self.streaming_text.len()),
+            (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
+        ) {
+            self.transcript_list.remeasure_items(range);
         }
         if row_count > 0 {
             if let Some((_, y)) = self.pending_history_scroll.take() {

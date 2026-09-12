@@ -1,5 +1,42 @@
 # Interaction latency profile
 
+## Loaded desktop stalls, 2026-09-12
+
+A passive 25-second capture of the running desktop recorded 875 draws and
+68 input-bearing frames. The maximum draw was 52.26 ms and maximum input latency
+73.60 ms. Thirty-five sampling windows contained draws over 16.7 ms. Concurrent
+Rust builds were active, so these are observed stalls, not an isolated benchmark.
+Artifacts: `target/live-profile/fps-before-20260912c/`.
+
+Two UI hot paths now avoid unnecessary work:
+
+- Transcript notifications no longer discard every cached list measurement.
+  Unchanged repaints invalidate zero rows, and stable streaming text/reasoning
+  updates invalidate at most three trailing rows. Structural, tool, history,
+  selection, and font changes retain conservative full invalidation. GPUI still
+  measures visible rows and independently invalidates wrapping on width changes.
+- The event bridge processes at most 128 updates before yielding for 1 ms, so a
+  continuously ready producer cannot monopolize the UI executor. It preserves
+  event order and leaves excess events queued, without reintroducing idle polls.
+  Session refreshes also skip durable todo-file reads when no unfinished-work
+  dashboard is open.
+
+The real-panel measurement tests cover repaint reuse, streaming geometry, tool
+updates, selection, recovery, and width changes. A 10,002-row measurement plan
+invalidates 300 rows across 100 stable stream updates, rather than 1,000,200.
+This is a reduction in explicit invalidation work, not a claimed FPS multiplier.
+Timing comparisons between existing debug binaries were inconsistent under the
+concurrent build load, so they do not establish an isolated frame-time speedup.
+
+Graphics selection matters independently of transcript work. The affected Intel
+machine had Mesa OpenGL and software Vulkan installed, but no Intel Vulkan ICD.
+Install the matching `vulkan-intel` package on Arch to make hardware Vulkan
+available. The running process keeps its graphics context until an application
+restart, not a UI hot reload. UI activation now logs GPUI's actual GPU specs once
+to the persistent desktop diagnostic log, including software-emulation status.
+The screenshot harness deliberately forces lavapipe and cannot prove hardware
+Vulkan presentation on the user's display.
+
 ## Sidebar hover, 2026-09-05
 
 Session rows previously lived in one eagerly built scrollable div. GPUI's hover

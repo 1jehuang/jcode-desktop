@@ -646,7 +646,7 @@ impl Workspace {
         let bridge_task = cx.spawn(async move |this, cx| {
             while let Some(first) = update_bridge.recv().await {
                 let mut updates = vec![first];
-                updates.extend(update_bridge.drain());
+                updates.extend(update_bridge.drain_up_to(127));
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     let mut changed = false;
                     for update in updates {
@@ -659,6 +659,10 @@ impl Workspace {
                 if outcome.is_err() {
                     break;
                 }
+                // recv() is immediately ready while a producer has a backlog.
+                // Bound each batch and yield to input/layout between batches,
+                // without reintroducing idle polling or dropping stream events.
+                cx.background_executor().timer(Duration::from_millis(1)).await;
             }
         });
 
@@ -1525,9 +1529,13 @@ impl Workspace {
                     }
                 }
                 self.sessions = sessions;
-                let unfinished = harness::unfinished_sessions(&self.sessions);
+                let mut unfinished = None;
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == "unfinished-work" {
+                        // Most workspaces have no dashboard. Do not read every
+                        // session's todo file on the UI thread in that case.
+                        let unfinished = unfinished
+                            .get_or_insert_with(|| harness::unfinished_sessions(&self.sessions));
                         slot.panel.update(cx, |panel, cx| {
                             panel.set_unfinished_work(unfinished.clone(), cx)
                         });
