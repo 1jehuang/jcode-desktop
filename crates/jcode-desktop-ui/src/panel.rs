@@ -4745,11 +4745,14 @@ fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
         })
 }
 
+const PINNED_TODO_DOT_LIMIT: usize = 8;
+
 #[derive(Debug, PartialEq)]
 struct PinnedTodoSummary {
     completed: usize,
     total: usize,
     current: Option<String>,
+    dots: Vec<bool>,
 }
 
 fn pinned_todo_summary(payload: &TodoCardPayload) -> PinnedTodoSummary {
@@ -4761,6 +4764,11 @@ fn pinned_todo_summary(payload: &TodoCardPayload) -> PinnedTodoSummary {
         .clone()
         .filter(|todo| todo.status == "completed")
         .count();
+    let dots = active_todos
+        .clone()
+        .take(PINNED_TODO_DOT_LIMIT)
+        .map(|todo| todo.status == "completed")
+        .collect();
     let total = active_todos.count();
     let current = payload
         .todos
@@ -4772,6 +4780,7 @@ fn pinned_todo_summary(payload: &TodoCardPayload) -> PinnedTodoSummary {
         completed,
         total,
         current,
+        dots,
     }
 }
 
@@ -4801,13 +4810,7 @@ fn render_pinned_todo_summary(payload: &TodoCardPayload) -> impl IntoElement {
         .text_size(px(12.0))
         .child(
             div()
-                .flex_none()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(Theme::global().ACCENT_MUTED)
-                .child(format!("{}/{}", summary.completed, summary.total)),
-        )
-        .child(
-            div()
+                .debug_selector(|| "pinned-todo-task".into())
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
@@ -4815,6 +4818,37 @@ fn render_pinned_todo_summary(payload: &TodoCardPayload) -> impl IntoElement {
                 .text_ellipsis()
                 .text_color(Theme::global().TEXT)
                 .child(task),
+        )
+        .child(
+            div()
+                .debug_selector(|| "pinned-todo-dots".into())
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.0))
+                .children(summary.dots.iter().enumerate().map(|(index, completed)| {
+                    div()
+                        .debug_selector(move || format!("pinned-todo-dot-{index}"))
+                        .flex_none()
+                        .size(px(7.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(if *completed {
+                            Theme::global().OK
+                        } else {
+                            Theme::global().TEXT_FAINT
+                        })
+                        .when(*completed, |dot| dot.bg(Theme::global().OK))
+                }))
+                .when(summary.total > summary.dots.len(), |row| {
+                    row.child(
+                        div()
+                            .debug_selector(|| "pinned-todo-overflow".into())
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(format!("+{}", summary.total - summary.dots.len())),
+                    )
+                }),
         )
         .child(
             div()
@@ -7716,6 +7750,7 @@ Goals: []"#,
                 completed: 1,
                 total: 3,
                 current: Some("current".into()),
+                dots: vec![true, false, false],
             }
         );
 
@@ -7729,8 +7764,38 @@ Goals: []"#,
                 completed: 0,
                 total: 1,
                 current: Some("next".into()),
+                dots: vec![false],
             }
         );
+    }
+
+    #[test]
+    fn pinned_todo_dots_cap_actual_items_and_handle_empty_and_completed_lists() {
+        for count in [0, 1, 8, 9, 100] {
+            let mut payload = TodoCardPayload::default();
+            payload.todos = (0..count)
+                .map(|index| TodoCardItem {
+                    content: format!("Task {index}"),
+                    status: if index % 2 == 0 { "completed" } else { "pending" }.into(),
+                    group: None,
+                    blocked_by: vec![],
+                })
+                .collect();
+            let summary = pinned_todo_summary(&payload);
+            assert_eq!(summary.total, count);
+            assert_eq!(summary.dots.len(), count.min(PINNED_TODO_DOT_LIMIT));
+            assert_eq!(summary.completed, count.div_ceil(2));
+            for (index, completed) in summary.dots.iter().enumerate() {
+                assert_eq!(*completed, index % 2 == 0, "preserve task order");
+            }
+            for todo in &mut payload.todos {
+                todo.status = "completed".into();
+            }
+            let summary = pinned_todo_summary(&payload);
+            assert_eq!(summary.completed, count);
+            assert!(summary.dots.iter().all(|completed| *completed));
+            assert!(summary.current.is_none());
+        }
     }
 
     #[gpui::test]
@@ -7773,6 +7838,19 @@ Goals: []"#,
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
         assert!(pinned.bottom() <= transcript.top());
         assert_eq!(summary.size.height, px(30.0));
+        let task = vcx.debug_bounds("pinned-todo-task").expect("task label");
+        let dots = vcx.debug_bounds("pinned-todo-dots").expect("progress dots");
+        assert!(
+            dots.left() >= task.right(),
+            "dots sit to the right of the task"
+        );
+        for selector in ["pinned-todo-dot-0", "pinned-todo-dot-1"] {
+            let dot = vcx.debug_bounds(selector).expect("one dot per item");
+            assert_eq!(dot.size, gpui::size(px(7.0), px(7.0)));
+            assert!(dot.right() <= summary.right());
+        }
+        assert!(vcx.debug_bounds("pinned-todo-dot-2").is_none());
+        assert!(vcx.debug_bounds("pinned-todo-overflow").is_none());
         assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());
         assert!(vcx.debug_bounds("tool-inline").is_none());
 
@@ -7799,6 +7877,29 @@ Goals: []"#,
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());
         assert!(vcx.debug_bounds("pinned-todo-summary").is_some());
+
+        panel.update(vcx, |panel, cx| {
+            panel.items = vec![Item::Todos(TodoCardPayload {
+                todos: (0..12)
+                    .map(|index| TodoCardItem {
+                        content: format!("Task {index}"),
+                        status: "completed".into(),
+                        group: None,
+                        blocked_by: vec![],
+                    })
+                    .collect(),
+                plan: TodoCardPlan::default(),
+            })];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-dot-7").is_some());
+        assert!(vcx.debug_bounds("pinned-todo-dot-8").is_none());
+        let overflow = vcx
+            .debug_bounds("pinned-todo-overflow")
+            .expect("extra items counted");
+        let summary = vcx.debug_bounds("pinned-todo-summary").unwrap();
+        assert!(overflow.right() <= summary.right());
     }
 }
 
@@ -7969,6 +8070,12 @@ fn demo_item_fixtures() -> Vec<Item> {
         },
         Item::Todos(TodoCardPayload {
             todos: vec![
+                TodoCardItem {
+                    content: "Add compact todo progress dots".into(),
+                    status: "completed".into(),
+                    group: Some("Desktop".into()),
+                    blocked_by: vec![],
+                },
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
                     status: "in_progress".into(),
