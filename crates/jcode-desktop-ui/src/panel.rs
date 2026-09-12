@@ -3739,7 +3739,6 @@ impl Render for Panel {
         let status_line = self.status_line();
         let active = self.activity_active();
         let theme = Theme::global();
-        let active_tint = theme.PANEL_BG.blend(theme.ACCENT.opacity(0.08));
         let meta_line = meta_line(
             self.working_dir.as_deref(),
             self.model.as_deref(),
@@ -3964,7 +3963,6 @@ impl Render for Panel {
                     .text_size(px(10.0))
                     .font_family(Theme::global().FONT_MONO)
                     .text_color(Theme::global().TEXT_FAINT)
-                    .when(active, |el| el.bg(active_tint))
                     .child(
                         div()
                             .flex_1()
