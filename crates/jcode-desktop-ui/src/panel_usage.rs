@@ -36,14 +36,14 @@ fn meter(
     div()
         .id(SharedString::from(id))
         .debug_selector(move || selector.clone())
-        .flex_none()
+        .min_w_0()
         .flex()
         .items_center()
         .gap_1p5()
         .h(px(22.))
         .text_color(theme.TEXT_DIM)
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
-        .child(label)
+        .child(div().min_w_0().truncate().child(label))
         .children(used.map(|used| {
             let color = if used >= 90. {
                 theme.ERROR
@@ -53,6 +53,7 @@ fn meter(
                 theme.ACCENT
             };
             div()
+                .flex_none()
                 .w(px(42.))
                 .h(px(4.))
                 .rounded_full()
@@ -97,7 +98,8 @@ impl Panel {
             .min_w_0()
             .items_center()
             .gap_2()
-            .flex_wrap();
+            .flex_nowrap()
+            .overflow_hidden();
         let window = self.model.as_deref().and_then(context_window_for_model);
         let used = self.context_tokens;
         let percent = used
@@ -217,6 +219,52 @@ mod tests {
         );
         assert!(active_limits(&accounts, Some("openai"), None).is_none());
         assert!(active_limits(&accounts, None, None).is_none());
+    }
+
+    #[gpui::test]
+    fn status_row_never_grows_with_width_or_content(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("fixed-status-row", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [1440., 640., 400., 320.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
+            for populated in [false, true] {
+                for status in [
+                    "idle",
+                    "running_tools",
+                    "disconnected with a long status message",
+                ] {
+                    panel.update(vcx, |panel, cx| {
+                        panel.model = populated.then(|| "a-very-long-model-name".repeat(4));
+                        panel.provider = populated.then(|| "openai".into());
+                        panel.auth_method = populated.then(|| "oauth".into());
+                        panel.working_dir = Some("/a/very/long/working/directory".repeat(4));
+                        panel.reasoning_effort = Some("high".into());
+                        panel.status = status.into();
+                        cx.notify();
+                    });
+                    vcx.run_until_parked();
+                    let row = vcx.debug_bounds("panel-meta").expect("status row");
+                    assert_eq!(row.size.height, px(30.), "width={width}, status={status}");
+                    for selector in [
+                        "panel-identity",
+                        "panel-build",
+                        "panel-status",
+                        "panel-usage",
+                    ] {
+                        if let Some(child) = vcx.debug_bounds(selector) {
+                            assert!(child.top() >= row.top(), "{selector}: {child:?}");
+                            assert!(child.bottom() <= row.bottom(), "{selector}: {child:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[gpui::test]

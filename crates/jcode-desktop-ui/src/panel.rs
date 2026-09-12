@@ -4138,20 +4138,20 @@ impl Render for Panel {
             .when(self.recovery_picker_open, |el| {
                 el.child(self.render_recovery_model_picker(cx))
             })
-            // Keep identity, build information, and connection/activity status
-            // on one row when space permits. Wrap controls on narrow panels
-            // instead of clipping the account action or squeezing status away.
+            // Keep the footer stable as status and usage change. Narrow panels
+            // truncate horizontally rather than stealing transcript height.
             .child(
                 div()
                     .debug_selector(|| "panel-meta".into())
                     .flex_none()
+                    .h(px(30.))
                     .min_w_0()
                     .px_3()
                     .py_1()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .flex_wrap()
+                    .flex_nowrap()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(10.0))
@@ -4161,11 +4161,12 @@ impl Render for Panel {
                         div()
                             .debug_selector(|| "panel-identity".into())
                             .flex_1()
-                            .min_w(px(150.))
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .flex_wrap()
+                            .flex_nowrap()
+                            .overflow_hidden()
                             .children(
                                 self.working_dir
                                     .as_deref()
