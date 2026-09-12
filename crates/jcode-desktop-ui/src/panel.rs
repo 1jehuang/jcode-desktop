@@ -2003,17 +2003,23 @@ impl Panel {
                     .map(|model| {
                         let provider = model.split(':').next().unwrap().to_string();
                         let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
                         let usage = match provider.as_str() {
                             "anthropic" => Some(jcode_sdk::ModelUsage {
-                                count: 42, last_used_unix_secs: Some(now - 7200),
+                                count: 42,
+                                last_used_unix_secs: Some(now - 7200),
                                 tracking_started_unix_secs: Some(now - 86400 * 14),
-                                selection_count: 5, last_selected_unix_secs: Some(now - 7200),
+                                selection_count: 5,
+                                last_selected_unix_secs: Some(now - 7200),
                             }),
                             "google" => Some(jcode_sdk::ModelUsage {
-                                count: 7, last_used_unix_secs: Some(now - 86400 * 3),
+                                count: 7,
+                                last_used_unix_secs: Some(now - 86400 * 3),
                                 tracking_started_unix_secs: Some(now - 86400 * 14),
-                                selection_count: 2, last_selected_unix_secs: Some(now - 86400 * 3),
+                                selection_count: 2,
+                                last_selected_unix_secs: Some(now - 86400 * 3),
                             }),
                             _ => None,
                         };
@@ -2563,7 +2569,9 @@ impl Panel {
                 if model.is_some() && *model != self.model {
                     self.model = model.clone();
                     self.auth_method = None;
-                    self.input.update(cx, |input, cx| input.set_current_model(self.model.clone(), cx));
+                    self.input.update(cx, |input, cx| {
+                        input.set_current_model(self.model.clone(), cx)
+                    });
                 }
             }
             ApiEvent::RuntimeInfo {

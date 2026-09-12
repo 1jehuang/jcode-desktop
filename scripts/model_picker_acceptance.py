@@ -199,6 +199,21 @@ def verify(output, env, root):
         phrase_bounds(words, "Current")
         report["checks"][stage] = True
 
+        stage = "pointer-selection-and-keyboard-handoff"
+        google = phrase_bounds(words, "google:gemini-review")
+        native("mousemove", round((google[0] + google[2]) / 2), round((google[1] + google[3]) / 2))
+        def pointer_selected(image):
+            bounds, current_words = picker(image, stage, "google:gemini-review")
+            selected_row(image, bounds, current_words, "google:gemini-review")
+        wait_frame("model-pointer-selected", pointer_selected)
+        native("mousemove", bounds[0] + 32, bounds[1] + 24)
+        native("key", "Up")
+        def keyboard_restored(image):
+            menu_bounds, current_words = picker(image, stage, FILTER_ROUTE)
+            selected_row(image, menu_bounds, current_words, FILTER_ROUTE)
+        wait_frame("model-keyboard-restored", keyboard_restored)
+        report["checks"][stage] = True
+
         stage = "keyboard-beyond-eight"
         native("key", "--clearmodifiers", "--delay", "80", *(["Down"] * 9))
         def keyboard_scrolled(image):

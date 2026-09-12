@@ -14,8 +14,9 @@ list without dropping commands behind an arbitrary result limit.
   highlighted for selection.
 
 Usage is supplied by the shared Jcode runtime, not inferred from token totals or
-locally counted picker clicks. One successful agent turn counts once. Historical
-TUI picker choices are displayed separately as **prior selections**, with their
+locally counted picker clicks. A turn with a persisted model response counts once
+per serving route, including turns that later stop before the task is finished.
+Historical TUI picker choices are displayed separately as **prior selections**, with their
 selection time, until tracked-turn data exists. They are not relabeled as turns.
 A model without history says **No recorded usage yet**. Older daemons that omit
 usage metadata show **Usage history unavailable**, rather than claiming the

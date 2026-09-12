@@ -1570,6 +1570,12 @@ impl Render for PromptInput {
                                                         .text_size(px(12.0))
                                                         .text_color(ink)
                                                         .cursor_pointer()
+                                                        .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                                                            if this.command_selection != index {
+                                                                this.command_selection = index;
+                                                                cx.notify();
+                                                            }
+                                                        }))
                                                         .child(
                                                             div()
                                                                 .flex()
