@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window,
-    actions, div, prelude::*, px, relative,
+    App, Context, Entity, FocusHandle, Focusable, ScrollHandle, Window, actions, div, prelude::*,
+    px, relative,
 };
 use jcode_desktop_api::HostHandle;
 use serde::{Deserialize, Serialize};
@@ -52,26 +52,26 @@ mod fps_header_tests;
 #[path = "hidden_animation_tests.rs"]
 mod hidden_animation_tests;
 #[cfg(test)]
+#[path = "navigation_map_tests.rs"]
+mod navigation_map_tests;
+#[path = "navigation_state.rs"]
+mod navigation_state;
+#[cfg(test)]
 #[path = "panel_cache_tests.rs"]
 pub(crate) mod panel_cache_tests;
 #[cfg(test)]
-#[path = "super_action_behavior_tests.rs"]
-mod super_action_behavior_tests;
-#[cfg(test)]
-#[path = "navigation_map_tests.rs"]
-mod navigation_map_tests;
-#[cfg(test)]
-#[path = "window_navigation_tests.rs"]
-mod window_navigation_tests;
-#[path = "window_navigation.rs"]
-mod window_navigation;
-#[path = "navigation_state.rs"]
-mod navigation_state;
+#[path = "workspace_remote_tests.rs"]
+mod remote_tests;
 #[path = "workspace_remotes.rs"]
 mod remotes;
 #[cfg(test)]
-#[path = "workspace_remote_tests.rs"]
-mod remote_tests;
+#[path = "super_action_behavior_tests.rs"]
+mod super_action_behavior_tests;
+#[path = "window_navigation.rs"]
+mod window_navigation;
+#[cfg(test)]
+#[path = "window_navigation_tests.rs"]
+mod window_navigation_tests;
 
 #[path = "workspace_default_directory.rs"]
 mod default_directory;
@@ -871,8 +871,15 @@ impl Workspace {
             jcode_sdk::SessionInfo {
                 session_id: Panel::STARTUP_SESSION_ID.into(),
                 title: Some(self.remotes.default_host.as_ref().map_or_else(
-                    || "New session".into(), |host| format!("Connecting to {host}"))),
-                working_dir: self.remotes.default_host.is_none().then(default_working_dir).flatten(),
+                    || "New session".into(),
+                    |host| format!("Connecting to {host}"),
+                )),
+                working_dir: self
+                    .remotes
+                    .default_host
+                    .is_none()
+                    .then(default_working_dir)
+                    .flatten(),
                 status: "starting".into(),
                 transcript_bytes: None,
                 saved: false,
@@ -985,20 +992,23 @@ impl Workspace {
     pub fn snapshot(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
         // Closing slots and transient tool snapshots must not be restored as
         // server sessions. All saved indices refer to persisted slots only.
-        let slots: Vec<_> = self.slots.iter()
+        let slots: Vec<_> = self
+            .slots
+            .iter()
             .filter(|slot| !slot.closing && !slot.panel.read(cx).is_change_review())
             .collect();
-        let index_for_id = |id: gpui::EntityId| {
-            slots
-                .iter()
-                .position(|slot| slot.panel.entity_id() == id)
-        };
+        let index_for_id =
+            |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
         let review_source = self.slots.get(self.active).and_then(|slot| {
             let panel = slot.panel.read(cx);
             let source_id = panel.session_id.strip_prefix("review://")?;
-            slots.iter().position(|slot| slot.panel.read(cx).session_id == source_id)
+            slots
+                .iter()
+                .position(|slot| slot.panel.read(cx).session_id == source_id)
         });
-        let active = self.slots.get(self.active)
+        let active = self
+            .slots
+            .get(self.active)
             .and_then(|slot| index_for_id(slot.panel.entity_id()))
             .or(review_source)
             .unwrap_or(0);
@@ -1075,7 +1085,9 @@ impl Workspace {
                 panel_state.session_id = pending::next_draft_id();
                 if help {
                     panel_state.session_id = panel_state.session_id.replacen(
-                        "startup://draft/", "startup://draft/help/", 1,
+                        "startup://draft/",
+                        "startup://draft/help/",
+                        1,
                     );
                 }
                 self.bridge.send(Command::CreateSession {
@@ -1133,7 +1145,9 @@ impl Workspace {
                         cx,
                     )
                 });
-                if !Panel::is_pending_session_id(&session_id) && session_id != Panel::DEFAULT_DIRECTORY_SESSION_ID {
+                if !Panel::is_pending_session_id(&session_id)
+                    && session_id != Panel::DEFAULT_DIRECTORY_SESSION_ID
+                {
                     self.bridge.send(Command::Watch { session_id });
                 }
                 panel
@@ -1196,7 +1210,9 @@ impl Workspace {
             let search = self.create_folder_search(cx);
             search.update(cx, |search, cx| search.restore(search_state, cx));
             if let Some(index) = self.default_directory_panel_index(cx) {
-                self.slots[index].panel.update(cx, |panel, _| panel.input = search.clone());
+                self.slots[index]
+                    .panel
+                    .update(cx, |panel, _| panel.input = search.clone());
             }
             self.folder_search = Some(search);
         }
@@ -1358,7 +1374,12 @@ impl Workspace {
 
         match update {
             Update::Status(status) => self.status = status,
-            Update::RemoteStatus { host, message, request_id, failed } => {
+            Update::RemoteStatus {
+                host,
+                message,
+                request_id,
+                failed,
+            } => {
                 if request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID) {
                     self.remotes.startup_failed = failed;
                 }
@@ -1385,7 +1406,10 @@ impl Workspace {
                         if panel.session_id != session.session_id {
                             continue;
                         }
-                        let title = session.title.as_ref().filter(|title| panel.title.as_ref() != *title);
+                        let title = session
+                            .title
+                            .as_ref()
+                            .filter(|title| panel.title.as_ref() != *title);
                         // Restored panels can predate directory metadata. Refresh it
                         // along with the title so the identity footer stays current.
                         // Missing catalog metadata must not erase a known directory.
@@ -1420,19 +1444,20 @@ impl Workspace {
                 session,
                 request_id,
             } => {
-                if request_id.as_deref().is_some_and(Panel::is_pending_session_id) {
-                    if let Some(slot) = self
-                        .slots
-                        .iter()
-                        .find(|slot| {
-                            !slot.closing
-                                && Some(slot.panel.read(cx).session_id.as_str()) == request_id.as_deref()
-                        })
-                    {
+                if request_id
+                    .as_deref()
+                    .is_some_and(Panel::is_pending_session_id)
+                {
+                    if let Some(slot) = self.slots.iter().find(|slot| {
+                        !slot.closing
+                            && Some(slot.panel.read(cx).session_id.as_str())
+                                == request_id.as_deref()
+                    }) {
                         let session_id = session.session_id.clone();
                         slot.panel
                             .update(cx, |panel, cx| panel.attach_startup_session(session, cx));
-                        if request_id.as_deref()
+                        if request_id
+                            .as_deref()
                             .is_some_and(|id| id.starts_with("startup://draft/help/"))
                         {
                             self.bridge.send(Command::Send {
@@ -2635,7 +2660,11 @@ impl Workspace {
         {
             return;
         }
-        if self.slots[self.active].panel.read(cx).is_default_directory() {
+        if self.slots[self.active]
+            .panel
+            .read(cx)
+            .is_default_directory()
+        {
             self.close_folder_picker(cx);
             self.focus_active(window, cx);
             return;
@@ -2646,8 +2675,10 @@ impl Workspace {
         self.slots[closed].closing = true;
         self.slots[closed].close_progress.set(0.0, Instant::now());
         let session_id = self.slots[closed].panel.read(cx).session_id.clone();
-        if session_id != "terminal" && !Panel::is_pending_session_id(&session_id)
-            && !self.slots[closed].panel.read(cx).is_change_review() {
+        if session_id != "terminal"
+            && !Panel::is_pending_session_id(&session_id)
+            && !self.slots[closed].panel.read(cx).is_change_review()
+        {
             self.bridge.send(Command::Unwatch { session_id });
         }
         if self.previous == Some(closed_id) {
@@ -3045,8 +3076,7 @@ impl Workspace {
     fn advance_hidden_strip_animations(&mut self, now: Instant, overview_visible: bool) {
         static STALE_FIXTURE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
             (harness::screenshot_mode() || cfg!(test))
-                && std::env::var("JCODE_DESKTOP_SCREENSHOT_STALE_HIDDEN_ANIMATIONS")
-                    .as_deref()
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_STALE_HIDDEN_ANIMATIONS").as_deref()
                     == Ok("1")
         });
         if *STALE_FIXTURE {
@@ -3947,9 +3977,11 @@ impl Workspace {
     }
 
     fn render_files_sidebar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        if self.slots.get(self.active).is_some_and(|slot| {
-            slot.panel.read(cx).session_id.starts_with("ssh://")
-        }) {
+        if self
+            .slots
+            .get(self.active)
+            .is_some_and(|slot| slot.panel.read(cx).session_id.starts_with("ssh://"))
+        {
             return div().debug_selector(|| "remote-file-browser-notice".into()).p_3().text_size(px(11.0)).text_color(Theme::global().TEXT_DIM)
                 .child("This panel runs on a remote machine. Ask Jcode to inspect its files in chat. The local file browser is available on local panels.")
                 .into_any_element();
@@ -4055,9 +4087,15 @@ impl Workspace {
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        open_sessions.retain(|session| self.slots.iter().any(|slot|
-            !slot.closing && slot.panel.read(cx).session_id == session.session_id));
-        let selection_order = open_sessions.iter().map(|s| s.session_id.clone()).collect::<Vec<_>>();
+        open_sessions.retain(|session| {
+            self.slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id)
+        });
+        let selection_order = open_sessions
+            .iter()
+            .map(|s| s.session_id.clone())
+            .collect::<Vec<_>>();
         self.sidebar_selection.retain(&selection_order);
         let open_session_count = open_sessions.len();
         let session_workspaces = self
@@ -4113,18 +4151,42 @@ impl Workspace {
             .overflow_hidden();
         list = list.flex().flex_col();
         if !self.sidebar_selection.ids.is_empty() {
-            list = list.child(div().flex_none().px_3().py_2().flex().items_center().gap_2()
-                .text_size(px(11.0))
-                .child(format!("{} selected", self.sidebar_selection.ids.len()))
-                .child(div().id("sidebar-close-selected").debug_selector(|| "sidebar-close-selected".into())
-                    .px_2().py_1().rounded_md().bg(Theme::global().ACCENT_DIM).cursor_pointer()
-                    .child("Close selected")
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        let ids = this.sidebar_session_layout.iter().filter(|s| this.sidebar_selection.contains(&s.session_id)).map(|s| s.session_id.clone()).collect();
-                        this.close_sidebar_sessions(ids, window, cx);
-                    }))));
+            list = list.child(
+                div()
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.0))
+                    .child(format!("{} selected", self.sidebar_selection.ids.len()))
+                    .child(
+                        div()
+                            .id("sidebar-close-selected")
+                            .debug_selector(|| "sidebar-close-selected".into())
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(Theme::global().ACCENT_DIM)
+                            .cursor_pointer()
+                            .child("Close selected")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    let ids = this
+                                        .sidebar_session_layout
+                                        .iter()
+                                        .filter(|s| this.sidebar_selection.contains(&s.session_id))
+                                        .map(|s| s.session_id.clone())
+                                        .collect();
+                                    this.close_sidebar_sessions(ids, window, cx);
+                                }),
+                            ),
+                    ),
+            );
         }
         if !ordered_sessions.is_empty() {
             list = list.child(
@@ -6048,7 +6110,13 @@ impl Workspace {
                             .items_center()
                             .justify_between()
                             .gap_2()
-                            .child(div().flex_1().min_w_0().truncate().child(format!("▸  {label}")))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(format!("▸  {label}")),
+                            )
                             .when(!reason.is_empty(), |el| {
                                 el.child(
                                     div()
@@ -6063,34 +6131,63 @@ impl Workspace {
 
         let inline = self.folder_picker_sets_default;
         div()
-            .id(if inline { "default-directory-panel" } else { "folder-picker-overlay" })
-            .debug_selector(move || if inline { "default-directory-panel".into() } else { "folder-picker-overlay".into() })
+            .id(if inline {
+                "default-directory-panel"
+            } else {
+                "folder-picker-overlay"
+            })
+            .debug_selector(move || {
+                if inline {
+                    "default-directory-panel".into()
+                } else {
+                    "folder-picker-overlay".into()
+                }
+            })
             // Clicking a modal control must not let the workspace ancestor
             // steal the search focus. In particular, a rejected save needs to
             // keep accepting edits and Escape without an extra input click.
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
-                window.prevent_default();
-                cx.stop_propagation();
-                if this.folder_picker_sets_default {
-                    if let Some(index) = this.default_directory_panel_index(cx) {
-                        this.set_active(index, cx);
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if this.folder_picker_sets_default {
+                        if let Some(index) = this.default_directory_panel_index(cx) {
+                            this.set_active(index, cx);
+                        }
                     }
-                }
-                if let Some(search) = &this.folder_search {
-                    this.focus_pending = false;
-                    window.focus(&search.read(cx).focus_handle.clone(), cx);
-                }
-            }))
+                    if let Some(search) = &this.folder_search {
+                        this.focus_pending = false;
+                        window.focus(&search.read(cx).focus_handle.clone(), cx);
+                    }
+                }),
+            )
             .when(inline, |el| el.size_full())
-            .when(!inline, |el| el.absolute().inset_0().items_center().justify_center().bg(gpui::rgba(0x000000cc)))
+            .when(!inline, |el| {
+                el.absolute()
+                    .inset_0()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x000000cc))
+            })
             .flex()
             .child(
                 div()
                     .when(inline, |el| el.size_full().min_w_0())
-                    .when(!inline, |el| el.w(px(680.0)).h(px(560.0)).max_w(relative(0.9)).max_h(relative(0.85)))
+                    .when(!inline, |el| {
+                        el.w(px(680.0))
+                            .h(px(560.0))
+                            .max_w(relative(0.9))
+                            .max_h(relative(0.85))
+                    })
                     .flex()
                     .flex_col()
-                    .when(!inline, |el| el.rounded_lg().border_1().border_color(Theme::global().PANEL_BORDER_FOCUS).bg(Theme::global().PANEL_BG))
+                    .when(!inline, |el| {
+                        el.rounded_lg()
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                            .bg(Theme::global().PANEL_BG)
+                    })
                     .child(
                         div()
                             .px_4()
@@ -6098,7 +6195,13 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_size(px(14.0)).child(if self.folder_picker_sets_default { "Default directory" } else { "open folder" }))
+                            .child(div().text_size(px(14.0)).child(
+                                if self.folder_picker_sets_default {
+                                    "Default directory"
+                                } else {
+                                    "open folder"
+                                },
+                            ))
                             .child(
                                 div()
                                     .id("folder-picker-cancel")
@@ -6121,7 +6224,9 @@ impl Workspace {
                             .text_color(Theme::global().TEXT_DIM)
                             .child(if self.folder_picker_sets_default {
                                 self.default_directory_description(&directory)
-                            } else { directory.display().to_string() }),
+                            } else {
+                                directory.display().to_string()
+                            }),
                     )
                     .child(
                         div()
@@ -6211,14 +6316,22 @@ impl Workspace {
                                 // newly repositioned strip and steal draft focus.
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     cx.stop_propagation();
-                                    let query = this.folder_search.as_ref().map(|s| s.read(cx).content.trim().to_string()).unwrap_or_default();
+                                    let query = this
+                                        .folder_search
+                                        .as_ref()
+                                        .map(|s| s.read(cx).content.trim().to_string())
+                                        .unwrap_or_default();
                                     if this.folder_picker_sets_default && !query.is_empty() {
                                         this.set_searched_default_directory(&query, cx);
                                     } else {
                                         this.choose_browsed_folder(cx);
                                     }
                                 }))
-                                .child(if self.folder_picker_sets_default { "Set as default" } else { "open this folder" }),
+                                .child(if self.folder_picker_sets_default {
+                                    "Set as default"
+                                } else {
+                                    "open this folder"
+                                }),
                         ),
                     ),
             )
@@ -6610,9 +6723,10 @@ impl Render for Workspace {
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
-            .when(self.folder_picker_dir.is_some() && !self.folder_picker_sets_default, |root| {
-                root.child(self.render_folder_picker(cx))
-            });
+            .when(
+                self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
+                |root| root.child(self.render_folder_picker(cx)),
+            );
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
         let action_capture_pending = self
@@ -6889,10 +7003,16 @@ fn unix_now_ms() -> i64 {
 
 fn sidebar_session_directory(session: &jcode_sdk::SessionInfo) -> Option<String> {
     if let Some(host) = harness::remote_host(&session.session_id) {
-        return Some(match session.working_dir.as_deref().filter(|dir| !dir.trim().is_empty()) {
-            Some(dir) => format!("{host} · {dir}"),
-            None => host,
-        });
+        return Some(
+            match session
+                .working_dir
+                .as_deref()
+                .filter(|dir| !dir.trim().is_empty())
+            {
+                Some(dir) => format!("{host} · {dir}"),
+                None => host,
+            },
+        );
     }
     session
         .working_dir
@@ -7669,9 +7789,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn session_refresh_updates_the_footer_directory_without_a_title(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn session_refresh_updates_the_footer_directory_without_a_title(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(cx, |workspace, cx| {
@@ -7680,13 +7798,29 @@ mod tests {
             let slot = workspace.open_session(session.clone(), cx);
             for directory in ["/srv/project", "/srv/other"] {
                 session.working_dir = Some(directory.into());
-                workspace.apply(Update::Sessions { sessions: vec![session.clone()] }, cx);
-                assert_eq!(workspace.slots[slot].panel.read(cx).working_dir.as_deref(), Some(directory));
+                workspace.apply(
+                    Update::Sessions {
+                        sessions: vec![session.clone()],
+                    },
+                    cx,
+                );
+                assert_eq!(
+                    workspace.slots[slot].panel.read(cx).working_dir.as_deref(),
+                    Some(directory)
+                );
             }
             for directory in [None, Some("   ")] {
                 session.working_dir = directory.map(str::to_owned);
-                workspace.apply(Update::Sessions { sessions: vec![session.clone()] }, cx);
-                assert_eq!(workspace.slots[slot].panel.read(cx).working_dir.as_deref(), Some("/srv/other"));
+                workspace.apply(
+                    Update::Sessions {
+                        sessions: vec![session.clone()],
+                    },
+                    cx,
+                );
+                assert_eq!(
+                    workspace.slots[slot].panel.read(cx).working_dir.as_deref(),
+                    Some("/srv/other")
+                );
             }
         });
     }
@@ -9661,7 +9795,11 @@ mod tests {
                     request_id,
                 } => {
                     assert_eq!(working_dir, expected, "{chord}");
-                    assert!(request_id.as_deref().is_some_and(Panel::is_pending_session_id));
+                    assert!(
+                        request_id
+                            .as_deref()
+                            .is_some_and(Panel::is_pending_session_id)
+                    );
                 }
                 _ => panic!("{chord} dispatched the wrong command"),
             }
@@ -10872,17 +11010,27 @@ mod tests {
             "the toast should remain inside the workspace instead of spilling into the sidebar"
         );
         let title = cx.debug_bounds("coach-title").expect("a readable title");
-        let keys = cx.debug_bounds("coach-keys").expect("dedicated keycap footer");
+        let keys = cx
+            .debug_bounds("coach-keys")
+            .expect("dedicated keycap footer");
         assert!(keys.origin.y >= title.bottom());
         cx.simulate_click(title.center(), gpui::Modifiers::default());
         workspace.read_with(cx, |workspace, _| {
-            assert!(workspace.test_coach().active_hint_id().is_some(), "body clicks do not dismiss tips");
+            assert!(
+                workspace.test_coach().active_hint_id().is_some(),
+                "body clicks do not dismiss tips"
+            );
         });
-        let dismiss = cx.debug_bounds("coach-dismiss").expect("explicit close control");
+        let dismiss = cx
+            .debug_bounds("coach-dismiss")
+            .expect("explicit close control");
         assert!(dismiss.size.width >= px(28.0));
         cx.simulate_click(dismiss.center(), gpui::Modifiers::default());
         workspace.read_with(cx, |workspace, _| {
-            assert!(workspace.test_coach().active_hint_id().is_none(), "close dismisses the tip");
+            assert!(
+                workspace.test_coach().active_hint_id().is_none(),
+                "close dismisses the tip"
+            );
         });
     }
 

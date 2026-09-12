@@ -154,37 +154,67 @@ mod tests {
             ] {
                 panel.update(vcx, |panel, cx| panel.apply(&event, cx));
                 vcx.run_until_parked();
-                let activity = vcx.debug_bounds("transcript-activity").expect("activity paints");
+                let activity = vcx
+                    .debug_bounds("transcript-activity")
+                    .expect("activity paints");
                 let content_rows = panel.read_with(vcx, |panel, _| {
-                    assert_eq!(panel.transcript_row_count, panel.transcript_render_rows().len() + 1);
+                    assert_eq!(
+                        panel.transcript_row_count,
+                        panel.transcript_render_rows().len() + 1
+                    );
                     panel.transcript_render_rows().len()
                 });
                 if content_rows > 0 {
-                    let last = vcx.debug_bounds(format!("transcript-row-{}", content_rows - 1).leak())
+                    let last = vcx
+                        .debug_bounds(format!("transcript-row-{}", content_rows - 1).leak())
                         .expect("last content row paints");
-                    assert!(activity.top() >= last.bottom(), "spinner needs its own tail line");
+                    assert!(
+                        activity.top() >= last.bottom(),
+                        "spinner needs its own tail line"
+                    );
                 }
                 assert!(vcx.debug_bounds("panel-status-spinner").is_none());
             }
             panel.update(vcx, |panel, cx| match terminal {
-                "done" => panel.apply(&ApiEvent::TurnDone { session_id: "tail-test".into() }, cx),
-                "error" => panel.apply(&ApiEvent::Error {
-                    code: jcode_sdk::api::ErrorCode::Internal,
-                    message: "Provider failed".into(),
-                }, cx),
+                "done" => panel.apply(
+                    &ApiEvent::TurnDone {
+                        session_id: "tail-test".into(),
+                    },
+                    cx,
+                ),
+                "error" => panel.apply(
+                    &ApiEvent::Error {
+                        code: jcode_sdk::api::ErrorCode::Internal,
+                        message: "Provider failed".into(),
+                    },
+                    cx,
+                ),
                 "failed" => panel.message_failed("Send failed".into(), cx),
-                _ => panel.apply(&ApiEvent::SessionStatus {
-                    session_id: "tail-test".into(), status: terminal.into(),
-                }, cx),
+                _ => panel.apply(
+                    &ApiEvent::SessionStatus {
+                        session_id: "tail-test".into(),
+                        status: terminal.into(),
+                    },
+                    cx,
+                ),
             });
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("transcript-activity").is_none(), "{terminal}");
-            assert!(vcx.debug_bounds("panel-activity-spinner").is_none(), "{terminal}");
+            assert!(
+                vcx.debug_bounds("transcript-activity").is_none(),
+                "{terminal}"
+            );
+            assert!(
+                vcx.debug_bounds("panel-activity-spinner").is_none(),
+                "{terminal}"
+            );
             panel.read_with(vcx, |panel, _| {
                 assert!(!panel.activity_active(), "{terminal}");
                 assert!(panel.streaming_reasoning.is_empty());
                 assert!(panel.streaming_text.is_empty());
-                assert_eq!(panel.transcript_row_count, panel.transcript_render_rows().len());
+                assert_eq!(
+                    panel.transcript_row_count,
+                    panel.transcript_render_rows().len()
+                );
             });
         }
     }
@@ -206,8 +236,38 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("panel-activity-spinner").is_none());
 
+        // Providers send a transport phase before text or a status update.
+        // A failed previous turn must not hide this new turn's activity.
+        panel.update(vcx, |panel, cx| {
+            panel.message_failed("Previous request failed".into(), cx);
+            panel.apply(
+                &ApiEvent::ConnectionPhase {
+                    session_id: "activity-test".into(),
+                    phase: "streaming".into(),
+                },
+                cx,
+            );
+            assert!(panel.activity_active());
+            assert!(panel.sidebar_activity().is_some());
+            assert_eq!(panel.status_line(), "Responding");
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("transcript-activity").is_some());
+        assert!(vcx.debug_bounds("panel-status-badge").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TurnDone {
+                    session_id: "activity-test".into(),
+                },
+                cx,
+            );
+            assert!(!panel.activity_active());
+        });
+
         for (status, expected) in [
             ("running", "Working"),
+            ("generating", "Working"),
+            ("thinking", "Thinking"),
             ("streaming", "Responding"),
             ("running_tools", "Running tools"),
         ] {
@@ -233,6 +293,14 @@ mod tests {
             assert!(vcx.debug_bounds("panel-status-spinner").is_none());
         }
         panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::ConnectionPhase {
+                    session_id: "activity-test".into(),
+                    phase: "streaming".into(),
+                },
+                cx,
+            );
+            assert_eq!(panel.status_line(), "Running tools");
             panel.apply(
                 &ApiEvent::ReasoningDelta {
                     session_id: "activity-test".into(),

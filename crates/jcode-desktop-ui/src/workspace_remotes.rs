@@ -273,14 +273,17 @@ impl Workspace {
                     div()
                         .id("machine-host-input")
                         .debug_selector(|| "machine-host-input".into())
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
-                            if let Some(input) = &this.remotes.input {
-                                let focus = input.read(cx).focus_handle.clone();
-                                window.focus(&focus, cx);
-                                this.focus_pending = false;
-                            }
-                            cx.stop_propagation();
-                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                if let Some(input) = &this.remotes.input {
+                                    let focus = input.read(cx).focus_handle.clone();
+                                    window.focus(&focus, cx);
+                                    this.focus_pending = false;
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
                         .child(input.clone()),
                 )
                 .child(

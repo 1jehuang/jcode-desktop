@@ -1,4 +1,4 @@
-//! A panel-sized image lightbox. The transcript stays mounted behind it, so
+//! A window-sized image lightbox. The transcript stays mounted behind it, so
 //! closing the preview preserves the user's scroll position and draft.
 use super::*;
 
@@ -91,16 +91,18 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn render_image_preview(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_image_preview(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let image = self.image_preview.as_ref()?;
         let preview = image.preview.clone()?;
-        Some(
-            div()
+        let overlay = div()
                 .id("image-preview")
                 .debug_selector(|| "image-preview".into())
-                .absolute()
-                .inset_0()
-                .size_full()
+                .w(window.viewport_size().width)
+                .h(window.viewport_size().height)
                 .flex()
                 .flex_col()
                 .gap_3()
@@ -271,7 +273,17 @@ impl Panel {
                         .text_color(Theme::global().TEXT_DIM)
                         .child("Pinch or Ctrl+scroll to zoom · Drag or scroll to pan · Double-click to zoom / fit"),
                 )
-                .into_any_element(),
+                .into_any_element();
+        // Defer beyond panel clipping and anchor in window coordinates so the
+        // viewer covers the sidebar and neighboring panels as well.
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(gpui::point(px(0.0), px(0.0)))
+                    .child(overlay),
+            )
+            .with_priority(100)
+            .into_any_element(),
         )
     }
 }
@@ -540,6 +552,13 @@ mod tests {
                 .debug_bounds("image-preview-full")
                 .expect("diagram overlay paints");
             assert!(enlarged.size.height > thumbnail.size.height);
+            let overlay = vcx.debug_bounds("image-preview").unwrap();
+            let viewport = vcx.update(|window, _| window.viewport_size());
+            assert_eq!(overlay.origin, gpui::point(px(0.0), px(0.0)));
+            assert_eq!(
+                overlay.size, viewport,
+                "preview must cover the whole window"
+            );
             let zoom_in = vcx.debug_bounds("image-preview-zoom-in").unwrap();
             vcx.simulate_click(zoom_in.center(), gpui::Modifiers::default());
             vcx.run_until_parked();

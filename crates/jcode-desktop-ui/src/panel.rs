@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, FontWeight,
-    ListAlignment, ListState, ScrollHandle, SharedString, StyledImage, Task, Window, div, img,
-    list, point, prelude::*, px, relative,
+    App, Context, Entity, FocusHandle, Focusable, FontWeight, ListAlignment, ListState,
+    ScrollHandle, SharedString, StyledImage, Task, Window, div, img, list, point, prelude::*, px,
+    relative,
 };
 use jcode_desktop_api::HostHandle;
 use jcode_sdk::ApiEvent;
@@ -473,12 +473,7 @@ impl Panel {
     }
 
     pub(crate) fn sidebar_activity(&self) -> Option<gpui::AnyView> {
-        let working = matches!(
-            self.status.to_ascii_lowercase().as_str(),
-            "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools"
-        );
-        let streaming = !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty();
-        (self.activity_active() && (working || streaming))
+        self.activity_active()
             .then(|| self.sidebar_spinner.clone().into())
     }
 
@@ -1874,15 +1869,17 @@ impl Panel {
                     }
                 })
                 .with_on_overlay_cancel(move |app| {
-                                let input = this.input.clone();
-                                cx.defer(move |cx| {
-                                    input.update(cx, |input, cx| input.set_content(String::new(), cx));
-                                });
                     let mut handled = false;
                     if let Some(panel) = cancel_weak.upgrade() {
                         panel.update(app, |this, cx| {
                             if this.model_picker_open {
                                 this.close_model_picker(cx);
+                                let input = this.input.clone();
+                                cx.defer(move |cx| {
+                                    input.update(cx, |input, cx| {
+                                        input.set_content(String::new(), cx)
+                                    });
+                                });
                                 handled = true;
                             } else if !this.is_pending_session()
                                 && (this.status != "idle"
@@ -1898,35 +1895,43 @@ impl Panel {
                                 handled = true;
                             }
                             cx.notify();
-            if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
-                && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
-            {
-                let names = ["anthropic:sonnet-review".to_string(), "google:gemini-review".to_string()]
-                    .into_iter()
-                    .chain((1..=12).map(|index| format!("openai:atlas-{index:02}")));
-                let routes = names.map(|model| {
-                    let provider = model.split(':').next().unwrap().to_string();
-                    jcode_sdk::ModelRouteInfo {
-                        api_method: format!("{provider}-api-key"),
-                        model,
-                        provider,
-                        available: true,
-                        detail: String::new(),
-                    }
-                }).collect();
-                this.apply(&ApiEvent::RuntimeInfo {
-                    session_id: this.session_id.clone(),
-                    provider: Some("openai".into()),
-                    model: Some("openai:atlas-01".into()),
-                    reasoning_effort: None,
-                    routes,
-                }, cx);
-            }
                         });
                     }
                     handled
                 })
             });
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
+            {
+                let names = [
+                    "anthropic:sonnet-review".to_string(),
+                    "google:gemini-review".to_string(),
+                ]
+                .into_iter()
+                .chain((1..=12).map(|index| format!("openai:atlas-{index:02}")));
+                let routes = names
+                    .map(|model| {
+                        let provider = model.split(':').next().unwrap().to_string();
+                        jcode_sdk::ModelRouteInfo {
+                            api_method: format!("{provider}-api-key"),
+                            model,
+                            provider,
+                            available: true,
+                            detail: String::new(),
+                        }
+                    })
+                    .collect();
+                this.apply(
+                    &ApiEvent::RuntimeInfo {
+                        session_id: this.session_id.clone(),
+                        provider: Some("openai".into()),
+                        model: Some("openai:atlas-01".into()),
+                        reasoning_effort: None,
+                        routes,
+                    },
+                    cx,
+                );
+            }
             if this.is_pending_session() {
                 this.status = "Starting session · you can type now".into();
                 this.input
@@ -2591,7 +2596,7 @@ impl Panel {
     /// Prefer meaningful activity over transport bookkeeping.
     fn status_line(&self) -> String {
         let phase = self.connection_phase.trim();
-        if !phase.is_empty() && phase != "connected" {
+        if !phase.is_empty() && !matches!(phase, "connected" | "streaming") {
             return phase.replace('_', " ");
         }
         if self.activity_active() {
@@ -2601,10 +2606,15 @@ impl Panel {
             if !self.streaming_text.is_empty() {
                 return "Responding".into();
             }
+            if phase == "streaming" && self.status != "running_tools" {
+                return "Responding".into();
+            }
         }
         match self.status.as_str() {
             "idle" | "connected" => "Ready".into(),
             "busy" | "running" => "Working".into(),
+            "generating" => "Working".into(),
+            "thinking" => "Thinking".into(),
             "streaming" => "Responding".into(),
             "running_tools" => "Running tools".into(),
             status => status.replace('_', " "),
@@ -2612,14 +2622,19 @@ impl Panel {
     }
 
     fn activity_active(&self) -> bool {
-        match self.minimap_state() {
-            MinimapSessionState::Streaming => true,
-            MinimapSessionState::Working => matches!(
-                self.status.to_ascii_lowercase().as_str(),
-                "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools"
-            ),
-            _ => false,
+        let status = self.status.to_ascii_lowercase();
+        if status.contains("error") || status.contains("crash") || status.starts_with("lost:") {
+            return false;
         }
+        // Historical transcript errors do not describe the current turn. A
+        // transport streaming event can also arrive before its session status.
+        !self.streaming_text.is_empty()
+            || !self.streaming_reasoning.is_empty()
+            || self.connection_phase.trim() == "streaming"
+            || matches!(
+                status.as_str(),
+                "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools"
+            )
     }
 
     fn render_transcript_activity(&self) -> gpui::AnyElement {
@@ -2987,7 +3002,8 @@ impl Panel {
                 let expanded = self.expanded_tools.contains(call_id);
                 let summary = tool_summary(input);
                 let detail = tool_detail(name, input, output);
-                let edit_preview = self.render_edit_metadata(name, input, *done, error.is_some(), cx);
+                let edit_preview =
+                    self.render_edit_metadata(name, input, *done, error.is_some(), cx);
                 let has_detail = !detail.is_empty() || edit_preview.is_some();
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
@@ -3750,7 +3766,10 @@ impl Render for Panel {
                                             return;
                                         }
                                         if panel.startup_layout.is_some()
-                                            && !panel.transcript_list.viewport_bounds().contains(&event.position)
+                                            && !panel
+                                                .transcript_list
+                                                .viewport_bounds()
+                                                .contains(&event.position)
                                         {
                                             return;
                                         }
@@ -3854,16 +3873,26 @@ impl Render for Panel {
                         div()
                             .debug_selector(|| "panel-status".into())
                             .flex_1()
-                            .min_w_0()
+                            .min_w(px(120.0))
                             .flex()
                             .justify_end()
                             .items_center()
-                            .gap_1p5()
                             .overflow_hidden()
-                            .when(active, |el| {
-                                el.text_color(theme.ACCENT)
-                            })
-                            .child(status_line),
+                            .child(
+                                div()
+                                    .debug_selector(|| "panel-status-badge".into())
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .min_w_0()
+                                    .px_2()
+                                    .h(px(22.0))
+                                    .rounded_md()
+                                    .when(active, |el| {
+                                        el.bg(theme.ACCENT.opacity(0.12)).text_color(theme.ACCENT)
+                                    })
+                                    .child(div().min_w_0().truncate().child(status_line)),
+                            ),
                     ),
             )
             // Input
@@ -4718,17 +4747,17 @@ fn clip_lines(text: &str, max_lines: usize) -> String {
 }
 
 #[cfg(test)]
-#[path = "panel_turn_completion_tests.rs"]
-mod turn_completion_tests;
-#[cfg(test)]
 #[path = "panel_fresh_session_tests.rs"]
 mod fresh_session_tests;
+#[cfg(test)]
+#[path = "panel_image_flicker_tests.rs"]
+mod image_flicker_tests;
 #[cfg(test)]
 #[path = "panel_startup_lifecycle_tests.rs"]
 mod startup_lifecycle_tests;
 #[cfg(test)]
-#[path = "panel_image_flicker_tests.rs"]
-mod image_flicker_tests;
+#[path = "panel_turn_completion_tests.rs"]
+mod turn_completion_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4736,9 +4765,8 @@ mod tests {
 
     #[gpui::test]
     fn gmail_requests_are_isolated_from_network_and_worker_teardown(cx: &mut gpui::TestAppContext) {
-        let panel = cx.update(|cx| {
-            cx.new(|cx| Panel::new_gmail(crate::harness::spawn_inert(), cx))
-        });
+        let panel =
+            cx.update(|cx| cx.new(|cx| Panel::new_gmail(crate::harness::spawn_inert(), cx)));
         panel.update(cx, |panel, cx| {
             let disabled = "Gmail network access is disabled in UI unit tests";
             assert!(matches!(
@@ -6544,7 +6572,12 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [320., 800.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
-            for dir in [Some("/srv/projects/jcode-desktop"), Some("/"), None, Some("")] {
+            for dir in [
+                Some("/srv/projects/jcode-desktop"),
+                Some("/"),
+                None,
+                Some(""),
+            ] {
                 panel.update(vcx, |panel, cx| {
                     panel.working_dir = dir.map(str::to_owned);
                     cx.notify();
@@ -7078,7 +7111,10 @@ mod tests {
                 assert!(matches!(panel.items.last(), Some(Item::Error(message))
                     if message == "Update failed: checksum mismatch."));
             });
-            assert!(commands.try_recv().is_err(), "Linux updater never invokes the model or CLI updater");
+            assert!(
+                commands.try_recv().is_err(),
+                "Linux updater never invokes the model or CLI updater"
+            );
             crate::updates::clear_test_actions();
         }
     }
@@ -7121,6 +7157,23 @@ mod tests {
             window.focus(&handle, cx);
         });
 
+        vcx.simulate_input("/mod");
+        vcx.run_until_parked();
+        let command = vcx
+            .debug_bounds("slash-command-row-0")
+            .expect("model command suggestion exists");
+        vcx.simulate_click(command.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "clicking /model opens choices without selecting a model"
+        );
+        vcx.update(|_, cx| assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model "));
+        assert!(vcx.debug_bounds("model-picker-logo-0").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("slash-command-overlay").is_none());
+
         vcx.simulate_input("/model");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_none());
@@ -7152,23 +7205,6 @@ mod tests {
                 vec![
                     ("claude-fable-5".into(), false),
                     ("gpt-5.6-sol".into(), true)
-        vcx.simulate_input("/mod");
-        vcx.run_until_parked();
-        let command = vcx
-            .debug_bounds("slash-command-row-0")
-            .expect("model command suggestion exists");
-        vcx.simulate_click(command.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(
-            commands.try_recv().is_err(),
-            "clicking /model opens choices without selecting a model"
-        );
-        vcx.update(|_, cx| assert_eq!(panel.read(cx).input.read(cx).content.as_ref(), "/model "));
-        assert!(vcx.debug_bounds("model-picker-logo-0").is_some());
-        vcx.simulate_keystrokes("escape");
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("slash-command-overlay").is_none());
-
                 ]
             );
         });
@@ -7183,32 +7219,6 @@ mod tests {
         }
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("model-picker-overlay").is_none());
-    }
-
-    #[test]
-    fn model_logos_follow_routes_then_fall_back_to_model_families() {
-        assert_eq!(
-            model_logo_provider("custom-model", "openai-oauth"),
-            "openai"
-        );
-        assert_eq!(model_logo_provider("claude-fable-5", ""), "anthropic-api");
-        assert_eq!(model_logo_provider("gemini-3-pro", ""), "gemini");
-        assert_eq!(model_logo_provider("private-model", "private"), "private");
-    }
-
-    #[test]
-    fn todo_tool_output_parses_items_and_plan() {
-        let payload = parse_todo_tool_output(
-            r#"[{"id":"build","content":"Build the card","status":"in_progress","priority":"high","group":"Desktop","confidence":"validated"}]
-Plan: {"user_intention":"See progress at a glance","understands_user_intent":"clear"}
-Goals: []"#,
-        )
-        .expect("todo payload parses");
-
-        assert_eq!(payload.todos.len(), 1);
-        assert_eq!(payload.todos[0].content, "Build the card");
-        assert_eq!(payload.todos[0].group.as_deref(), Some("Desktop"));
-        assert_eq!(
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
 
         vcx.simulate_input("/model claude");
@@ -7252,6 +7262,32 @@ Goals: []"#,
                 "composer focus retained"
             )
         });
+    }
+
+    #[test]
+    fn model_logos_follow_routes_then_fall_back_to_model_families() {
+        assert_eq!(
+            model_logo_provider("custom-model", "openai-oauth"),
+            "openai"
+        );
+        assert_eq!(model_logo_provider("claude-fable-5", ""), "anthropic-api");
+        assert_eq!(model_logo_provider("gemini-3-pro", ""), "gemini");
+        assert_eq!(model_logo_provider("private-model", "private"), "private");
+    }
+
+    #[test]
+    fn todo_tool_output_parses_items_and_plan() {
+        let payload = parse_todo_tool_output(
+            r#"[{"id":"build","content":"Build the card","status":"in_progress","priority":"high","group":"Desktop","confidence":"validated"}]
+Plan: {"user_intention":"See progress at a glance","understands_user_intent":"clear"}
+Goals: []"#,
+        )
+        .expect("todo payload parses");
+
+        assert_eq!(payload.todos.len(), 1);
+        assert_eq!(payload.todos[0].content, "Build the card");
+        assert_eq!(payload.todos[0].group.as_deref(), Some("Desktop"));
+        assert_eq!(
             payload.plan.user_intention.as_deref(),
             Some("See progress at a glance")
         );
@@ -7405,7 +7441,9 @@ fn demo_items() -> Vec<Item> {
         });
         return vec![
             Item::User("Can you render a Mermaid diagram?".into()),
-            Item::Assistant(format!("Here is a Mermaid diagram:\n\n```mermaid\n{source}\n```")),
+            Item::Assistant(format!(
+                "Here is a Mermaid diagram:\n\n```mermaid\n{source}\n```"
+            )),
         ];
     }
     if crate::harness::screenshot_mode()

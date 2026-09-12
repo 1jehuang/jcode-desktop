@@ -391,10 +391,8 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                     .name("jcode-bridge-create".into())
                     .spawn(move || {
                         loop {
-                            let result = spawn_profile::create(
-                                || connect("create"),
-                                working_dir.clone(),
-                            );
+                            let result =
+                                spawn_profile::create(|| connect("create"), working_dir.clone());
                             match result {
                                 Ok((session, client)) => {
                                     let _ = internal.send(Command::CreatedInternal {
