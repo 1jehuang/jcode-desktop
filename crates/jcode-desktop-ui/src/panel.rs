@@ -47,6 +47,8 @@ mod startup;
 pub use startup::StartupLayout;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
+#[path = "panel_usage.rs"]
+pub(crate) mod usage;
 
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
@@ -203,8 +205,8 @@ pub struct Panel {
     pub auth_method: Option<String>,
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
-    /// Latest token usage: (input, output, cache_read) from the last update.
-    token_usage: Option<(u64, u64, u64)>,
+    /// Latest provider-reported prompt occupancy, with cache accounting normalized.
+    context_tokens: Option<u64>,
     pub items: Vec<Item>,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
@@ -618,6 +620,8 @@ impl Panel {
                 std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(),
                 Ok("streaming" | "mermaid")
             );
+        let usage_fixture = crate::harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tokens");
         let emoji = jcode_core::id::extract_session_name(&session_id)
             .map(jcode_core::id::session_icon)
             .unwrap_or("💫");
@@ -627,11 +631,11 @@ impl Panel {
             working_dir,
             status: "idle".into(),
             connection_phase: String::new(),
-            model: None,
-            provider: None,
-            auth_method: None,
+            model: usage_fixture.then(|| "gpt-5.6-sol".into()),
+            provider: usage_fixture.then(|| "openai".into()),
+            auth_method: usage_fixture.then(|| "oauth".into()),
             reasoning_effort: None,
-            token_usage: None,
+            context_tokens: usage_fixture.then_some(100_000),
             items: demo_items(),
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
@@ -1991,6 +1995,7 @@ impl Panel {
                     .map(|model| {
                         let provider = model.split(':').next().unwrap().to_string();
                         jcode_sdk::ModelRouteInfo {
+                            usage: None,
                             api_method: format!("{provider}-api-key"),
                             model,
                             provider,
@@ -2544,11 +2549,16 @@ impl Panel {
             }
             ApiEvent::TokenUsage {
                 input,
-                output,
                 cache_read_input,
+                cache_creation_input,
                 ..
             } => {
-                self.token_usage = Some((*input, *output, cache_read_input.unwrap_or(0)));
+                self.context_tokens = Some(jcode_base::compaction::effective_context_tokens_from_usage(
+                    self.provider.as_deref().unwrap_or_default(),
+                    *input,
+                    *cache_read_input,
+                    *cache_creation_input,
+                ));
             }
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
@@ -3764,7 +3774,7 @@ impl Render for Panel {
         let status_line = self.status_line();
         let active = self.activity_active();
         let theme = Theme::global();
-        let context_line = context_usage_label(self.model.as_deref(), self.token_usage);
+        let usage_meters = self.render_usage_meters(cx);
         let account_label =
             account_method_label(self.provider.as_deref(), self.auth_method.as_deref());
         let identity_control = |id: &'static str, label: String| {
@@ -4059,9 +4069,7 @@ impl Render for Panel {
                                     .clone()
                                     .map(|effort| div().child(effort)),
                             )
-                            .children(
-                                context_line.map(|line| div().min_w_0().truncate().child(line)),
-                            ),
+                            .child(usage_meters),
                     )
                     .child(
                         div()
@@ -4363,11 +4371,10 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
 
 fn context_usage_label(
     model: Option<&str>,
-    token_usage: Option<(u64, u64, u64)>,
+    context_tokens: Option<u64>,
 ) -> Option<String> {
     let mut parts = Vec::new();
-    if let Some((input, output, cache_read)) = token_usage {
-        let used = input + output + cache_read;
+    if let Some(used) = context_tokens {
         match model.and_then(context_window_for_model) {
             Some(window) => {
                 let percent = (used as f64 / window as f64 * 100.0).min(100.0);
@@ -4398,35 +4405,9 @@ fn compact_dir(path: &str) -> String {
     }
 }
 
-/// Best-effort context window by model family. The harness API does not carry
-/// the provider's exact window, so this mirrors jcode's own fallbacks for the
-/// families the user actually runs; unknown models show raw token counts.
+/// Use the same model capacity catalog as the CLI instead of desktop-only guesses.
 fn context_window_for_model(model: &str) -> Option<u64> {
-    let m = model.to_lowercase();
-    if m.starts_with("gpt-5.3-codex-spark") {
-        return Some(128_000);
-    }
-    if m.contains("chat") && m.starts_with("gpt-5") {
-        return Some(128_000);
-    }
-    if m.starts_with("gpt-5.4") {
-        return Some(1_000_000);
-    }
-    if m.starts_with("gpt-5") {
-        return Some(272_000);
-    }
-    if m.starts_with("claude-")
-        || m.starts_with("fable")
-        || m.contains("opus")
-        || m.contains("sonnet")
-        || m.contains("haiku")
-    {
-        return Some(200_000);
-    }
-    if m.starts_with("gemini-") {
-        return Some(1_000_000);
-    }
-    None
+    jcode_base::provider::context_limit_for_model_with_provider(model, None).map(|n| n as u64)
 }
 
 /// Match the TUI's output-token estimate and thresholds, using desktop theme
@@ -5984,6 +5965,7 @@ mod tests {
 
     fn route(model: &str, api_method: &str) -> jcode_sdk::ModelRouteInfo {
         jcode_sdk::ModelRouteInfo {
+            usage: None,
             model: model.into(),
             provider: "openai".into(),
             api_method: api_method.into(),
@@ -6089,12 +6071,12 @@ mod tests {
         assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
         assert_eq!(context_usage_label(None, None), None);
         assert_eq!(
-            context_usage_label(Some("gpt-5.6-sol"), Some((100_000, 8_000, 28_000))).as_deref(),
-            Some("136.0k / 272.0k (50%)")
+            context_usage_label(Some("gpt-5.6-sol"), Some(100_000)).as_deref(),
+            Some("100.0k / 272.0k (37%)")
         );
         assert_eq!(
-            context_usage_label(Some("mystery-model"), Some((1_500, 500, 0))).as_deref(),
-            Some("2.0k tokens")
+            context_usage_label(Some("mystery-model"), Some(1_500)).as_deref(),
+            Some("1.5k tokens")
         );
     }
 
@@ -6883,6 +6865,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         routes: vec![jcode_sdk::ModelRouteInfo {
+                            usage: None,
                             model: "gpt-5.6-sol".into(),
                             provider: "openai".into(),
                             api_method: "openai-oauth".into(),
@@ -6899,6 +6882,7 @@ mod tests {
                         input: 100_000,
                         output: 8_000,
                         cache_read_input: Some(28_000),
+                        cache_creation_input: None,
                     },
                     cx,
                 );

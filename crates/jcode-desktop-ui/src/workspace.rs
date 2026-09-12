@@ -688,6 +688,10 @@ impl Workspace {
                 };
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     if workspace.accounts != accounts {
+                        cx.set_global(crate::panel::usage::StatusAccounts(accounts.clone()));
+                        for slot in &workspace.slots {
+                            slot.panel.update(cx, |_, cx| cx.notify());
+                        }
                         workspace.accounts = accounts;
                         workspace.accounts_layout_pending = true;
                         cx.notify();
@@ -9309,6 +9313,7 @@ mod tests {
         workspace.update(vcx, |w, cx| {
             w.accounts[0].usage_reports = ["personal", "work"].into_iter().map(|label| {
                 accounts::UsageReport {
+                    limits: Vec::new(),
                     provider_name: format!("OpenAI (ChatGPT) {label}"),
                     account_label: Some(label.into()),
                     extra_info: vec![

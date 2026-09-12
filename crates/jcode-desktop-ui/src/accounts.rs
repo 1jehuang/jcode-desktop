@@ -41,6 +41,7 @@ pub struct Account {
 pub struct UsageReport {
     pub provider_name: String,
     pub account_label: Option<String>,
+    pub limits: Vec<UsageLimit>,
     pub extra_info: Vec<(String, String)>,
 }
 
@@ -64,6 +65,24 @@ pub struct UsageLimit {
 }
 
 impl Account {
+    /// The CLI marks its active OAuth login with ✦. Never blend unrelated logins.
+    pub fn active_limits(&self) -> Option<&[UsageLimit]> {
+        let active: Vec<_> = self
+            .usage_reports
+            .iter()
+            .filter(|report| report.provider_name.trim_end().ends_with('✦'))
+            .collect();
+        match active.as_slice() {
+            [report] => Some(&report.limits),
+            [] => match self.usage_reports.as_slice() {
+                [report] => Some(&report.limits),
+                [] => Some(&self.limits),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn available(&self) -> bool {
         self.status == "available"
     }
@@ -158,6 +177,7 @@ pub fn spawn() -> Feed {
                 vec![UsageReport {
                     provider_name: "OpenAI (ChatGPT)".into(),
                     account_label: Some("personal".into()),
+                    limits: vec![UsageLimit { name: "5 hour".into(), usage_percent: 25., reset_in: Some("2h".into()) }],
                     extra_info: vec![
                         ("Today".into(), "120000 input / 8000 output tokens (90000 cached input), $0.4200 API-equivalent estimate, not a bill; recorded only; since local midnight".into()),
                         ("Lifetime".into(), "2400000 input / 160000 output tokens (1800000 cached input), $8.4000 known + unknown cost (2 unpriced responses) API-equivalent estimate, not a bill; recorded only; partial token counts; since 2026-09-01 10:00 -07:00".into()),
@@ -293,35 +313,37 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
         account.usage_reports.push(UsageReport {
             provider_name: provider_name.to_owned(),
             account_label,
+            limits: Vec::new(),
             extra_info: extra_info
                 .into_iter()
                 .filter(|(key, _)| key != "Account label")
                 .collect(),
         });
-        account.limits.extend(
-            provider
-                .get("limits")
-                .and_then(|value| value.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|limit| {
-                    Some(UsageLimit {
-                        name: limit.get("name")?.as_str()?.to_owned(),
-                        usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
-                        reset_in: limit
-                            .get("reset_in")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned),
-                    })
-                }),
-        );
+        let limits: Vec<_> = provider
+            .get("limits")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|limit| {
+                Some(UsageLimit {
+                    name: limit.get("name")?.as_str()?.to_owned(),
+                    usage_percent: limit.get("usage_percent")?.as_f64()? as f32,
+                    reset_in: limit
+                        .get("reset_in")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned),
+                })
+            })
+            .collect();
+        account.usage_reports.last_mut().unwrap().limits = limits.clone();
+        account.limits.extend(limits);
     }
 }
 
 fn usage_provider_matches(account: &Account, provider_name: &str) -> bool {
     let name = provider_name.to_ascii_lowercase();
     match account.id.as_str() {
-        "claude" => name.starts_with("anthropic (claude)"),
+        "claude" => name.starts_with("anthropic (claude)") || name.starts_with("anthropic - "),
         "anthropic-api" => name.starts_with("anthropic api"),
         "openai" => name.starts_with("openai (chatgpt)") || name.starts_with("openai - "),
         "openai-api" => name.starts_with("openai api"),
@@ -581,6 +603,25 @@ mod tests {
         assert_eq!(openai.limits[0].name, "5 hour");
         assert_eq!(openai.limits[1].usage_percent, 81.0);
         assert_eq!(openai.limits[1].reset_in.as_deref(), Some("4d"));
+        assert_eq!(openai.active_limits(), Some(openai.limits.as_slice()));
+    }
+
+    #[test]
+    fn status_limits_select_active_login_and_refuse_ambiguous_reports() {
+        let mut accounts =
+            parse(r#"{"providers":[{"id":"claude","status":"available"}]}"#).unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+            {"provider_name":"Anthropic - personal ✦","limits":[{"name":"5 hour","usage_percent":24.0}]},
+            {"provider_name":"Anthropic - work","limits":[{"name":"5 hour","usage_percent":91.0}]}
+        ]}"#,
+        );
+        assert_eq!(accounts[0].active_limits().unwrap()[0].usage_percent, 24.);
+        accounts[0].usage_reports[0].provider_name = "Anthropic - personal".into();
+        assert!(accounts[0].active_limits().is_none());
+        accounts[0].usage_reports[1].provider_name.push_str(" ✦");
+        assert_eq!(accounts[0].active_limits().unwrap()[0].usage_percent, 91.);
     }
 
     #[test]
