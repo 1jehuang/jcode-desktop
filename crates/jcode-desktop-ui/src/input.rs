@@ -1570,21 +1570,12 @@ impl Render for PromptInput {
                     .w_full()
                     .flex()
                     .items_start()
-                    .gap_1()
                     .px_3()
                     .py_2()
                     .text_size(px(14.0))
                     .when(spacious, |el| {
                         el.min_h(px(112.0)).px_4().py_4().text_size(px(16.0))
                     })
-                    // The TUI's `›` prompt marker in user blue.
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_color(Theme::global().USER_ACCENT)
-                            .child("›"),
-                    )
                     .child(
                         div()
                             .id("prompt-editor")
@@ -1774,6 +1765,28 @@ mod tests {
         window
             .update(cx, |input, _, _| assert!(input.content.is_empty()))
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn composer_editor_has_no_prompt_prefix_in_compact_or_spacious_mode(cx: &mut TestAppContext) {
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            PromptInput::new(cx, "Type something…", |_, _, _, _| {})
+        });
+        for spacious in [false, true] {
+            input.update(vcx, |input, cx| {
+                input.spacious = spacious;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let composer = vcx.debug_bounds("prompt-input").unwrap();
+            let editor = vcx.debug_bounds("prompt-editor").unwrap();
+            let left = editor.left() - composer.left();
+            let right = composer.right() - editor.right();
+            assert!(
+                f32::from(left - right).abs() < 1.0,
+                "editor must not reserve extra left padding for a prompt marker"
+            );
+        }
     }
 
     #[gpui::test]

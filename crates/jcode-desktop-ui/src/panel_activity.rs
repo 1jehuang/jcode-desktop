@@ -84,6 +84,27 @@ impl Render for Spinner {
 mod tests {
     use super::*;
 
+    fn assert_inline_status(vcx: &mut gpui::VisualTestContext) {
+        let spinner = vcx
+            .debug_bounds("panel-activity-spinner")
+            .expect("spinner paints");
+        let label = vcx
+            .debug_bounds("panel-activity-label")
+            .expect("status paints");
+        assert!(
+            label.left() > spinner.right(),
+            "status sits to the right of the spinner"
+        );
+        assert!(
+            f32::from(label.center().y - spinner.center().y).abs() < 1.0,
+            "status and spinner are vertically centered"
+        );
+        assert!(
+            vcx.debug_bounds("panel-status-badge").is_none(),
+            "no duplicate footer status"
+        );
+    }
+
     #[test]
     fn spinner_highlight_rotates_and_wraps() {
         for step in 0..16 {
@@ -174,6 +195,7 @@ mod tests {
                     );
                 }
                 assert!(vcx.debug_bounds("panel-status-spinner").is_none());
+                assert_inline_status(vcx);
             }
             panel.update(vcx, |panel, cx| match terminal {
                 "done" => panel.apply(
@@ -206,6 +228,14 @@ mod tests {
             assert!(
                 vcx.debug_bounds("panel-activity-spinner").is_none(),
                 "{terminal}"
+            );
+            assert!(
+                vcx.debug_bounds("panel-activity-label").is_none(),
+                "{terminal}"
+            );
+            assert!(
+                vcx.debug_bounds("panel-status-badge").is_some(),
+                "non-active status stays in footer"
             );
             panel.read_with(vcx, |panel, _| {
                 assert!(!panel.activity_active(), "{terminal}");
@@ -253,7 +283,7 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("transcript-activity").is_some());
-        assert!(vcx.debug_bounds("panel-status-badge").is_some());
+        assert_inline_status(vcx);
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TurnDone {
@@ -285,7 +315,7 @@ mod tests {
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("panel-activity-spinner").is_some());
             assert!(vcx.debug_bounds("panel-session-title").is_none());
-            assert!(vcx.debug_bounds("panel-activity-label").is_none());
+            assert_inline_status(vcx);
             let spinner = vcx.debug_bounds("transcript-activity").unwrap();
             let transcript = vcx.debug_bounds("transcript").unwrap();
             assert!(spinner.top() >= transcript.top());

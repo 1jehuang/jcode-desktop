@@ -363,7 +363,7 @@ impl Workspace {
                 self.live_tabs.hit_targets.push((index, x));
             }
             let padding = (visible / 12.0).min(6.0);
-            let (title, emoji, activity, state) = match index {
+            let (title, emoji, activity) = match index {
                 Some(index) => {
                     let panel = self.slots[index].panel.read(cx);
                     (
@@ -372,10 +372,9 @@ impl Workspace {
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
                         panel.tab_activity(),
-                        Some(panel.minimap_state()),
                     )
                 }
-                None => (format!("Workspace {}", row + 1).into(), "📁", None, None),
+                None => (format!("Workspace {}", row + 1).into(), "📁", None),
             };
             let text = div()
                 .absolute()
@@ -494,39 +493,6 @@ impl Workspace {
                         el.child(div().absolute().inset_0().debug_selector(move || {
                             format!("live-session-tab-{}-focused", index.unwrap())
                         }))
-                    })
-                    .when_some(index.zip(state), |el, (index, state)| {
-                        let (state_name, state_color) = match state {
-                            crate::panel::MinimapSessionState::Idle => {
-                                ("idle", Theme::global().TEXT_FAINT)
-                            }
-                            crate::panel::MinimapSessionState::Working => {
-                                ("working", Theme::global().WARN)
-                            }
-                            crate::panel::MinimapSessionState::Streaming => {
-                                ("streaming", Theme::global().ACCENT)
-                            }
-                            crate::panel::MinimapSessionState::Complete => {
-                                ("complete", Theme::global().OK)
-                            }
-                            crate::panel::MinimapSessionState::Error => {
-                                ("error", Theme::global().ERROR)
-                            }
-                        };
-                        el.child(
-                            div()
-                                .absolute()
-                                .right(px(
-                                    (current.left + current.width - exposed_left - visible) + 4.0
-                                ))
-                                .top_1()
-                                .size(px(5.0))
-                                .rounded_full()
-                                .bg(state_color)
-                                .debug_selector(move || {
-                                    format!("live-session-tab-{index}-{state_name}")
-                                }),
-                        )
                     })
                     .child(text)
                     .when_some(index, |el, index| {

@@ -1,5 +1,15 @@
 # Live-session folder tabs: verification
 
+## Status-dot removal (2026-09-12)
+
+The top-right status dots have been removed from session tabs. The animated
+working emoji remains, and minimap state colors and todo progress are unchanged.
+This supersedes the historical dot expectations below.
+`minimap_paints_live_state_and_todo_progress_through_the_workspace_surface`
+now checks that tabs stay visible without any status dot through idle, working,
+error, streaming, partial-todo and complete transitions, while preserving the
+minimap indicators.
+
 Verified on 2026-09-05. Implementation: `b378196`.
 
 ## Result against the request

@@ -573,7 +573,7 @@ impl Panel {
         let input = cx.new(|cx| {
             PromptInput::new(
                 cx,
-                "message jcode...",
+                "Type something…",
                 move |content, images, _window, _app| {
                     send_bridge.send(Command::Send {
                         session_id: send_session.clone(),
@@ -1877,7 +1877,7 @@ impl Panel {
             this.input = cx.new(|cx| {
                 PromptInput::new(
                     cx,
-                    "message jcode...",
+                    "Type something…",
                     move |content, images, _window, app| {
                         let echoed_images = images.clone();
                         if let Some(panel) = weak.upgrade() {
@@ -2714,10 +2714,23 @@ impl Panel {
         div()
             .debug_selector(|| "transcript-activity".into())
             .flex_none()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
             .px_3()
             .pt(px(10.0))
             .pb_2()
             .child(self.activity_spinner.clone())
+            .child(
+                div()
+                    .debug_selector(|| "panel-activity-label".into())
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(self.status_line()),
+            )
             .into_any_element()
     }
 
@@ -4006,21 +4019,20 @@ impl Render for Panel {
                             .justify_end()
                             .items_center()
                             .overflow_hidden()
-                            .child(
-                                div()
-                                    .debug_selector(|| "panel-status-badge".into())
-                                    .flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .min_w_0()
-                                    .px_2()
-                                    .h(px(22.0))
-                                    .rounded_md()
-                                    .when(active, |el| {
-                                        el.bg(theme.ACCENT.opacity(0.12)).text_color(theme.ACCENT)
-                                    })
-                                    .child(div().min_w_0().truncate().child(status_line)),
-                            ),
+                            .when(!active, |el| {
+                                el.child(
+                                    div()
+                                        .debug_selector(|| "panel-status-badge".into())
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .min_w_0()
+                                        .px_2()
+                                        .h(px(22.0))
+                                        .rounded_md()
+                                        .child(div().min_w_0().truncate().child(status_line)),
+                                )
+                            }),
                     ),
             )
             .children(self.render_preview_badge(cx))
@@ -5063,25 +5075,19 @@ mod tests {
     fn minimap_paints_live_state_and_todo_progress_through_the_workspace_surface(
         cx: &mut gpui::TestAppContext,
     ) {
-        let assert_live_tab_state = |vcx: &mut gpui::VisualTestContext, expected: &str| {
-            let tab = vcx.debug_bounds("live-session-tab-0").unwrap();
-            for (state, selector) in [
-                ("idle", "live-session-tab-0-idle"),
-                ("working", "live-session-tab-0-working"),
-                ("streaming", "live-session-tab-0-streaming"),
-                ("complete", "live-session-tab-0-complete"),
-                ("error", "live-session-tab-0-error"),
+        let assert_no_tab_status_dot = |vcx: &mut gpui::VisualTestContext| {
+            assert!(vcx.debug_bounds("live-session-tab-0").is_some());
+            for selector in [
+                "live-session-tab-0-idle",
+                "live-session-tab-0-working",
+                "live-session-tab-0-streaming",
+                "live-session-tab-0-complete",
+                "live-session-tab-0-error",
             ] {
-                let dot = vcx.debug_bounds(selector);
-                assert_eq!(
-                    dot.is_some(),
-                    state == expected,
-                    "only the current tab status is painted"
+                assert!(
+                    vcx.debug_bounds(selector).is_none(),
+                    "tabs must not paint the redundant status dot: {selector}"
                 );
-                if let Some(dot) = dot {
-                    assert_eq!(dot.size, gpui::size(px(5.0), px(5.0)));
-                    assert!(tab.contains(&dot.center()));
-                }
             }
         };
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -5100,7 +5106,7 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-idle").is_some(),
             "the public workspace surface must paint the idle state"
         );
-        assert_live_tab_state(vcx, "idle");
+        assert_no_tab_status_dot(vcx);
 
         panel.update(vcx, |panel, cx| {
             panel.status = "running_tools".into();
@@ -5112,7 +5118,7 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-working").is_some(),
             "the public workspace surface must paint the working state"
         );
-        assert_live_tab_state(vcx, "working");
+        assert_no_tab_status_dot(vcx);
 
         panel.update(vcx, |panel, cx| {
             panel.status = "idle".into();
@@ -5125,7 +5131,7 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-error").is_some(),
             "the public workspace surface must paint the error state"
         );
-        assert_live_tab_state(vcx, "error");
+        assert_no_tab_status_dot(vcx);
 
         panel.update(vcx, |panel, cx| {
             panel.items.clear();
@@ -5139,7 +5145,7 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-streaming").is_some(),
             "the public workspace surface must paint the streaming state"
         );
-        assert_live_tab_state(vcx, "streaming");
+        assert_no_tab_status_dot(vcx);
 
         panel.update(vcx, |panel, cx| {
             panel.streaming_text.clear();
@@ -5169,7 +5175,7 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-idle").is_some(),
             "a partially complete idle session keeps its idle state color"
         );
-        assert_live_tab_state(vcx, "idle");
+        assert_no_tab_status_dot(vcx);
         let partial = vcx
             .debug_bounds("minimap-panel-0-todo-progress")
             .expect("partial todo progress indicator is painted");
@@ -5199,7 +5205,7 @@ mod tests {
             vcx.debug_bounds("minimap-panel-0-complete").is_some(),
             "the public workspace surface must paint completed sessions"
         );
-        assert_live_tab_state(vcx, "complete");
+        assert_no_tab_status_dot(vcx);
         let progress = vcx
             .debug_bounds("minimap-panel-0-todo-progress")
             .expect("completed todo progress indicator is painted");
