@@ -11,9 +11,12 @@ The SDK session API exposes optional `parent_session_id`, `agent_label`, and `sw
 ## Verification
 
 - `cargo test -p jcode-desktop-ui sidebar_ --lib`: 62 passed, 1 manual profiler ignored.
+- `cargo test -p jcode-desktop-ui harness:: --lib`: 40 passed, 1 real-model test ignored.
+- `python3 -m unittest discover -s scripts -p 'test_screenshot.py'`: 9 passed.
 - Grouping tests cover child/grandchild order, ordinary independent sessions, missing parents, self references and cycles.
 - GPUI tests cover metadata enrichment through session refresh into real rendering, automatic row growth/shrink, compact previews, expansion, non-duplicated children and child click navigation.
 - A remote-address test verifies the child and parent receive the same host namespace.
 - `python3 scripts/screenshot.py target/ui-review.png --swarm`: real application rendered on private Xvfb and PNG visually inspected. No active desktop windows are used for testing.
+- The running release desktop acknowledged its Ctrl+R rebuild/reload action and activated UI generation 4 in the original process. Subsequent session refreshes succeeded without a panic.
 
 The session catalog remains bounded. A child whose parent is outside the loaded catalog stays visible independently until its parent is available.
