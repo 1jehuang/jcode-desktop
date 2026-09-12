@@ -38,7 +38,6 @@ def main():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
-    parser.add_argument("--changelog", action="store_true", help="show the read-only Desktop changelog panel")
     parser.add_argument("--fresh-interact", action="store_true",
                         help="measure fresh composer pixels and verify native typing and submission")
     parser.add_argument("--html-interact", action="store_true",
@@ -59,8 +58,6 @@ def main():
                         help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--fps-header-interact", action="store_true",
                         help="verify the integrated FPS header while navigating four native workspaces")
-    parser.add_argument("--map-motion-interact", action="store_true",
-                        help="verify native tab clicks travel continuously across the 2D map")
     parser.add_argument("--workspace-interact", action="store_true",
                         help="measure four workspace identities and verify numbered map navigation")
     parser.add_argument("--close-interact", action="store_true",
@@ -95,7 +92,7 @@ def main():
     args = parser.parse_args()
     if args.preview_state is not None:
         if (args.panels != 1 or args.transcript != "all" or args.swarm
-                or args.notification or args.changelog or args.learn_stage is not None
+                or args.notification or args.learn_stage is not None
                 or args.focus_panel is not None
                 or any(value for key, value in vars(args).items()
                        if key.endswith("_interact") and key != "preview_interact")):
@@ -173,15 +170,6 @@ def main():
             parser.error("model-interact requires xdotool and tesseract")
     if args.fps_header_interact and (args.panels != 4 or args.layout_mode != "folder_tabs"):
         parser.error("fps-header-interact requires four panels and folder_tabs layout")
-    if args.map_motion_interact:
-        others = any(value for key, value in vars(args).items()
-                     if key.endswith("_interact") and key != "map_motion_interact")
-        if (others or args.panels != 4 or args.size != "1440x1000"
-                or args.layout_mode != "folder_tabs" or args.learn_stage is not None
-                or args.focus_panel is not None):
-            parser.error("map-motion-interact requires four panels, default size/layout, and no other interactions")
-        if not shutil.which("xdotool"):
-            parser.error("map-motion-interact requires xdotool")
     if args.workspace_interact:
         if (args.panels != 4 or args.size != "1440x1000"
                 or args.theme not in ("warm-neutral", "neutral-light")
@@ -264,8 +252,6 @@ def main():
         env = isolated_env(root)
         if args.swarm:
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
-        if args.changelog:
-            env["JCODE_DESKTOP_SCREENSHOT_CHANGELOG"] = "1"
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
@@ -375,9 +361,6 @@ def main():
                     time.sleep(0.5)
                 if args.fps_header_interact:
                     from fps_header_acceptance import verify
-                    verify(output, env, root)
-                if args.map_motion_interact:
-                    from map_motion_acceptance import verify
                     verify(output, env, root)
                 if args.workspace_interact:
                     from workspace_identity_acceptance import verify
