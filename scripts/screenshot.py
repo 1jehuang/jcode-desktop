@@ -50,6 +50,8 @@ def main():
                         help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
     parser.add_argument("--responsive-interact", action="store_true",
                         help="verify compact navigation, sidebar drawer, panel focus and native resizing")
+    parser.add_argument("--roller-interact", action="store_true",
+                        help="verify native sidebar hover popout, scroll selection, dismissal, and preserved focus")
     parser.add_argument("--sidebar-interact", action="store_true",
                         help="verify hover-only close and native safe left-drag dismissal across workspaces")
     parser.add_argument("--history-interact", action="store_true",
@@ -116,6 +118,15 @@ def main():
             parser.error("login-interact requires xdotool and tesseract")
     if args.mermaid_source is not None and args.transcript != "mermaid":
         parser.error("mermaid-source requires --transcript mermaid")
+    if args.roller_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "roller_interact")
+        if (others or args.size != "1440x1000" or args.layout_mode != "folder_tabs"
+                or args.learn_stage is not None or args.focus_panel is not None
+                or args.swarm or args.notification or args.transcript != "all"):
+            parser.error("roller-interact requires default size/folder layout/transcript and no other interactions or overlays")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("roller-interact requires xdotool and tesseract")
     if args.sidebar_interact:
         if (args.panels != 2 or args.size != "1440x1000" or args.theme != "warm-neutral"
                 or args.layout_mode != "folder_tabs" or args.learn_stage is not None
@@ -363,6 +374,9 @@ def main():
                     verify(output, env, root)
                 if args.responsive_interact:
                     from responsive_acceptance import verify
+                    verify(output, env, root)
+                if args.roller_interact:
+                    from sidebar_roller_acceptance import verify
                     verify(output, env, root)
                 if args.sidebar_interact:
                     from sidebar_gesture_acceptance import verify

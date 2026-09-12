@@ -56,6 +56,7 @@ pub(super) struct Roller {
     target: f32,
     remainder: f32,
     view: Option<SidebarView>,
+    expanded: bool,
 }
 
 impl Default for Roller {
@@ -65,6 +66,7 @@ impl Default for Roller {
             target: 0.0,
             remainder: 0.0,
             view: None,
+            expanded: false,
         }
     }
 }
@@ -130,21 +132,59 @@ impl Render for Label {
 }
 
 impl Workspace {
+    fn hover_sidebar_roller(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A pointer move, not a repaint during startup/reload or a drag.
+        if event.pressed_button.is_none() && !self.sidebar_roller.expanded {
+            self.sidebar_roller.expanded = true;
+            self.sidebar_roller.remainder = 0.0;
+            cx.notify();
+        }
+    }
+
     fn scroll_sidebar_roller(
         &mut self,
         event: &gpui::ScrollWheelEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let delta = event.delta.pixel_delta(window.line_height());
-        let delta = if delta.x.abs() > delta.y.abs() {
-            delta.x
-        } else {
-            delta.y
+        // One wheel notch is one option. Precise touchpads accumulate smaller
+        // movements instead of racing through the choices on every event.
+        let delta = match event.delta {
+            gpui::ScrollDelta::Lines(delta) => {
+                let delta = if delta.x.abs() > delta.y.abs() {
+                    delta.x
+                } else {
+                    delta.y
+                };
+                delta.signum() * STEP
+            }
+            gpui::ScrollDelta::Pixels(delta) => f32::from(if delta.x.abs() > delta.y.abs() {
+                delta.x
+            } else {
+                delta.y
+            }),
         };
-        self.sidebar_roller.scroll(f32::from(delta));
+        let previous = self.sidebar_roller.target;
+        self.sidebar_roller.scroll(delta);
+        if self.sidebar_roller.target != previous {
+            self.preview_roller_tab();
+        }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    fn preview_roller_tab(&mut self) {
+        let index = self.sidebar_roller.target.rem_euclid(COUNT as f32) as usize;
+        // Browsing pages is live, but passing an action must never launch it.
+        if let Some(view) = TABS[index].2 {
+            self.sidebar_view = view;
+            self.sidebar_roller.view = Some(view);
+        }
     }
 
     fn activate_roller_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -176,7 +216,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         // Restore from the existing sidebar view, including after a hot reload.
-        // Merely browsing the wheel never launches an action or changes the page.
+        // Scrolling previews pages live, but never launches an action.
         if self.sidebar_roller.view != Some(self.sidebar_view) {
             let index = TABS
                 .iter()
@@ -212,6 +252,7 @@ impl Workspace {
             .flex_none()
             .overflow_hidden()
             .bg(Theme::global().HEADER_BG)
+            .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
             .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
             .child(
                 div()
@@ -274,6 +315,7 @@ impl Workspace {
                     .when(offset < -0.5, |el| el.justify_start())
                     .cursor_pointer()
                     .occlude()
+                    .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
                     .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
                     .hover(|el| {
                         el.bg(Theme::global().HEADER_BG)
@@ -325,6 +367,7 @@ impl Workspace {
                     .text_size(px(14.0))
                     .text_color(Theme::global().TEXT_DIM)
                     .cursor_pointer()
+                    .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
                     .hover(|el| {
                         el.bg(Theme::global().PANEL_BG)
                             .text_color(Theme::global().TEXT)
@@ -337,19 +380,254 @@ impl Workspace {
                             this.sidebar_roller.remainder = 0.0;
                             this.sidebar_roller
                                 .move_to(this.sidebar_roller.target + step);
+                            this.preview_roller_tab();
                             cx.notify();
                         }),
                     )
                     .child(label),
             );
         }
-        roller.into_any_element()
+        div()
+            .relative()
+            .h(px(TITLEBAR_HEIGHT))
+            .flex_none()
+            .child(roller)
+            .when(self.sidebar_roller.expanded, |el| {
+                // Deferred paint keeps the pop-out above the sidebar body
+                // without moving it or changing the workspace's geometry.
+                el.child(gpui::deferred(self.render_roller_popout(fullscreen, cx)))
+            })
+            .into_any_element()
+    }
+
+    fn render_roller_popout(&self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut pages = div().flex().flex_col().gap_1();
+        for pair in (0..6).collect::<Vec<_>>().chunks(2) {
+            let mut row = div().flex().gap_1();
+            for &index in pair {
+                let (id, label, view) = TABS[index];
+                let selected = view == Some(self.sidebar_view);
+                row = row.child(
+                    div()
+                        .id(format!("{id}-expanded"))
+                        .debug_selector(move || format!("{id}-expanded"))
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(32.0))
+                        .px_2()
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .bg(if selected {
+                            Theme::global().ACCENT_DIM
+                        } else {
+                            Theme::global().PANEL_BG
+                        })
+                        .text_color(if selected {
+                            Theme::global().TEXT
+                        } else {
+                            Theme::global().TEXT_DIM
+                        })
+                        .hover(|el| {
+                            el.bg(Theme::global().HEADER_BG)
+                                .text_color(Theme::global().TEXT)
+                        })
+                        .child(
+                            div()
+                                .w(px(8.0))
+                                .text_color(Theme::global().ACCENT)
+                                .child(if selected { "•" } else { "" }),
+                        )
+                        .child(label)
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.activate_roller_tab(index, window, cx);
+                            }),
+                        ),
+                );
+            }
+            pages = pages.child(row);
+        }
+        let target = self.sidebar_roller.target.rem_euclid(COUNT as f32) as usize;
+        let mut actions = div().flex().flex_wrap().gap_1();
+        for (index, &(id, label, _)) in TABS.iter().enumerate().skip(6) {
+            actions = actions.child(
+                div()
+                    .id(format!("{id}-expanded"))
+                    .debug_selector(move || format!("{id}-expanded"))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .when(index == target, |el| el.bg(Theme::global().ACCENT_DIM))
+                    .hover(|el| {
+                        el.bg(Theme::global().HEADER_BG)
+                            .text_color(Theme::global().TEXT)
+                    })
+                    .child(if label == "+" { "new chat" } else { label })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.sidebar_roller.expanded = false;
+                            this.activate_roller_tab(index, window, cx);
+                        }),
+                    ),
+            );
+        }
+        div()
+            .id("sidebar-roller-popout")
+            .debug_selector(|| "sidebar-roller-popout".into())
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(px(SIDEBAR_WIDTH))
+            // Include the original header in the hit area: crossing from the
+            // collapsed control to an option never dismisses the pop-out.
+            .pt(px(if cfg!(target_os = "macos") && !fullscreen {
+                TITLEBAR_HEIGHT
+            } else {
+                4.0
+            }))
+            .px_2()
+            .pb_2()
+            .occlude()
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.sidebar_roller.expanded {
+                    this.sidebar_roller.expanded = false;
+                    this.sidebar_roller.remainder = 0.0;
+                    cx.notify();
+                }
+            }))
+            .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
+            .child(
+                div()
+                    .p_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                    .shadow_lg()
+                    .bg(Theme::global().PANEL_BG)
+                    .text_size(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .h(px(28.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child("Sidebar")
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child("Scroll to switch"),
+                            ),
+                    )
+                    .child(pages)
+                    .child(
+                        div()
+                            .border_t_1()
+                            .border_color(Theme::global().PANEL_BORDER)
+                            .pt_2()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(9.0))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child("Actions · click to open"),
+                            )
+                            .child(actions),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn roller_popout_scrolls_live_and_leaves_layout_focus_and_actions_alone(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(move |_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w.push_test_panel("Keep this chat", cx);
+            w
+        });
+        vcx.run_until_parked();
+        let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+        let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+        let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-roller-popout").is_some());
+        let option = vcx.debug_bounds("sidebar-files-tab-expanded").unwrap();
+        vcx.update(|window, cx| window.simulate_mouse_move(option.center(), cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("sidebar-roller-popout").is_some(),
+            "no gap when entering options"
+        );
+        let pages = [
+            SidebarView::Learn,
+            SidebarView::Files,
+            SidebarView::Accounts,
+            SidebarView::Theme,
+            SidebarView::Settings,
+        ];
+        for expected in pages
+            .into_iter()
+            .chain(std::iter::repeat_n(SidebarView::Settings, 5))
+            .chain([SidebarView::Sessions])
+        {
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: option.center(),
+                delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -1.0)),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |w, _| {
+                assert_eq!(w.sidebar_view, expected);
+                assert_eq!(w.slots.len(), 1);
+                assert_eq!(w.active, 0);
+                assert_eq!(w.active_row, 0);
+            });
+            assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
+            assert_eq!(vcx.debug_bounds("sidebar-tab-body").unwrap(), body);
+            assert!(
+                commands.try_recv().is_err(),
+                "wheel must never dispatch an action"
+            );
+        }
+        let theme = vcx.debug_bounds("sidebar-theme-tab-expanded").unwrap();
+        vcx.simulate_click(theme.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("theme-settings").is_some());
+        vcx.update(|window, cx| window.simulate_mouse_move(canvas.center(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-roller-popout").is_none());
+        assert!(
+            vcx.debug_bounds("theme-settings").is_some(),
+            "leaving keeps the live selection"
+        );
+    }
 
     #[test]
     fn roller_motion_reverses_without_jumps_and_resumes_after_reduced_motion() {
@@ -379,7 +657,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn roller_exposed_labels_do_not_overlap_and_thin_tabs_keep_full_tooltips(
+    fn roller_exposed_labels_do_not_overlap_and_hover_reveals_all_options(
         cx: &mut gpui::TestAppContext,
     ) {
         let (_, vcx) = cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
@@ -397,8 +675,14 @@ mod tests {
         vcx.run_until_parked();
         vcx.executor().advance_clock(Duration::from_secs(1));
         vcx.run_until_parked();
-        let tooltip = vcx.debug_bounds("sidebar-roller-tooltip-accounts").unwrap();
-        assert!(tooltip.size.width > thin.size.width);
+        let option = vcx.debug_bounds("sidebar-accounts-tab-expanded").unwrap();
+        assert!(option.size.width > thin.size.width);
+        for (id, _, _) in TABS {
+            assert!(
+                vcx.debug_bounds(Box::leak(format!("{id}-expanded").into_boxed_str()))
+                    .is_some()
+            );
+        }
     }
 
     #[gpui::test]
@@ -438,19 +722,19 @@ mod tests {
     }
 
     #[gpui::test]
-    fn roller_browses_without_launching_and_clicks_each_sidebar_page(
+    fn roller_scrolls_pages_live_without_launching_actions_and_clicks_each_page(
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         vcx.run_until_parked();
         let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
-        for (dx, dy) in [
-            (-48.0, 0.0),
-            (0.0, -96.0),
-            (-384.0, -1.0),
-            (48.0, 1.0),
-            (0.0, 480.0),
+        for (dx, dy, expected) in [
+            (-48.0, 0.0, SidebarView::Learn),
+            (0.0, -96.0, SidebarView::Accounts),
+            (-384.0, -1.0, SidebarView::Sessions),
+            (48.0, 1.0, SidebarView::Sessions),
+            (0.0, 480.0, SidebarView::Sessions),
         ] {
             vcx.simulate_event(gpui::ScrollWheelEvent {
                 position: tabs.center(),
@@ -460,7 +744,7 @@ mod tests {
             });
             workspace.update(vcx, |w, cx| {
                 w.sidebar_roller.settle();
-                assert_eq!(w.sidebar_view, SidebarView::Sessions);
+                assert_eq!(w.sidebar_view, expected);
                 assert!(
                     w.slots.is_empty(),
                     "rolling over actions must not open a panel"
@@ -469,18 +753,11 @@ mod tests {
             });
             vcx.run_until_parked();
         }
-        for (index, (selector, _, view)) in TABS.iter().enumerate().take(6) {
-            if index > 0 {
-                let next = vcx.debug_bounds("sidebar-roller-next").unwrap();
-                vcx.simulate_click(next.center(), gpui::Modifiers::default());
-                workspace.update(vcx, |w, cx| {
-                    w.sidebar_roller.settle();
-                    cx.notify();
-                });
-                vcx.run_until_parked();
-            }
-            let tab = vcx.debug_bounds(*selector).unwrap();
-            assert!((f32::from(tab.center().x) - SIDEBAR_WIDTH / 2.0).abs() < 1.0);
+        vcx.update(|window, cx| window.simulate_mouse_move(tabs.center(), cx));
+        vcx.run_until_parked();
+        for (selector, _, view) in TABS.iter().take(6) {
+            let selector = Box::leak(format!("{selector}-expanded").into_boxed_str());
+            let tab = vcx.debug_bounds(selector).unwrap();
             vcx.simulate_click(tab.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             workspace.read_with(vcx, |w, _| assert_eq!(Some(w.sidebar_view), *view));
@@ -498,20 +775,14 @@ mod tests {
             w
         });
         vcx.run_until_parked();
-        for _ in 0..2 {
-            let previous = vcx.debug_bounds("sidebar-roller-previous").unwrap();
-            vcx.simulate_click(previous.center(), gpui::Modifiers::default());
-            workspace.update(vcx, |w, cx| {
-                w.sidebar_roller.settle();
-                cx.notify();
-            });
-            vcx.run_until_parked();
-        }
+        let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
+        vcx.run_until_parked();
         assert!(
             commands.try_recv().is_err(),
             "browsing must not create a session"
         );
-        let folder = vcx.debug_bounds("sidebar-open-folder").unwrap();
+        let folder = vcx.debug_bounds("sidebar-open-folder-expanded").unwrap();
         vcx.simulate_click(folder.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
@@ -524,14 +795,9 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
         assert!(commands.try_recv().is_err());
-        let next = vcx.debug_bounds("sidebar-roller-next").unwrap();
-        vcx.simulate_click(next.center(), gpui::Modifiers::default());
-        workspace.update(vcx, |w, cx| {
-            w.sidebar_roller.settle();
-            cx.notify();
-        });
+        vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
         vcx.run_until_parked();
-        let new = vcx.debug_bounds("sidebar-new-session").unwrap();
+        let new = vcx.debug_bounds("sidebar-new-session-expanded").unwrap();
         vcx.simulate_click(new.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let Ok(Command::CreateSession {
