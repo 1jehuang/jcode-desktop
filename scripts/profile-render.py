@@ -63,7 +63,7 @@ def main():
     parser.add_argument('--scenario', choices=('overview', 'focus-switch', 'overview-after-resize'), default='overview')
     parser.add_argument('--stale-hidden-animations', action='store_true', help='same-binary offline control retaining hidden animation flags')
     parser.add_argument('--panels', type=int, choices=range(2, 7), default=4)
-    parser.add_argument('--transcript', choices=('all', 'empty', 'reasoning'), default='all')
+    parser.add_argument('--transcript', choices=('all', 'empty', 'reasoning', 'long-history'), default='all')
     args = parser.parse_args()
     if args.seconds < 3:
         parser.error('seconds must be at least 3')

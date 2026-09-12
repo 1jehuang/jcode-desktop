@@ -93,7 +93,10 @@ pub enum Item {
 #[derive(Clone)]
 enum TranscriptRowSource {
     Settled(usize),
-    Owned(Item),
+    // Almost every row only points into `Panel::items`. Keep the largest Item
+    // variant out of every descriptor rebuilt during a frame. Only live text
+    // and coalesced reasoning need owned storage.
+    Owned(Box<Item>),
 }
 
 #[derive(Clone)]
@@ -2671,39 +2674,23 @@ impl Panel {
             if let Item::Reasoning(text) = item
                 && let Some(previous) = rows.last_mut()
             {
-                let existing = match &mut previous.source {
+                match &mut previous.source {
                     TranscriptRowSource::Settled(previous_index) => {
-                        let Item::Reasoning(existing) = &self.items[*previous_index] else {
-                            rows.push(TranscriptRenderRow {
-                                index,
-                                source: TranscriptRowSource::Settled(index),
-                                role: None,
-                                show_label: false,
-                            });
+                        if let Item::Reasoning(existing) = &self.items[*previous_index] {
+                            let mut joined = existing.clone();
+                            append_reasoning_text(&mut joined, text);
+                            previous.source =
+                                TranscriptRowSource::Owned(Box::new(Item::Reasoning(joined)));
                             continue;
-                        };
-                        previous.source =
-                            TranscriptRowSource::Owned(Item::Reasoning(existing.clone()));
-                        let TranscriptRowSource::Owned(Item::Reasoning(existing)) =
-                            &mut previous.source
-                        else {
-                            unreachable!()
-                        };
-                        existing
+                        }
                     }
-                    TranscriptRowSource::Owned(Item::Reasoning(existing)) => existing,
-                    _ => {
-                        rows.push(TranscriptRenderRow {
-                            index,
-                            source: TranscriptRowSource::Settled(index),
-                            role: None,
-                            show_label: false,
-                        });
-                        continue;
+                    TranscriptRowSource::Owned(item) => {
+                        if let Item::Reasoning(existing) = item.as_mut() {
+                            append_reasoning_text(existing, text);
+                            continue;
+                        }
                     }
-                };
-                append_reasoning_text(existing, text);
-                continue;
+                }
             }
 
             let role = role_of(item);
@@ -2732,7 +2719,7 @@ impl Panel {
             let role = role_of(&item);
             rows.push(TranscriptRenderRow {
                 index,
-                source: TranscriptRowSource::Owned(item),
+                source: TranscriptRowSource::Owned(Box::new(item)),
                 role,
                 show_label: role.is_some() && role != previous_role,
             });
@@ -5335,6 +5322,17 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
+            let row_started = std::time::Instant::now();
+            for _ in 0..1_000 {
+                panel.read_with(vcx, |panel, _| {
+                    std::hint::black_box(panel.transcript_render_rows());
+                });
+            }
+            println!(
+                "TRANSCRIPT_ROWS rows={count} descriptor_bytes={} mean_us={:.3}",
+                std::mem::size_of::<TranscriptRenderRow>(),
+                row_started.elapsed().as_secs_f64() * 1_000.0,
+            );
             let mut samples = Vec::new();
             for iteration in 0..60 {
                 let started = std::time::Instant::now();
@@ -5580,6 +5578,57 @@ mod tests {
             &items[0],
             Item::Reasoning(text) if text == "first thought\n\nsecond thought"
         ));
+    }
+
+    #[gpui::test]
+    fn transcript_rows_stay_compact_and_preserve_sources(cx: &mut gpui::TestAppContext) {
+        assert!(
+            std::mem::size_of::<TranscriptRenderRow>() <= 6 * std::mem::size_of::<usize>(),
+            "settled rows must not reserve storage for the largest transcript Item"
+        );
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("compact-rows", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+        panel.update(vcx, |panel, _| {
+            panel.items = vec![
+                Item::User("Question".into()),
+                Item::Reasoning("First α".into()),
+                Item::Todos(TodoCardPayload::default()),
+                Item::Reasoning("Second β".into()),
+                Item::Reasoning("Third γ".into()),
+                Item::Assistant("Answer".into()),
+                Item::Reasoning("Separate thought".into()),
+            ];
+            panel.streaming_reasoning = "Live δ".into();
+            panel.streaming_text = "Live answer".into();
+            let rows = panel.transcript_render_rows();
+            assert_eq!(rows.len(), 6);
+            assert!(matches!(rows[0].source, TranscriptRowSource::Settled(0)));
+            assert_eq!(rows[0].role, Some("you"));
+            assert!(rows[0].show_label);
+            assert_eq!(rows[1].index, 1);
+            assert!(matches!(&rows[1].source, TranscriptRowSource::Owned(item)
+                if matches!(item.as_ref(), Item::Reasoning(text) if text == "First α\n\nSecond β\n\nThird γ")));
+            assert!(matches!(rows[2].source, TranscriptRowSource::Settled(5)));
+            assert!(rows[2].show_label);
+            assert!(matches!(rows[3].source, TranscriptRowSource::Settled(6)));
+            assert_eq!(rows[4].index, usize::MAX - 1);
+            assert!(matches!(&rows[4].source, TranscriptRowSource::Owned(item)
+                if matches!(item.as_ref(), Item::Reasoning(text) if text == "Live δ")));
+            assert_eq!(rows[5].index, usize::MAX);
+            assert!(matches!(&rows[5].source, TranscriptRowSource::Owned(item)
+                if matches!(item.as_ref(), Item::Assistant(text) if text == "Live answer")));
+            for index in [1, 3, 4] {
+                assert_eq!(rows[index].role, None);
+                assert!(!rows[index].show_label);
+            }
+            assert!(!rows[5].show_label, "same speaker after reasoning stays unlabelled");
+            assert!(matches!(&panel.items[1], Item::Reasoning(text) if text == "First α"));
+        });
     }
 
     #[gpui::test]
@@ -7420,6 +7469,16 @@ fn demo_items() -> Vec<Item> {
         && std::env::var("JCODE_DESKTOP_DEMO_TRANSCRIPT").as_deref() != Ok("1")
     {
         return Vec::new();
+    }
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("long-history")
+    {
+        return (0..10_000)
+            .map(|index| {
+                let text = format!("Message {index}: **formatted** text and `inline code`.\n\nA second paragraph for layout.");
+                if index % 2 == 0 { Item::User(text) } else { Item::Assistant(text) }
+            })
+            .collect();
     }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff")
