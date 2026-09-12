@@ -5,6 +5,10 @@ use jcode_sdk::{
     AuthClient, AuthFlow, AuthInputKind, AuthOptions, AuthPrompt, LoginMethod, LoginProvider,
 };
 
+#[path = "panel_login_status.rs"]
+mod connection;
+use connection::{ConnectionStatus, ConnectionStatuses};
+
 pub(super) struct LoginState {
     client: AuthClient,
     providers: Vec<LoginProvider>,
@@ -17,6 +21,9 @@ pub(super) struct LoginState {
     complete: bool,
     focus_pending: bool,
     task: Option<Task<()>>,
+    statuses: Option<ConnectionStatuses>,
+    status_loading: bool,
+    status_task: Option<Task<()>>,
 }
 
 impl Drop for LoginState {
@@ -36,6 +43,27 @@ enum LoginUpdate {
 }
 
 impl Panel {
+    pub(super) fn login_input_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
+        let state = self.login.as_ref()?;
+        (state
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
+            || state
+                .prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode))
+        .then(|| state.input.read(cx).focus_handle.clone())
+    }
+
+    fn login_is_remote(&self) -> bool {
+        let source = self
+            .session_id
+            .strip_prefix("accounts://")
+            .unwrap_or(&self.session_id);
+        crate::harness::remote_host(source).is_some()
+    }
+
     pub(super) fn open_login_picker(&mut self, cx: &mut Context<Self>) {
         self.recovery_picker_open = false;
         if self.login.is_some() {
@@ -75,12 +103,63 @@ impl Panel {
             complete: false,
             focus_pending: true,
             task: None,
+            statuses: None,
+            status_loading: false,
+            status_task: None,
         });
         // Local credentials cannot authenticate an SSH-hosted session.
-        if crate::harness::remote_host(&self.session_id).is_some() {
+        if self.login_is_remote() {
             self.login.as_mut().unwrap().error = Some(
                 "This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.".into());
+        } else {
+            self.refresh_login_status(cx);
         }
+        cx.notify();
+    }
+
+    fn refresh_login_status(&mut self, cx: &mut Context<Self>) {
+        let offline =
+            self.preview_state.is_some() || cfg!(test) || crate::harness::screenshot_mode();
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        if state.status_loading {
+            return;
+        }
+        state.status_loading = true;
+        state.statuses = None;
+        let provider_ids: Vec<_> = state
+            .providers
+            .iter()
+            .map(|provider| provider.id.to_owned())
+            .collect();
+        let task = cx.background_executor().spawn(async move {
+            if offline {
+                let mut statuses = ConnectionStatuses::from([
+                    ("openai".into(), ConnectionStatus::Connected),
+                    ("openai-api".into(), ConnectionStatus::NotConnected),
+                    ("claude".into(), ConnectionStatus::Expired),
+                    ("gemini".into(), ConnectionStatus::Unverified),
+                    ("copilot".into(), ConnectionStatus::Failed),
+                ]);
+                for id in provider_ids {
+                    statuses.entry(id).or_insert(ConnectionStatus::NotConnected);
+                }
+                Some(statuses)
+            } else {
+                connection::fetch_connection_statuses()
+            }
+        });
+        state.status_task = Some(cx.spawn(async move |this, cx| {
+            let statuses = task.await;
+            let _ = this.update(cx, |panel, cx| {
+                if let Some(state) = panel.login.as_mut() {
+                    state.statuses = statuses;
+                    state.status_loading = false;
+                    cx.notify();
+                }
+            });
+        }));
         cx.notify();
     }
 
@@ -110,7 +189,11 @@ impl Panel {
             } else if let Some(provider) = {
                 let state = self.login.as_ref().unwrap();
                 if self.preview_state.is_some() {
-                    state.providers.iter().find(|entry| entry.id == provider).copied()
+                    state
+                        .providers
+                        .iter()
+                        .find(|entry| entry.id == provider)
+                        .copied()
                 } else {
                     state.client.resolve_provider(provider)
                 }
@@ -125,7 +208,7 @@ impl Panel {
     }
 
     fn select_login_provider(&mut self, provider: LoginProvider, cx: &mut Context<Self>) {
-        if crate::harness::remote_host(&self.session_id).is_some() {
+        if self.login_is_remote() {
             return;
         }
         // Replacing state cancels precisely the old flow, not saved credentials.
@@ -195,7 +278,9 @@ impl Panel {
                         if validation_warning {
                             state.error = Some("Credentials were saved, but the provider could not be verified. Choose an available model below. You do not need to reuse the sign-in code.".into());
                         }
-                        panel.bridge.send(Command::RefreshRuntime { session_id: panel.session_id.clone() });
+                        if !panel.is_accounts_panel() {
+                            panel.bridge.send(Command::RefreshRuntime { session_id: panel.session_id.clone() });
+                        }
                         crate::accounts::request_refresh();
                     }
                     Err(error) => state.error = Some(error),
@@ -307,7 +392,7 @@ impl Panel {
         }
         let state = self.login.as_ref()?;
         let theme = Theme::global();
-        let remote = crate::harness::remote_host(&self.session_id).is_some();
+        let remote = self.login_is_remote();
         let mut body = div().flex().flex_col().gap_3();
         if let Some(error) = &state.error {
             body = body.child(
@@ -322,13 +407,22 @@ impl Panel {
                 .child(
                     div()
                         .debug_selector(|| "login-complete".into())
+                        .text_color(if state.error.is_some() {
+                            theme.WARN
+                        } else {
+                            theme.OK
+                        })
                         .child("Account connected. Choose a model to continue."),
                 )
                 .child(
                     login_button("login-choose-model", "Choose a model").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.close_login_picker(cx);
-                            this.open_recovery_models(cx);
+                            if this.is_accounts_panel() {
+                                cx.emit(AccountsPanelChooseModel);
+                            } else {
+                                this.open_recovery_models(cx);
+                            }
                         },
                     )),
                 );
@@ -417,14 +511,27 @@ impl Panel {
                 )),
             );
         } else if !remote {
+            body =
+                body.child(div().text_color(theme.TEXT_DIM).child(
+                    "Choose an account to connect or reconnect. Status is for this computer.",
+                ));
             body = body.child(
-                div()
-                    .text_color(theme.TEXT_DIM)
-                    .child("Choose an account to connect. No commands needed."),
+                div().flex().items_center().gap_2().flex_wrap()
+                    .child(div().flex_1().min_w_0().whitespace_normal().text_size(px(12.)).text_color(theme.TEXT_DIM)
+                        .child("Green: working · Amber: unverified · Red: needs attention · Gray: not connected. Uses saved checks, not a live test."))
+                    .child(login_button("login-refresh-status", if state.status_loading { "Checking…" } else { "Refresh status" })
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_login_status(cx)))),
             );
             for provider in &state.providers {
                 let provider = provider.clone();
                 let id = format!("login-provider-{}", provider.id);
+                let status = connection::status_for(
+                    state.statuses.as_ref(),
+                    provider.id,
+                    state.status_loading,
+                );
+                let color = status.color();
+                let status_id = format!("login-status-{}", provider.id);
                 let label = format!(
                     "{} · {}",
                     provider.display_name,
@@ -442,13 +549,46 @@ impl Panel {
                         .py_2()
                         .rounded_md()
                         .border_1()
-                        .border_color(theme.PANEL_BORDER)
+                        .border_color(color.opacity(0.35))
+                        .bg(color.opacity(0.045))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
                         .cursor_pointer()
                         .hover(|el| el.bg(theme.ACCENT_DIM))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.select_login_provider(provider.clone(), cx)
                         }))
-                        .child(label),
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .flex_wrap()
+                                .child(div().flex_1().min_w_0().child(label))
+                                .child(
+                                    div()
+                                        .debug_selector(move || status_id.clone())
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(color.opacity(0.12))
+                                        .text_size(px(11.))
+                                        .text_color(color)
+                                        .child(div().size(px(6.)).rounded_full().bg(color))
+                                        .child(status.label()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(theme.TEXT_DIM)
+                                .child(status.detail()),
+                        ),
                 );
             }
         }
@@ -478,7 +618,7 @@ impl Panel {
                             div()
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("Connect an account"),
+                                .child("Accounts"),
                         )
                         .child(
                             login_button(
@@ -488,7 +628,11 @@ impl Panel {
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
                                     this.close_login_picker(cx);
-                                    this.focus_input(window, cx);
+                                    if this.is_accounts_panel() {
+                                        cx.emit(AccountsPanelClosed);
+                                    } else {
+                                        this.focus_input(window, cx);
+                                    }
                                 },
                             )),
                         ),
@@ -531,6 +675,54 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn login_status_badges_and_refresh_are_visible(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts("login-test", None, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("accounts-panel").is_some());
+        assert!(vcx.debug_bounds("login-status-openai").is_some());
+        assert!(vcx.debug_bounds("login-refresh-status").is_some());
+        panel.read_with(vcx, |panel, _| {
+            let state = panel.login.as_ref().unwrap();
+            assert!(!state.status_loading);
+            assert_eq!(
+                state.statuses.as_ref().unwrap()["openai"],
+                ConnectionStatus::Connected
+            );
+        });
+        let refresh = vcx.debug_bounds("login-refresh-status").unwrap();
+        vcx.simulate_click(refresh.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("login-status-openai").is_some());
+    }
+
+    #[gpui::test]
+    fn login_accounts_back_keeps_dedicated_panel_and_remote_does_not_probe(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts("login-test", None, crate::harness::spawn_inert(), cx)
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.login_command("/login openai-api", cx);
+        });
+        let back = vcx.debug_bounds("login-back").unwrap();
+        vcx.simulate_click(back.center(), gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("accounts-panel").is_some());
+        assert!(vcx.debug_bounds("login-provider-openai").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.close_login_picker(cx);
+            panel.session_id = "accounts://ssh://test-host/session".into();
+            panel.open_login_picker(cx);
+            let state = panel.login.as_ref().unwrap();
+            assert!(state.error.as_ref().unwrap().contains("another machine"));
+            assert!(state.status_task.is_none());
+        });
+        assert!(vcx.debug_bounds("login-provider-openai").is_none());
+    }
+
+    #[gpui::test]
     fn native_login_is_clickable_private_and_preserves_draft(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) =
@@ -540,10 +732,9 @@ mod tests {
                 input.set_content("keep my draft".into(), cx)
             });
         });
-        let button = vcx
-            .debug_bounds("panel-login")
-            .expect("visible login action");
-        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("panel-login").is_some());
+        // Workspace tests exercise the footer opening a separate adjacent panel.
+        panel.update(vcx, |panel, cx| panel.open_login_picker(cx));
         assert!(vcx.debug_bounds("login-dialog").is_some());
         let button = vcx
             .debug_bounds("login-provider-openai-api")

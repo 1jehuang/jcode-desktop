@@ -87,6 +87,12 @@ mod default_directory;
 #[path = "workspace_default_directory_tests.rs"]
 mod default_directory_tests;
 
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenAccounts {
+    pub source: gpui::EntityId,
+}
+
 actions!(
     workspace,
     [
@@ -1047,14 +1053,21 @@ impl Workspace {
         let slots: Vec<_> = self
             .slots
             .iter()
-            .filter(|slot| !slot.closing && !slot.panel.read(cx).is_change_review()
-                && slot.panel.read(cx).preview_state.is_none())
+            .filter(|slot| {
+                !slot.closing
+                    && !slot.panel.read(cx).is_change_review()
+                    && !slot.panel.read(cx).is_accounts_panel()
+                    && slot.panel.read(cx).preview_state.is_none()
+            })
             .collect();
         let index_for_id =
             |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
         let review_source = self.slots.get(self.active).and_then(|slot| {
             let panel = slot.panel.read(cx);
-            let source_id = panel.session_id.strip_prefix("review://")?;
+            let source_id = panel
+                .session_id
+                .strip_prefix("review://")
+                .or_else(|| panel.session_id.strip_prefix("accounts://"))?;
             slots
                 .iter()
                 .position(|slot| slot.panel.read(cx).session_id == source_id)
@@ -1131,7 +1144,11 @@ impl Workspace {
         for saved in snapshot.slots {
             let mut panel_state = saved.panel;
             // Preview fixture IDs are never runtime sessions, including old snapshots.
-            if panel_state.session_id.starts_with("preview://") { continue; }
+            if panel_state.session_id.starts_with("preview://")
+                || panel_state.session_id.starts_with("accounts://")
+            {
+                continue;
+            }
             if panel_state.session_id.starts_with("startup://draft/") {
                 // The previous bridge generation cannot deliver its in-flight
                 // result to this workspace. Restart with a fresh correlation ID
@@ -2412,6 +2429,128 @@ impl Workspace {
         cx.notify();
     }
 
+    fn close_accounts(
+        &mut self,
+        panel: &Entity<Panel>,
+        source: &Entity<Panel>,
+        choose_model: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel == *panel)
+        else {
+            return;
+        };
+        self.set_active(index, cx);
+        self.close_panel(&ClosePanel, window, cx);
+        if let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel == *source)
+        {
+            self.set_active(index, cx);
+            if source.read(cx).can_refresh_account_runtime() {
+                self.bridge.send(Command::RefreshRuntime {
+                    session_id: source.read(cx).session_id.clone(),
+                });
+            }
+            if choose_model {
+                source.update(cx, |panel, cx| panel.choose_account_model(cx));
+            }
+            self.retarget_camera();
+            self.focus_active(window, cx);
+        }
+    }
+
+    fn open_accounts(
+        &mut self,
+        request: &OpenAccounts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source_index) = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.entity_id() == request.source)
+        else {
+            return;
+        };
+        let source = self.slots[source_index].panel.clone();
+        let source_session = source.read(cx).session_id.clone();
+        if let Some(index) = self.slots.iter().position(|slot| {
+            !slot.closing && slot.panel.read(cx).session_id == format!("accounts://{source_session}")
+        }) {
+            self.set_active(index, cx);
+            self.retarget_camera();
+            self.focus_active(window, cx);
+            cx.notify();
+            return;
+        }
+        let row = self.slots[source_index].row;
+        let preview = source.read(cx).preview_state;
+        let panel = cx.new(|cx| Panel::new_accounts(&source_session, preview, self.bridge.clone(), cx));
+        let source_for_close = source.clone();
+        cx.subscribe_in(
+            &panel,
+            window,
+            move |this, panel, _: &crate::panel::AccountsPanelClosed, window, cx| {
+                this.close_accounts(panel, &source_for_close, false, window, cx);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &panel,
+            window,
+            move |this, panel, _: &crate::panel::AccountsPanelChooseModel, window, cx| {
+                this.close_accounts(panel, &source, true, window, cx);
+            },
+        )
+        .detach();
+        let width_fraction = spawned_panel_width(self.slots.len());
+        let insert_at = source_index + 1;
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
+                restore_fraction: None,
+            },
+        );
+        if self.active >= insert_at {
+            self.active += 1;
+        }
+        let row_count = self.slots.iter().filter(|slot| slot.row == row && !slot.closing).count();
+        let source = &mut self.slots[source_index];
+        let width = demoted_width(source.width_fraction, row_count);
+        if width != source.width_fraction {
+            source.width_fraction = width;
+            source.animated_width.set(width, Instant::now());
+            source.restore_fraction = None;
+        }
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
     fn open_gmail(&mut self, _: &OpenGmail, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self
             .slots
@@ -2754,6 +2893,7 @@ impl Workspace {
         if session_id != "terminal"
             && !Panel::is_pending_session_id(&session_id)
             && !self.slots[closed].panel.read(cx).is_change_review()
+            && !self.slots[closed].panel.read(cx).is_accounts_panel()
             && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
             self.bridge.send(Command::Unwatch { session_id });
@@ -6675,6 +6815,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
+            .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))
@@ -12793,3 +12934,181 @@ mod pending;
 #[cfg(test)]
 #[path = "workspace_pending_tests.rs"]
 mod pending_tests;
+
+#[cfg(test)]
+mod accounts_panel_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn accounts_panel_preview_and_pending_sources_never_contact_runtime(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w.push_test_panel("preview://empty", cx);
+            w.slots[0].panel.update(cx, |panel, _| {
+                panel.preview_state = Some(crate::preview_state::PreviewState::Empty);
+            });
+            w
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        vcx.run_until_parked();
+        let footer = vcx.debug_bounds("panel-login").expect("preview footer");
+        vcx.simulate_click(footer.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let accounts = workspace.read_with(vcx, |w, cx| {
+            let accounts = w.slots[w.active].panel.clone();
+            assert!(accounts.read(cx).is_accounts_panel());
+            assert_eq!(accounts.read(cx).preview_state, source.read(cx).preview_state);
+            assert!(!source.read(cx).can_refresh_account_runtime());
+            accounts
+        });
+        let provider = vcx.debug_bounds("login-provider-openai-api").expect("offline provider");
+        vcx.simulate_click(provider.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.simulate_input("offline-only-not-a-credential");
+        let submit = vcx.debug_bounds("login-submit").expect("offline submit");
+        vcx.simulate_click(submit.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("login-error").is_some());
+        accounts.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelChooseModel));
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "preview auth and closing must remain offline");
+        assert!(source.read_with(vcx, |panel, _| panel.items.is_empty()));
+        source.update(vcx, |panel, _| {
+            panel.preview_state = None;
+            panel.session_id = Panel::STARTUP_SESSION_ID.into();
+        });
+        let request = OpenAccounts { source: source.entity_id() };
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
+        let accounts = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
+        accounts.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelClosed));
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "pending drafts have no runtime to refresh");
+    }
+
+    #[gpui::test]
+    fn accounts_panel_footer_opens_new_adjacent_preserves_source_and_escape_returns(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.set_test_bridge(bridge);
+            workspace.push_test_panel("source", cx);
+            workspace
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        source.update(vcx, |panel, cx| {
+            panel.items.push(crate::panel::Item::Assistant(
+                "Keep this conversation".into(),
+            ));
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("unsent draft".into(), cx));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
+        let footer = vcx
+            .debug_bounds("panel-login")
+            .expect("Connect account footer paints");
+        vcx.simulate_click(footer.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let accounts = workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 2);
+            assert_eq!(w.slots[0].panel, source);
+            assert_eq!(w.active, 1);
+            assert_eq!(w.slots[0].row, w.slots[1].row);
+            assert!(w.slots[1].panel.read(cx).is_accounts_panel());
+            assert!(!w.slots[1].panel.read(cx).can_fork());
+            w.slots[1].panel.clone()
+        });
+        assert!(vcx.debug_bounds("accounts-panel").is_some());
+        assert!(vcx.debug_bounds("login-dialog").is_some());
+        vcx.update(|window, cx| {
+            assert!(accounts.read(cx).input_focus_handle(cx).is_focused(window));
+            let snapshot = workspace.read(cx).snapshot(window, cx).unwrap();
+            assert_eq!(snapshot.slots.len(), 1);
+            assert_eq!(snapshot.active, 0);
+        });
+        assert!(
+            commands.try_recv().is_err(),
+            "opening accounts must not contact harness"
+        );
+        vcx.simulate_keystrokes("x escape");
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| assert_eq!(w.slots[w.active].panel, source));
+        vcx.update(|window, cx| assert!(source.read(cx).input_focus_handle(cx).is_focused(window)));
+        let after = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
+        assert_eq!(before.draft, after.draft);
+        assert_eq!(before.scroll_y, after.scroll_y);
+        assert_eq!(source.read_with(vcx, |panel, _| panel.items.len()), 1);
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "source")
+        );
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn accounts_panel_uses_source_row_reuses_live_panel_and_choose_model_returns_to_source(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w.push_test_panel("source", cx);
+            w.slots[0].width_fraction = 1.0;
+            w.active_row = 1;
+            w.push_test_panel("other-row", cx);
+            w.active = 1;
+            w
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        let request = OpenAccounts {
+            source: source.entity_id(),
+        };
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
+        let first = workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.active, 1);
+            assert_eq!(w.active_row, 0);
+            assert_eq!(w.slots[1].row, 0);
+            assert!(w.slots[0].width_fraction < 1.0, "source demotes to show adjacent accounts");
+            w.slots[1].panel.clone()
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
+        let second = workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.len(), 3);
+            assert_eq!(w.slots[1].panel, first);
+            w.slots[1].panel.clone()
+        });
+        second.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelChooseModel));
+        vcx.run_until_parked();
+        vcx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(1200.), px(800.)), |_, _| div());
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots[w.active].panel, source);
+            assert!(
+                !w.slots
+                    .iter()
+                    .any(|slot| slot.panel == first && !slot.closing)
+            );
+            assert_eq!(w.active_row, 0);
+            assert!(!source.read(cx).is_accounts_panel());
+        });
+        assert!(vcx.debug_bounds("recovery-model-picker").is_some());
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "source")
+        );
+        assert!(commands.try_recv().is_err());
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
+        vcx.run_until_parked();
+        let close = vcx.debug_bounds("login-close").expect("dedicated Close button paints");
+        vcx.simulate_click(close.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| assert_eq!(w.slots[w.active].panel, source));
+        assert!(matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "source"));
+        assert!(commands.try_recv().is_err());
+    }
+}

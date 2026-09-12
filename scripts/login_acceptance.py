@@ -64,6 +64,16 @@ def verify(output, env, root):
     stage = "initial"
     clipboard = None
 
+    def navigation():
+        for line in (root / "state").read_text().splitlines():
+            if line.startswith("navigation="):
+                return json.loads(line.split("=", 1)[1])
+        raise AssertionError("Missing navigation state")
+
+    def panels():
+        return [panel for row in navigation()["rows"] for panel in row["panels"]
+                if not panel["closing"]]
+
     def native(*args):
         subprocess.run(["xdotool", *map(str, args)], env=env, cwd=root, check=True, timeout=15)
 
@@ -105,12 +115,37 @@ def verify(output, env, root):
         native("type", "--clearmodifiers", "--delay", "25", DRAFT + "  ")
         _, words, _ = wait_words("draft", DRAFT)
         stage = "native-connect-account-button"
+        source = panels()[0]
         click(phrase_bounds(words, "Connect account"))
-        _, words, _ = wait_words("providers", "Choose an account to connect")
+        provider_image, words, _ = wait_words("providers", "Choose an account to connect")
+        opened = panels()
+        assert len(opened) == 2 and opened[0]["id"] == source["id"], opened
+        assert opened[1]["session"].startswith("accounts://"), opened
+        assert opened[1]["focused"] and navigation()["keyboard_panel"] == opened[1]["slot"], navigation()
+        assert opened[0]["history_items"] == source["history_items"], opened
+        report["checks"]["separate_right_panel_focused_source_unchanged"] = True
         report["checks"][stage] = True
 
+        stage = "color-coded-account-statuses"
+        # Inspect actual colored badge pixels, not only a text-only status model.
+        # The right-hand account panel occupies the right half of the canvas.
+        pixels = list(provider_image.crop((850, 170, 1420, 850)).getdata())
+        green = sum(g > r * 1.18 and g > b * 1.08 and g > 90 for r, g, b in pixels)
+        red = sum(r > g * 1.25 and r > b * 1.1 and r > 110 for r, g, b in pixels)
+        assert green > 25 and red > 25, {"green": green, "red": red}
+        report["checks"][stage] = {"green_pixels": green, "red_pixels": red}
+
         stage = "native-openai-api-key-choice"
-        click(phrase_bounds(words, "OpenAI API"))
+        for attempt in range(12):
+            try:
+                api_choice = phrase_bounds(words, "OpenAI API")
+                break
+            except AssertionError:
+                native("mousemove", 1200, 740, "click", "--repeat", 3, "--delay", 80, "5")
+                words = ocr(capture("providers-scrolled"), "providers-scrolled")
+        else:
+            raise AssertionError("OpenAI API account was not reachable by scrolling")
+        click(api_choice)
         empty, words, placeholder = wait_words("api-key", "Paste your API key")
         report["checks"][stage] = True
 
@@ -139,6 +174,8 @@ def verify(output, env, root):
         stage = "native-close-restores-draft"
         click(phrase_bounds(pasted_words, "Close"))
         _, words, _ = wait_words("restored", DRAFT)
+        assert len(panels()) == 1 and panels()[0]["id"] == source["id"], panels()
+        assert panels()[0]["focused"], panels()
         text = normalized(" ".join(word["text"] for word in words))
         assert "chooseanaccount" not in text and "pastefromclipboard" not in text, "Login overlay stayed open"
         assert normalized(SECRET) not in text, "Secret leaked into the restored composer"

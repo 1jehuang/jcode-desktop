@@ -179,6 +179,13 @@ pub struct PanelSnapshot {
     pub startup_layout: Option<StartupLayout>,
 }
 
+pub(crate) struct AccountsPanelClosed;
+pub(crate) struct AccountsPanelChooseModel;
+
+impl gpui::EventEmitter<AccountsPanelChooseModel> for Panel {}
+
+impl gpui::EventEmitter<AccountsPanelClosed> for Panel {}
+
 pub struct Panel {
     pub preview_state: Option<PreviewState>,
     pub session_id: String,
@@ -496,6 +503,7 @@ impl Panel {
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
         self.is_default_directory()
             || self.is_change_review()
+            || self.is_accounts_panel()
             || self.code_file.is_some()
             || self.gmail_inbox.is_some()
             || self.gmail_message.is_some()
@@ -755,6 +763,37 @@ impl Panel {
         panel.items.clear();
         panel.code_file = Some(CodeFile { path, contents });
         panel
+    }
+
+    pub(crate) fn new_accounts(
+        source_session: &str,
+        preview: Option<PreviewState>,
+        bridge: Bridge,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut panel = Self::new(
+            format!("accounts://{source_session}"),
+            Some("accounts".into()),
+            None,
+            bridge,
+            cx,
+        );
+        panel.items.clear();
+        panel.preview_state = preview;
+        panel.open_login_picker(cx);
+        panel
+    }
+
+    pub(crate) fn choose_account_model(&mut self, cx: &mut Context<Self>) {
+        self.open_recovery_models(cx);
+    }
+
+    pub(crate) fn can_refresh_account_runtime(&self) -> bool {
+        self.can_fork() && self.gmail_inbox.is_none() && self.todoist.is_none()
+    }
+
+    pub(crate) fn is_accounts_panel(&self) -> bool {
+        self.session_id.starts_with("accounts://")
     }
 
     pub fn new_gmail(bridge: Bridge, cx: &mut Context<Self>) -> Self {
@@ -1753,6 +1792,7 @@ impl Panel {
         self.preview_state.is_none()
             && !self.is_default_directory()
             && !self.is_change_review()
+            && !self.is_accounts_panel()
             && self.terminal.is_none()
             && self.code_file.is_none()
             && self.session_id != "unfinished-work"
@@ -3138,7 +3178,10 @@ impl Panel {
     }
 
     pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
-        if self.image_preview.is_some() || self.diff_review.is_some() {
+        if let Some(handle) = self.login_input_focus_handle(cx) {
+            return handle;
+        }
+        if self.image_preview.is_some() || self.diff_review.is_some() || self.is_accounts_panel() {
             self.focus_handle.clone()
         } else if let Some(terminal) = &self.terminal {
             terminal.read(cx).focus_handle(cx)
@@ -3193,6 +3236,22 @@ impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
+        if self.is_accounts_panel() {
+            return div()
+                .debug_selector(|| "accounts-panel".into())
+                .size_full()
+                .relative()
+                .track_focus(&self.focus_handle)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.close_login_picker(cx);
+                        cx.emit(AccountsPanelClosed);
+                        cx.stop_propagation();
+                    }
+                }))
+                .children(self.render_login_picker(window, cx))
+                .into_any_element();
+        }
         if self.is_change_review() {
             return div()
                 .size_full()
@@ -3881,14 +3940,35 @@ impl Render for Panel {
                             .gap_2()
                             .overflow_hidden()
                             .child(
-                                div().id("panel-login").debug_selector(|| "panel-login".into())
-                                    .flex_none().flex().items_center().h(px(22.0)).px_2().rounded_md()
-                                    .text_color(theme.TEXT_DIM).cursor_pointer()
+                                div()
+                                    .id("panel-login")
+                                    .debug_selector(|| "panel-login".into())
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(22.0))
+                                    .px_2()
+                                    .rounded_md()
+                                    .text_color(theme.TEXT_DIM)
+                                    .cursor_pointer()
                                     .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_login_picker(cx)))
+                                    .on_click(cx.listener(|_, _, window, cx| {
+                                        window.dispatch_action(
+                                            Box::new(crate::workspace::OpenAccounts {
+                                                source: cx.entity_id(),
+                                            }),
+                                            cx,
+                                        );
+                                    }))
                                     .child("Connect account"),
                             )
-                            .child(div().debug_selector(|| "panel-identity".into()).min_w_0().truncate().child(meta_line)),
+                            .child(
+                                div()
+                                    .debug_selector(|| "panel-identity".into())
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(meta_line),
+                            ),
                     )
                     .child(
                         div()
