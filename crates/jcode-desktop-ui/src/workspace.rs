@@ -10079,7 +10079,7 @@ mod tests {
         let viewport = 1200.0;
         let panels = || [(0, 0.5), (1, 0.5), (2, 0.5)];
 
-        assert_eq!(panel_at_viewport_center(panels(), 0.0, viewport), Some(0));
+        assert_eq!(panel_at_viewport_center(panels(), -STRUT, viewport), Some(0));
         assert_eq!(panel_at_viewport_center(panels(), 400.0, viewport), Some(1));
         assert_eq!(panel_at_viewport_center(panels(), 900.0, viewport), Some(2));
         assert_eq!(panel_at_viewport_center([], 0.0, viewport), None);

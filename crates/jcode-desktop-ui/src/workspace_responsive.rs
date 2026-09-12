@@ -88,7 +88,7 @@ impl Workspace {
                 ),
             )
             .child(
-                button("compact-new-session", "+", "New session · Super+Enter").on_mouse_down(
+                button("compact-new-session", "+", "New session").on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
                         this.new_panel(&NewPanel, window, cx);
