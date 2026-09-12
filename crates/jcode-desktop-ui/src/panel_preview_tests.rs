@@ -44,7 +44,7 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
             assert!(panel.handle_slash_command(command, cx));
         }
         panel.run_session_operation(SessionOperation::Clear, "not sent");
-        panel.submit_command_prompt("not sent");
+        panel.submit_command_prompt("not sent", cx);
         assert!(panel.terminal.is_none());
         assert!(panel.gmail_inbox.is_none());
         assert!(panel.todoist.is_none());

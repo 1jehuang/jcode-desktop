@@ -175,6 +175,9 @@ session_refresh_seconds = 2      # 1 through 300
 
 [desktop.terminal]
 scrollback_lines = 10000         # 100 through 1,000,000
+
+[desktop.sounds]
+enabled = false                 # Opt in from Settings → Sound effects
 ```
 
 Every semantic color can be overridden. In addition to the example above,
@@ -189,6 +192,27 @@ the supported keys are `canvas_dot`, `panel_border`, `panel_border_focus`,
 `minimap_viewport`, `minimap_panel`, `minimap_panel_busy`, and `minimap_bg`.
 Unknown or malformed color values are ignored with a diagnostic rather than
 preventing the app from starting.
+
+## Sound effects
+
+Sounds are **off by default**. Enable **Settings → Sound effects** to save the
+preference for all windows, and use **Play preview** to hear the completion cue.
+The equivalent setting is `[desktop.sounds] enabled = true` in
+`~/.jcode/config.toml` (or `[sounds]` in a standalone `JCODE_DESKTOP_CONFIG`).
+
+Short, original synthesized cues mark message submission, a completed response,
+permission requests, terminal response/send/command errors, background task
+completion, and panel opening/closing. Panel cues are especially quiet.
+Streaming text, reasoning, routine tool calls and recoverable tool errors,
+typing, scrolling, focus changes, cancellation, history loading, and startup
+stay silent. Duplicate completion/permission events are suppressed. Playback is
+nonblocking and rate limited across windows, with no overlapping sound storm.
+
+Linux uses `pw-play`, then `paplay`, then `aplay` when available. macOS uses
+`afplay`, and Windows uses its built-in PowerShell `SoundPlayer`. Missing audio
+support never blocks the UI. Offline screenshots and tests are always silent.
+Set `JCODE_DESKTOP_MUTE_SOUNDS=1` to silence an automated app launch without
+changing the saved preference.
 
 ## Inline HTML previews (Linux)
 

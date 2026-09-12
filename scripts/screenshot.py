@@ -36,6 +36,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--sounds-interact", action="store_true",
+                        help="verify sound opt-in, preview, and saved mute on the private display")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--fresh-interact", action="store_true",
@@ -92,6 +94,13 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.sounds_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "sounds_interact")
+        if others or args.panels != 1 or args.size != "1440x1000" or getattr(args, "changelog", False) or args.preview_state:
+            parser.error("sounds-interact requires one panel, default size, and no other interactions")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("sounds-interact requires xdotool and tesseract")
     if args.preview_state is not None:
         if (args.panels != 1 or args.transcript != "all" or args.swarm
                 or args.notification or args.learn_stage is not None
@@ -381,6 +390,9 @@ def main():
                     verify(output, env, root, theme=args.theme)
                 if app.poll() is not None:
                     raise RuntimeError("App exited before capture")
+                if args.sounds_interact:
+                    from sounds_acceptance import verify
+                    verify(output, env, root)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.preview_interact:

@@ -1669,6 +1669,7 @@ impl Workspace {
                                 panel.status = "Session creation failed · draft retained".into();
                             }
                             panel.items.push(crate::panel::Item::Error(reason.clone()));
+                            crate::sounds::play(crate::sounds::Cue::Error, cx);
                             cx.notify();
                         });
                         break;
@@ -1776,6 +1777,9 @@ impl Workspace {
         // Inserting shifts every later index, including the focused one.
         if self.active >= insert_at {
             self.active += 1;
+        }
+        if session.session_id != Panel::STARTUP_SESSION_ID {
+            crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         }
         insert_at
     }
@@ -2426,6 +2430,7 @@ impl Workspace {
                 restore_fraction: None,
             },
         );
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.set_active(insert_at, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -2548,6 +2553,7 @@ impl Workspace {
             source.animated_width.set(width, Instant::now());
             source.restore_fraction = None;
         }
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.set_active(insert_at, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -2594,6 +2600,7 @@ impl Workspace {
                 restore_fraction: None,
             },
         );
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.set_active(insert_at, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -2642,6 +2649,7 @@ impl Workspace {
                 restore_fraction: None,
             },
         );
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.set_active(insert_at, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -2707,6 +2715,7 @@ impl Workspace {
                 restore_fraction: None,
             },
         );
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.set_active(insert_at, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -2753,6 +2762,7 @@ impl Workspace {
                 restore_fraction: None,
             },
         );
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.set_active(insert_at, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
@@ -2888,6 +2898,7 @@ impl Workspace {
             return;
         }
         self.learned("close_panel", cx);
+        crate::sounds::play(crate::sounds::Cue::PanelClose, cx);
         let closed = self.active;
         let closed_id = self.slots[closed].panel.entity_id();
         self.slots[closed].closing = true;
@@ -5693,6 +5704,7 @@ impl Workspace {
                 ),
         );
         settings
+            .child(self.render_sound_settings(cx))
             .child(
                 div()
                     .id("settings-machines")
@@ -12954,6 +12966,8 @@ mod pending;
 #[cfg(test)]
 #[path = "workspace_pending_tests.rs"]
 mod pending_tests;
+#[path = "workspace_sounds.rs"]
+mod sound_settings;
 
 #[cfg(test)]
 mod accounts_panel_tests {

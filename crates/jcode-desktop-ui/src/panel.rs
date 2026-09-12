@@ -209,6 +209,7 @@ pub struct Panel {
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
     streaming_reasoning: String,
+    sound_events: crate::sound_events::SoundEvents,
     activity_spinner: Entity<activity::Spinner>,
     tab_emoji: Entity<tab_emoji::TabEmoji>,
     sidebar_spinner: Entity<activity::Spinner>,
@@ -263,6 +264,10 @@ pub struct Panel {
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
 }
+
+#[cfg(test)]
+#[path = "panel_sound_tests.rs"]
+mod sound_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum MinimapSessionState {
@@ -634,6 +639,7 @@ impl Panel {
                 String::new()
             },
             streaming_reasoning: String::new(),
+            sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(activity::Spinner::new),
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
             sidebar_spinner: cx.new(activity::Spinner::new),
@@ -1912,6 +1918,7 @@ impl Panel {
                                     },
                                 ));
                                 this.pending_users.push_back(index);
+                                crate::sounds::play(crate::sounds::Cue::Sent, cx);
                                 this.stick_to_bottom = true;
                                 this.transcript_list.scroll_to_end();
                                 cx.notify();
@@ -1958,6 +1965,7 @@ impl Panel {
                                         session_id: this.session_id.clone(),
                                     });
                                 }
+                                this.sound_events.cancel();
                                 this.finish_response();
                                 handled = true;
                             }
@@ -2156,9 +2164,11 @@ impl Panel {
                 )),
                 "/commit" => self.submit_command_prompt(
                     "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
+                    cx,
                 ),
                 "/commit-push" | "/commit-and-push" => self.submit_command_prompt(
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
+                    cx,
                 ),
                 _ if trimmed.starts_with('/') => self.items.push(Item::Error(format!(
                     "{}",
@@ -2215,8 +2225,10 @@ impl Panel {
         self.items.push(Item::Assistant(message.into()));
     }
 
-    fn submit_command_prompt(&mut self, prompt: &str) {
-        if self.preview_state.is_some() { return; }
+    fn submit_command_prompt(&mut self, prompt: &str, cx: &mut Context<Self>) {
+        if self.preview_state.is_some() {
+            return;
+        }
         self.bridge.send(Command::Send {
             session_id: self.session_id.clone(),
             content: prompt.to_string(),
@@ -2225,6 +2237,7 @@ impl Panel {
         let index = self.items.len();
         self.items.push(Item::User(prompt.to_string()));
         self.pending_users.push_back(index);
+        crate::sounds::play(crate::sounds::Cue::Sent, cx);
     }
 
     pub(crate) fn history_loaded(&self) -> bool {
@@ -2364,6 +2377,11 @@ impl Panel {
 
     /// Apply a streaming event addressed to this session.
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        if let Some(cue) = self.sound_events.observe(event)
+            && self.preview_state.is_none()
+        {
+            crate::sounds::play(cue, cx);
+        }
         match event {
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
@@ -2656,6 +2674,10 @@ impl Panel {
     }
 
     pub fn message_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.sound_events.cancel();
+        if self.preview_state.is_none() {
+            crate::sounds::play(crate::sounds::Cue::Error, cx);
+        }
         self.flush_reasoning();
         self.flush_streaming();
         self.items.push(Item::Error(message));

@@ -68,6 +68,7 @@ impl Workspace {
             },
         );
         self.set_active(insert_at, cx);
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         self.overview = false;
         self.overview_progress.set(0.0, Instant::now());
         self.focus_pending = true;
@@ -91,6 +92,7 @@ impl Workspace {
             .get(self.active)
             .map(|slot| slot.panel.entity_id());
         let removed = self.slots.remove(index);
+        crate::sounds::play(crate::sounds::Cue::PanelClose, cx);
         let removed_id = removed.panel.entity_id();
         if self.previous == Some(removed_id) {
             self.previous = None;

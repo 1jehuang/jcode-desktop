@@ -9,6 +9,14 @@ pub struct DesktopConfig {
     pub appearance: AppearanceConfig,
     pub workspace: WorkspaceConfig,
     pub terminal: TerminalConfig,
+    pub sounds: SoundsConfig,
+}
+
+/// Desktop feedback is opt-in and independent of the terminal client's bell.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SoundsConfig {
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -67,6 +75,7 @@ impl Default for DesktopConfig {
             appearance: AppearanceConfig::default(),
             workspace: WorkspaceConfig::default(),
             terminal: TerminalConfig::default(),
+            sounds: SoundsConfig::default(),
         }
     }
 }
@@ -382,6 +391,34 @@ fn persist_value_at(
     fs::rename(temporary, path)
 }
 
+#[cfg(not(test))]
+pub fn persist_sounds_enabled(enabled: bool) -> std::io::Result<()> {
+    persist_sounds_enabled_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        enabled,
+    )
+}
+
+#[cfg(test)]
+pub fn persist_sounds_enabled(_enabled: bool) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn persist_sounds_enabled_at(
+    path: &std::path::Path,
+    standalone: bool,
+    enabled: bool,
+) -> std::io::Result<()> {
+    persist_value_at(
+        path,
+        standalone,
+        "sounds",
+        "enabled",
+        if enabled { "true" } else { "false" },
+    )
+}
+
 fn load() -> DesktopConfig {
     let path = path();
     match fs::read_to_string(&path) {
@@ -420,6 +457,25 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sounds_default_off_and_persist_without_rewriting_other_preferences() {
+        assert!(!DesktopConfig::default().sounds.enabled);
+        for standalone in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let original = "# keep shared configuration\nmodel = 'keep-me'\n";
+            fs::write(&path, original).unwrap();
+            assert!(!parse(original, standalone).unwrap().sounds.enabled);
+            for enabled in [true, false, true] {
+                persist_sounds_enabled_at(&path, standalone, enabled).unwrap();
+                let text = fs::read_to_string(&path).unwrap();
+                assert!(text.starts_with(original));
+                assert_eq!(parse(&text, standalone).unwrap().sounds.enabled, enabled);
+                assert_eq!(text.matches("enabled =").count(), 1);
+            }
+        }
+    }
 
     #[test]
     fn remote_preferences_default_local_and_normalize_safe_unique_targets() {

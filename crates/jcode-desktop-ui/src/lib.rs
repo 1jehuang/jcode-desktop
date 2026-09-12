@@ -30,6 +30,8 @@ mod preview_control;
 pub mod preview_state;
 mod remote_targets;
 mod scrollbar;
+mod sound_events;
+mod sounds;
 mod terminal;
 mod text_selection;
 mod theme;

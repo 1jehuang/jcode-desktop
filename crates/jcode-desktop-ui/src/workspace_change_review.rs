@@ -131,6 +131,7 @@ impl Workspace {
                 source.animated_width.set(width, Instant::now());
                 source.restore_fraction = None;
             }
+            crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
             index
         };
         self.set_active(index, cx);
