@@ -48,7 +48,8 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                     canvas.top() + px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET)
                 );
                 let expected_left = if sidebar {
-                    SIDEBAR_WIDTH + FOLDER_CONNECTOR_WIDTH
+                    responsive::sidebar_width(true, responsive::is_compact(width))
+                        + FOLDER_CONNECTOR_WIDTH
                 } else {
                     0.0
                 };

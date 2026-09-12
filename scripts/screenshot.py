@@ -48,6 +48,8 @@ def main():
                         help="verify distinct pasted/transcript images and repeated stable image frames (GTK3 required)")
     parser.add_argument("--mermaid-interact", action="store_true",
                         help="click a Mermaid diagram, verify enlargement, and dismiss by Escape and Close")
+    parser.add_argument("--responsive-interact", action="store_true",
+                        help="verify compact navigation, sidebar drawer, panel focus and native resizing")
     parser.add_argument("--sidebar-interact", action="store_true",
                         help="verify hover-only close and native safe left-drag dismissal across workspaces")
     parser.add_argument("--history-interact", action="store_true",
@@ -82,6 +84,13 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.responsive_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "responsive_interact")
+        if others or args.panels != 2 or args.size != "1440x1000" or args.layout_mode != "folder_tabs":
+            parser.error("responsive-interact requires two panels, default size/layout, and no other interactions")
+        if not shutil.which("xdotool"):
+            parser.error("responsive-interact requires xdotool")
     if args.login_interact:
         other = any(value for key, value in vars(args).items()
                     if key.endswith("_interact") and key != "login_interact")
@@ -239,7 +248,9 @@ def main():
         wm_config = root / "openbox.xml"
         wm_config.write_text('''<openbox_config xmlns="http://openbox.org/3.4/rc">
 <applications><application class="*"><decor>no</decor>
-<maximized>yes</maximized></application></applications></openbox_config>''')
+<maximized>yes</maximized></application></applications></openbox_config>'''.replace(
+            "<maximized>yes</maximized>",
+            "<maximized>no</maximized>" if args.responsive_interact else "<maximized>yes</maximized>"))
         for name in ("home", "runtime", "config", "cache", "data", "jcode"):
             (root / name).mkdir(mode=0o700)
         if args.ai_font:
@@ -330,6 +341,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.responsive_interact:
+                    from responsive_acceptance import verify
+                    verify(output, env, root)
                 if args.sidebar_interact:
                     from sidebar_gesture_acceptance import verify
                     verify(output, env, root)

@@ -53,6 +53,11 @@ impl Workspace {
             .collect();
         serde_json::json!({
             "version": 1,
+            "viewport": [f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)],
+            "compact_sidebar": self.show_sidebar && responsive::is_compact(f32::from(window.viewport_size().width)),
+            "sidebar_overlay": self.compact_sidebar_open,
+            "canvas_width": self.last_canvas_width,
+
             "header_height": FPS_HEADER_HEIGHT,
             "active_row": self.active_row,
             "focused_slot": focused,

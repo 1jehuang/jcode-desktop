@@ -97,6 +97,20 @@ Add `--check-attachments` to verify the companion's explicit/default create
 directories, persisted-session reattachment, and typed errors for missing cwd.
 This writes a requirement-by-requirement `api-attachment-acceptance.json` report.
 
+## Smaller windows
+
+Narrow windows automatically replace the full sidebar with a 48px navigation
+rail. Its menu opens the complete sidebar as a dismissible drawer. The `+`
+button creates a session, and the numbered buttons switch workspaces.
+
+When the chat area is narrow, one conversation fills the available width.
+Use the session tabs or the usual panel shortcuts to switch chats. Widening the
+window restores your multi-panel widths without changing sessions or drafts.
+Long prompts and expanded plans scroll instead of pushing the composer offscreen.
+
+Native resize and navigation acceptance runs on a private display:
+`python3 scripts/screenshot.py target/responsive-review.png --panels 2 --responsive-interact`.
+
 ## Configuration
 
 Workspaces 1–4 have consistent blue, teal, amber, and purple accents. Session

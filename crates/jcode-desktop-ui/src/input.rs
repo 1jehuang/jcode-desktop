@@ -1,5 +1,5 @@
 //! Prompt input with full IME support, adapted from gpui's input example.
-//! Long prompts soft-wrap and grow vertically. Enter submits via a callback.
+//! Long prompts soft-wrap in a bounded, scrollable editor. Enter submits via a callback.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -145,6 +145,8 @@ pub struct PromptInput {
     command_selection: usize,
     model_logo_providers: HashMap<String, String>,
     command_scroll: gpui::ScrollHandle,
+    editor_scroll: gpui::ScrollHandle,
+    revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
     submission_enabled: bool,
     spacious: bool,
 }
@@ -371,6 +373,8 @@ impl PromptInput {
             command_selection: 0,
             model_logo_providers: HashMap::new(),
             command_scroll: gpui::ScrollHandle::new(),
+            editor_scroll: gpui::ScrollHandle::new(),
+            revealed_caret: None,
             submission_enabled: true,
             spacious: false,
         }
@@ -1243,11 +1247,40 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
+            // Reveal edits and keyboard navigation, but do not undo wheel scrolling
+            // on every paint. Include viewport size so resizing reveals the caret.
+            let viewport = input.editor_scroll.bounds();
+            let caret_key = (input.cursor_offset(), input.content.clone(), viewport.size);
+            if input.revealed_caret.as_ref() != Some(&caret_key) {
+                if let Some(caret) =
+                    line.position_for_index(input.cursor_offset(), window.line_height())
+                {
+                    let top = prepaint.text_bounds.top() + caret.y;
+                    let bottom = top + window.line_height();
+                    let adjustment = if top < viewport.top() {
+                        viewport.top() - top
+                    } else if bottom > viewport.bottom() {
+                        viewport.bottom() - bottom
+                    } else {
+                        px(0.)
+                    };
+                    if adjustment != px(0.) {
+                        let offset = input.editor_scroll.offset();
+                        input
+                            .editor_scroll
+                            .set_offset(point(px(0.), (offset.y + adjustment).min(px(0.))));
+                        let entity = _cx.entity();
+                        _cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+                    }
+                }
+                input.revealed_caret = Some(caret_key);
+            }
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
             if input.visual_line_count != prepaint.visual_line_count {
                 input.visual_line_count = prepaint.visual_line_count;
-                _cx.notify();
+                let entity = _cx.entity();
+                _cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
             }
         });
     }
@@ -1256,6 +1289,8 @@ impl Element for TextElement {
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
+        let spacious = self.spacious && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
@@ -1285,6 +1320,8 @@ impl Render for PromptInput {
             let preview_height = 52.0 + 16.0 * (1.0 - progress);
             div()
                 .id(("attachment", index))
+                .max_w_full()
+                .min_w_0()
                 .flex()
                 .items_center()
                 .gap_1()
@@ -1295,6 +1332,7 @@ impl Render for PromptInput {
                 .text_color(Theme::global().TEXT_DIM)
                 .child(
                     img(crate::image_cache::source(image.preview.clone()))
+                        .flex_none()
                         .w(px(preview_width))
                         .h(px(preview_height))
                         .object_fit(gpui::ObjectFit::Contain)
@@ -1304,8 +1342,9 @@ impl Render for PromptInput {
                     div()
                         .flex()
                         .flex_col()
+                        .min_w_0()
                         .gap_1()
-                        .child(image.label.clone())
+                        .child(div().truncate().child(image.label.clone()))
                         .child(
                             div()
                                 .text_color(Theme::global().TEXT_FAINT)
@@ -1341,7 +1380,9 @@ impl Render for PromptInput {
                             .mb_1()
                             .flex()
                             .flex_col()
-                            .max_h(px(280.0))
+                            .max_h(px(
+                                (f32::from(window.viewport_size().height) * 0.35).min(280.)
+                            ))
                             .overflow_y_scroll()
                             .track_scroll(&self.command_scroll)
                             .rounded_lg()
@@ -1414,6 +1455,9 @@ impl Render for PromptInput {
                                         .child(
                                             div()
                                                 .flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
                                                 .items_center()
                                                 .gap_3()
                                                 .children(logo)
@@ -1423,10 +1467,13 @@ impl Render for PromptInput {
                                                 } else {
                                                     Theme::global().TEXT_DIM
                                                 })
-                                                .child(label),
+                                                .child(div().min_w_0().truncate().child(label)),
                                         )
                                         .child(
                                             div()
+                                                .max_w(relative(0.4))
+                                                .min_w_0()
+                                                .truncate()
                                                 .text_color(Theme::global().TEXT_FAINT)
                                                 .child(suggestion.help),
                                         )
@@ -1486,6 +1533,8 @@ impl Render for PromptInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
+            .min_w_0()
+            .flex_none()
             .bg(Theme::global().INPUT_BG)
             .border_1()
             .border_color(if focused {
@@ -1497,6 +1546,9 @@ impl Render for PromptInput {
             .when(!self.attachments.is_empty(), |el| {
                 el.child(
                     div()
+                        .id("prompt-attachments")
+                        .max_h(px(editor_height))
+                        .overflow_y_scroll()
                         .flex()
                         .flex_wrap()
                         .gap_1()
@@ -1522,7 +1574,7 @@ impl Render for PromptInput {
                     .px_3()
                     .py_2()
                     .text_size(px(14.0))
-                    .when(self.spacious, |el| {
+                    .when(spacious, |el| {
                         el.min_h(px(112.0)).px_4().py_4().text_size(px(16.0))
                     })
                     // The TUI's `›` prompt marker in user blue.
@@ -1535,8 +1587,13 @@ impl Render for PromptInput {
                     )
                     .child(
                         div()
+                            .id("prompt-editor")
+                            .debug_selector(|| "prompt-editor".into())
                             .flex_1()
-                            .overflow_hidden()
+                            .min_w_0()
+                            .max_h(px(editor_height))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.editor_scroll)
                             .text_color(Theme::global().TEXT)
                             .child(TextElement { input: cx.entity() }),
                     ),
@@ -1802,3 +1859,7 @@ mod tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "input_responsive_tests.rs"]
+mod responsive_tests;

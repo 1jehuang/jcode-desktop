@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "workspace_responsive.rs"]
+mod responsive;
+
 #[path = "workspace_notifications.rs"]
 mod notifications;
 
@@ -514,6 +517,8 @@ pub struct Workspace {
     remotes: remotes::Machines,
     host: HostHandle,
     show_sidebar: bool,
+    compact_sidebar_open: bool,
+    last_canvas_width: Option<f32>,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
     show_minimap: bool,
     layout_mode: crate::config::LayoutMode,
@@ -725,6 +730,8 @@ impl Workspace {
                 std::env::args_os(),
                 crate::config::get().workspace.sidebar,
             ),
+            compact_sidebar_open: false,
+            last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
             expanded_directories: HashSet::new(),
@@ -944,6 +951,8 @@ impl Workspace {
             show_minimap: false,
             layout_mode: crate::config::LayoutMode::FolderTabs,
             folder_frame: Default::default(),
+            compact_sidebar_open: false,
+            last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
             expanded_directories: HashSet::new(),
@@ -1804,6 +1813,7 @@ impl Workspace {
         if let Some(outgoing) = outgoing {
             self.previous = Some(outgoing);
         }
+        self.compact_sidebar_open = false;
         self.active = index;
         self.active_row = self.slots[index].row;
         self.row_focus[self.active_row] = Some(self.slots[index].panel.entity_id());
@@ -1819,9 +1829,15 @@ impl Workspace {
     }
 
     fn width_for_fraction(fraction: f32, viewport: f32) -> f32 {
-        // niri sizes a column as a proportion of the working area, which is the
-        // output minus the struts.
-        ((viewport - STRUT * 2.0) * fraction - GAP).max(320.0)
+        // Narrow windows show one readable conversation without overwriting the
+        // user's width presets. Widening restores the original arrangement.
+        let fraction = if viewport < responsive::SINGLE_PANEL_BREAKPOINT {
+            1.0
+        } else {
+            fraction
+        };
+        ((viewport - STRUT * 2.0) * fraction - GAP)
+            .max(320.0_f32.min((viewport - STRUT * 2.0).max(1.0)))
     }
 
     fn slot_left(&self, index: usize, viewport: f32) -> f32 {
@@ -2886,6 +2902,7 @@ impl Workspace {
     /// preference rather than a workspace mutation: panels keep their slots and
     /// only the horizontal budget in `render` changes.
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+        self.compact_sidebar_open = false;
         self.show_sidebar = !self.show_sidebar;
         cx.notify();
     }
@@ -6424,11 +6441,11 @@ impl Render for Workspace {
         }
         let render_started = Instant::now();
         let viewport = window.viewport_size();
-        let sidebar_width = if self.show_sidebar {
-            SIDEBAR_WIDTH
-        } else {
-            0.0
-        };
+        let compact = responsive::is_compact(f32::from(viewport.width));
+        if !compact {
+            self.compact_sidebar_open = false;
+        }
+        let sidebar_width = responsive::sidebar_width(self.show_sidebar, compact);
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let connector_width = if self.show_sidebar && folders {
             FOLDER_CONNECTOR_WIDTH
@@ -6438,14 +6455,19 @@ impl Render for Workspace {
         let right_margin = if folders { FOLDER_RIGHT_MARGIN } else { 0. };
         let canvas_w =
             (f32::from(viewport.width) - sidebar_width - connector_width - right_margin).max(0.0);
-        let viewport_w = canvas_w.max(320.0);
+        let viewport_w = canvas_w.max(1.0);
+        if self.last_canvas_width != Some(viewport_w) {
+            self.last_canvas_width = Some(viewport_w);
+            self.camera_dirty.fill(true);
+            self.camera_snap_pending.fill(true);
+        }
         // On macOS the sidebar header covers the transparent titlebar strip.
         // Without the sidebar, leave room for the traffic lights. Other platforms
         // do not draw through a system titlebar, so an inset would be a visible gap.
         // In native macOS fullscreen the titlebar and traffic lights are hidden,
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
-        let content_top_inset = content_top_inset(self.show_sidebar, fullscreen);
+        let content_top_inset = content_top_inset(self.show_sidebar && !compact, fullscreen);
         let viewport_h =
             (f32::from(viewport.height) - content_top_inset - FPS_HEADER_HEIGHT).max(0.0);
 
@@ -6658,6 +6680,22 @@ impl Render for Workspace {
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
+                if this.compact_sidebar_open {
+                    this.compact_sidebar_open = false;
+                    this.focus_active(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.compact_sidebar_open && event.keystroke.key == "escape" {
+                    this.compact_sidebar_open = false;
+                    this.focus_active(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             // Navigation belongs to the canvas, regardless of which control in
             // the active panel currently owns keyboard focus. Capture these at
             // the workspace boundary so a terminal, composer, picker, or other
@@ -6712,7 +6750,11 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .when(self.show_sidebar, |root| {
-                        root.child(self.render_sidebar(fullscreen, cx))
+                        root.child(if compact {
+                            self.render_compact_navigation(fullscreen, cx)
+                        } else {
+                            self.render_sidebar(fullscreen, cx)
+                        })
                     })
                     .child(
                         div()
@@ -6781,6 +6823,9 @@ impl Render for Workspace {
                             ),
                     ),
             )
+            .when(compact && self.show_sidebar && self.compact_sidebar_open, |root| {
+                root.child(self.render_compact_sidebar_overlay(fullscreen, cx))
+            })
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
@@ -10031,13 +10076,16 @@ mod tests {
 
     #[test]
     fn touchpad_camera_focuses_the_panel_nearest_the_viewport_center() {
-        let viewport = 1000.0;
+        let viewport = 1200.0;
         let panels = || [(0, 0.5), (1, 0.5), (2, 0.5)];
 
         assert_eq!(panel_at_viewport_center(panels(), 0.0, viewport), Some(0));
         assert_eq!(panel_at_viewport_center(panels(), 400.0, viewport), Some(1));
         assert_eq!(panel_at_viewport_center(panels(), 900.0, viewport), Some(2));
         assert_eq!(panel_at_viewport_center([], 0.0, viewport), None);
+        // Compact widths use full-size panels, including when hit-testing pans.
+        assert_eq!(panel_at_viewport_center(panels(), 400.0, 1000.0), Some(0));
+        assert_eq!(panel_at_viewport_center(panels(), 900.0, 1000.0), Some(1));
     }
 
     /// The reticle holds fully lit while deltas keep arriving, fades linearly

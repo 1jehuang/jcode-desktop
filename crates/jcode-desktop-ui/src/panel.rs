@@ -3486,6 +3486,7 @@ impl Render for Panel {
         let body_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let panel = cx.entity();
         let wheel_panel = panel.clone();
+        let wheel_input_bounds = input_bounds.clone();
         let list_rows = rows.clone();
         let first_visible_row = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_first_visible = first_visible_row.clone();
@@ -3498,7 +3499,11 @@ impl Render for Panel {
                 .items_center()
                 .justify_center()
                 .px_4()
-                .pb(px(64.0))
+                .pb(px(if window.viewport_size().height < px(400.) {
+                    8.
+                } else {
+                    64.
+                }))
                 .child(
                     div()
                         .w_full()
@@ -3686,7 +3691,10 @@ impl Render for Panel {
                     )
                     .child(if self.pinned_todo_expanded {
                         div()
+                            .id("pinned-todo-expanded-scroll")
                             .debug_selector(|| "pinned-todo-expanded".into())
+                            .max_h(px((f32::from(window.viewport_size().height) * 0.25).min(240.)))
+                            .overflow_y_scroll()
                             .child(render_todo_card(&payload))
                             .into_any_element()
                     } else {
@@ -3702,7 +3710,7 @@ impl Render for Panel {
                             .debug_selector(|| "pinned-latest-prompt".into())
                             .flex_none()
                             .min_w_0()
-                            .max_h(px(180.))
+                            .max_h(px((f32::from(window.viewport_size().height) * 0.2).min(180.)))
                             .overflow_y_scroll()
                             .px_3()
                             .pt_2p5()
@@ -3726,11 +3734,19 @@ impl Render for Panel {
                             },
                             move |_, hitbox, window, _| {
                                 let wheel_panel = wheel_panel.clone();
+                                let input_bounds = wheel_input_bounds.clone();
                                 window.on_mouse_event(
                                     move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
                                         if phase != gpui::DispatchPhase::Capture
                                             || !hitbox.should_handle_scroll(window)
                                         {
+                                            return;
+                                        }
+                                        // Fresh/startup editors live inside this body. Let
+                                        // their own scroll containers receive wheel events.
+                                        if input_bounds.get().is_some_and(
+                                            |bounds: gpui::Bounds<gpui::Pixels>| bounds.contains(&event.position),
+                                        ) {
                                             return;
                                         }
                                         let delta = event.delta.pixel_delta(window.line_height());
@@ -3820,15 +3836,19 @@ impl Render for Panel {
                 el.child(self.render_recovery_model_picker(cx))
             })
             // Keep identity, build information, and connection/activity status
-            // on one row. Equal flexible sides keep the build label centered.
+            // on one row when space permits. Wrap controls on narrow panels
+            // instead of clipping the account action or squeezing status away.
             .child(
                 div()
                     .debug_selector(|| "panel-meta".into())
+                    .flex_none()
+                    .min_w_0()
                     .px_3()
                     .py_1()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .flex_wrap()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(10.0))
@@ -3838,7 +3858,7 @@ impl Render for Panel {
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0()
+                            .min_w(px(150.))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -3863,7 +3883,7 @@ impl Render for Panel {
                         div()
                             .debug_selector(|| "panel-status".into())
                             .flex_1()
-                            .min_w(px(120.0))
+                            .min_w_0()
                             .flex()
                             .justify_end()
                             .items_center()
@@ -3888,7 +3908,7 @@ impl Render for Panel {
             // Input
             .when(!fresh_session && self.startup_layout.is_none(), |el| {
                 el.child(
-                    div().px_2().py_2().child(
+                    div().flex_none().min_w_0().px_2().py_2().child(
                         div()
                             .relative()
                             .child(self.input.clone())
@@ -7646,3 +7666,7 @@ fn demo_item_fixtures() -> Vec<Item> {
         Item::Error("provider returned 429: rate limited, retrying".into()),
     ]
 }
+
+#[cfg(test)]
+#[path = "panel_responsive_tests.rs"]
+mod responsive_tests;
