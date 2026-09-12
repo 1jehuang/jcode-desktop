@@ -14,6 +14,8 @@ fn recovery_kind(message: &str) -> RecoveryKind {
     let message = message.to_ascii_lowercase();
     if [
         "token refresh failed",
+        "refresh token was previously rejected",
+        "jcode login",
         "refresh_token_invalidated",
         "re-authenticate",
         "invalid_grant",
@@ -98,29 +100,16 @@ fn recovery_kind(message: &str) -> RecoveryKind {
     }
 }
 
-// Keep original diagnostics in the transcript and clipboard, but translate the
-// runtime's terminal-specific recovery guidance to the native controls.
+// Provider errors can embed arbitrary CLI commands, nested causes and setup
+// instructions. Present a native summary rather than attempting a brittle
+// command-by-command rewrite. Copy details retains the complete original.
 fn native_error_message(message: &str) -> String {
-    let mut result = message.to_string();
-    for (terminal, native) in [
-        ("run /login", "use the Log in / add account button"),
-        ("Run /login", "Use the Log in / add account button"),
-        (
-            "Use /model to choose",
-            "Use the model choices below to choose",
-        ),
-        (
-            "Use /model to see available models.",
-            "Available models are shown below.",
-        ),
-        (
-            "Choose another model from `/model`.",
-            "Choose another model below.",
-        ),
-    ] {
-        result = result.replace(terminal, native);
-    }
-    result
+    match recovery_kind(message) {
+        RecoveryKind::Auth => "Account authentication failed. Log in again or choose another model.",
+        RecoveryKind::Model => "This model is unavailable for the current account. Choose another model.",
+        RecoveryKind::Quota => "The provider's usage or rate limit was reached. Choose another model or log in to a different account.",
+        RecoveryKind::Other => message,
+    }.to_string()
 }
 
 impl Panel {
@@ -153,7 +142,11 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_1()
-            .max_h(px(180.))
+            .debug_selector(|| "recovery-model-choices".into())
+            .flex_none()
+            .h(px(
+                (self.available_models.len().max(1) as f32 * 30.).min(180.)
+            ))
             .overflow_y_scroll()
             .when(self.available_models.is_empty(), |el| {
                 el.child(
@@ -173,6 +166,7 @@ impl Panel {
                         div()
                             .id(SharedString::from(selector.clone()))
                             .debug_selector(move || selector.clone())
+                            .flex_none()
                             .px_2()
                             .py_1()
                             .rounded_md()
@@ -311,6 +305,23 @@ impl Panel {
                                 cx.stop_propagation();
                             }),
                     )
+                    .when(kind != RecoveryKind::Other, |el| {
+                        el.child(
+                            div()
+                                .id(("recovery-choose-model", index))
+                                .debug_selector(|| "recovery-choose-model".into())
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(Theme::global().ACCENT_DIM))
+                                .child("Choose model")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_recovery_models(cx);
+                                    cx.stop_propagation();
+                                })),
+                        )
+                    })
                     .when(
                         matches!(kind, RecoveryKind::Auth | RecoveryKind::Quota),
                         |el| {
@@ -323,7 +334,7 @@ impl Panel {
                                     .rounded_md()
                                     .cursor_pointer()
                                     .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                    .child("Log in / add account")
+                                    .child("Log in")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.open_login_picker(cx);
                                         cx.stop_propagation();
@@ -332,12 +343,6 @@ impl Panel {
                         },
                     ),
             )
-            .when(kind != RecoveryKind::Other, |el| {
-                el.child(div().text_color(Theme::global().TEXT_DIM).child(
-                    "Choose another model, then resend when ready. Your draft is preserved.",
-                ))
-                .child(self.recovery_model_choices(index.to_string(), cx))
-            })
             .into_any_element()
     }
 }

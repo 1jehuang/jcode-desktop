@@ -31,8 +31,8 @@ fn recovery_terminal_guidance_is_native_but_diagnostics_are_preserved() {
     assert_eq!(recovery_kind(auth), RecoveryKind::Auth);
     let displayed = native_error_message(auth);
     assert!(!displayed.contains("/login"));
-    assert!(displayed.contains("Log in / add account button"));
-    assert!(displayed.contains("invalid_grant"));
+    assert!(displayed.contains("Log in again"));
+    assert!(displayed.len() < 120);
     let model = "Model is not currently usable. Choose another model from `/model`.";
     assert_eq!(recovery_kind(model), RecoveryKind::Model);
     assert!(!native_error_message(model).contains("/model"));
@@ -90,10 +90,16 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
         panel.apply(&error("429 rate limit exceeded"), cx);
     });
     vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-model-0-0").is_none());
+    let choose = vcx
+        .debug_bounds("recovery-choose-model")
+        .expect("compact recovery action");
+    vcx.simulate_click(choose.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
     let row = vcx
-        .debug_bounds("recovery-model-0-0")
-        .expect("error automatically exposes a model choice");
-    assert!(vcx.debug_bounds("recovery-model-0-1").is_none());
+        .debug_bounds("recovery-model-picker-0")
+        .expect("native model choice");
+    assert!(vcx.debug_bounds("recovery-model-picker-1").is_none());
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
@@ -188,4 +194,83 @@ fn recovery_empty_model_picker_offers_native_connect_and_refresh(cx: &mut gpui::
         assert_eq!(panel.input.read(cx).content.as_ref(), "untouched draft");
     });
     assert!(commands.try_recv().is_err());
+}
+
+const REFRESH_TOKEN_ERROR: &str = "openai refresh token was previously rejected by the provider and cannot be refreshed. Run `jcode login --provider openai` to mint a fresh token.";
+
+#[test]
+fn recovery_refresh_token_error_and_arbitrary_cli_guidance_use_native_summaries() {
+    for original in [
+        REFRESH_TOKEN_ERROR,
+        "Authentication failed. Please execute some-other-cli auth login --token foo.",
+        "Model unavailable. Run `jcode --model another-model` in your terminal.",
+    ] {
+        let native = native_error_message(original);
+        assert!(!native.contains("jcode"));
+        assert!(!native.contains("some-other-cli"));
+        assert!(!native.contains("--"));
+        assert!(native.len() < 120);
+    }
+    assert_eq!(recovery_kind(REFRESH_TOKEN_ERROR), RecoveryKind::Auth);
+    assert_eq!(
+        native_error_message("I/O failure: read only"),
+        "I/O failure: read only"
+    );
+}
+
+#[gpui::test]
+fn recovery_many_routes_stay_compact_until_choose_model_is_clicked(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("compact".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.available_models = (0..80).map(|n| format!("minimax:model-{n:02}")).collect();
+        panel.input.update(cx, |input, cx| {
+            input.set_content("preserve draft".into(), cx)
+        });
+        panel.apply(&error(REFRESH_TOKEN_ERROR), cx);
+    });
+    vcx.run_until_parked();
+    let card = vcx.debug_bounds("recovery-error").expect("error card");
+    assert!(
+        card.size.height < px(130.),
+        "error should not grow with route count: {card:?}"
+    );
+    assert!(vcx.debug_bounds("recovery-model-choices").is_none());
+    assert!(vcx.debug_bounds("recovery-login").is_some());
+    let copy = vcx.debug_bounds("recovery-copy").unwrap();
+    vcx.simulate_click(copy.center(), gpui::Modifiers::default());
+    vcx.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some(REFRESH_TOKEN_ERROR)
+        )
+    });
+    let choose = vcx.debug_bounds("recovery-choose-model").unwrap();
+    vcx.simulate_click(choose.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let choices = vcx
+        .debug_bounds("recovery-model-choices")
+        .expect("bounded catalog");
+    assert!(choices.size.height <= px(180.));
+    let picker = vcx.debug_bounds("recovery-model-picker").unwrap();
+    assert!(
+        picker.size.height <= px(250.),
+        "picker must not expand to fit all routes: {picker:?}"
+    );
+    let row = vcx.debug_bounds("recovery-model-picker-0").unwrap();
+    assert!(
+        row.size.height >= px(20.),
+        "rows remain readable rather than shrinking to fit"
+    );
+    vcx.simulate_click(row.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "minimax:model-00")
+    );
+    assert!(commands.try_recv().is_err());
+    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    panel.read_with(vcx, |panel, cx| {
+        assert_eq!(panel.input.read(cx).content.as_ref(), "preserve draft")
+    });
 }
