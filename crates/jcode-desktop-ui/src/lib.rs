@@ -16,6 +16,7 @@ mod harness;
 mod html_preview;
 mod image_cache;
 mod input;
+pub mod login_input;
 mod learning;
 mod live_profile;
 mod markdown;

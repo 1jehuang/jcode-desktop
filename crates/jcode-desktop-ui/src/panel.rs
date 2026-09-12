@@ -31,6 +31,10 @@ mod diff_review;
 mod flicker;
 #[path = "panel_image_preview.rs"]
 mod image_preview;
+#[path = "panel_login.rs"]
+mod login;
+#[path = "panel_recovery.rs"]
+mod recovery;
 #[path = "panel_prompt.rs"]
 mod prompt;
 #[path = "panel_startup.rs"]
@@ -236,7 +240,9 @@ pub struct Panel {
     /// A native Todoist-backed task view. The existing session todo cards remain
     /// independent and continue to represent the agent's current work.
     todoist: Option<TodoistPanelState>,
+    recovery_picker_open: bool,
     model_picker_open: bool,
+    login: Option<login::LoginState>,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
 }
@@ -645,7 +651,9 @@ impl Panel {
             gmail_message: None,
             gmail_scroll: ScrollHandle::new(),
             todoist: None,
+            recovery_picker_open: false,
             model_picker_open: false,
+            login: None,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
         }
@@ -1942,6 +1950,9 @@ impl Panel {
 
     fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         let trimmed = content.trim();
+        if self.login_command(trimmed, cx) {
+            return true;
+        }
         if let Some(model) = trimmed
             .strip_prefix("/model ")
             .map(str::trim)
@@ -2116,9 +2127,7 @@ impl Panel {
 
     fn open_model_picker(&mut self, cx: &mut Context<Self>) {
         if self.available_models.is_empty() {
-            self.items.push(Item::Error(
-                "No models are available yet. Wait for the session to connect, then try `/model` again.".into(),
-            ));
+            self.open_recovery_models(cx);
             return;
         }
         self.model_picker_open = true;
@@ -3115,30 +3124,7 @@ impl Panel {
                     }))
                     .into_any_element()
             }
-            Item::Error(message) => div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .items_start()
-                .px_2p5()
-                .py_1p5()
-                .rounded_md()
-                .bg(Theme::global().ERROR_BG)
-                .border_1()
-                .border_color(Theme::global().TOOL_BORDER)
-                .text_size(px(12.0))
-                .text_color(Theme::global().ERROR)
-                .child(div().flex_none().child("!"))
-                .child(div().flex_1().min_w_0().line_height(relative(1.45)).child(
-                    text_selection::plain(
-                        self.transcript_selection.clone(),
-                        format!("{index}-error"),
-                        message.clone(),
-                        window,
-                        cx,
-                    ),
-                ))
-                .into_any_element(),
+            Item::Error(message) => self.render_recovery_error(index, message, window, cx),
         }
     }
 
@@ -3673,7 +3659,11 @@ impl Render for Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.diff_review.is_some() && event.keystroke.key == "escape" {
+                if this.login.is_some() && event.keystroke.key == "escape" {
+                    this.close_login_picker(cx);
+                    this.focus_input(window, cx);
+                    cx.stop_propagation();
+                } else if this.diff_review.is_some() && event.keystroke.key == "escape" {
                     this.close_diff_review(window, cx);
                     cx.stop_propagation();
                 } else if this.image_preview.is_some() && event.keystroke.key == "escape" {
@@ -3839,6 +3829,9 @@ impl Render for Panel {
                         )
                     }),
             )
+            .when(self.recovery_picker_open, |el| {
+                el.child(self.render_recovery_model_picker(cx))
+            })
             // Keep identity, build information, and connection/activity status
             // on one row. Equal flexible sides keep the build label centered.
             .child(
@@ -3857,11 +3850,21 @@ impl Render for Panel {
                     .when(active, |el| el.bg(active_tint))
                     .child(
                         div()
-                            .debug_selector(|| "panel-identity".into())
                             .flex_1()
                             .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .overflow_hidden()
-                            .child(meta_line),
+                            .child(
+                                div().id("panel-login").debug_selector(|| "panel-login".into())
+                                    .flex_none().flex().items_center().h(px(22.0)).px_2().rounded_md()
+                                    .text_color(theme.TEXT_DIM).cursor_pointer()
+                                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_login_picker(cx)))
+                                    .child("Connect account"),
+                            )
+                            .child(div().debug_selector(|| "panel-identity".into()).min_w_0().truncate().child(meta_line)),
                     )
                     .child(
                         div()
@@ -3928,6 +3931,7 @@ impl Render for Panel {
             ))
             .children(self.render_image_preview(window, cx))
             .children(self.render_diff_review(cx))
+            .children(self.render_login_picker(window, cx))
             .into_any_element()
     }
 }

@@ -101,6 +101,7 @@ pub enum Command {
     /// Final UI handle dropped. Stop workers, including their SSH transports.
     Shutdown,
     RefreshSessions,
+    RefreshRuntime { session_id: String },
     CreateSession {
         working_dir: Option<String>,
         request_id: Option<String>,
@@ -158,6 +159,7 @@ pub enum SessionOperation {
 }
 
 enum SessionCommand {
+    RefreshRuntime,
     Send {
         content: String,
         images: Vec<(String, String)>,
@@ -496,6 +498,11 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             Command::SetModel { session_id, model } => {
                 let command = SessionCommand::SetModel(model);
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
+                    spawn_session_worker(session_id, &updates)
+                });
+            }
+            Command::RefreshRuntime { session_id } => {
+                send_to_session_worker(&mut workers, session_id, SessionCommand::RefreshRuntime, |session_id| {
                     spawn_session_worker(session_id, &updates)
                 });
             }
@@ -1225,6 +1232,18 @@ fn session_worker_with_connector(
                     WorkerCommand::Disconnected => return,
                 };
                 match command {
+                    SessionCommand::RefreshRuntime => {
+                        if let Ok(info) = client.get_runtime_info(real_id) {
+                            let _ = updates.send(Update::Event {
+                                session_id: session_id.clone(),
+                                event: ApiEvent::RuntimeInfo {
+                                    session_id: session_id.clone(), provider: info.provider,
+                                    model: info.model, routes: info.routes,
+                                    reasoning_effort: info.reasoning_effort,
+                                },
+                            });
+                        }
+                    }
                     SessionCommand::Send { content, images } => {
                         let retry_content = content.clone();
                         let retry_images = images.clone();

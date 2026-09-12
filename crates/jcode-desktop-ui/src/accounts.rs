@@ -9,6 +9,16 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+static AUTH_REFRESH: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+/// Wake account feeds after a native login without waiting for the slow poll.
+pub fn request_refresh() {
+    if let Ok(mut generation) = AUTH_REFRESH.0.lock() {
+        *generation = generation.wrapping_add(1);
+        AUTH_REFRESH.1.notify_all();
+    }
+}
+
 /// One configured credential, as reported by the CLI's canonical auth report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Account {
@@ -172,12 +182,17 @@ pub fn spawn() -> Feed {
         .name("jcode-accounts".into())
         .spawn(move || {
             loop {
+                let generation = *AUTH_REFRESH.0.lock().unwrap();
                 if let Some(accounts) = fetch() {
                     if tx.send(accounts).is_err() {
                         return;
                     }
                 }
-                std::thread::sleep(Duration::from_secs(60));
+                let _ = AUTH_REFRESH.1.wait_timeout_while(
+                    AUTH_REFRESH.0.lock().unwrap(),
+                    Duration::from_secs(60),
+                    |current| *current == generation,
+                );
             }
         })
         .expect("spawn accounts thread");

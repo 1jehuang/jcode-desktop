@@ -58,6 +58,8 @@ def main():
                         help="measure four workspace identities and verify numbered map navigation")
     parser.add_argument("--close-interact", action="store_true",
                         help="hold Super+Q from the right edge of six panels and verify focus through retirement and reopen")
+    parser.add_argument("--login-interact", action="store_true",
+                        help="verify native account/provider clicks, masked clipboard paste, and draft restoration offline")
     parser.add_argument("--model-interact", action="store_true",
                         help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
     parser.add_argument("--default-directory-interact", action="store_true",
@@ -80,6 +82,16 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.login_interact:
+        other = any(value for key, value in vars(args).items()
+                    if key.endswith("_interact") and key != "login_interact")
+        if (other or args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript != "empty" or args.learn_stage is not None
+                or args.focus_panel is not None):
+            parser.error("login-interact requires --transcript empty, one panel, default size/theme/layout, and no other interactions")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("login-interact requires xdotool and tesseract")
     if args.mermaid_source is not None and args.transcript != "mermaid":
         parser.error("mermaid-source requires --transcript mermaid")
     if args.sidebar_interact:
@@ -326,6 +338,9 @@ def main():
                     verify(output, env, root, layout_mode=args.layout_mode)
                 if args.default_directory_interact:
                     from default_directory_acceptance import verify
+                    verify(output, env, root)
+                if args.login_interact:
+                    from login_acceptance import verify
                     verify(output, env, root)
                 if args.model_interact:
                     from model_picker_acceptance import verify
