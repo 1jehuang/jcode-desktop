@@ -62,6 +62,8 @@ mod hidden_animation_tests;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
+#[path = "workspace_map_motion.rs"]
+mod map_motion;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 #[cfg(test)]
@@ -545,6 +547,10 @@ pub struct Workspace {
     /// Row being animated out and progress of the incoming row.
     outgoing_row: Option<usize>,
     row_progress: AnimatedValue,
+    /// Origin of the current trip in shared map coordinates (pixels, rows).
+    row_origin: (f32, f32),
+    /// Shared horizontal camera while rendering rows along a map trip.
+    map_camera_x: Option<f32>,
     /// Previously focused panel, for niri's `focus-window-previous`.
     previous: Option<gpui::EntityId>,
     /// Each strip retains its own horizontal camera position.
@@ -752,6 +758,8 @@ impl Workspace {
             active_row: 0,
             row_focus: [None; STRIP_COUNT],
             outgoing_row: None,
+            row_origin: (0.0, 0.0),
+            map_camera_x: None,
             row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
             previous: None,
             camera_x: [0.0; STRIP_COUNT],
@@ -982,6 +990,8 @@ impl Workspace {
             active_row: 0,
             row_focus: [None; STRIP_COUNT],
             outgoing_row: None,
+            row_origin: (0.0, 0.0),
+            map_camera_x: None,
             row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
             previous: None,
             camera_x: [0.0; STRIP_COUNT],
@@ -1848,6 +1858,11 @@ impl Workspace {
         if let Some(outgoing) = outgoing {
             self.previous = Some(outgoing);
         }
+        if self.last_canvas_width.is_some()
+            && (self.active != index || self.active_row != self.slots[index].row)
+        {
+            self.begin_map_navigation(self.slots[index].row);
+        }
         self.compact_sidebar_open = false;
         self.active = index;
         self.active_row = self.slots[index].row;
@@ -1900,6 +1915,7 @@ impl Workspace {
     }
 
     fn select_row(&mut self, row: usize, preferred_position: usize) {
+        self.begin_map_navigation(row.min(STRIP_COUNT - 1));
         self.active_row = row.min(STRIP_COUNT - 1);
         let remembered = self.row_focus[self.active_row].and_then(|entity_id| {
             self.slots
@@ -2211,17 +2227,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let outgoing_row = self.active_row;
         let position = self.active_position_in_row();
         let was_active = self
             .slots
             .get(self.active)
             .map(|slot| slot.panel.entity_id());
         self.select_row(row, position);
-        self.outgoing_row = Some(outgoing_row);
-        let now = Instant::now();
-        self.row_progress = AnimatedValue::new(0.0, transition::policy(Transition::Row).duration);
-        self.row_progress.set(1.0, now);
         self.focus_active(window, cx);
         let is_active = self
             .slots
@@ -2330,24 +2341,18 @@ impl Workspace {
     }
 
     fn move_panel_to_row(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let outgoing_row = self.active_row;
         let target = self.active_row as isize + delta;
         if !(0..STRIP_COUNT as isize).contains(&target) {
             return;
         }
-        let Some(slot) = self.slots.get_mut(self.active) else {
-            return;
-        };
-        if slot.row != self.active_row {
+        if !self.slots.get(self.active).is_some_and(|slot| slot.row == self.active_row) {
             return;
         }
+        self.begin_map_navigation(target as usize);
+        let slot = &mut self.slots[self.active];
         slot.row = target as usize;
         self.active_row = target as usize;
         self.row_focus[self.active_row] = Some(slot.panel.entity_id());
-        self.outgoing_row = Some(outgoing_row);
-        let now = Instant::now();
-        self.row_progress = AnimatedValue::new(0.0, transition::policy(Transition::Row).duration);
-        self.row_progress.set(1.0, now);
         self.retarget_camera();
         self.focus_active(window, cx);
         self.learned("move_panel_strip", cx);
@@ -3316,7 +3321,7 @@ impl Workspace {
             let duration = if self.camera_touch_pan[row] {
                 TOUCH_PAN_DURATION
             } else {
-                CAMERA_DURATION
+                transition::policy(Transition::Focus).duration
             };
             if self.camera_started[row]
                 .is_some_and(|started| now.saturating_duration_since(started) >= duration)
@@ -3396,7 +3401,7 @@ impl Workspace {
         let camera_duration = if self.camera_touch_pan[row] {
             TOUCH_PAN_DURATION
         } else {
-            CAMERA_DURATION
+            transition::policy(Transition::Focus).duration
         };
         match self.camera_started[row] {
             Some(started) => {
@@ -3446,7 +3451,7 @@ impl Workspace {
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_TOP))
-            .left(px(-self.camera_x[row]))
+            .left(px(-self.map_camera_x.unwrap_or(self.camera_x[row])))
             .w(px(
                 animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
             ))
@@ -3839,6 +3844,7 @@ impl Workspace {
         // Accumulate precise deltas onto the target, not the lagging painted
         // position. This preserves every pixel of travel while the short
         // interpolation filters event/compositor timing jitter.
+        let map_pan = self.begin_map_pan(row, smooth);
         let base = if smooth {
             self.camera_target[row]
         } else {
@@ -3849,6 +3855,9 @@ impl Workspace {
             return;
         }
         self.camera_target[row] = next;
+        if map_pan && !smooth {
+            self.row_origin.0 = next;
+        }
         if smooth {
             self.camera_from[row] = self.camera_x[row];
             self.camera_started[row] = Some(Instant::now());
@@ -5772,8 +5781,12 @@ impl Workspace {
                         .map(|index| this.slot_width(index, viewport_w) + GAP)
                         .sum::<f32>()
                         + STRUT * 2.0;
+                    let map_pan = this.begin_map_pan(row, false);
                     let next = pan_camera(this.camera_x[row], -dx / scale, total, viewport_w);
                     if (next - this.camera_x[row]).abs() >= f32::EPSILON {
+                        if map_pan {
+                            this.row_origin.0 = next;
+                        }
                         this.camera_x[row] = next;
                         this.camera_target[row] = next;
                         this.camera_from[row] = next;
@@ -6645,39 +6658,7 @@ impl Render for Workspace {
                 .child(self.render_overview(cx))
                 .into_any_element()
         } else if self.outgoing_row.is_some() {
-            let outgoing_row = self.outgoing_row.unwrap();
-            let direction = if self.active_row > outgoing_row {
-                1.0
-            } else {
-                -1.0
-            };
-            let outgoing_y = -direction * row_progress * viewport_h;
-            let incoming_y = direction * (1.0 - row_progress) * viewport_h;
-            let outgoing = self.render_row(outgoing_row, viewport_w, viewport_h, window, cx);
-            let incoming = self.render_row(self.active_row, viewport_w, viewport_h, window, cx);
-            div()
-                .relative()
-                .size_full()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .debug_selector(|| "row-transition-outgoing".into())
-                        .absolute()
-                        .top(px(outgoing_y))
-                        .left_0()
-                        .size_full()
-                        .child(outgoing),
-                )
-                .child(
-                    div()
-                        .debug_selector(|| "row-transition-incoming".into())
-                        .absolute()
-                        .top(px(incoming_y))
-                        .left_0()
-                        .size_full()
-                        .child(incoming),
-                )
-                .into_any_element()
+            self.render_map_trip(row_progress, viewport_w, viewport_h, window, cx)
         } else {
             // One path for both the populated and the empty strip, so the
             // empty strip's gesture handling exists everywhere it paints.

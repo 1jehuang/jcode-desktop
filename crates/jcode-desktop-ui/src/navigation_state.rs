@@ -51,6 +51,12 @@ impl Workspace {
                 })
             })
             .collect();
+        let mut progress = self.row_progress;
+        let map_camera = if self.outgoing_row.is_some() {
+            self.map_position(progress.sample(Instant::now()))
+        } else {
+            (self.camera_x[self.active_row], self.active_row as f32)
+        };
         serde_json::json!({
             "version": 1,
             "viewport": [f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)],
@@ -66,7 +72,9 @@ impl Workspace {
                 .map(|(index, x)| (*index, x + live_tabs::TAB_STATUS_WIDTH))
                 .collect::<Vec<_>>(),
             "tab_motion": self.live_tabs.is_animating(),
-            "camera_motion": self.camera_started[self.active_row].is_some(),
+            "camera_motion": self.camera_started[self.active_row].is_some() || self.row_progress.is_animating(),
+            "row_motion": self.row_progress.is_animating(),
+            "map_camera": [map_camera.0, map_camera.1],
             "minimap_visible": self.show_minimap,
             "overview": self.overview,
             "rows": rows,

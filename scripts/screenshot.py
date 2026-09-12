@@ -58,6 +58,8 @@ def main():
                         help="verify native history clicks open and focus the intended composer")
     parser.add_argument("--fps-header-interact", action="store_true",
                         help="verify the integrated FPS header while navigating four native workspaces")
+    parser.add_argument("--map-motion-interact", action="store_true",
+                        help="verify native tab clicks travel continuously across the 2D map")
     parser.add_argument("--workspace-interact", action="store_true",
                         help="measure four workspace identities and verify numbered map navigation")
     parser.add_argument("--close-interact", action="store_true",
@@ -170,6 +172,15 @@ def main():
             parser.error("model-interact requires xdotool and tesseract")
     if args.fps_header_interact and (args.panels != 4 or args.layout_mode != "folder_tabs"):
         parser.error("fps-header-interact requires four panels and folder_tabs layout")
+    if args.map_motion_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "map_motion_interact")
+        if (others or args.panels != 4 or args.size != "1440x1000"
+                or args.layout_mode != "folder_tabs" or args.learn_stage is not None
+                or args.focus_panel is not None):
+            parser.error("map-motion-interact requires four panels, default size/layout, and no other interactions")
+        if not shutil.which("xdotool"):
+            parser.error("map-motion-interact requires xdotool")
     if args.workspace_interact:
         if (args.panels != 4 or args.size != "1440x1000"
                 or args.theme not in ("warm-neutral", "neutral-light")
@@ -361,6 +372,9 @@ def main():
                     time.sleep(0.5)
                 if args.fps_header_interact:
                     from fps_header_acceptance import verify
+                    verify(output, env, root)
+                if args.map_motion_interact:
+                    from map_motion_acceptance import verify
                     verify(output, env, root)
                 if args.workspace_interact:
                     from workspace_identity_acceptance import verify
