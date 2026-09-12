@@ -74,3 +74,22 @@ acceptance checks. Do not rebuild from current main or move the release tag.
 The main workflow's timeout is increased to 180 minutes for subsequent releases
 so successful cold Windows builds have time to save their cache. Package,
 signing, and smoke gates are unchanged.
+
+## Publication verified
+
+Completed September 12, 2026, 08:59 UTC.
+
+| Requirement | Observed evidence |
+| --- | --- |
+| Include the latest source requested at release preparation | `10fc479` is an ancestor of immutable tag `74e07af`; only release metadata was added before tagging. Later concurrent development was not included. |
+| Ship verified macOS packages | Run `34679178421` succeeded, including signing/notarization, installation checks, and signed Sparkle archive generation. |
+| Ship verified Linux packages | Run `34679178367` Linux job succeeded, including X11 and Wayland launch checks. Downloaded tarball and Debian-package SHA-256 checks passed locally, bundled CLI ran as `950e231`, and the actual packaged desktop passed private-Xvfb responsive interaction acceptance. |
+| Ship verified Windows package | The same run's Windows build, package verification, launch smoke, and artifact upload all succeeded before the cache-only timeout. Recovered ZIP passed package validation and SHA-256 verification. Each required step and artifact source SHA was rechecked before recovery upload. The overall run remains cancelled, not green. |
+| Update public downloads without missing platform assets | Public publisher run `34684543620` succeeded, promoted beta.27 at 08:57:05 UTC, and downloaded and verified all nine assets through both the anonymous origin and website routes. |
+| Validate installation from the public Mac download | Public acceptance run `34684574955` succeeded, including quarantined DMG download, Gatekeeper/notarization verification, installation, bundled CLI, and installed-app launch. |
+| Update stable website and updater metadata | Fresh anonymous reads of `/desktop/latest.json` returned beta.27. `/desktop/appcast.xml` matched the manifest's exact size and SHA-256, retained its Ed25519 signature, and targeted the public beta.27 archive. |
+
+The real public downloads and installed-package workflows were checked, not just
+local test fixtures. No running user application was restarted or replaced by
+this release task. The follow-up workflow timeout change is on main only and
+does not alter the immutable released packages.
