@@ -48,3 +48,29 @@ The Actions runs and live public manifest are the publication evidence.
 - Shell syntax checks passed for Linux/macOS packaging and macOS verification.
 - The pinned runtime's SDK, render-core, and harness-api source matches the local
   runtime checkout used for the desktop unit tests.
+
+## Cross-platform release recovery
+
+The immutable release tag points to `74e07af14c99963864c948e72b1da53cd072544f`.
+macOS run `34679178421` passed signing, notarization, installation verification,
+and signed-update generation. Linux in run `34679178367` passed packaging,
+checksums, and X11/Wayland launch checks.
+
+The Windows job in the same run completed packaging at 08:39:02 UTC, package
+verification at 08:39:07, launch smoke at 08:39:21, and artifact upload at
+08:39:31 on September 12. All of those steps passed. Its post-job 2.4 GB cache
+save then ran past the two-hour job limit. GitHub marked the job cancelled with
+the annotation `The job has exceeded the maximum execution time of 2h0m0s`,
+skipping the normal release upload despite all package acceptance steps passing.
+
+Recovery uses only the already uploaded Linux and Windows artifacts from that
+run, whose recorded source SHA matches the immutable tag. Before uploading the
+missing assets to the existing prerelease, recheck each build/package/smoke/
+artifact step's success, validate the downloaded packages, and verify their
+SHA-256 checksums. Then run the unchanged public publisher, including its complete
+platform set, signed appcast, anonymous download integrity, and public macOS
+acceptance checks. Do not rebuild from current main or move the release tag.
+
+The main workflow's timeout is increased to 180 minutes for subsequent releases
+so successful cold Windows builds have time to save their cache. Package,
+signing, and smoke gates are unchanged.

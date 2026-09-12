@@ -28,7 +28,9 @@ jobs:
           - os: windows-2025
             platform: windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # Cold Windows builds plus the multi-GB post-job cache save exceeded 120m
+    # in beta27 after packaging, smoke tests, and artifact upload had passed.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
