@@ -3961,11 +3961,11 @@ impl Render for Panel {
     }
 }
 
-/// Empty and reconnecting folders still need a label matching their sidebar tab.
+/// Unnamed session tabs use a friendly label instead of an internal session ID.
 pub(crate) fn folder_session_title(session_id: &str, title: &str) -> SharedString {
     custom_session_title(session_id, title)
-        .map(str::to_owned)
-        .unwrap_or_else(|| short_id(session_id))
+        .unwrap_or("New session")
+        .to_owned()
         .into()
 }
 
@@ -5525,7 +5525,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_header_keeps_an_identity_before_a_session_is_named() {
+    fn folder_header_defaults_to_new_session_until_named() {
         let session_id = "01JABCDEF0123456789";
         let fallback = short_id(session_id);
 
@@ -5541,11 +5541,16 @@ mod tests {
         );
         assert_eq!(
             folder_session_title(session_id, &fallback).as_ref(),
-            "session 23456789"
+            "New session"
         );
         assert_eq!(
             folder_session_title(session_id, "  ").as_ref(),
-            "session 23456789"
+            "New session"
+        );
+        assert_eq!(folder_session_title(session_id, "").as_ref(), "New session");
+        assert_eq!(
+            folder_session_title("startup://draft/123-0", "New session").as_ref(),
+            "New session"
         );
     }
 
