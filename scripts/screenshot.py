@@ -36,6 +36,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--onboarding-interact", action="store_true",
+                        help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
                         help="verify sound opt-in, preview, and saved mute on the private display")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
@@ -96,6 +98,13 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.onboarding_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "onboarding_interact")
+        if others or args.panels != 1 or args.learn_stage is not None or args.preview_state:
+            parser.error("onboarding-interact requires one panel and no other interaction or preview modes")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("onboarding-interact requires xdotool and tesseract")
     if args.slash_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "slash_interact")
@@ -404,6 +413,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 if args.sounds_interact:
                     from sounds_acceptance import verify
+                    verify(output, env, root)
+                if args.onboarding_interact:
+                    from onboarding_acceptance import verify
                     verify(output, env, root)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")

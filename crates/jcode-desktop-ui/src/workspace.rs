@@ -122,6 +122,7 @@ actions!(
         ClosePanel,
         ToggleOverview,
         ToggleHints,
+        ToggleOnboardingSimulator,
         ToggleShowcase,
         ToggleSidebar,
         CycleTheme,
@@ -176,6 +177,9 @@ mod hover_scroll_tests;
 
 #[path = "tutorial.rs"]
 mod tutorial;
+
+#[path = "onboarding_simulator.rs"]
+mod onboarding_simulator;
 
 #[cfg(test)]
 #[path = "tutorial_geometry_tests.rs"]
@@ -467,6 +471,8 @@ pub struct WorkspaceSnapshot {
     sidebar_view: SidebarView,
     #[serde(default)]
     tutorial_page: usize,
+    #[serde(default)]
+    onboarding_simulator: Option<onboarding_simulator::Simulation>,
     slots: Vec<SlotSnapshot>,
     active: usize,
     active_row: usize,
@@ -534,6 +540,7 @@ pub struct Workspace {
     folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
     tutorial_page: usize,
+    onboarding_simulator: Option<onboarding_simulator::Simulation>,
     expanded_directories: HashSet<PathBuf>,
     slots: Vec<Slot>,
     active: usize,
@@ -757,6 +764,7 @@ impl Workspace {
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
+            onboarding_simulator: None,
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -989,6 +997,7 @@ impl Workspace {
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
+            onboarding_simulator: None,
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -1121,6 +1130,7 @@ impl Workspace {
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
             tutorial_page: self.tutorial_page,
+            onboarding_simulator: self.onboarding_simulator.clone(),
             slots: slots
                 .iter()
                 .map(|slot| SlotSnapshot {
@@ -1155,6 +1165,7 @@ impl Workspace {
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_view = snapshot.sidebar_view;
         self.tutorial_page = snapshot.tutorial_page.min(2);
+        self.onboarding_simulator = snapshot.onboarding_simulator;
         self.slots.clear();
         for saved in snapshot.slots {
             let mut panel_state = saved.panel;
@@ -1332,6 +1343,10 @@ impl Workspace {
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.onboarding_simulator.is_some() {
+            window.focus(&self.focus_handle, cx);
+            return;
+        }
         match self.focus_restore.clone() {
             FocusSnapshot::Panel(_) if self.overview || self.overview_progress.is_animating() => {
                 self.focus_active(window, cx);
@@ -3167,6 +3182,11 @@ impl Workspace {
     }
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
+        // Runtime updates may restore focus while the rehearsal hides panels.
+        if self.onboarding_simulator.is_some() {
+            window.focus(&self.focus_handle, cx);
+            return;
+        }
         // Overview cards contain copied content, not mounted panel views. Keep
         // shortcuts on the workspace until the exit animation remounts them.
         if self.overview || self.overview_progress.is_animating() {
@@ -6571,6 +6591,9 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.onboarding_simulator.is_some() {
+            return self.render_onboarding_simulator(cx);
+        }
         self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar
             && self.layout_mode == crate::config::LayoutMode::Normal
@@ -6834,6 +6857,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
+            .capture_action(cx.listener(Self::toggle_onboarding_simulator))
             .on_action(cx.listener(Self::toggle_hints))
             .on_action(cx.listener(Self::toggle_showcase))
             .on_action(cx.listener(Self::toggle_sidebar))
@@ -7867,6 +7891,7 @@ mod tests {
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
             tutorial_page: 0,
+            onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
                     session_id: "terminal".into(),
@@ -8058,6 +8083,7 @@ mod tests {
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
                     tutorial_page: 0,
+                    onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             session_id: "session_fox_1234567890000_deadbeef".into(),

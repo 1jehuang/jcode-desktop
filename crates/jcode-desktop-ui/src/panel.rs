@@ -1969,6 +1969,15 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, _window, app| {
+                        if images.is_empty()
+                            && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
+                        {
+                            _window.dispatch_action(
+                                Box::new(crate::workspace::ToggleOnboardingSimulator),
+                                app,
+                            );
+                            return;
+                        }
                         let echoed_images = images.clone();
                         if let Some(panel) = weak.upgrade() {
                             panel.update(app, |this, cx| {
