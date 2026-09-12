@@ -1944,7 +1944,10 @@ impl Panel {
                     let mut handled = false;
                     if let Some(panel) = cancel_weak.upgrade() {
                         panel.update(app, |this, cx| {
-                            if this.model_picker_open {
+                            if this.recovery_picker_open {
+                                this.recovery_picker_open = false;
+                                handled = true;
+                            } else if this.model_picker_open {
                                 this.close_model_picker(cx);
                                 let input = this.input.clone();
                                 cx.defer(move |cx| {
@@ -3761,15 +3764,30 @@ impl Render for Panel {
         let status_line = self.status_line();
         let active = self.activity_active();
         let theme = Theme::global();
-        let meta_line = meta_line(
-            self.working_dir.as_deref(),
-            self.model.as_deref(),
-            self.provider.as_deref(),
-            self.auth_method.as_deref(),
-            self.reasoning_effort.as_deref(),
-            self.token_usage,
-        )
-        .unwrap_or_default();
+        let context_line = context_usage_label(self.model.as_deref(), self.token_usage);
+        let account_label =
+            account_method_label(self.provider.as_deref(), self.auth_method.as_deref());
+        let identity_control = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .min_w_0()
+                .max_w_full()
+                .flex()
+                .items_center()
+                .gap_1()
+                .h(px(22.))
+                .px_2()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.PANEL_BORDER)
+                .bg(theme.HEADER_BG)
+                .text_color(theme.TEXT_DIM)
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                .child(div().min_w_0().truncate().child(label))
+                .child(div().flex_none().child("⌄"))
+        };
 
         let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
 
@@ -3784,6 +3802,11 @@ impl Render for Panel {
                 if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);
                     this.focus_input(window, cx);
+                    cx.stop_propagation();
+                } else if this.recovery_picker_open && event.keystroke.key == "escape" {
+                    this.recovery_picker_open = false;
+                    this.focus_input(window, cx);
+                    cx.notify();
                     cx.stop_propagation();
                 } else if this.diff_review.is_some() && event.keystroke.key == "escape" {
                     this.close_diff_review(window, cx);
@@ -3987,41 +4010,57 @@ impl Render for Panel {
                     .text_color(Theme::global().TEXT_FAINT)
                     .child(
                         div()
+                            .debug_selector(|| "panel-identity".into())
                             .flex_1()
                             .min_w(px(150.))
                             .flex()
                             .items_center()
                             .gap_2()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .id("panel-login")
-                                    .debug_selector(|| "panel-login".into())
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .h(px(22.0))
-                                    .px_2()
-                                    .rounded_md()
-                                    .text_color(theme.TEXT_DIM)
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                                    .on_click(cx.listener(|_, _, window, cx| {
-                                        window.dispatch_action(
-                                            Box::new(crate::workspace::OpenAccounts {
-                                                source: cx.entity_id(),
-                                            }),
-                                            cx,
-                                        );
-                                    }))
-                                    .child("Connect account"),
+                            .flex_wrap()
+                            .children(
+                                self.working_dir
+                                    .as_deref()
+                                    .filter(|dir| !dir.is_empty())
+                                    .map(|dir| {
+                                        div()
+                                            .min_w_0()
+                                            .max_w(px(180.))
+                                            .truncate()
+                                            .child(compact_dir(dir))
+                                    }),
                             )
                             .child(
-                                div()
-                                    .debug_selector(|| "panel-identity".into())
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(meta_line),
+                                identity_control(
+                                    "panel-model",
+                                    self.model.clone().unwrap_or_else(|| "Choose model".into()),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.recovery_picker_open = !this.recovery_picker_open;
+                                        this.focus_input(window, cx);
+                                        cx.notify();
+                                        cx.stop_propagation();
+                                    },
+                                )),
+                            )
+                            .child(identity_control("panel-login", account_label).on_click(
+                                cx.listener(|_, _, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(crate::workspace::OpenAccounts {
+                                            source: cx.entity_id(),
+                                        }),
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                            ))
+                            .children(
+                                self.reasoning_effort
+                                    .clone()
+                                    .map(|effort| div().child(effort)),
+                            )
+                            .children(
+                                context_line.map(|line| div().min_w_0().truncate().child(line)),
                             ),
                     )
                     .child(
@@ -4306,38 +4345,26 @@ fn model_logo_provider<'a>(model: &str, api_method: &'a str) -> &'a str {
     }
 }
 
-/// The identity footer: directory, model (provider, auth, effort), and
-/// context usage. Absent parts are simply omitted, so the line never shows
-/// placeholders.
-fn meta_line(
-    working_dir: Option<&str>,
+/// Label the account control with the current provider and credential method.
+/// Keep account setup discoverable before runtime identity arrives.
+fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> String {
+    let parts: Vec<_> = [provider, auth_method]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        "Accounts".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn context_usage_label(
     model: Option<&str>,
-    provider: Option<&str>,
-    auth_method: Option<&str>,
-    reasoning_effort: Option<&str>,
     token_usage: Option<(u64, u64, u64)>,
 ) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(dir) = working_dir.filter(|dir| !dir.is_empty()) {
-        parts.push(compact_dir(dir));
-    }
-    if let Some(model) = model {
-        let mut qualifiers: Vec<&str> = Vec::new();
-        if let Some(provider) = provider {
-            qualifiers.push(provider);
-        }
-        if let Some(auth) = auth_method {
-            qualifiers.push(auth);
-        }
-        if let Some(effort) = reasoning_effort {
-            qualifiers.push(effort);
-        }
-        if qualifiers.is_empty() {
-            parts.push(model.to_string());
-        } else {
-            parts.push(format!("{model} ({})", qualifiers.join(", ")));
-        }
-    }
+    let mut parts = Vec::new();
     if let Some((input, output, cache_read)) = token_usage {
         let used = input + output + cache_read;
         match model.and_then(context_window_for_model) {
@@ -4361,7 +4388,7 @@ fn meta_line(
 /// Shorten a home-relative path for the footer.
 fn compact_dir(path: &str) -> String {
     match std::env::var("HOME").ok() {
-        Some(home) if path == home => "~".to_string(),
+        Some(home) if path == home => "~ (home)".to_string(),
         Some(home) => match path.strip_prefix(&format!("{home}/")) {
             Some(relative) => format!("~/{relative}"),
             None => path.to_string(),
@@ -6035,43 +6062,38 @@ mod tests {
     }
 
     #[test]
-    fn meta_line_shows_directory_model_auth_and_context() {
-        let line = meta_line(
-            Some("/srv/project"),
-            Some("gpt-5.6-sol"),
-            Some("openai"),
-            Some("oauth"),
-            Some("high"),
-            Some((100_000, 8_000, 28_000)),
-        )
-        .unwrap();
+    fn compact_directory_marks_home_but_not_its_children() {
+        let home = std::env::var("HOME").expect("test home");
+        assert_eq!(compact_dir(&home), "~ (home)");
+        assert_eq!(compact_dir(&format!("{home}/project")), "~/project");
         assert_eq!(
-            line,
-            "/srv/project  ·  gpt-5.6-sol (openai, oauth, high)  ·  136.0k / 272.0k (50%)"
+            compact_dir(&format!("{home}-other")),
+            format!("{home}-other")
         );
     }
 
     #[test]
-    fn meta_line_omits_missing_parts_instead_of_showing_placeholders() {
-        // No identity at all: no footer.
-        assert_eq!(meta_line(None, None, None, None, None, None), None);
-        // Model only: just the model, no empty parens.
+    fn footer_labels_keep_model_account_and_context_separate() {
         assert_eq!(
-            meta_line(None, Some("gpt-5.6"), None, None, None, None).as_deref(),
-            Some("gpt-5.6")
+            account_method_label(Some("openai"), Some("oauth")),
+            "openai · oauth"
         );
-        // Unknown model family: raw token count, no bogus percentage.
         assert_eq!(
-            meta_line(
-                None,
-                Some("mystery-model"),
-                None,
-                None,
-                None,
-                Some((1_500, 500, 0))
-            )
-            .as_deref(),
-            Some("mystery-model  ·  2.0k tokens")
+            account_method_label(Some("anthropic"), Some("api key")),
+            "anthropic · api key"
+        );
+        assert_eq!(account_method_label(None, Some("oauth")), "oauth");
+        assert_eq!(account_method_label(Some("openai"), None), "openai");
+        assert_eq!(account_method_label(None, None), "Accounts");
+        assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
+        assert_eq!(context_usage_label(None, None), None);
+        assert_eq!(
+            context_usage_label(Some("gpt-5.6-sol"), Some((100_000, 8_000, 28_000))).as_deref(),
+            Some("136.0k / 272.0k (50%)")
+        );
+        assert_eq!(
+            context_usage_label(Some("mystery-model"), Some((1_500, 500, 0))).as_deref(),
+            Some("2.0k tokens")
         );
     }
 
@@ -6927,7 +6949,7 @@ mod tests {
         let identity = vcx.debug_bounds("panel-identity").expect("identity paints");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
         assert!((f32::from(build.center().x - bounds.center().x)).abs() < 1.0);
-        assert_eq!(identity.origin.y, build.origin.y);
+        assert_eq!(identity.center().y, build.center().y);
         assert_eq!(status.center().y, build.center().y);
         assert!(identity.right() <= build.left());
         assert!(build.right() <= status.left());

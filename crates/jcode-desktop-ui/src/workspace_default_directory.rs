@@ -270,7 +270,7 @@ pub(super) fn spawn_shortcut() -> &'static str {
 pub(super) fn compact_path(path: &str) -> String {
     if let Some(home) = default_working_dir() {
         if path == home {
-            return "~".into();
+            return "~ (home)".into();
         }
         if let Ok(relative) = Path::new(path).strip_prefix(&home) {
             return format!("~/{}", relative.display());

@@ -2,6 +2,63 @@ use super::*;
 use gpui::EntityInputHandler;
 
 #[gpui::test]
+fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("footer-test".into(), None, None, bridge, cx));
+    vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.model = Some("openai:test".into());
+        panel.provider = Some("openai".into());
+        panel.auth_method = Some("oauth".into());
+        panel.available_models = vec!["openai:test".into(), "anthropic:test".into()];
+        panel.input.update(cx, |input, cx| {
+            input.set_content("keep my draft".into(), cx)
+        });
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let model = vcx.debug_bounds("panel-model").unwrap();
+    let account = vcx.debug_bounds("panel-login").unwrap();
+    assert!(
+        model.right() <= account.left(),
+        "account method follows model"
+    );
+    vcx.simulate_click(model.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-model-picker").is_some());
+    assert!(commands.try_recv().is_err());
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    let model = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(model.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    let choice = vcx.debug_bounds("recovery-model-picker-1").unwrap();
+    vcx.simulate_click(choice.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "anthropic:test")
+    );
+    assert!(commands.try_recv().is_err());
+    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    panel.read_with(vcx, |panel, cx| {
+        assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft")
+    });
+    panel.update(vcx, |panel, cx| {
+        panel.available_models.clear();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let model = vcx.debug_bounds("panel-model").unwrap();
+    vcx.simulate_click(model.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-connect-account").is_some());
+    assert!(vcx.debug_bounds("recovery-refresh-models").is_some());
+}
+
+#[gpui::test]
 fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, _commands) = crate::harness::spawn_recording();
@@ -39,7 +96,12 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             assert!(input.left() >= px(0.) && input.right() <= px(width));
             assert!(footer.bottom() <= px(height));
-            for selector in ["panel-login", "panel-build", "panel-status-badge"] {
+            for selector in [
+                "panel-model",
+                "panel-login",
+                "panel-build",
+                "panel-status-badge",
+            ] {
                 let bounds = vcx.debug_bounds(selector).unwrap();
                 assert!(
                     bounds.left() >= footer.left() && bounds.right() <= footer.right(),

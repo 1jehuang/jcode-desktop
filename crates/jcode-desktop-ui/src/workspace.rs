@@ -7298,7 +7298,12 @@ fn compact_working_dir(path: &str) -> String {
     if let Some(home) = home.as_deref()
         && let Some(relative) = path.strip_prefix(home)
     {
-        return format!("~{relative}");
+        if relative.is_empty() {
+            return "~ (home)".into();
+        }
+        if relative.starts_with('/') {
+            return format!("~{relative}");
+        }
     }
     path.to_owned()
 }
@@ -13021,6 +13026,16 @@ mod accounts_panel_tests {
         assert!(commands.try_recv().is_err(), "pending drafts have no runtime to refresh");
     }
 
+    #[test]
+    fn home_directory_labels_are_explicit_and_children_stay_compact() {
+        let home = std::env::var("HOME").expect("test home");
+        for format in [compact_working_dir, default_directory::compact_path] {
+            assert_eq!(format(&home), "~ (home)");
+            assert_eq!(format(&format!("{home}/project")), "~/project");
+            assert_eq!(format(&format!("{home}-other")), format!("{home}-other"));
+        }
+    }
+
     #[gpui::test]
     fn accounts_panel_footer_opens_new_adjacent_preserves_source_and_escape_returns(
         cx: &mut gpui::TestAppContext,
@@ -13047,7 +13062,7 @@ mod accounts_panel_tests {
         let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
         let footer = vcx
             .debug_bounds("panel-login")
-            .expect("Connect account footer paints");
+            .expect("Account method control paints");
         vcx.simulate_click(footer.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let accounts = workspace.read_with(vcx, |w, cx| {
@@ -13136,8 +13151,19 @@ mod accounts_panel_tests {
             matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "source")
         );
         assert!(commands.try_recv().is_err());
-        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_accounts(&request, window, cx);
+            // The test executor does not advance wall-clock row animation.
+            // Settle it before clicking, or Close is still above the viewport.
+            w.row_progress.sample(Instant::now() + Duration::from_secs(1));
+            cx.notify();
+        });
         vcx.run_until_parked();
+        vcx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| div(),
+        );
         let close = vcx.debug_bounds("login-close").expect("dedicated Close button paints");
         vcx.simulate_click(close.center(), gpui::Modifiers::default());
         vcx.run_until_parked();

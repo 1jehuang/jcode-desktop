@@ -1,7 +1,9 @@
 # Native login and model recovery
 
-Desktop provides a **Connect account** button beside the session identity. Clicking
-it opens and focuses a dedicated **Accounts** panel immediately to the right of the
+The footer shows separate, bordered model and connection-method controls with
+dropdown indicators. Clicking the model opens native model choices without changing
+the draft. Clicking the connection method (or **Accounts** before it is known)
+opens and focuses a dedicated **Accounts** panel immediately to the right of the
 conversation, without replacing its transcript or draft. Clicking again reuses the
 same source's accounts panel. Close or Escape returns to the source conversation.
 Accounts panels are transient and never become harness sessions or saved logins in

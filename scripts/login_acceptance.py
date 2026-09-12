@@ -114,9 +114,16 @@ def verify(output, env, root):
         click((bounds[0] + 20, bounds[1] + 12, bounds[0] + 80, bounds[1] + 36))
         native("type", "--clearmodifiers", "--delay", "25", DRAFT + "  ")
         _, words, _ = wait_words("draft", DRAFT)
-        stage = "native-connect-account-button"
+        stage = "native-model-control-preserves-draft"
+        click(phrase_bounds(words, "Choose model"))
+        _, words, _ = wait_words("models", "Choose a model")
+        phrase_bounds(words, DRAFT)
+        native("key", "Escape")
+        _, words, _ = wait_words("models-dismissed", DRAFT)
+        report["checks"][stage] = True
+        stage = "native-account-method-control"
         source = panels()[0]
-        click(phrase_bounds(words, "Connect account"))
+        click(phrase_bounds(words, "Accounts"))
         provider_image, words, _ = wait_words("providers", "Choose an account to connect")
         opened = panels()
         assert len(opened) == 2 and opened[0]["id"] == source["id"], opened
