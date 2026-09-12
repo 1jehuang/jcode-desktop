@@ -14,6 +14,8 @@ pub(crate) mod change_review;
 mod sidebar_gesture;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
+#[path = "sidebar_swarm.rs"]
+mod sidebar_swarm;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -573,6 +575,7 @@ pub struct Workspace {
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
+    expanded_swarms: HashSet<String>,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     sidebar_navigation_scroll: ScrollHandle,
@@ -768,6 +771,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -807,10 +811,30 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
             };
             workspace.connected = true;
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
+            if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
+                for (index, (label, status)) in [
+                    ("API reviewer", "working"),
+                    ("Sidebar implementation", "working"),
+                    ("Test runner", "completed"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut child = workspace.sessions[0].clone();
+                    child.session_id = format!("swarm-fixture-{index}");
+                    child.parent_session_id = Some("screenshot-fixture".into());
+                    child.agent_label = Some(label.into());
+                    child.swarm_status = Some(status.into());
+                    workspace.sessions.push(child);
+                }
+            }
             let panel_count = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANELS")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
@@ -887,6 +911,9 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
             },
             cx,
         );
@@ -963,6 +990,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -1352,6 +1380,14 @@ impl Workspace {
                 {
                     continue;
                 }
+                if let Some(known) = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == panel.session_id)
+                {
+                    sessions.push(known.clone());
+                    continue;
+                }
                 sessions.push(jcode_sdk::SessionInfo {
                     session_id: panel.session_id.clone(),
                     working_dir: panel.working_dir.clone(),
@@ -1363,6 +1399,9 @@ impl Workspace {
                     last_active_at_ms: None,
                     archived: false,
                     archived_at_ms: None,
+                    parent_session_id: None,
+                    agent_label: None,
+                    swarm_status: None,
                 });
             }
         }
@@ -1730,6 +1769,9 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
             });
         // This can run from a click listener on the active unfinished-work
         // panel. Do not read that same entity while GPUI is updating it.
@@ -4070,9 +4112,11 @@ impl Workspace {
         // is an invitation to open another panel, so keep those two actions in
         // visibly separate sections. Preserve the TUI saved/recency ordering
         // within each section.
+        let swarm = sidebar_swarm::groups(&sidebar_session_order(&self.sessions));
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) =
             sidebar_session_order(&self.sessions)
                 .into_iter()
+                .filter(|session| !swarm.nested.contains(&session.session_id))
                 .partition(|session| open_activities.contains_key(&session.session_id));
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
@@ -4127,6 +4171,20 @@ impl Workspace {
                 workspace_row: session_workspaces.get(&session.session_id).copied(),
                 selected: active_id.as_deref() == Some(session.session_id.as_str()),
                 saved: session.saved,
+                swarm_rows: swarm
+                    .children
+                    .get(&session.session_id)
+                    .map_or(0, |children| {
+                        if self.expanded_swarms.contains(&session.session_id) {
+                            children.len()
+                        } else {
+                            children.len().min(sidebar_swarm::PREVIEW)
+                        }
+                    }),
+                swarm_more: swarm
+                    .children
+                    .get(&session.session_id)
+                    .is_some_and(|children| children.len() > sidebar_swarm::PREVIEW),
                 details: session
                     .working_dir
                     .as_deref()
@@ -4340,6 +4398,9 @@ impl Workspace {
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let selection_order = selection_order.clone();
+                            let swarm_content = swarm.children.get(&session.session_id).map(|children| {
+                                this.render_swarm_children(&session.session_id, children, active_id.as_deref(), cx)
+                            });
                             let session = session.clone();
                             list = list.child(
                                 div()
@@ -4456,7 +4517,8 @@ impl Workspace {
                                                 .text_color(Theme::global().TEXT_DIM)
                                                 .child(details),
                                         )
-                                    }),
+                                    })
+                                    .when_some(swarm_content, |row, content| row.child(content)),
                             );
                             list.into_any_element()
                         })
@@ -6925,6 +6987,8 @@ struct SidebarSessionLayout {
     selected: bool,
     saved: bool,
     details: bool,
+    swarm_rows: usize,
+    swarm_more: bool,
 }
 
 fn sync_sidebar_session_layout(
@@ -7718,7 +7782,7 @@ mod tests {
         assert!(error.to_string().contains("active row"));
     }
 
-    fn session_info(id: &str, title: Option<&str>) -> jcode_sdk::SessionInfo {
+    pub(super) fn session_info(id: &str, title: Option<&str>) -> jcode_sdk::SessionInfo {
         jcode_sdk::SessionInfo {
             session_id: id.into(),
             working_dir: None,
@@ -7730,6 +7794,9 @@ mod tests {
             last_active_at_ms: None,
             archived: false,
             archived_at_ms: None,
+            parent_session_id: None,
+            agent_label: None,
+            swarm_status: None,
         }
     }
 

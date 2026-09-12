@@ -587,7 +587,8 @@ fn refresh_sessions(
         .spawn(move || {
             if include_disk_snapshot {
                 let started = std::time::Instant::now();
-                let sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
+                let mut sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
+                jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
                 eprintln!(
                     "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
                     started.elapsed().as_secs_f64() * 1_000.0,
@@ -607,7 +608,8 @@ fn refresh_sessions(
                         Vec::new()
                     }
                 };
-            let sessions = merge_persisted_sessions(api_sessions, home.as_deref());
+            let mut sessions = merge_persisted_sessions(api_sessions, home.as_deref());
+            jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
             eprintln!(
                 "jcode desktop: session list completed in {:.1}ms ({} sessions)",
                 started.elapsed().as_secs_f64() * 1_000.0,
@@ -984,6 +986,9 @@ pub(crate) fn merge_persisted_sessions(
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
             },
         ));
     }
@@ -1605,6 +1610,9 @@ mod tests {
             last_active_at_ms: None,
             archived: false,
             archived_at_ms: None,
+            parent_session_id: None,
+            agent_label: None,
+            swarm_status: None,
         }
     }
 

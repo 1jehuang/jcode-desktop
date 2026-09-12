@@ -54,6 +54,9 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
             },
             cx,
         );

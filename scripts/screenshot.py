@@ -36,6 +36,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--fresh-interact", action="store_true",
                         help="measure fresh composer pixels and verify native typing and submission")
@@ -204,6 +205,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.swarm:
+            env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))

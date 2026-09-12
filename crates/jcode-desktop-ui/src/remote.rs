@@ -46,6 +46,7 @@ impl SessionAddress {
 
     pub fn session_info(&self, mut session: jcode_sdk::SessionInfo) -> jcode_sdk::SessionInfo {
         session.session_id = self.ui_id(&session.session_id);
+        session.parent_session_id = session.parent_session_id.map(|id| self.ui_id(&id));
         session
     }
 }
@@ -94,6 +95,22 @@ fn decode(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_swarm_remote_ownership_uses_the_same_host_namespace() {
+        let address = SessionAddress::parse(&namespace("server", "child")).unwrap();
+        let session: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": "child", "status": "running", "parent_session_id": "root"
+        }))
+        .unwrap();
+        let mapped = address.session_info(session);
+        assert_eq!(mapped.session_id, namespace("server", "child"));
+        assert_eq!(mapped.parent_session_id, Some(namespace("server", "root")));
+        assert_ne!(
+            mapped.parent_session_id,
+            Some(namespace("other-server", "root"))
+        );
+    }
 
     #[test]
     fn local_ids_are_unchanged() {
