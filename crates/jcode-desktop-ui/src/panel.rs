@@ -4126,6 +4126,7 @@ impl Render for Panel {
                 self.offscreen_prompt.is_some(),
                 cx.entity().entity_id(),
             ))
+            .child(self.input.read(cx).paste_preview_panel_marker())
             .children(self.render_image_preview(window, cx))
             .children(self.render_diff_review(cx))
             .children(self.render_login_picker(window, cx))

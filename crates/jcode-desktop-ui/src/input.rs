@@ -17,6 +17,9 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
+#[path = "input_paste_preview.rs"]
+mod paste_preview;
+
 use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
 
@@ -137,7 +140,8 @@ pub struct PromptInput {
     attachment_notice: Option<SharedString>,
     /// The newest paste briefly appears at reading size, then flies into its
     /// thumbnail. The index keeps simultaneous attachments independent.
-    attachment_preview: Option<(usize, Instant)>,
+    attachment_preview: Option<paste_preview::Preview>,
+    preview_panel_bounds: paste_preview::MeasuredBounds,
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
@@ -237,6 +241,7 @@ struct Attachment {
     encoded: String,
     label: SharedString,
     preview: Arc<gpui::Image>,
+    bounds: paste_preview::MeasuredBounds,
 }
 
 fn preview_image(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
@@ -313,6 +318,7 @@ impl PromptInput {
                     encoded: attachment.encoded,
                     label: attachment.label.into(),
                     preview,
+                    bounds: Default::default(),
                 })
             })
             .collect();
@@ -366,6 +372,7 @@ impl PromptInput {
             attachments: Vec::new(),
             attachment_notice: None,
             attachment_preview: None,
+            preview_panel_bounds: Default::default(),
             on_submit: Box::new(on_submit),
             on_change: None,
             on_overlay_cancel: None,
@@ -550,27 +557,36 @@ impl PromptInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
+    fn attach_image(
+        &mut self,
+        image: crate::clipboard_image::ClipboardImage,
+        cx: &mut Context<Self>,
+    ) {
+        let label = image.label();
+        let Some(preview) = preview_image(&image.media_type, image.bytes.clone()) else {
+            self.attachment_notice = Some("could not preview pasted image".into());
+            cx.notify();
+            return;
+        };
+        self.attachments.push(Attachment {
+            media_type: image.media_type,
+            encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes),
+            label: label.clone().into(),
+            preview,
+            bounds: Default::default(),
+        });
+        self.attachment_preview = Some(paste_preview::Preview::new(self.attachments.len() - 1));
+        self.attachment_notice = Some(match self.attachments.len() {
+            1 => format!("image attached ({label})").into(),
+            count => format!("{count} images attached").into(),
+        });
+        cx.notify();
+    }
+
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         match crate::clipboard_image::read() {
             Ok(Some(image)) => {
-                let label = image.label();
-                let Some(preview) = preview_image(&image.media_type, image.bytes.clone()) else {
-                    self.attachment_notice = Some("could not preview pasted image".into());
-                    cx.notify();
-                    return;
-                };
-                self.attachments.push(Attachment {
-                    media_type: image.media_type,
-                    encoded: base64::engine::general_purpose::STANDARD.encode(image.bytes),
-                    label: label.clone().into(),
-                    preview,
-                });
-                self.attachment_preview = Some((self.attachments.len() - 1, Instant::now()));
-                self.attachment_notice = Some(match self.attachments.len() {
-                    1 => format!("image attached ({label})").into(),
-                    count => format!("{count} images attached").into(),
-                });
-                cx.notify();
+                self.attach_image(image, cx);
                 return;
             }
             Ok(None) => {}
@@ -1296,28 +1312,13 @@ impl Render for PromptInput {
             self.command_selection = 0;
         }
         let command_selection = self.command_selection;
-        const SETTLE: Duration = Duration::from_millis(280);
-        let settling_attachment = self.attachment_preview.and_then(|(index, started)| {
-            let elapsed = Instant::now().saturating_duration_since(started);
-            if elapsed >= SETTLE {
-                self.attachment_preview = None;
-                return None;
-            }
-            window.request_animation_frame();
-            let linear = (elapsed.as_secs_f32() / SETTLE.as_secs_f32()).clamp(0.0, 1.0);
-            let progress = linear * linear * (3.0 - 2.0 * linear);
-            Some((index, progress))
+        let attachment_overlay = self.render_paste_preview(window);
+        let preview_index = attachment_overlay.as_ref().and_then(|_| {
+            self.attachment_preview
+                .as_ref()
+                .map(|preview| preview.index)
         });
         let attachments = self.attachments.iter().enumerate().map(|(index, image)| {
-            // Keep the animation in normal layout flow. An absolutely positioned
-            // child here is positioned against a distant GPUI containing block,
-            // which can leave the pasted image floating at the top of the panel.
-            let progress = settling_attachment
-                .filter(|(settling_index, _)| *settling_index == index)
-                .map(|(_, progress)| progress)
-                .unwrap_or(1.0);
-            let preview_width = 64.0 + 20.0 * (1.0 - progress);
-            let preview_height = 52.0 + 16.0 * (1.0 - progress);
             div()
                 .id(("attachment", index))
                 .max_w_full()
@@ -1331,12 +1332,23 @@ impl Render for PromptInput {
                 .text_size(px(11.0))
                 .text_color(Theme::global().TEXT_DIM)
                 .child(
-                    img(crate::image_cache::source(image.preview.clone()))
+                    div()
+                        .relative()
                         .flex_none()
-                        .w(px(preview_width))
-                        .h(px(preview_height))
-                        .object_fit(gpui::ObjectFit::Contain)
-                        .rounded_sm(),
+                        .w(px(64.0))
+                        .h(px(52.0))
+                        .child(
+                            img(crate::image_cache::source(image.preview.clone()))
+                                .size_full()
+                                .opacity(if preview_index == Some(index) {
+                                    0.0
+                                } else {
+                                    1.0
+                                })
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .rounded_sm(),
+                        )
+                        .child(paste_preview::bounds_marker(image.bounds.clone())),
                 )
                 .child(
                     div()
@@ -1361,6 +1373,7 @@ impl Render for PromptInput {
         });
         div()
             .debug_selector(|| "prompt-input".into())
+            .children(attachment_overlay)
             .flex()
             .flex_col()
             .key_context("PromptInput")
@@ -1829,6 +1842,7 @@ mod tests {
                     encoded: "cG5n".into(),
                     label: "4×3".into(),
                     preview: preview_image("image/png", Vec::new()).unwrap(),
+                    bounds: Default::default(),
                 });
                 window.focus(&input.focus_handle, cx);
             })
@@ -1862,6 +1876,7 @@ mod tests {
                         encoded: "cG5n".into(),
                         label: label.into(),
                         preview: preview_image("image/png", Vec::new()).unwrap(),
+                        bounds: Default::default(),
                     });
                 }
                 input.remove_attachment(0, cx);
