@@ -109,3 +109,34 @@ python3 scripts/screenshot.py target/ui-review.png
 
 Use fresh output paths. Keep binaries pinned when comparing revisions, finish
 builds before timing, and repeat in both orders. Raw artifacts remain local.
+
+## Delivery verification
+
+The pinned optimized application rendered `target/fps-sep12-ui-review.png` on a
+private display. Visual inspection confirmed formatted prose, lists, quotes,
+tables, Rust highlighting, math, error cards and composers remained intact.
+The required `target/ui-review.png` invocation safely refused to overwrite an
+existing artifact, so the task-specific path was used instead.
+
+A subsequent shared-checkout suite had 706 passes and one failure in another
+agent's new responsive-caret test. That agent's later changes made the targeted
+recheck pass. Further build attempts briefly encountered declared preview
+modules that another agent had not yet written. These concurrent files were
+not edited or included in this optimization commit. The 705-pass full-suite
+result above refers to the pinned optimization-only source, not a claim that
+all evolving shared work passed its latest full suite.
+
+After the concurrent source writes settled, the production build succeeded.
+The live host's Ctrl+R rebuild-and-reload path was invoked through `--reload-ui`
+and successfully activated **UI generation 7** from
+`target/release/libjcode_desktop_ui.so` at approximately 05:00 UTC. The activation
+log is retained at `target/fps-sep12-live-reload.log`.
+
+Local optimization commit: `c1ca36c`. Pushing local `main` was rejected because
+an earlier unrelated commit changes a workflow and the HTTPS token lacks the
+`workflow` scope. The existing SSH key was also rejected. Without rewriting
+local history or touching credentials, the identical optimization-only patch
+was committed on the remote base and pushed to **`perf/compact-transcript-rows`**
+(initial remote commit `b5e9941`). Only the panel FPS hunks, profiling option and
+this report are on that branch. No unrelated workflow or concurrent UI edits
+were included.
