@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections import Counter
 
 from PIL import Image
 
@@ -85,9 +86,25 @@ def phrase_bounds(words, phrase):
 def selected_row(image, bounds, words, route):
     row = phrase_bounds(words, route)
     y = round((row[1] + row[3]) / 2)
-    selected_pixels = sum(image.getpixel((x, y))[:3] == (48, 43, 39)
+    selected_pixels = sum(image.getpixel((x, y))[:3] == (228, 221, 211)
                           for x in range(bounds[0] + 1, bounds[2] - 1))
     assert selected_pixels >= 200, ("Keyboard-selected route is not visibly highlighted", route)
+
+
+def normalize_menu_ocr(crop):
+    """Give inverse selected rows the same polarity as other menu rows.
+
+    Keep original captures as pixel evidence. Tesseract otherwise drops the
+    light selected row while recognizing the surrounding dark menu.
+    """
+    crop = crop.convert("RGB").copy()
+    for y in range(crop.height):
+        colors = [crop.getpixel((x, y)) for x in range(crop.width)]
+        background = Counter(colors).most_common(1)[0][0]
+        if sum(background) > 128 * 3:
+            for x, color in enumerate(colors):
+                crop.putpixel((x, y), tuple(255 - channel for channel in color))
+    return crop
 
 
 def verify(output, env, root):
@@ -115,7 +132,7 @@ def verify(output, env, root):
 
     def ocr(image, bounds, label):
         path = output.with_name(output.stem + "-" + label + "-ocr.png")
-        crop = image.crop(bounds)
+        crop = normalize_menu_ocr(image.crop(bounds))
         crop.resize((crop.width * 3, crop.height * 3)).save(path)
         tsv = subprocess.check_output(
             ["tesseract", str(path), "stdout", "--psm", "6", "tsv"],
@@ -144,15 +161,14 @@ def verify(output, env, root):
 
     def open_picker(command, label):
         type_text(command)
-        # Some versions auto-open as /model is typed. Never press Return on an
-        # already visible dialog, since that would select a route instead.
-        _, image = capture(label + "-typed")
-        try:
-            picker(image, label + "-typed", FILTER_ROUTE)
-            trigger = "typing"
-        except AssertionError:
+        # /model opens as it is typed. Do not turn an OCR/paint delay into an
+        # Enter press that would accidentally submit the highlighted model.
+        # Only the explicit /models alias needs command submission.
+        if command == "/models":
             native("key", "Return")
             trigger = "Return"
+        else:
+            trigger = "typing"
         report.setdefault("open_actions", {})[label] = trigger
         return wait_frame(label, lambda image: picker(image, label, FILTER_ROUTE))
 
@@ -174,6 +190,13 @@ def verify(output, env, root):
         path, opened, (dialog, words) = open_picker("/model", "model-open")
         shutil.copyfile(path, output)
         report["dialog_bounds"] = dialog
+        report["checks"][stage] = True
+        stage = "visible-model-usage-metadata"
+        phrase_bounds(words, "42 tracked turns")
+        phrase_bounds(words, "Last used 2h ago")
+        phrase_bounds(words, "7 tracked turns")
+        phrase_bounds(words, "Last used 3d ago")
+        phrase_bounds(words, "Current")
         report["checks"][stage] = True
 
         stage = "keyboard-beyond-eight"

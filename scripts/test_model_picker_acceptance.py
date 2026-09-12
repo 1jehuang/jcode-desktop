@@ -52,18 +52,31 @@ class ModelPickerPixelTests(unittest.TestCase):
         words = [word("openai:atlas-10", x=600, y=500)]
         with self.assertRaisesRegex(AssertionError, "visibly highlighted"):
             acceptance.selected_row(image, bounds, words, "openai:atlas-10")
+        # The old selection color was identical to the menu surface. It must
+        # not count as visible selection evidence.
         ImageDraw.Draw(image).rectangle((541, 490, 1159, 525), fill=(48, 43, 39))
+        with self.assertRaisesRegex(AssertionError, "visibly highlighted"):
+            acceptance.selected_row(image, bounds, words, "openai:atlas-10")
+        ImageDraw.Draw(image).rectangle((541, 490, 1159, 525), fill=(228, 221, 211))
         acceptance.selected_row(image, bounds, words, "openai:atlas-10")
 
     def test_other_highlighted_row_does_not_satisfy_keyboard_selection(self):
         image = fixture()
-        ImageDraw.Draw(image).rectangle((541, 450, 1159, 480), fill=(48, 43, 39))
+        ImageDraw.Draw(image).rectangle((541, 450, 1159, 480), fill=(228, 221, 211))
         with self.assertRaisesRegex(AssertionError, "visibly highlighted"):
             acceptance.selected_row(image, acceptance.dialog_bounds(image),
                                     [word("openai:atlas-10", x=600, y=500)], "openai:atlas-10")
 
 
 class ModelPickerOCRTests(unittest.TestCase):
+    def test_inverse_selection_is_normalized_without_changing_capture(self):
+        image = Image.new("RGB", (100, 60), (48, 43, 39))
+        ImageDraw.Draw(image).rectangle((0, 0, 99, 29), fill=(228, 221, 211))
+        normalized = acceptance.normalize_menu_ocr(image)
+        self.assertEqual(normalized.getpixel((5, 5)), (27, 34, 44))
+        self.assertEqual(normalized.getpixel((5, 40)), (48, 43, 39))
+        self.assertEqual(image.getpixel((5, 5)), (228, 221, 211))
+
     def test_tsv_positions_are_transformed_back_to_screen_pixels(self):
         tsv = "left\ttop\twidth\theight\ttext\n0\t0\t0\t0\t\n30\t60\t120\t36\tSearch\n"
         self.assertEqual(acceptance.parse_words(tsv, (500, 250, 1000, 700)),

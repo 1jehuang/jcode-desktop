@@ -1994,13 +1994,28 @@ impl Panel {
                 let routes = names
                     .map(|model| {
                         let provider = model.split(':').next().unwrap().to_string();
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                        let usage = match provider.as_str() {
+                            "anthropic" => Some(jcode_sdk::ModelUsage {
+                                count: 42, last_used_unix_secs: Some(now - 7200),
+                                tracking_started_unix_secs: Some(now - 86400 * 14),
+                                selection_count: 5, last_selected_unix_secs: Some(now - 7200),
+                            }),
+                            "google" => Some(jcode_sdk::ModelUsage {
+                                count: 7, last_used_unix_secs: Some(now - 86400 * 3),
+                                tracking_started_unix_secs: Some(now - 86400 * 14),
+                                selection_count: 2, last_selected_unix_secs: Some(now - 86400 * 3),
+                            }),
+                            _ => None,
+                        };
                         jcode_sdk::ModelRouteInfo {
-                            usage: None,
                             api_method: format!("{provider}-api-key"),
                             model,
                             provider,
                             available: true,
                             detail: String::new(),
+                            usage,
                         }
                     })
                     .collect();
@@ -2524,6 +2539,7 @@ impl Panel {
                 if model.is_some() && *model != self.model {
                     self.model = model.clone();
                     self.auth_method = None;
+                    self.input.update(cx, |input, cx| input.set_current_model(self.model.clone(), cx));
                 }
             }
             ApiEvent::RuntimeInfo {
@@ -2543,7 +2559,7 @@ impl Panel {
                 self.model_logo_providers = available_model_logo_providers(routes);
                 self.available_models = models.clone();
                 self.input.update(cx, |input, cx| {
-                    input.set_command_models(models, cx);
+                    input.set_model_routes(models, routes, self.model.clone(), cx);
                     input.set_model_logo_providers(self.model_logo_providers.clone(), cx);
                 });
             }

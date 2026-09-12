@@ -70,6 +70,8 @@ def main():
                         help="verify native account/provider clicks, masked clipboard paste, and draft restoration offline")
     parser.add_argument("--model-interact", action="store_true",
                         help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
+    parser.add_argument("--slash-interact", action="store_true",
+                        help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "html", "image", "mermaid", "tokens", "diff", "diff-rich"), default="all",
@@ -94,6 +96,16 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.slash_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "slash_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.transcript != "empty"
+                or args.layout_mode != "folder_tabs" or args.focus_panel is not None
+                or args.learn_stage is not None or getattr(args, "changelog", False) or args.notification or args.swarm):
+            parser.error("slash-interact requires --transcript empty, one panel, default size/theme/layout, and no other interactions")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("slash-interact requires xdotool and tesseract")
     if args.sounds_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "sounds_interact")
@@ -395,6 +407,9 @@ def main():
                     verify(output, env, root)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.slash_interact:
+                    from slash_menu_acceptance import verify
+                    verify(output, env, root)
                 if args.preview_interact:
                     from preview_acceptance import verify
                     verify(output, env, root)

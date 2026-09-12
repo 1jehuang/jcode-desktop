@@ -70,6 +70,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                 reasoning_effort: None,
                 routes: vec![
                     jcode_sdk::ModelRouteInfo {
+                        usage: None,
                         model: "openai:test".into(),
                         provider: "openai".into(),
                         api_method: "openai-api-key".into(),
@@ -77,6 +78,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                         detail: String::new(),
                     },
                     jcode_sdk::ModelRouteInfo {
+                        usage: None,
                         model: "unavailable".into(),
                         provider: "openai".into(),
                         api_method: "openai-api-key".into(),

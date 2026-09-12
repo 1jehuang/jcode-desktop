@@ -47,6 +47,7 @@ impl Panel {
                 model: Some("preview-model".into()),
                 reasoning_effort: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
+                    usage: None,
                     model: "preview-model".into(),
                     provider: "openai".into(),
                     api_method: "preview".into(),
