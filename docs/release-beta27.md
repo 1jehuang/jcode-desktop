@@ -29,3 +29,22 @@ download hashes before promoting the website's `desktop/latest.json` channel.
 
 Preparing this document does not assert that those release gates have passed.
 The Actions runs and live public manifest are the publication evidence.
+
+## Local preflight
+
+- `python3 -m unittest discover -s tests -v`: 26 passed.
+- `cargo test --workspace --lib --bins --locked -- --test-threads=1`:
+  753 passed, 8 ignored, zero failures.
+- Default parallel execution is not green: four transient animation/debug-selector
+  tests failed in the first full run. All four passed individually, and the full
+  serial run passed without source changes. Wall-clock animation completion and
+  cached-paint debug selectors are sensitive to concurrent test scheduling. This
+  release does not claim to fix parallel test flakiness.
+- The current local release binary passed isolated Xvfb responsive-layout,
+  native login-control, and model-picker interaction checks using
+  `scripts/screenshot.py`. Login verification used offline fixtures, not real
+  provider OAuth. Model verification covered local selection requests, not
+  backend acknowledgement. These local checks do not replace packaged CI checks.
+- Shell syntax checks passed for Linux/macOS packaging and macOS verification.
+- The pinned runtime's SDK, render-core, and harness-api source matches the local
+  runtime checkout used for the desktop unit tests.
