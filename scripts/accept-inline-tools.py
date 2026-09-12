@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure inline tool surfaces and exercise real clicks on a private X11 display.
+"""Verify inline tool headers, token buttons, and expanded output cards via X11.
 
 Uses screenshot.py's real application fixture and isolation, without opening or
 controlling the user's desktop. Pass an unused output PNG path. The current
@@ -47,10 +47,16 @@ def verify(output, env, root, run):
                    image.getcolors(maxcolors=image.width * image.height)
                    if color != (0, 0, 0))
 
-    def click(y):
-        run(["xdotool", "mousemove", "450", str(y), "click", "1",
+    def click(y, x=450):
+        run(["xdotool", "mousemove", str(x), str(y), "click", "1",
              "mousemove", "100", "100"], env=env, cwd=root,
             check=True, timeout=10)
+
+    def token_center(image, y):
+        xs = [x for x in range(1000, 1420)
+              if image.getpixel((x, y)) == (54, 48, 43)]
+        assert len(xs) > 10, "rounded token button fill did not paint"
+        return (min(xs) + max(xs)) // 2
 
     def capture(suffix):
         path = output.with_name(output.stem + suffix + ".png")
@@ -61,15 +67,18 @@ def verify(output, env, root, run):
 
     y = running_center(before)
     checked = same_surface(before, y - 50, y + 50)
-    # This interior strip contains the three status rows, but no long text.
-    # A card background or any horizontal border would change these pixels.
+    crop = (280, 60, 1420, 1490)  # omit prompt caret and changing build metadata
+    # Clicking the row must no longer expand it.
     click(y)
+    row_clicked = capture("-row-clicked")
+    assert changed_pixels(ImageChops.difference(
+        before.crop(crop), row_clicked.crop(crop))) == 0, "tool row is still clickable"
+    click(y, token_center(before, y))
     expanded = capture("-expanded")
     expanded_y = running_center(expanded)
-    crop = (280, 60, 1420, 1490)  # omit prompt caret and changing build metadata
     difference = ImageChops.difference(before.crop(crop), expanded.crop(crop))
     changed = changed_pixels(difference)
-    assert changed > 500, "native header click did not reveal tool details"
+    assert changed > 500, "native token click did not reveal tool details"
     # Compact transcripts may fit without scrolling, leaving the header fixed.
     # Verify that detail content paints below it rather than requiring an upward
     # scroll that only occurred when the taller transcript filled the viewport.
@@ -77,15 +86,25 @@ def verify(output, env, root, run):
     detail_changed = changed_pixels(ImageChops.difference(
         before.crop(detail_box), expanded.crop(detail_box)))
     assert detail_changed > 500, "expanded detail did not paint below the header"
-    checked += same_surface(expanded, expanded_y - 10, y + 40)
+    card = expanded.crop((800, expanded_y + 30, 1200, expanded_y + 60))
+    count = card.width * card.height
+    assert card.getcolors(maxcolors=count) == [(count, (28, 26, 24))], (
+        "expanded output must have a distinct code-card background")
+    # Neither the row nor the card body should collapse the output.
     click(expanded_y)
+    click(expanded_y + 40, 900)
+    body_clicked = capture("-body-clicked")
+    assert changed_pixels(ImageChops.difference(
+        expanded.crop(crop), body_clicked.crop(crop))) == 0, "only the token button may collapse output"
+    click(expanded_y, token_center(expanded, expanded_y))
     collapsed = capture("-collapsed")
     assert running_center(collapsed) == y, "second click did not restore row layout"
     difference = ImageChops.difference(before.crop(crop), collapsed.crop(crop))
     remaining = changed_pixels(difference)
     assert remaining == 0, f"collapse failed to restore the original transcript: {remaining} pixels"
-    print(f"Inline tools acceptance passed: {checked} surface/edge pixels match "
-          f"transcript RGB {background}; native expansion changes {changed} pixels "
+    print(f"Tool cards acceptance passed: {checked} collapsed surface/edge pixels match "
+          f"transcript RGB {background}; {count} expanded card pixels match code background; "
+          f"token-only expansion changes {changed} pixels "
           f"with {detail_changed} changed detail pixels; collapse restores all transcript pixels.")
 
 

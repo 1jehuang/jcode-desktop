@@ -1,5 +1,25 @@
 # Inline tool-call acceptance
 
+## Current interaction contract, 2026-09-12
+
+Collapsed tool headers remain inline. The token count is now a rounded button
+that toggles a padded, rounded output card using the theme's code background.
+Clicking the rest of the row or the expanded card does not toggle it. The token
+button is also available while a tool is running, including with empty output.
+
+`scripts/accept-inline-tools.py` now checks these revised requirements with native
+clicks on the private display, contrasting card pixels, unchanged collapsed-row
+pixels, and exact restoration after collapse. The GPUI tool tests cover running,
+empty, single-line, and long ANSI-colored output, plus non-interactive row/body
+clicks. The older observations below describe the previous design, not the
+current expanded state.
+
+Verification: all 24 tool-filtered GPUI/unit tests passed. Native X11 acceptance
+checked 40,200 unchanged collapsed-surface pixels and 12,000 code-card pixels.
+Row/body clicks changed no transcript pixels, and the second token-button click
+restored the original transcript exactly. The expanded screenshot was inspected
+at `target/tool-card-acceptance-expanded.png`.
+
 ## Interpretation
 
 The request was to remove the card around tool calls and make them feel more

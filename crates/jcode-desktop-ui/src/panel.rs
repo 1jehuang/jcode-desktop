@@ -3264,18 +3264,6 @@ impl Panel {
                     .flex_none()
                     .flex_col()
                     .overflow_hidden()
-                    .when(has_detail, |el| {
-                        el.cursor_pointer().on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                if !this.expanded_tools.remove(&call_id) {
-                                    this.expanded_tools.insert(call_id.clone());
-                                }
-                                this.transcript_measurements.dirty = true;
-                                cx.notify();
-                            }),
-                        )
-                    })
                     .child(
                         div()
                             .debug_selector(|| "tool-header".into())
@@ -3317,16 +3305,32 @@ impl Panel {
                                         .child("running"),
                                 )
                             })
-                            // Context cost stays visible even for single-line
-                            // results and while the output is expanded.
-                            .when(*done, |el| {
+                            // The token pill is the sole expansion control,
+                            // including while a tool is still running.
+                            .when(has_detail, |el| {
                                 el.child(
                                     div()
+                                        .id(("tool-output-toggle", index))
                                         .debug_selector(|| "tool-output-size".into())
                                         .flex_none()
                                         .ml_auto()
+                                        .px_2()
+                                        .py(px(2.0))
+                                        .rounded_full()
+                                        .bg(Theme::global().INLINE_CODE_BG)
+                                        .hover(|style| style.bg(Theme::global().TOOL_BORDER))
+                                        .cursor_pointer()
                                         .text_size(px(10.0))
+                                        .line_height(px(14.0))
                                         .text_color(token_color)
+                                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                                            cx.stop_propagation();
+                                            if !this.expanded_tools.remove(&call_id) {
+                                                this.expanded_tools.insert(call_id.clone());
+                                            }
+                                            this.transcript_measurements.dirty = true;
+                                            cx.notify();
+                                        }))
                                         .child(token_label),
                                 )
                             }),
@@ -3336,11 +3340,14 @@ impl Panel {
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
-                                // Align details with the text after the status
-                                // glyph, without introducing another surface.
+                                // Keep the collapsed header inline, and give
+                                // expanded output its own quiet card surface.
                                 .ml(px(24.0))
-                                .pr_1()
-                                .py_1p5()
+                                .mt_1()
+                                .mb_1()
+                                .p_3()
+                                .rounded_lg()
+                                .bg(Theme::global().CODE_BG)
                                 .font_family(Theme::global().FONT_MONO)
                                 .text_size(px(11.5))
                                 .line_height(relative(1.45))
@@ -6596,12 +6603,21 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert_eq!(vcx.debug_bounds("tool-output-size").is_some(), done);
+            let button = vcx
+                .debug_bounds("tool-output-size")
+                .expect("running and finished tools expose their output toggle");
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("tool-detail").is_some());
+            let button = vcx.debug_bounds("tool-output-size").unwrap();
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("tool-detail").is_none());
         }
     }
 
     #[gpui::test]
-    fn clicking_a_tool_row_expands_clean_detail_and_collapses_again(cx: &mut gpui::TestAppContext) {
+    fn only_the_token_button_toggles_the_tool_output_card(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -6642,19 +6658,22 @@ mod tests {
             "detail stays hidden until expanded"
         );
 
-        // A real click on the header expands it.
+        // The row itself is no longer an expansion target.
         let header = vcx
             .debug_bounds("tool-header")
             .expect("tool header painted");
-        let expanded_header = vcx
-            .debug_bounds("tool-header")
-            .expect("expanded tool header painted");
-        vcx.simulate_click(expanded_header.center(), gpui::Modifiers::default());
+        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_none());
+        vcx.simulate_click(hint.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let detail = vcx
             .debug_bounds("tool-detail")
-            .expect("clicking the header expands the detail");
+            .expect("clicking the token button expands the output card");
         assert!(detail.size.height > px(0.));
+        let header = vcx.debug_bounds("tool-header").unwrap();
+        assert_eq!(detail.left(), header.left() + px(24.));
+        assert!(detail.top() >= header.bottom() + px(4.));
         assert!(
             vcx.debug_bounds("tool-output-size").is_some(),
             "token cost remains visible alongside the expanded detail"
@@ -6677,8 +6696,17 @@ mod tests {
         assert!(rendered.contains("line 0") && rendered.contains("line 59"));
         assert!(rendered.contains("lines hidden"));
 
-        // A second click collapses it again.
+        // Clicking the header or output card leaves it open.
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_some());
+        vcx.simulate_click(detail.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_some());
+
+        // Only a second click on the token button collapses it again.
+        let button = vcx.debug_bounds("tool-output-size").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(
             vcx.debug_bounds("tool-detail").is_none(),
