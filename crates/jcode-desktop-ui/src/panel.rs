@@ -36,6 +36,8 @@ mod image_preview;
 mod preview;
 #[path = "panel_login.rs"]
 mod login;
+#[path = "panel_latest.rs"]
+mod latest;
 #[path = "panel_recovery.rs"]
 mod recovery;
 #[path = "panel_prompt.rs"]
@@ -229,6 +231,7 @@ pub struct Panel {
     transcript_wheel_glide: WheelGlide,
     transcript_wheel_task: Option<Task<()>>,
     stick_to_bottom: bool,
+    transcript_end_visible: bool,
     /// A detached reload offset cannot be applied until asynchronous history
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     pending_history_scroll: Option<(f32, f32)>,
@@ -651,6 +654,7 @@ impl Panel {
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_task: None,
             stick_to_bottom: true,
+            transcript_end_visible: true,
             pending_history_scroll: None,
             bridge,
             preview_state: None,
@@ -3567,6 +3571,9 @@ impl Render for Panel {
         let first_visible_row = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_first_visible = first_visible_row.clone();
         let prompt_list = self.transcript_list.clone();
+        let end_visible = std::rc::Rc::new(std::cell::Cell::new(false));
+        let row_end_visible = end_visible.clone();
+        let end_list = self.transcript_list.clone();
         let transcript = if fresh_session {
             div()
                 .debug_selector(|| "fresh-session".into())
@@ -3610,7 +3617,14 @@ impl Render for Panel {
                         self.transcript_list.clone(),
                         move |row_index, window, cx| {
                             if row_index == list_rows.len() {
-                                return panel.read(cx).render_transcript_activity();
+                                return div()
+                                    .relative()
+                                    .child(panel.read(cx).render_transcript_activity())
+                                    .child(latest::end_marker(
+                                        row_end_visible.clone(),
+                                        end_list.clone(),
+                                    ))
+                                    .into_any_element();
                             }
                             let row = &list_rows[row_index];
                             panel.update(cx, |panel, cx| {
@@ -3649,6 +3663,12 @@ impl Render for Panel {
                                     .px_3()
                                     .pt(px(top_padding))
                                     .child(element)
+                                    .when(row_index + 1 == row_count, |el| {
+                                        el.child(latest::end_marker(
+                                            row_end_visible.clone(),
+                                            end_list.clone(),
+                                        ))
+                                    })
                                     .child(prompt::visibility_marker(
                                         row_index,
                                         row_first_visible.clone(),
@@ -3717,7 +3737,7 @@ impl Render for Panel {
         )
         .unwrap_or_default();
 
-        let show_jump_chip = !self.stick_to_bottom;
+        let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
 
         div()
             .flex()
@@ -3861,6 +3881,7 @@ impl Render for Panel {
                     .child(transcript)
                     .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
+                    .child(self.transcript_end_observer(end_visible, row_count, cx))
                     .child(crate::scrollbar::vertical_list(
                         &self.transcript_list,
                         "transcript-scrollbar",
