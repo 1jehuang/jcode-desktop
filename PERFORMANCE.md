@@ -37,6 +37,17 @@ to the persistent desktop diagnostic log, including software-emulation status.
 The screenshot harness deliberately forces lavapipe and cannot prove hardware
 Vulkan presentation on the user's display.
 
+The rebuilt release UI activated successfully in the running process, and its
+adapter log confirmed hardware Intel Arc B390 rendering through Mesa OpenGL.
+The private-Xvfb visual review is `target/ui-review-fps-20260912.png`. Eighteen
+targeted queue, measurement, cache, streaming-scroll, tool, and image tests passed.
+The broader panel run passed 185 tests with two failures outside these checks:
+fresh-session composer geometry (also reproduced with the earlier binary) and
+multiedit diff-boundary expectations. A post-reload passive capture overlapped
+further UI reloads and contained concatenated JSONL records, so its failed
+analysis is not evidence of an end-to-end FPS improvement. Raw artifacts remain
+at `target/live-profile/fps-after-20260912/`.
+
 ## Sidebar hover, 2026-09-05
 
 Session rows previously lived in one eagerly built scrollable div. GPUI's hover
