@@ -50,6 +50,9 @@ fn assert_hover_scroll(cx: &mut gpui::TestAppContext, precise: bool, active_empt
     });
     vcx.run_until_parked();
     vcx.executor().advance_clock(Duration::from_millis(16));
+    vcx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
     vcx.run_until_parked();
     let after = panels
         .each_ref()
@@ -78,6 +81,9 @@ fn assert_hover_scroll(cx: &mut gpui::TestAppContext, precise: bool, active_empt
     });
     vcx.run_until_parked();
     vcx.executor().advance_clock(Duration::from_millis(16));
+    vcx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
     vcx.run_until_parked();
     if active_empty {
         assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 1);

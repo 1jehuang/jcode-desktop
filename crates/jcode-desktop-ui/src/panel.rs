@@ -26,6 +26,12 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 
 #[path = "panel_activity.rs"]
 mod activity;
+#[path = "panel_scroll_motion.rs"]
+mod scroll_motion;
+use scroll_motion::WheelGlide;
+#[cfg(test)]
+#[path = "panel_scroll_momentum_tests.rs"]
+mod scroll_momentum_tests;
 #[path = "panel_diff.rs"]
 mod diff_review;
 #[path = "panel_flicker.rs"]
@@ -239,10 +245,11 @@ pub struct Panel {
     offscreen_prompt: Option<usize>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
-    /// Remaining mouse-wheel travel. Precise touchpad input already carries
-    /// platform momentum and continues to go straight to GPUI's list.
+    /// Remaining wheel travel. Precise touchpad input stays directly mapped
+    /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
-    transcript_wheel_task: Option<Task<()>>,
+    transcript_wheel_frame: Option<Instant>,
+    transcript_wheel_frame_pending: bool,
     stick_to_bottom: bool,
     transcript_end_visible: bool,
     /// A detached reload offset cannot be applied until asynchronous history
@@ -341,42 +348,6 @@ pub(crate) enum MinimapSessionState {
     Streaming,
     Complete,
     Error,
-}
-
-/// Browser-like easing for discrete mouse-wheel notches. New notches add to
-/// the destination while an existing glide is running, rather than starting a
-/// second animation or jumping a full line-height immediately.
-#[derive(Debug, Default)]
-struct WheelGlide {
-    remaining: f32,
-}
-
-impl WheelGlide {
-    const EASE: f32 = 0.24;
-    const MIN_STEP: f32 = 0.65;
-    const SETTLE: f32 = 0.7;
-
-    fn push(&mut self, pixels: f32) {
-        // Reversing the wheel should respond immediately instead of first
-        // paying off momentum in the old direction.
-        if self.remaining.signum() != pixels.signum() {
-            self.remaining = 0.0;
-        }
-        self.remaining += pixels;
-    }
-
-    fn take_step(&mut self) -> Option<f32> {
-        if self.remaining.abs() <= Self::SETTLE {
-            self.remaining = 0.0;
-            return None;
-        }
-        let step = (self.remaining.abs() * Self::EASE)
-            .max(Self::MIN_STEP)
-            .min(self.remaining.abs())
-            * self.remaining.signum();
-        self.remaining -= step;
-        Some(step)
-    }
 }
 
 struct CodeFile {
@@ -730,7 +701,8 @@ impl Panel {
             pinned_todo_expanded: false,
             transcript_selection,
             transcript_wheel_glide: WheelGlide::default(),
-            transcript_wheel_task: None,
+            transcript_wheel_frame: None,
+            transcript_wheel_frame_pending: false,
             stick_to_bottom: true,
             transcript_end_visible: true,
             pending_history_scroll: None,
@@ -758,6 +730,13 @@ impl Panel {
     }
 
     fn glide_transcript_wheel(&mut self, pixels: f32, cx: &mut Context<Self>) {
+        if !pixels.is_finite() || pixels == 0.0 {
+            return;
+        }
+        if crate::config::get().appearance.reduce_motion || cx.reduce_motion() {
+            self.scroll_transcript_direct(-pixels, cx);
+            return;
+        }
         self.release_startup_preview();
         // `ListState::scroll_by` is a programmatic movement and therefore does
         // not invoke the list's user-scroll callback. Release follow mode here
@@ -768,13 +747,18 @@ impl Panel {
             cx.notify();
         }
         self.transcript_wheel_glide.push(pixels);
-        if self.transcript_wheel_task.is_some() {
-            return;
-        }
-        self.schedule_transcript_wheel_tick(cx);
+        self.transcript_wheel_frame
+            .get_or_insert_with(|| cx.background_executor().now());
+        cx.notify();
+    }
+
+    fn cancel_transcript_momentum(&mut self) {
+        self.transcript_wheel_glide.remaining = 0.0;
+        self.transcript_wheel_frame = None;
     }
 
     fn scroll_transcript_direct(&mut self, delta_y: f32, cx: &mut Context<Self>) {
+        self.cancel_transcript_momentum();
         self.release_startup_preview();
         if delta_y > 0.0 && self.stick_to_bottom {
             self.stick_to_bottom = false;
@@ -785,29 +769,57 @@ impl Panel {
         cx.notify();
     }
 
-    fn schedule_transcript_wheel_tick(&mut self, cx: &mut Context<Self>) {
-        self.transcript_wheel_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(8))
-                .await;
-            let _ = this.update(cx, |panel, cx| {
-                panel.transcript_wheel_task = None;
-                if panel.advance_transcript_wheel(cx) {
-                    panel.schedule_transcript_wheel_tick(cx);
+    fn schedule_transcript_wheel_frame(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.transcript_wheel_frame.is_none() || self.transcript_wheel_frame_pending {
+            return;
+        }
+        self.transcript_wheel_frame_pending = true;
+        let panel = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            let _ = panel.update(cx, |panel, cx| {
+                panel.transcript_wheel_frame_pending = false;
+                let Some(previous) = panel.transcript_wheel_frame else {
+                    return;
+                };
+                let now = cx.background_executor().now();
+                let elapsed = now.saturating_duration_since(previous);
+                // Do not replay stale momentum after a suspended/hidden window.
+                if elapsed > Duration::from_millis(250) {
+                    panel.cancel_transcript_momentum();
+                    return;
+                }
+                panel.transcript_wheel_frame = Some(now);
+                if !panel.advance_transcript_wheel_by(elapsed, cx) {
+                    panel.cancel_transcript_momentum();
                 }
             });
-        }));
+        });
     }
 
+    #[cfg(test)]
     fn advance_transcript_wheel(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(step) = self.transcript_wheel_glide.take_step() else {
+        self.advance_transcript_wheel_by(Duration::from_millis(16), cx)
+    }
+
+    fn advance_transcript_wheel_by(&mut self, elapsed: Duration, cx: &mut Context<Self>) -> bool {
+        if elapsed.is_zero() {
+            cx.notify();
+            return true;
+        }
+        let Some(step) = self.transcript_wheel_glide.take_step(elapsed) else {
             return false;
         };
         let current = self.transcript_list.scroll_px_offset_for_scrollbar();
+        let max = f32::from(self.transcript_list.max_offset_for_scrollbar().y).max(0.0);
+        let target = (f32::from(current.y) - step).clamp(-max, 0.0);
         self.transcript_list
-            .set_offset_from_scrollbar(point(current.x, current.y - px(step)));
+            .set_offset_from_scrollbar(point(current.x, px(target)));
+        // Discard travel into an edge instead of accumulating invisible debt.
+        if (step < 0.0 && target >= 0.0) || (step > 0.0 && target <= -max) {
+            self.transcript_wheel_glide.remaining = 0.0;
+        }
         cx.notify();
-        true
+        self.transcript_wheel_glide.remaining != 0.0
     }
 
     pub fn new_code_file(path: std::path::PathBuf, bridge: Bridge, cx: &mut Context<Self>) -> Self {
@@ -3415,6 +3427,7 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.schedule_transcript_wheel_frame(window, cx);
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
         if self.is_accounts_panel() {
@@ -4025,10 +4038,9 @@ impl Render for Panel {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    // GPUI applies discrete wheel notches in one jump. Catch
-                    // only those in capture phase and ease them over several
-                    // frames. Precise touchpad deltas keep their native direct
-                    // manipulation and platform-provided momentum.
+                    // Discrete wheel notches coast on display frames. Precise
+                    // touchpad deltas stay directly mapped, without layering
+                    // a second animation over native gesture control.
                     .child(
                         gpui::canvas(
                             move |bounds, window, _| {
@@ -4057,6 +4069,10 @@ impl Render for Panel {
                                             return;
                                         }
                                         let panel = wheel_panel.read(cx);
+                                        if panel.transcript_list.is_scrollbar_dragging() {
+                                            cx.stop_propagation();
+                                            return;
+                                        }
                                         if panel.diff_review.is_some() {
                                             return;
                                         }
@@ -4088,9 +4104,20 @@ impl Render for Panel {
                     .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))
-                    .child(crate::scrollbar::vertical_list(
+                    .child(crate::scrollbar::interactive_vertical_list(
                         &self.transcript_list,
                         "transcript-scrollbar",
+                        {
+                            let panel = cx.entity().downgrade();
+                            move |_, cx| {
+                                let _ = panel.update(cx, |panel, cx| {
+                                    panel.cancel_transcript_momentum();
+                                    panel.release_startup_preview();
+                                    panel.stick_to_bottom = false;
+                                    cx.notify();
+                                });
+                            }
+                        },
                     ))
                     // Detached from the live end: one tap catches back up.
                     .when(show_jump_chip, |el| {
@@ -4125,6 +4152,7 @@ impl Render for Panel {
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
+                                        this.cancel_transcript_momentum();
                                         this.release_startup_preview();
                                         this.stick_to_bottom = true;
                                         this.transcript_list.scroll_to_end();
@@ -5720,13 +5748,13 @@ mod tests {
         let (during_dispatch, glide_started) = panel.read_with(vcx, |panel, _| {
             (
                 panel.test_scroll_offset_y(),
-                panel.transcript_wheel_task.is_some(),
+                panel.transcript_wheel_frame.is_some(),
             )
         });
         assert_eq!(during_dispatch, before, "restored history must not jump");
         assert!(glide_started, "restored history starts a momentum glide");
         panel.update(vcx, |panel, cx| {
-            panel.transcript_wheel_task = None;
+            panel.transcript_wheel_frame = None;
             assert!(panel.advance_transcript_wheel(cx));
         });
         let after = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
@@ -6238,11 +6266,13 @@ mod tests {
     fn discrete_wheel_glide_eases_and_preserves_the_full_distance() {
         let mut glide = WheelGlide::default();
         glide.push(120.0);
-        let first = glide.take_step().expect("wheel input starts a glide");
+        let first = glide
+            .take_step(Duration::from_millis(16))
+            .expect("wheel input starts a glide");
         assert!(first > 0.0 && first < 120.0);
 
         let mut traveled = first;
-        while let Some(step) = glide.take_step() {
+        while let Some(step) = glide.take_step(Duration::from_millis(16)) {
             traveled += step;
         }
         assert!((traveled - 120.0).abs() <= WheelGlide::SETTLE);
@@ -6252,9 +6282,13 @@ mod tests {
     fn reversing_the_wheel_cancels_old_direction_momentum() {
         let mut glide = WheelGlide::default();
         glide.push(120.0);
-        let _ = glide.take_step();
+        let _ = glide.take_step(Duration::from_millis(16));
         glide.push(-40.0);
-        assert!(glide.take_step().is_some_and(|step| step < 0.0));
+        assert!(
+            glide
+                .take_step(Duration::from_millis(16))
+                .is_some_and(|step| step < 0.0)
+        );
     }
 
     /// The acceptance path for the scroll-lock fix: a real wheel event over a
@@ -6315,7 +6349,7 @@ mod tests {
         let (offset_during_dispatch, glide_started) = panel.read_with(vcx, |panel, _| {
             (
                 panel.test_scroll_offset_y(),
-                panel.transcript_wheel_task.is_some(),
+                panel.transcript_wheel_frame.is_some(),
             )
         });
         assert_eq!(
@@ -6327,7 +6361,7 @@ mod tests {
             "the painted transcript starts a momentum glide"
         );
         panel.update(vcx, |panel, cx| {
-            panel.transcript_wheel_task = None;
+            panel.transcript_wheel_frame = None;
             assert!(panel.advance_transcript_wheel(cx));
         });
         let offset_after_frame = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
