@@ -6,7 +6,7 @@ on:
       version:
         description: Beta version (for example 0.1.0-beta.1)
         required: true
-        default: 0.1.0-beta.25
+        default: 0.1.0-beta.27
   push:
     tags: ["desktop-v*"]
 
