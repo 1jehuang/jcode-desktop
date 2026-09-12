@@ -110,8 +110,6 @@ impl Workspace {
             .mt_1()
             .ml(px(20.0))
             .pl_2()
-            .border_l_1()
-            .border_color(Theme::global().PANEL_BORDER)
             .flex()
             .flex_col()
             .gap(px(2.0));

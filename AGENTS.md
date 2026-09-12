@@ -11,6 +11,11 @@
 - When desktop work requires an SDK, protocol, TUI, or shared-runtime change, make the correct change in the Jcode repository directly rather than adding a desktop-only workaround or asking the user to coordinate it.
 - Keep cross-repository behavior aligned and commit and push the changes in each affected repository.
 
+## Visual Design
+
+- Never use decorative left-hand vertical lines, accent bars, or tree rails to mark or group content, including sidebar swarm agents. Use indentation, spacing, typography, or subtle background fills instead.
+- This rule does not prohibit functional scrollbars, pane dividers, or complete control outlines.
+
 ## Testing
 
 - For visual inspection, run `python3 scripts/screenshot.py target/ui-review.png`.
