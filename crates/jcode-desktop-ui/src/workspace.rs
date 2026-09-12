@@ -145,7 +145,6 @@ const STRIP_PADDING_Y: f32 = 16.0;
 const STRIP_PADDING_TOP: f32 = 10.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 40.0;
-const FPS_HEADER_HEIGHT: f32 = 20.0;
 /// Keep the sidebar separate from the session sheet with a canvas gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
 const FOLDER_RIGHT_MARGIN: f32 = 12.0;
@@ -5052,49 +5051,6 @@ impl Workspace {
         Some(chip.into_any_element())
     }
 
-    /// A mouse-friendly spawn target at the canvas edge. It stays invisible
-    /// until the pointer reaches the far right, then reveals the same `+`
-    /// affordance as the session sidebar.
-    fn render_edge_new_session(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("edge-new-session")
-            .debug_selector(|| "edge-new-session".into())
-            .absolute()
-            .right_0()
-            // Keep this invisible add-session target below the live tabs.
-            .top(px(STRIP_PADDING_TOP + FOLDER_CONTENT_INSET))
-            .bottom_0()
-            .w(px(32.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .opacity(0.0)
-            .hover(|el| el.opacity(1.0))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| {
-                    this.missed("new_panel", cx);
-                    this.open_new_session(cx);
-                }),
-            )
-            .child(
-                div()
-                    .size(px(28.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(Theme::global().PANEL_BORDER)
-                    .bg(Theme::global().HEADER_BG)
-                    .text_size(px(20.0))
-                    .text_color(Theme::global().TEXT)
-                    .child("+"),
-            )
-            .into_any_element()
-    }
-
     /// The dedicated tab fills the sidebar, with fixed-height account rows and
     /// independent scrolling when the credentials exceed the available height.
     fn render_accounts(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -6488,8 +6444,7 @@ impl Render for Workspace {
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
         let content_top_inset = content_top_inset(self.show_sidebar && !compact, fullscreen);
-        let viewport_h =
-            (f32::from(viewport.height) - content_top_inset - FPS_HEADER_HEIGHT).max(0.0);
+        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -6660,29 +6615,6 @@ impl Render for Workspace {
                 ))
         });
 
-        // Sample only on existing redraws. The counter never drives animation
-        // or wakes an idle window just to measure itself.
-        let fps = self
-            .fps_counter
-            .label(Instant::now(), || window.frame_duration_snapshot());
-        let fps_header = div()
-            .debug_selector(|| "fps-header".into())
-            .w_full()
-            .h(px(FPS_HEADER_HEIGHT))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(Theme::global().HEADER_BG)
-            .child(
-                div()
-                    .debug_selector(|| "fps-counter".into())
-                    .font_family(Theme::global().FONT_MONO)
-                    .text_size(px(10.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(fps),
-            );
-
         let root = div()
             .size_full()
             .flex()
@@ -6759,7 +6691,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &WidthPreset2, _w, cx| this.set_width(0.5, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset3, _w, cx| this.set_width(0.75, cx)))
             .on_action(cx.listener(|this, _: &WidthPreset4, _w, cx| this.set_width(1.0, cx)))
-            .child(fps_header)
             .child(
                 div()
                     .debug_selector(|| "workspace-body".into())
@@ -6802,7 +6733,7 @@ impl Render for Workspace {
                                         ))
                                     })
                                     .child(content)
-                                    .child(self.render_workspace_bar(canvas_w, cx))
+                                    .child(self.render_workspace_bar(canvas_w, window, cx))
                                     .when(
                                         self.show_minimap
                                             && !self.slots.is_empty()
@@ -6823,9 +6754,6 @@ impl Render for Workspace {
                                             ))
                                         },
                                     )
-                                    .when(overview_progress <= 0.0, |el| {
-                                        el.child(self.render_edge_new_session(cx))
-                                    })
                                     // Paint non-tutorial feedback last so it remains above the
                                     // canvas without covering an animated tutorial control.
                                     .when_some(
@@ -11010,7 +10938,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn right_edge_is_a_full_height_click_target_for_a_new_session(cx: &mut gpui::TestAppContext) {
+    fn tab_plus_replaces_the_right_edge_new_session_target(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -11019,18 +10947,16 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let edge = vcx
-            .debug_bounds("edge-new-session")
-            .expect("the right-edge new-session target should paint");
-        assert_eq!(f32::from(edge.size.width), 32.0);
-        assert!(f32::from(edge.size.height) > 100.0);
-        vcx.simulate_click(edge.center(), gpui::Modifiers::default());
+        assert!(vcx.debug_bounds("edge-new-session").is_none());
+        let plus = vcx.debug_bounds("tab-new-session").unwrap();
+        assert_eq!(plus.size, gpui::size(px(32.0), px(32.0)));
+        vcx.simulate_click(plus.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
 
         workspace.update(vcx, |workspace, _| {
             assert!(
                 workspace.test_coach().trace("new_panel").slow_paths > 0,
-                "clicking the edge target should invoke the pointer spawn path"
+                "clicking the tab plus should invoke the pointer spawn path"
             );
         });
     }

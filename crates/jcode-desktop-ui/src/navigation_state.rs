@@ -58,11 +58,13 @@ impl Workspace {
             "sidebar_overlay": self.compact_sidebar_open,
             "canvas_width": self.last_canvas_width,
 
-            "header_height": FPS_HEADER_HEIGHT,
+            "header_height": 0,
             "active_row": self.active_row,
             "focused_slot": focused,
             "keyboard_panel": keyboard_panel,
-            "tab_targets": self.live_tabs.hit_targets,
+            "tab_targets": self.live_tabs.hit_targets.iter()
+                .map(|(index, x)| (*index, x + live_tabs::TAB_STATUS_WIDTH))
+                .collect::<Vec<_>>(),
             "tab_motion": self.live_tabs.is_animating(),
             "camera_motion": self.camera_started[self.active_row].is_some(),
             "minimap_visible": self.show_minimap,

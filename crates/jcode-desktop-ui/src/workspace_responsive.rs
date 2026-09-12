@@ -156,7 +156,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         div()
             .absolute()
-            .top(px(FPS_HEADER_HEIGHT))
+            .top_0()
             .bottom_0()
             .left_0()
             .right_0()

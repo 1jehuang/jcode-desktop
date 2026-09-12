@@ -6,16 +6,20 @@ import time
 from PIL import Image
 
 
-def header_pixels(image, height):
-    """The backing strip is flat, with only a small centered text readout."""
-    assert height == 20, ("unexpected header height", height)
-    width = image.width
-    background = image.getpixel((0, 0))
-    changed = [(x, y) for y in range(height) for x in range(width)
-               if image.getpixel((x, y)) != background]
+def header_pixels(image, height, minimap):
+    """FPS occupies the left slot of the tab row, not a separate top strip."""
+    assert height == 0, ("the separate header must be removed", height)
+    # This acceptance fixture uses the default folder layout and full sidebar.
+    slot = image.crop((276, 10, 364, 42))
+    background = slot.getpixel((0, 0))
+    changed = [(x, y) for y in range(slot.height) for x in range(slot.width)
+               if slot.getpixel((x, y)) != background]
     assert changed, "FPS text is missing"
-    assert all(abs(x - width / 2) < 65 for x, _ in changed), "header text is not centered"
-    assert all(0 < y < height - 1 for _, y in changed), "header content is clipped"
+    assert all(0 < x < slot.width - 1 and 0 < y < slot.height - 1 for x, y in changed), "FPS content is clipped"
+    # The new-session plus is always visible to the right of the tabs, before the minimap.
+    right = image.width - 12 - (154 if minimap else 0)
+    plus = image.crop((right - 32, 10, right, 42))
+    assert any(pixel != plus.getpixel((0, 0)) for pixel in plus.getdata()), "tab plus is missing"
     return {"header_height": height, "text_pixels": len(changed), "background": background}
 
 
@@ -55,8 +59,17 @@ def verify(output, env, root):
         subprocess.run(["import", "-window", "root", "png:" + str(path)],
                        env=env, cwd=root, check=True, timeout=15)
         with Image.open(path) as image:
-            pixels = header_pixels(image.convert("RGB"), height)
+            pixels = header_pixels(image.convert("RGB"), height, current["minimap_visible"])
         frames.append(dict(workspace=row, keyboard_panel=current["keyboard_panel"],
                            screenshot=path.name, **pixels))
-    report.write_text(json.dumps(dict(passed=True, frames=frames), indent=2) + "\n")
-    print("FPS header PASS: native tab selection, panel moves, keyboard focus, and centered backing-strip text across 4 workspaces", flush=True)
+    width = nav()["viewport"][0]
+    native("mousemove", str(round(width - 24)), "400", "click", "1")
+    assert sum(len(row["panels"]) for row in nav()["rows"]) == 4, "old edge target still creates sessions"
+    native("mousemove", str(round(width - 12 - (154 if nav()["minimap_visible"] else 0) - 16)), "26", "click", "1")
+    current = nav()
+    assert sum(len(row["panels"]) for row in current["rows"]) == 5, "tab plus did not create exactly one session"
+    assert current["active_row"] == 3 and len(current["rows"][3]["panels"]) == 2, current
+    assert current["keyboard_panel"] == current["focused_slot"], "new composer did not receive focus"
+    report.write_text(json.dumps(dict(passed=True, frames=frames, plus_created_session=True,
+                                     edge_did_not_create_session=True), indent=2) + "\n")
+    print("FPS tab row PASS: left FPS, right plus, native tab navigation across 4 workspaces, new-session focus, and removed edge target", flush=True)

@@ -6,6 +6,8 @@ use crate::panel::folder_session_title;
 const TAB_FLOAT_GAP: f32 = 8.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
+pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
+const TAB_NEW_WIDTH: f32 = 40.0;
 
 /// Center one workspace's floating stack independently of the panel camera. Selection adds
 /// only a 12px width accent and a 4px lift, so the panels do the large slide.
@@ -286,6 +288,7 @@ impl Workspace {
     pub(super) fn render_workspace_bar(
         &mut self,
         canvas_width: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let right = if self.show_minimap && !self.slots.is_empty() && !self.overview {
@@ -315,7 +318,7 @@ impl Workspace {
                 *row == self.active_row && index.is_none_or(|index| index == self.active)
             })
             .unwrap_or(0);
-        let available = (canvas_width - right).max(0.0);
+        let available = (canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH).max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
         let targets: Vec<_> = entries
@@ -340,9 +343,9 @@ impl Workspace {
             .id("live-session-tabs")
             .debug_selector(|| "live-session-tabs".into())
             .absolute()
-            .top(px(STRIP_PADDING_TOP))
-            .left_0()
-            .right(px(right))
+            .top_0()
+            .left(px(TAB_STATUS_WIDTH))
+            .right(px(TAB_NEW_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
         self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
@@ -542,7 +545,71 @@ impl Workspace {
                     }),
             );
         }
-        tabs.into_any_element()
+        // Sample only on existing redraws, never wake an idle window for FPS.
+        let fps = self
+            .fps_counter
+            .label(Instant::now(), || window.frame_duration_snapshot());
+        div()
+            .debug_selector(|| "workspace-tab-row".into())
+            .absolute()
+            .top(px(STRIP_PADDING_TOP))
+            .left_0()
+            .right(px(right))
+            .h(px(FOLDER_CONTENT_INSET))
+            .child(
+                div()
+                    .debug_selector(|| "fps-counter-slot".into())
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(TAB_STATUS_WIDTH))
+                    .h(px(TAB_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .pl_2()
+                    .child(
+                        div()
+                            .debug_selector(|| "fps-counter".into())
+                            .font_family(Theme::global().FONT_MONO)
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(fps),
+                    ),
+            )
+            .child(tabs)
+            .child(
+                div()
+                    .id("tab-new-session")
+                    .debug_selector(|| "tab-new-session".into())
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .size(px(TAB_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .text_size(px(20.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .cursor_pointer()
+                    .occlude()
+                    .hover(|el| {
+                        el.bg(Theme::global().PANEL_BG)
+                            .text_color(Theme::global().TEXT)
+                    })
+                    .tooltip(|_, cx| cx.new(|_| TabTooltip("New session".into())).into())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                            this.missed("new_panel", cx);
+                            this.open_new_session(cx);
+                        }),
+                    )
+                    .child("+"),
+            )
+            .into_any_element()
     }
 }
 
@@ -1095,12 +1162,12 @@ mod tests {
                     w.resolve_camera_target(1200.0);
                     w.camera_x[0] = w.camera_target[0];
                     let before_camera = w.camera_target[0];
-                    let _ = w.render_workspace_bar(1200.0, cx);
+                    let _ = w.render_workspace_bar(1200.0, window, cx);
                     w.live_tabs.settle();
                     let closed_id = w.slots[initial].panel.entity_id().as_u64();
                     w.close_panel(&ClosePanel, window, cx);
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, cx);
+                    let _ = w.render_workspace_bar(1200.0, window, cx);
                     assert_eq!(w.slots.len(), 5, "surface is still fading");
                     assert_eq!(w.live_tabs.tabs.len(), 4);
                     assert!(!w.live_tabs.tabs.contains_key(&closed_id));
@@ -1122,7 +1189,7 @@ mod tests {
                         cx,
                     );
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, cx);
+                    let _ = w.render_workspace_bar(1200.0, window, cx);
                     assert_eq!(w.slots.len(), 4);
                     assert_eq!(w.camera_target[0], camera, "no second camera move");
                     for (id, tab) in &w.live_tabs.tabs {
@@ -1154,7 +1221,7 @@ mod tests {
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.close_panel(&ClosePanel, window, cx);
-                let _ = w.render_workspace_bar(1200.0, cx);
+                let _ = w.render_workspace_bar(1200.0, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert!(w.live_tabs.hit_targets.is_empty());
                 assert_eq!(w.live_tabs.tabs.len(), 1);
@@ -1384,8 +1451,9 @@ mod tests {
                 );
             }
             let last = vcx.debug_bounds("live-session-tab-11").unwrap();
-            let edge = vcx.debug_bounds("edge-new-session").unwrap();
-            assert!(edge.top() >= last.bottom());
+            let plus = vcx.debug_bounds("tab-new-session").unwrap();
+            assert!(plus.left() >= last.right());
+            assert!(vcx.debug_bounds("edge-new-session").is_none());
             let previous = vcx.debug_bounds("live-session-tab-10").unwrap();
             let x = track.left()
                 + px(workspace.read_with(vcx, |w, _| {

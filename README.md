@@ -238,14 +238,15 @@ security boundaries, error recovery, and verification.
 
 ## FPS counter
 
-The FPS readout is built into the background strip above the tabs, not drawn
-on top of them. It samples the presentation intervals of actual animation frames
+The FPS readout sits on the left of the session tab row, with a **+** button on
+the right to open a new session. No separate header takes space above the tabs.
+It samples the presentation intervals of actual animation frames
 at most four times per second. Deliberate idle gaps do not count as slow frames:
 `FPS · idle` means no new animated frames were presented in the last sample.
 Sampling only happens on existing redraws, so the counter never creates an idle
 animation loop. The last sample remains visible until the next redraw.
 
-Verify the backing strip, tab clicks, panel moves, and keyboard focus across four
+Verify the compact tab row, tab clicks, panel moves, and keyboard focus across four
 native workspaces on a private display with:
 
 ```sh
