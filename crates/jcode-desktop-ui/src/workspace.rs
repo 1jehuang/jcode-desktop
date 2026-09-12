@@ -4338,9 +4338,10 @@ impl Workspace {
         // is an invitation to open another panel, so keep those two actions in
         // visibly separate sections. Preserve the TUI saved/recency ordering
         // within each section.
-        let swarm = sidebar_swarm::groups(&sidebar_session_order(&self.sessions));
+        let ordered_sessions = sidebar_session_order(&self.sessions);
+        let swarm = sidebar_swarm::groups(&ordered_sessions);
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) =
-            sidebar_session_order(&self.sessions)
+            ordered_sessions
                 .into_iter()
                 .filter(|session| !swarm.nested.contains(&session.session_id))
                 .partition(|session| open_activities.contains_key(&session.session_id));
