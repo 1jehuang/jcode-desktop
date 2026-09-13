@@ -8,7 +8,7 @@ def chart_pixels(image, top_left=False):
     """Find the fixture's blue bar, independent of panel or image geometry."""
     points = []
     for y in range(image.height):
-        for x in range(280, image.width):
+        for x in range(image.width):
             r, g, b = image.getpixel((x, y))[:3]
             if abs(r - 92) <= 4 and abs(g - 124) <= 4 and abs(b - 173) <= 4:
                 points.append((x, y))
@@ -57,7 +57,9 @@ def verify(output, env, root):
     click(initial_point)
     _, enlarged_point = capture("-reopened", lambda count: count > initial_count * 2)
     click(enlarged_point)
-    capture("-click-stays-open", lambda count: abs(count - enlarged_count) < enlarged_count * .05)
+    capture("-click-closed", lambda count: abs(count - initial_count) < initial_count * .05)
+    click(initial_point)
+    _, enlarged_point = capture("-gesture-reopened", lambda count: count > initial_count * 2)
 
     def mouse(*args):
         subprocess.run(["xdotool", *map(str, args)], env=env, cwd=root, check=True, timeout=10)
@@ -73,10 +75,8 @@ def verify(output, env, root):
              for suffix in ("-wheel-zoomed", "-drag-panned")]
     assert abs(edges[1][0] - edges[0][0] + 35) <= 2, edges
     assert abs(edges[1][1] - edges[0][1] + 25) <= 2, edges
-    mouse("mousemove", *panned_point, "click", "--repeat", "2", "--delay", "80", "1")
-    capture("-double-click-fit", lambda count: abs(count - enlarged_count) < enlarged_count * .05)
-    mouse("key", "Escape")
+    click(panned_point)
     capture("-gesture-closed", lambda count: abs(count - initial_count) < initial_count * .05)
-    print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> {enlarged_count} -> {zoomed_count}; wheel zoom, drag pan, double-click fit, safe clicks, and Escape")
+    print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> {enlarged_count} -> {zoomed_count}; wheel zoom, drag pan, click-to-close at fit and zoomed sizes, and Escape")
     from image_flicker_acceptance import verify_repeated_preview
     verify_repeated_preview(output, env, root, initial_point)

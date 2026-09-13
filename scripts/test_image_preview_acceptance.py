@@ -14,6 +14,12 @@ class BaselineReady(Exception):
 
 
 class ImagePreviewAcceptanceTests(unittest.TestCase):
+    def test_fullscreen_chart_can_extend_left_of_chat_sidebar(self):
+        image = Image.new("RGB", (320, 8))
+        image.paste((92, 124, 173), (50, 0, 150, 8))
+        self.assertEqual(acceptance.chart_pixels(image), (800, (99, 3)))
+        self.assertEqual(acceptance.chart_pixels(image, top_left=True), (800, (50, 0)))
+
     def test_black_first_frame_waits_for_chart_before_clicking(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

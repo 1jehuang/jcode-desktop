@@ -243,13 +243,15 @@ impl Panel {
                             this.image_preview_drag = None;
                             cx.notify();
                         }))
-                        .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        .on_click(cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
                             this.image_preview_drag = None;
-                            if event.click_count() == 2 {
-                                let zoom = if this.image_preview_zoom > 1.0 { 1.0 } else { 2.0 };
-                                this.zoom_image_preview_at(zoom, event.position(), cx);
+                            // GPUI also emits clicks after mouse drags. Keep pan
+                            // gestures open, but let a regular click return to chat.
+                            let dragged = matches!(event, gpui::ClickEvent::Mouse(event)
+                                if (event.up.position - event.down.position).magnitude() > 4.0);
+                            if !dragged {
+                                this.close_image_preview(window, cx);
                             }
-                            // Interacting with the image must never dismiss it.
                             cx.notify();
                             cx.stop_propagation();
                         }))
@@ -271,7 +273,7 @@ impl Panel {
                         .flex_none()
                         .text_size(px(11.0))
                         .text_color(Theme::global().TEXT_DIM)
-                        .child("Pinch or Ctrl+scroll to zoom · Drag or scroll to pan · Double-click to zoom / fit"),
+                        .child("Pinch or Ctrl+scroll to zoom · Drag or scroll to pan · Click image to close"),
                 )
                 .into_any_element();
         // Defer beyond panel clipping and anchor in window coordinates so the
@@ -350,8 +352,22 @@ mod tests {
         let overlay = vcx.debug_bounds("image-preview").unwrap();
         vcx.simulate_click(overlay.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
-        // Image interactions no longer dismiss the viewer. The backdrop still does.
+        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+        assert!(vcx.debug_bounds("image-preview").is_none());
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
+            scroll_before
+        );
+        vcx.simulate_keystrokes("y");
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
+            "keep this draftxy"
+        );
+        // The backdrop still dismisses the viewer too.
+        let thumbnail = vcx.debug_bounds("transcript-image").unwrap();
+        vcx.simulate_click(thumbnail.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let overlay = vcx.debug_bounds("image-preview").unwrap();
         vcx.simulate_click(
             overlay.origin + gpui::point(px(2.0), px(2.0)),
             gpui::Modifiers::default(),
@@ -361,7 +377,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn image_preview_pinch_wheel_drag_and_double_click(cx: &mut gpui::TestAppContext) {
+    fn image_preview_pinch_wheel_drag_and_click_to_close(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::input::bind_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -463,19 +479,9 @@ mod tests {
         let panned = panel.read_with(vcx, |panel, _| panel.image_preview_scroll.offset());
         assert!(panned.x < offset.x && panned.y < offset.y);
 
-        for expected_zoom in [1.0, 2.0] {
-            vcx.simulate_event(gpui::MouseDownEvent {
-                position: anchor,
-                button: gpui::MouseButton::Left,
-                click_count: 2,
-                ..Default::default()
-            });
-            vcx.simulate_event(gpui::MouseUpEvent {
-                position: anchor,
-                button: gpui::MouseButton::Left,
-                click_count: 2,
-                ..Default::default()
-            });
+        for (selector, expected_zoom) in [("image-preview-fit", 1.0), ("image-preview-zoom-in", 1.5)] {
+            let button = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(
                 panel.read_with(vcx, |panel, _| panel.image_preview_zoom),
@@ -504,7 +510,11 @@ mod tests {
             panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
             transcript_scroll
         );
-        vcx.simulate_keystrokes("escape");
+        let zoom_in = vcx.debug_bounds("image-preview-zoom-in").unwrap();
+        vcx.simulate_click(zoom_in.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
+        vcx.simulate_click(anchor, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
     }
