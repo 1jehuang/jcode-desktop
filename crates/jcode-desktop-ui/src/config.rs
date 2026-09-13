@@ -24,7 +24,7 @@ pub struct SoundsConfig {
 pub struct AppearanceConfig {
     /// Overall workspace presentation.
     pub layout_mode: LayoutMode,
-    /// Built-in color theme. Unknown names fall back to warm-neutral.
+    /// Built-in color theme. Missing or unknown names fall back to Parchment.
     pub theme: String,
     /// UI font family. The platform-specific built-in remains the default.
     pub ui_font: Option<String>,
@@ -84,7 +84,7 @@ impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
             layout_mode: LayoutMode::default(),
-            theme: "warm-neutral".into(),
+            theme: crate::theme::ThemePreset::default().id().into(),
             ui_font: None,
             ai_font: None,
             mono_font: None,
@@ -634,6 +634,31 @@ mod tests {
             assert!(config.appearance.mono_font.is_none());
         }
         assert!(DesktopConfig::default().appearance.ai_font.is_none());
+    }
+
+    #[test]
+    fn theme_defaults_to_parchment_and_preserves_explicit_preferences() {
+        assert_eq!(DesktopConfig::default().appearance.theme, "parchment");
+        for standalone in [false, true] {
+            let section = if standalone {
+                "appearance"
+            } else {
+                "desktop.appearance"
+            };
+            for text in [String::new(), format!("[{section}]\ntext_scale = 1.25\n")] {
+                assert_eq!(
+                    parse(&text, standalone).unwrap().appearance.theme,
+                    "parchment"
+                );
+            }
+            for preset in crate::theme::ThemePreset::ALL {
+                let text = format!("[{section}]\ntheme = {:?}\n", preset.id());
+                assert_eq!(
+                    parse(&text, standalone).unwrap().appearance.theme,
+                    preset.id()
+                );
+            }
+        }
     }
 
     #[test]

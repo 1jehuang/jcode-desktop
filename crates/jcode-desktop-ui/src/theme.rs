@@ -271,7 +271,7 @@ impl Theme {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemePreset {
     WarmNeutral,
     WarmStudio,
@@ -282,6 +282,7 @@ pub enum ThemePreset {
     Forest,
     Plum,
     RoseDawn,
+    #[default]
     Parchment,
 }
 
@@ -344,14 +345,14 @@ impl ThemePreset {
         Self::ALL
             .into_iter()
             .find(|preset| preset.id() == value)
-            .unwrap_or(Self::WarmNeutral)
+            .unwrap_or_default()
     }
     pub fn next(self) -> Self {
         Self::ALL[(self.index() + 1) % Self::ALL.len()]
     }
 }
 
-static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(ThemePreset::Parchment.index());
 
 fn transition_state() -> &'static Mutex<Option<(usize, std::time::Instant)>> {
     static STATE: OnceLock<Mutex<Option<(usize, std::time::Instant)>>> = OnceLock::new();
@@ -682,7 +683,9 @@ mod tests {
             current = current.next();
         }
         assert_eq!(current, ThemePreset::WarmNeutral);
-        assert_eq!(ThemePreset::from_id("unknown"), ThemePreset::WarmNeutral);
+        assert_eq!(ThemePreset::default(), ThemePreset::Parchment);
+        assert_eq!(ThemePreset::from_id("unknown"), ThemePreset::Parchment);
+        assert_eq!(ThemePreset::from_id(""), ThemePreset::Parchment);
     }
 
     #[test]
