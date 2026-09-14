@@ -12626,7 +12626,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tutorial_advances_from_basics_to_arrangement_and_marks_learning(
+    fn tutorial_lists_basics_and_arrangement_and_marks_learning(
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, cx) = focused_workspace(cx);
@@ -12638,8 +12638,8 @@ mod tests {
 
         assert!(cx.debug_bounds("tutorial-new").is_some());
         assert!(cx.debug_bounds("tutorial-close").is_some());
-        assert!(cx.debug_bounds("tutorial-width-presets").is_none());
-        assert!(cx.debug_bounds("tutorial-resize").is_none());
+        assert!(cx.debug_bounds("tutorial-width-presets").is_some());
+        assert!(cx.debug_bounds("tutorial-resize").is_some());
 
         let now = learning::now();
         workspace.update(cx, |workspace, cx| {
@@ -12652,7 +12652,7 @@ mod tests {
         assert!(
             cx.debug_bounds("tutorial-learned-focus_left_right")
                 .is_some(),
-            "learned stage controls should expose their green completion state"
+            "learned controls should expose their green completion state"
         );
 
         workspace.update(cx, |workspace, cx| {
@@ -12663,14 +12663,13 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let next = cx.debug_bounds("tutorial-next").unwrap();
-        cx.simulate_click(next.center(), gpui::Modifiers::default());
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("tutorial-new").is_none());
-        assert!(cx.debug_bounds("tutorial-close").is_none());
+        assert!(cx.debug_bounds("tutorial-next").is_none());
+        assert!(cx.debug_bounds("tutorial-back").is_none());
+        assert!(cx.debug_bounds("tutorial-new").is_some());
+        assert!(cx.debug_bounds("tutorial-close").is_some());
         assert!(cx.debug_bounds("tutorial-width-presets").is_some());
-        assert!(cx.debug_bounds("tutorial-nav-left").is_some());
-        assert!(cx.debug_bounds("tutorial-resize").is_none());
+        assert!(cx.debug_bounds("tutorial-move-left").is_some());
+        assert!(cx.debug_bounds("tutorial-maximize").is_some());
     }
 
     #[gpui::test]
@@ -12733,8 +12732,8 @@ mod tests {
         assert!(
             cx.debug_bounds("tutorial-new").is_some()
                 && cx.debug_bounds("tutorial-close").is_some()
-                && cx.debug_bounds("tutorial-resize").is_none(),
-            "the first stage should show only navigation and basic session controls"
+                && cx.debug_bounds("tutorial-resize").is_some(),
+            "all navigation, session, and width lessons should be listed together"
         );
         assert!(
             cx.debug_bounds("showcase-key").is_none()

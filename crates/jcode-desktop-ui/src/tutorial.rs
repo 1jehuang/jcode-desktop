@@ -1,4 +1,4 @@
-//! A quiet, opt-in tutorial inside the top-left Learn tab.
+//! A quiet, opt-in shortcut reference with every lesson in one scrollable list.
 use super::*;
 
 type TutorialAction = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
@@ -46,7 +46,6 @@ impl Workspace {
     }
 
     pub(super) fn render_tutorial_guides(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let page = self.tutorial_page.min(2);
         let heading = if self.onboarding_complete() {
             "SHORTCUT REFERENCE"
         } else {
@@ -57,119 +56,106 @@ impl Workspace {
         } else {
             "Super"
         };
-        let (title, description) = match page {
-            0 => (
-                "Find your way",
-                "Switch between panels and start a new session.",
+        let lessons: Vec<Lesson> = vec![
+            (
+                "tutorial-nav-left",
+                "←  Focus left",
+                "H",
+                "focus_left_right",
+                Some(|this, w, cx| this.focus_left(&FocusLeft, w, cx)),
             ),
-            1 => (
-                "Make it yours",
-                "Move panels into place and choose how much space they get.",
+            (
+                "tutorial-nav-down",
+                "↓  Strip below",
+                "J",
+                "focus_up_down",
+                Some(|this, w, cx| this.focus_down(&FocusDown, w, cx)),
             ),
-            _ => (
-                "Take a step back",
-                "Adjust your view or see the whole workspace at once.",
+            (
+                "tutorial-nav-up",
+                "↑  Strip above",
+                "K",
+                "focus_up_down",
+                Some(|this, w, cx| this.focus_up(&FocusUp, w, cx)),
             ),
-        };
-        let lessons: Vec<Lesson> = match page {
-            0 => vec![
-                (
-                    "tutorial-nav-left",
-                    "←  Focus left",
-                    "H",
-                    "focus_left_right",
-                    Some(|this, w, cx| this.focus_left(&FocusLeft, w, cx)),
-                ),
-                (
-                    "tutorial-nav-down",
-                    "↓  Strip below",
-                    "J",
-                    "focus_up_down",
-                    Some(|this, w, cx| this.focus_down(&FocusDown, w, cx)),
-                ),
-                (
-                    "tutorial-nav-up",
-                    "↑  Strip above",
-                    "K",
-                    "focus_up_down",
-                    Some(|this, w, cx| this.focus_up(&FocusUp, w, cx)),
-                ),
-                (
-                    "tutorial-nav-right",
-                    "→  Focus right",
-                    "L",
-                    "focus_left_right",
-                    Some(|this, w, cx| this.focus_right(&FocusRight, w, cx)),
-                ),
-                (
-                    "tutorial-new",
-                    "New session",
-                    "Enter",
-                    "new_panel",
-                    Some(|this, w, cx| this.new_panel(&NewPanel, w, cx)),
-                ),
-                (
-                    "tutorial-close",
-                    "Close panel",
-                    "Q",
-                    "close_panel",
-                    Some(|this, w, cx| this.close_panel(&ClosePanel, w, cx)),
-                ),
-            ],
-            1 => vec![
-                (
-                    "tutorial-nav-left",
-                    "←  Move left",
-                    "Shift H",
-                    "move_panel",
-                    Some(|this, w, cx| this.move_panel_left(&MovePanelLeft, w, cx)),
-                ),
-                (
-                    "tutorial-nav-down",
-                    "↓  Move down",
-                    "Shift J",
-                    "move_panel_strip",
-                    Some(|this, w, cx| this.move_panel_down(&MovePanelDown, w, cx)),
-                ),
-                (
-                    "tutorial-nav-up",
-                    "↑  Move up",
-                    "Shift K",
-                    "move_panel_strip",
-                    Some(|this, w, cx| this.move_panel_up(&MovePanelUp, w, cx)),
-                ),
-                (
-                    "tutorial-nav-right",
-                    "→  Move right",
-                    "Shift L",
-                    "move_panel",
-                    Some(|this, w, cx| this.move_panel_right(&MovePanelRight, w, cx)),
-                ),
-                (
-                    "tutorial-width-presets",
-                    "Panel width",
-                    "1 2 3 4",
-                    "width_presets",
-                    None,
-                ),
-            ],
-            _ => vec![
-                (
-                    "tutorial-resize",
-                    "Cycle width",
-                    "R",
-                    "cycle_width",
-                    Some(|this, w, cx| this.cycle_width(&CycleWidth, w, cx)),
-                ),
-                (
-                    "tutorial-overview",
-                    "Overview",
-                    "O",
-                    "overview",
-                    Some(|this, w, cx| this.toggle_overview(&ToggleOverview, w, cx)),
-                ),
-            ],
-        };
+            (
+                "tutorial-nav-right",
+                "→  Focus right",
+                "L",
+                "focus_left_right",
+                Some(|this, w, cx| this.focus_right(&FocusRight, w, cx)),
+            ),
+            (
+                "tutorial-new",
+                "New session",
+                "Enter",
+                "new_panel",
+                Some(|this, w, cx| this.new_panel(&NewPanel, w, cx)),
+            ),
+            (
+                "tutorial-close",
+                "Close panel",
+                "Q",
+                "close_panel",
+                Some(|this, w, cx| this.close_panel(&ClosePanel, w, cx)),
+            ),
+            (
+                "tutorial-move-left",
+                "←  Move left",
+                "Shift H",
+                "move_panel",
+                Some(|this, w, cx| this.move_panel_left(&MovePanelLeft, w, cx)),
+            ),
+            (
+                "tutorial-move-down",
+                "↓  Move down",
+                "Shift J",
+                "move_panel_strip",
+                Some(|this, w, cx| this.move_panel_down(&MovePanelDown, w, cx)),
+            ),
+            (
+                "tutorial-move-up",
+                "↑  Move up",
+                "Shift K",
+                "move_panel_strip",
+                Some(|this, w, cx| this.move_panel_up(&MovePanelUp, w, cx)),
+            ),
+            (
+                "tutorial-move-right",
+                "→  Move right",
+                "Shift L",
+                "move_panel",
+                Some(|this, w, cx| this.move_panel_right(&MovePanelRight, w, cx)),
+            ),
+            (
+                "tutorial-width-presets",
+                "Panel width",
+                "1 2 3 4",
+                "width_presets",
+                None,
+            ),
+            (
+                "tutorial-resize",
+                "Cycle width",
+                "R",
+                "cycle_width",
+                Some(|this, w, cx| this.cycle_width(&CycleWidth, w, cx)),
+            ),
+            (
+                "tutorial-maximize",
+                "Full width / restore",
+                "F",
+                "maximize",
+                Some(|this, w, cx| this.maximize_width(&MaximizeWidth, w, cx)),
+            ),
+            (
+                "tutorial-overview",
+                "Overview",
+                "O",
+                "overview",
+                Some(|this, w, cx| this.toggle_overview(&ToggleOverview, w, cx)),
+            ),
+        ];
         let rows = lessons.into_iter().map(|(id, label, key, skill, action)| {
             let practiced = self.coach.trace(skill).practiced();
             div()
@@ -258,26 +244,31 @@ impl Workspace {
             .py_4()
             .child(
                 div()
-                    .id(format!("tutorial-content-{page}"))
+                    .id("tutorial-content")
                     .debug_selector(|| "tutorial-content".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(
                         div()
-                            .debug_selector(|| "tutorial-stage".into())
+                            .debug_selector(|| "tutorial-heading".into())
                             .text_size(px(10.0))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(format!("{heading}  ·  {} / 3", page + 1)),
+                            .child(heading),
                     )
-                    .child(div().mt_3().text_size(px(19.0)).child(title))
+                    .child(
+                        div()
+                            .mt_3()
+                            .text_size(px(19.0))
+                            .child("Workspace shortcuts"),
+                    )
                     .child(
                         div()
                             .mt_2()
                             .text_size(px(12.0))
                             .line_height(relative(1.5))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(description),
+                            .child("Navigate, arrange panels, and adjust your view."),
                     )
                     .child(
                         div()
@@ -290,58 +281,6 @@ impl Workspace {
                             )),
                     )
                     .children(rows),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .mt_3()
-                    .pt_3()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .id("tutorial-back")
-                            .debug_selector(|| "tutorial-back".into())
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .when(page > 0, |el| {
-                                el.cursor_pointer()
-                                    .hover(|el| el.text_color(Theme::global().TEXT))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.tutorial_page =
-                                                this.tutorial_page.saturating_sub(1);
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child("← Back")
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("tutorial-next")
-                            .debug_selector(|| "tutorial-next".into())
-                            .px_2()
-                            .py_1()
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().ACCENT)
-                            .cursor_pointer()
-                            .hover(|el| el.text_color(Theme::global().TEXT))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    if this.tutorial_page < 2 {
-                                        this.tutorial_page += 1;
-                                    } else {
-                                        this.sidebar_view = SidebarView::Sessions;
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if page < 2 { "Next →" } else { "Done" }),
-                    ),
             )
             .into_any_element()
     }

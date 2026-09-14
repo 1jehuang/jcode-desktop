@@ -14,82 +14,91 @@ fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
     vcx.run_until_parked();
 }
 
+const LESSONS: &[&str] = &[
+    "tutorial-nav-left",
+    "tutorial-nav-down",
+    "tutorial-nav-up",
+    "tutorial-nav-right",
+    "tutorial-new",
+    "tutorial-close",
+    "tutorial-move-left",
+    "tutorial-move-down",
+    "tutorial-move-up",
+    "tutorial-move-right",
+    "tutorial-width-presets",
+    "tutorial-resize",
+    "tutorial-maximize",
+    "tutorial-overview",
+];
+
+fn assert_all_lessons(vcx: &mut gpui::VisualTestContext) {
+    for id in LESSONS {
+        assert!(vcx.debug_bounds(*id).is_some(), "missing lesson {id}");
+    }
+    for id in ["tutorial-next", "tutorial-back", "tutorial-stage"] {
+        assert!(
+            vcx.debug_bounds(id).is_none(),
+            "pagination must not return: {id}"
+        );
+    }
+}
+
+fn scroll_to_bottom(vcx: &mut gpui::VisualTestContext) {
+    let content = vcx.debug_bounds("tutorial-content").unwrap();
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: content.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+        modifiers: gpui::Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+    vcx.run_until_parked();
+}
+
 #[gpui::test]
-fn tutorial_tab_is_opt_in_and_stages_do_not_resize_the_canvas(cx: &mut gpui::TestAppContext) {
+fn tutorial_tab_lists_all_lessons_without_resizing_canvas(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) =
         cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
     vcx.run_until_parked();
     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-    assert!(
-        vcx.debug_bounds("tutorial-guides").is_none(),
-        "no onboarding banner by default"
-    );
-    let tab = vcx.debug_bounds("sidebar-learn-tab").unwrap();
-    assert!(
-        tab.right() <= px(SIDEBAR_WIDTH),
-        "Learn is visible without scrolling the tabs"
-    );
+    assert!(vcx.debug_bounds("tutorial-guides").is_none());
     click(vcx, "sidebar-learn-tab");
-    assert!(vcx.debug_bounds("tutorial-new").is_some());
-    for stage in 0..3 {
-        workspace.read_with(vcx, |workspace, _| {
-            assert_eq!(workspace.tutorial_page, stage)
-        });
-        assert_eq!(
-            vcx.debug_bounds("workspace-canvas").unwrap(),
-            canvas,
-            "stages must not reserve canvas space"
-        );
-        if stage == 1 {
-            assert!(vcx.debug_bounds("tutorial-width-presets").is_some());
-        }
-        if stage == 2 {
-            assert!(vcx.debug_bounds("tutorial-overview").is_some());
-        }
-        click(vcx, "tutorial-next");
-    }
-    assert!(
-        vcx.debug_bounds("tutorial-guides").is_none(),
-        "Done returns to Chat"
-    );
+    assert_all_lessons(vcx);
     assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
-    click(vcx, "sidebar-learn-tab");
-    click(vcx, "tutorial-back");
-    workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.tutorial_page, 1));
     click(vcx, "sidebar-sessions-tab");
     assert!(vcx.debug_bounds("tutorial-guides").is_none());
     click(vcx, "sidebar-learn-tab");
-    workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.tutorial_page, 1));
+    assert_all_lessons(vcx);
 }
 
 #[gpui::test]
-fn tutorial_page_and_selected_tab_survive_snapshot_reload(cx: &mut gpui::TestAppContext) {
+fn tutorial_legacy_pages_restore_as_complete_reference(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) =
         cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
     vcx.run_until_parked();
     click(vcx, "sidebar-learn-tab");
-    click(vcx, "tutorial-next");
-    let snapshot = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
-    let bytes = snapshot.encode().unwrap();
-    workspace.update(vcx, |workspace, cx| {
-        workspace.sidebar_view = SidebarView::Sessions;
-        workspace.tutorial_page = 0;
-        workspace.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
-        cx.notify();
-    });
-    vcx.run_until_parked();
-    assert!(vcx.debug_bounds("tutorial-width-presets").is_some());
-    // The additive state remains compatible with snapshots from before Learn.
-    let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    old.as_object_mut().unwrap().remove("tutorial_page");
-    old.as_object_mut().unwrap().remove("sidebar_view");
-    let decoded = WorkspaceSnapshot::decode(&serde_json::to_vec(&old).unwrap()).unwrap();
-    assert_eq!(decoded.sidebar_view, SidebarView::Sessions);
-    assert_eq!(decoded.tutorial_page, 0);
+    for page in 0..3 {
+        let mut snapshot =
+            vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        snapshot.tutorial_page = page;
+        let bytes = snapshot.encode().unwrap();
+        workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_view = SidebarView::Sessions;
+            workspace.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_all_lessons(vcx);
+        let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        old.as_object_mut().unwrap().remove("tutorial_page");
+        old.as_object_mut().unwrap().remove("sidebar_view");
+        let decoded = WorkspaceSnapshot::decode(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(decoded.sidebar_view, SidebarView::Sessions);
+        assert_eq!(decoded.tutorial_page, 0);
+    }
 }
 
 #[gpui::test]
-fn tutorial_later_stages_dispatch_width_and_overview_actions(cx: &mut gpui::TestAppContext) {
+fn tutorial_list_scrolls_to_width_and_overview_actions(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
         workspace.push_test_panel("Practice", cx);
@@ -97,13 +106,30 @@ fn tutorial_later_stages_dispatch_width_and_overview_actions(cx: &mut gpui::Test
     });
     vcx.run_until_parked();
     click(vcx, "sidebar-learn-tab");
-    click(vcx, "tutorial-next");
+    let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+    scroll_to_bottom(vcx);
+    let content = vcx.debug_bounds("tutorial-content").unwrap();
+    for id in ["tutorial-width-2", "tutorial-maximize", "tutorial-overview"] {
+        let bounds = vcx.debug_bounds(id).unwrap();
+        assert!(
+            bounds.top() >= content.top() && bounds.bottom() <= content.bottom(),
+            "{id} must be reachable by scrolling"
+        );
+    }
     click(vcx, "tutorial-width-2");
     workspace.read_with(vcx, |workspace, _| {
         assert_eq!(workspace.slots[0].width_fraction, 0.5);
         assert!(workspace.coach.trace("width_presets").practiced());
     });
-    click(vcx, "tutorial-next");
+    click(vcx, "tutorial-maximize");
+    workspace.read_with(vcx, |workspace, _| {
+        assert_eq!(workspace.slots[0].width_fraction, 1.0);
+        assert!(workspace.coach.trace("maximize").practiced());
+    });
+    click(vcx, "tutorial-maximize");
+    workspace.read_with(vcx, |workspace, _| {
+        assert_eq!(workspace.slots[0].width_fraction, 0.5)
+    });
     click(vcx, "tutorial-overview");
     workspace.read_with(vcx, |workspace, _| {
         assert!(workspace.overview);
@@ -111,6 +137,7 @@ fn tutorial_later_stages_dispatch_width_and_overview_actions(cx: &mut gpui::Test
     });
     click(vcx, "tutorial-overview");
     workspace.read_with(vcx, |workspace, _| assert!(!workspace.overview));
+    assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
 }
 
 #[gpui::test]
@@ -122,7 +149,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
         workspace.slots[0].animated_width = AnimatedValue::new(1.0, transition::policy(Transition::PanelWidth).duration);
         workspace.slots[0].panel.update(cx, |panel, cx| {
             panel.items = vec![
-                crate::panel::Item::User("Keep the previous prompt visible alongside the staged tutorial".into()),
+                crate::panel::Item::User("Keep the previous prompt visible alongside the shortcut reference".into()),
                 crate::panel::Item::Tool {
                     call_id: "geometry-todo".into(), name: "todo".into(), input: "{}".into(),
                     output: r#"[{"id":"check","content":"Verify tutorial layout without covering this text","status":"in_progress","priority":"high"}]"#.into(),
@@ -133,6 +160,8 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
         });
         workspace
     });
+    // Measure the settled layout without depending on entrance-animation timing.
+    vcx.update(|_, cx| cx.set_reduce_motion(true));
     let handle = vcx.update(|window, _| window.window_handle());
     let mut cases = 0;
     let mut controls = 0;
@@ -150,6 +179,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 workspace.show_sidebar = true;
                 workspace.tutorial_page = stage;
                 workspace.compact_sidebar_open = responsive::is_compact(width);
+                cx.set_reduce_motion(true);
                 cx.notify();
             });
             vcx.run_until_parked();
@@ -178,19 +208,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 "no reserved tutorial strip at the top"
             );
             let mut regions = Vec::new();
-            for id in [
-                "tutorial-stage",
-                "tutorial-nav-left",
-                "tutorial-nav-down",
-                "tutorial-nav-up",
-                "tutorial-nav-right",
-                "tutorial-new",
-                "tutorial-close",
-                "tutorial-width-presets",
-                "tutorial-resize",
-                "tutorial-overview",
-                "tutorial-next",
-            ] {
+            for id in LESSONS.iter().copied().chain(["tutorial-heading"]) {
                 if let Some(bounds) = vcx.debug_bounds(id) {
                     assert!(
                         bounds.right() <= guide.right() && bounds.left() >= guide.left(),
@@ -202,61 +220,24 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                     regions.push((id, bounds));
                 }
             }
-            assert_eq!(
-                regions.len(),
-                [8, 7, 4][stage],
-                "every stage control is rendered"
-            );
+            assert_eq!(regions.len(), LESSONS.len() + 1, "every lesson is rendered");
+            assert_all_lessons(vcx);
             for (i, (a_id, a)) in regions.iter().enumerate() {
                 for (b_id, b) in &regions[i + 1..] {
-                    // GPUI debug_bounds records unmasked layout bounds, even
-                    // for rows below tutorial-content's overflow_y_scroll
-                    // viewport. The footer is a sibling, not a scroll child.
-                    let painted_a = if *a_id == "tutorial-next" {
-                        *a
-                    } else {
-                        a.intersect(&content)
-                    };
-                    let painted_b = if *b_id == "tutorial-next" {
-                        *b
-                    } else {
-                        b.intersect(&content)
-                    };
-                    if overlap_area(*a, *b) > 0.0 {
-                        println!(
-                            "LEARN_CLIPPING size={width}x{height} stage={stage} pair={a_id}/{b_id} logical_overlap={} painted_overlap={}",
-                            overlap_area(*a, *b), overlap_area(painted_a, painted_b)
-                        );
-                    }
                     assert_eq!(
-                        overlap_area(painted_a, painted_b),
+                        overlap_area(*a, *b),
                         0.0,
-                        "visible tutorial controls {a_id} and {b_id} overlap at {width}x{height}, stage {stage}"
+                        "tutorial rows {a_id} and {b_id} overlap at {width}x{height}"
                     );
-                    // Keep checking the complete row layout within the same
-                    // scroller, including portions currently scrolled out.
-                    if *a_id != "tutorial-next" && *b_id != "tutorial-next" {
-                        assert_eq!(
-                            overlap_area(*a, *b),
-                            0.0,
-                            "tutorial scroll rows must not overlap"
-                        );
-                    }
                 }
             }
-            let next = vcx.debug_bounds("tutorial-next").unwrap();
+            assert!(content.size.height > px(0.0));
+            assert!(content.bottom() <= px(height));
+            scroll_to_bottom(vcx);
+            let overview = vcx.debug_bounds("tutorial-overview").unwrap();
             assert!(
-                content.size.height > px(0.0),
-                "tutorial content viewport must remain usable"
-            );
-            assert_eq!(
-                overlap_area(content, next),
-                0.0,
-                "scroll viewport must not cover stage navigation"
-            );
-            assert!(
-                next.bottom() <= px(height),
-                "stage navigation remains visible"
+                overview.bottom() <= content.bottom() && overview.top() >= content.top(),
+                "last lesson must be reachable at {width}x{height}"
             );
             controls += regions.len();
             cases += 1;
