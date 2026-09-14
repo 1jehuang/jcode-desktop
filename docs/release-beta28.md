@@ -72,3 +72,39 @@ notarization, package, and launch checks. Only a complete, verified platform set
 may leave draft state and enter the unchanged public publisher. No billing
 settings or existing artifacts are changed. The recovered Sparkle build number
 must exceed beta.27's build 46.
+
+
+## Publication verified, September 14 at 08:12 UTC
+
+Recovery run `34806079844` passed all three platform jobs, including macOS
+Developer ID signing, notarization, installed-app checks and signed Sparkle
+archive generation, Linux X11/Wayland smoke tests, and Windows package/launch
+checks. Each job uploaded its verified assets to the private beta.28 draft.
+The final publication job was refused before runner startup because of an
+account payment/spending-limit restriction. The overall recovery run remains
+failed, not green.
+
+Publication was completed locally using the unchanged scripts exported from
+immutable Desktop commit `ddad954`. Before publication, the recorded platform
+job and required step successes were rechecked, the 26 immutable Python tests
+passed, and the downloaded complete package set passed package and checksum
+validation. The private prerelease was then published and the existing public
+publisher uploaded only its explicit binary/metadata allowlist. It verified all
+nine anonymous origin downloads before promoting the website channel.
+
+A separate fresh download through every website-owned asset URL verified all
+nine exact byte lengths and SHA-256 hashes. `/desktop/latest.json` matches the
+validated beta.28 manifest. `/desktop/appcast.xml` matches its manifest hash,
+retains its Ed25519 signature, targets the public beta.28 archive, and carries
+Sparkle build 47 (newer than beta.27 build 46). Machine-readable results are in
+`release-beta28-website-verification.json`.
+
+### Remaining acceptance limitation
+
+Public macOS installed-package acceptance was attempted in runs `34821509497`
+and `34821510568`. Both were refused before any test step ran by the same GitHub
+account payment/spending-limit restriction. This is not a passing public-install
+test. The exact published macOS package had already passed installation and
+notarization checks in the recovery build, and its public bytes were verified,
+but a fresh quarantined install from the public URL remains unverified. No
+billing settings were changed and no existing artifacts were deleted.

@@ -1,0 +1,61 @@
+{
+  "tag": "desktop-v0.1.0-beta.28",
+  "assets": [
+    {
+      "name": "Jcode-0.1.0-beta.28-linux-amd64.deb",
+      "size": 59727422,
+      "sha256": "75cf738d301db52fb8eaeec2dfc4c806ba886a8b4b6020e9322e4944521174c3",
+      "verified": true
+    },
+    {
+      "name": "Jcode-0.1.0-beta.28-linux-x86_64.tar.gz",
+      "size": 84613780,
+      "sha256": "c25518912e67a7d31d10d8490b321fe7fdf5a168c4f84afaf325b1ff27c3a434",
+      "verified": true
+    },
+    {
+      "name": "Jcode-0.1.0-beta.28-macOS-universal.zip",
+      "size": 151550886,
+      "sha256": "06185102424f780c6e0e309da83dac9a0cb210572f984b1e16f65a1b2b2ed2e1",
+      "verified": true
+    },
+    {
+      "name": "Jcode-0.1.0-beta.28-windows-x86_64.zip",
+      "size": 66755493,
+      "sha256": "70c99686e9eea6f485cbe9125b1d148d759d35fbbc0886c7b95ade9fd20d4004",
+      "verified": true
+    },
+    {
+      "name": "Jcode-macOS-universal.dmg",
+      "size": 167564929,
+      "sha256": "7a3910616ce958d771ce031de4914e728adcb475932e9470b04ac57351cf378c",
+      "verified": true
+    },
+    {
+      "name": "SHA256SUMS",
+      "size": 198,
+      "sha256": "4e659718954c33529383c8af8d85345d49895497d4a97c350e86009b743dac32",
+      "verified": true
+    },
+    {
+      "name": "SHA256SUMS-linux",
+      "size": 208,
+      "sha256": "1ac51adeb30659d8761b167774dc93c8dbf4cc82fc8912a69b10365f9f359d11",
+      "verified": true
+    },
+    {
+      "name": "SHA256SUMS-windows",
+      "size": 106,
+      "sha256": "ecbacedff52dac74415e0798ad8aa2119c557c035ff6cdc115177b4727fe863b",
+      "verified": true
+    },
+    {
+      "name": "appcast.xml",
+      "size": 811,
+      "sha256": "1d490683397d1ed80568405864a7f0e0afe2e9f1cf8d8362ee97dcff9643c6e4",
+      "verified": true
+    }
+  ],
+  "appcast_build": 47,
+  "feed_matches_manifest": true
+}
