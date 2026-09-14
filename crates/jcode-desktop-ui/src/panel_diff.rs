@@ -156,6 +156,9 @@ impl Panel {
                 .px_2()
                 .py_1p5()
                 .rounded_md()
+                // Overflow clips children to a rectangle in GPUI, so the
+                // header must round its own fill to match the card frame.
+                .rounded_t_lg()
                 .bg(Theme::global().CODE_HEADER_BG)
                 .cursor_pointer()
                 .hover(|s| s.bg(Theme::global().ACCENT_DIM))
