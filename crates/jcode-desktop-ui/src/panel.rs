@@ -3957,7 +3957,7 @@ impl Render for Panel {
             div()
                 .id(id)
                 .debug_selector(move || id.into())
-                .min_w_0()
+                .min_w(px(48.))
                 .max_w_full()
                 .flex()
                 .items_center()
@@ -4213,7 +4213,8 @@ impl Render for Panel {
                         div()
                             .debug_selector(|| "panel-identity".into())
                             .flex_1()
-                            .min_w_0()
+                            // Reserve both controls and gaps when optional labels collapse.
+                            .min_w(px(120.))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -4259,20 +4260,23 @@ impl Render for Panel {
                             .children(
                                 self.reasoning_effort
                                     .clone()
-                                    .map(|effort| div().child(effort)),
+                                    .map(|effort| div().min_w_0().truncate().child(effort)),
                             ),
                     )
                     .child(
                         div()
                             .debug_selector(|| "panel-build".into())
-                            .flex_none()
+                            // Build metadata must yield space to interactive controls.
+                            .flex_shrink_1()
+                            .min_w(px(24.))
+                            .truncate()
                             .child(crate::build_info::label()),
                     )
                     .child(
                         div()
                             .debug_selector(|| "panel-status".into())
                             .flex_1()
-                            .min_w_0()
+                            .min_w(px(40.))
                             .flex()
                             .justify_end()
                             .items_center()
@@ -4286,7 +4290,7 @@ impl Render for Panel {
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .min_w_0()
+                                        .min_w(px(32.))
                                         .px_2()
                                         .h(px(22.0))
                                         .rounded_md()

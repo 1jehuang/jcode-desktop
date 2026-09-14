@@ -1013,7 +1013,12 @@ mod tests {
             );
             assert!(vcx.debug_bounds("live-session-tab-1-spinner").is_none());
             assert!(vcx.debug_bounds("panel-session-title").is_none());
-            assert!(vcx.debug_bounds("panel-activity-label").is_none());
+            // Active sessions also show an inline transcript status.
+            assert_eq!(
+                vcx.debug_bounds("panel-activity-label").is_some(),
+                active,
+                "inline status {status}",
+            );
             let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
             assert!(vcx.debug_bounds("live-session-tab-0-spinner").is_none());
             assert!(

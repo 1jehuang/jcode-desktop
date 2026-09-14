@@ -77,6 +77,10 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
         for fresh in [true, false] {
             panel.update(vcx, |panel, cx| {
                 panel.startup_layout = None;
+                panel.model = (!fresh).then(|| "a-very-long-model-name".repeat(4));
+                panel.provider = (!fresh).then(|| "openai".into());
+                panel.auth_method = (!fresh).then(|| "oauth".into());
+                panel.reasoning_effort = (!fresh).then(|| "high".into());
                 panel.items = if fresh {
                     vec![]
                 } else {
@@ -109,6 +113,12 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
                 );
                 assert!(bounds.size.width > px(20.), "{selector} is squeezed away");
             }
+            let identity = vcx.debug_bounds("panel-identity").unwrap();
+            let model = vcx.debug_bounds("panel-model").unwrap();
+            let login = vcx.debug_bounds("panel-login").unwrap();
+            assert!(model.left() >= identity.left() && login.right() <= identity.right());
+            assert!(model.right() <= login.left(), "identity controls must not overlap");
+            assert!(login.right() <= vcx.debug_bounds("panel-build").unwrap().left());
             panel.update(vcx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {
                     input.set_content("long draft ".repeat(300).into(), cx)
