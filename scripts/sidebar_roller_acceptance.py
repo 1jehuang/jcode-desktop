@@ -1,4 +1,4 @@
-"""Native sidebar roller acceptance on screenshot.py's private offline Xvfb.
+"""Native sidebar section-menu acceptance on screenshot.py's private offline Xvfb.
 
 Run: python3 scripts/screenshot.py target/sidebar-roller.png --roller-interact
 Use --no-build only with a current binary. PNG/OCR/navigation evidence and a
@@ -42,8 +42,8 @@ def verify(output, env, root):
         assert identity(state) == baseline, ("Roller changed panels or keyboard focus", label, state)
 
     def words(image, label, header=False):
-        return ui.words(image, (0, 0, min(264, image.width),
-                                min(300, image.height) if header else image.height),
+        return ui.words(image, (0, 52 if header else 0, min(264, image.width),
+                                min(340, image.height) if header else image.height),
                         label, psm=11)
 
     def visible(image, phrase, label, header=False):
@@ -52,7 +52,7 @@ def verify(output, env, root):
     def popup(image):
         # Read the title/hint separately so two-column page OCR ordering cannot
         # merge the hint into an adjacent row. Click targets use actual OCR boxes.
-        header = ui.words(image, (0, 0, 264, 70), stage + "-header", psm=6)
+        header = ui.words(image, (0, 52, 264, 96), stage + "-header", psm=6)
         phrase_bounds(header, "Sidebar")
         phrase_bounds(header, "Scroll to switch")
         page_words = words(image, stage + "-pages", header=True)
@@ -62,7 +62,7 @@ def verify(output, env, root):
         return page_words
 
     def collapsed(image):
-        header = ui.words(image, (0, 0, 264, 70), stage + "-closed-header", psm=6)
+        header = ui.words(image, (0, 52, 264, 96), stage + "-closed-header", psm=6)
         try:
             phrase_bounds(header, "Scroll to switch")
         except AssertionError:
@@ -90,8 +90,12 @@ def verify(output, env, root):
         baseline = identity(navigation())
         assert baseline["count"] > 0 and baseline["keyboard_panel"] is not None, baseline
         unchanged(stage)
+        ui.wait_frame("initial-collapsed", lambda image: visible(image, "chat", "initial-trigger"))
         stage = "hover-open"
         hover()
+        image = ui.capture("persistent-trigger")
+        phrase_bounds(ui.words(image, (0, 0, 264, 52), "persistent-trigger", psm=6), "chat")
+        report["trigger_visible_above_menu"] = True
         shutil.copyfile(ui.artifact(stage + ".png"), output)
 
         stage = "scroll-four-notches"
