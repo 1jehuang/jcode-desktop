@@ -77,6 +77,7 @@ async fn encoded_image_asset_and_geometry_survive_streaming_and_history_reconstr
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
             let rendered = jcode_sdk::RenderedImage {
+                history_message_index: None,
                 media_type: "image/png".into(),
                 data: base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()),
                 label: Some("Stable image fixture".into()),

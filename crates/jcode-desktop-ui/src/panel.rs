@@ -7265,6 +7265,7 @@ mod tests {
             let event = ApiEvent::SidePaneImages {
                 session_id: "session-a".into(),
                 images: vec![jcode_sdk::RenderedImage {
+                    history_message_index: None,
                     media_type: "image/png".into(),
                     data: "iVBORw0KGgo=".into(),
                     label: Some("chart.png".into()),
@@ -7305,6 +7306,7 @@ mod tests {
                     content: "what is in this?".into(),
                 }],
                 vec![jcode_sdk::RenderedImage {
+                    history_message_index: None,
                     media_type: "image/png".into(),
                     data: "iVBORw0KGgo=".into(),
                     label: None,
