@@ -369,6 +369,33 @@ struct TodoistPanelState {
     projects: Vec<TodoistProject>,
     selected_project: Option<String>,
     busy_tasks: HashSet<String>,
+    scroll: ScrollHandle,
+    scroll_layout: Option<(usize, usize, Option<String>, gpui::Size<gpui::Pixels>)>,
+}
+
+impl TodoistPanelState {
+    /// Offline geometry fixture shared by headless tests and native screenshots.
+    fn fixture(count: usize) -> Self {
+        Self {
+            load: TodoistLoadState::Ready,
+            tasks: (0..count)
+                .map(|index| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": format!("task-{index}"),
+                        "content": format!("Task {index}: review the scrolling task list"),
+                        "project_id": "inbox",
+                        "priority": 1
+                    }))
+                    .expect("valid offline task")
+                })
+                .collect(),
+            projects: Vec::new(),
+            selected_project: None,
+            busy_tasks: HashSet::new(),
+            scroll: ScrollHandle::new(),
+            scroll_layout: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -727,7 +754,9 @@ impl Panel {
             gmail_inbox: None,
             gmail_message: None,
             gmail_scroll: ScrollHandle::new(),
-            todoist: None,
+            todoist: (crate::harness::screenshot_mode()
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos"))
+            .then(|| TodoistPanelState::fixture(80)),
             recovery_picker_open: false,
             model_picker_open: false,
             login: None,
@@ -934,6 +963,8 @@ impl Panel {
             projects: Vec::new(),
             selected_project: None,
             busy_tasks: HashSet::new(),
+            scroll: ScrollHandle::new(),
+            scroll_layout: None,
         });
         let weak = cx.weak_entity();
         panel.input = cx.new(|cx| {
@@ -1054,8 +1085,23 @@ impl Panel {
         .detach();
     }
 
-    fn render_todoist(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let state = self.todoist.as_ref().expect("Todoist state");
+    fn render_todoist(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let state = self.todoist.as_mut().expect("Todoist state");
+        let layout = (
+            state.tasks.len(),
+            state.projects.len(),
+            state.selected_project.clone(),
+            window.viewport_size(),
+        );
+        // Repaint after layout, including asynchronous loads, filtering and resize.
+        // Never poll for geometry on every idle frame.
+        if state.scroll_layout.as_ref() != Some(&layout) {
+            state.scroll_layout = Some(layout);
+            let panel = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = panel.update(cx, |_, cx| cx.notify());
+            });
+        }
         let selected = state.selected_project.clone();
         let mut tasks = state
             .tasks
@@ -1134,9 +1180,12 @@ impl Panel {
 
         let mut list = div()
             .id("todoist-task-list")
+            .debug_selector(|| "todoist-task-list".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .restrict_scroll_to_axis()
+            .track_scroll(&state.scroll)
             .px_4()
             .pb_4()
             .flex()
@@ -1173,6 +1222,8 @@ impl Panel {
             list = list.child(
                 div()
                     .id(("todoist-task", index))
+                    .debug_selector(move || format!("todoist-task-{index}"))
+                    .flex_none()
                     .px_3()
                     .py_2()
                     .rounded_lg()
@@ -1239,6 +1290,8 @@ impl Panel {
             .track_focus(&self.input.read(cx).focus_handle)
             .child(
                 div()
+                    .debug_selector(|| "todoist-header".into())
+                    .flex_none()
                     .px_4()
                     .pt_4()
                     .pb_2()
@@ -1282,10 +1335,23 @@ impl Panel {
                             ),
                     ),
             )
-            .child(div().px_4().pb_3().child(projects))
-            .child(list)
+            .child(div().flex_none().px_4().pb_3().child(projects))
             .child(
                 div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(list)
+                    .child(crate::scrollbar::vertical(
+                        &state.scroll,
+                        "todoist-scrollbar",
+                    )),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "todoist-composer".into())
                     .flex_none()
                     .border_t_1()
                     .border_color(Theme::global().PANEL_BORDER)
@@ -3586,7 +3652,7 @@ impl Render for Panel {
             return self.render_gmail(cx);
         }
         if self.todoist.is_some() {
-            return self.render_todoist(cx);
+            return self.render_todoist(window, cx);
         }
         if let Some(sessions) = &self.unfinished_work {
             let mut list = div()
@@ -8171,3 +8237,7 @@ fn demo_item_fixtures() -> Vec<Item> {
 #[cfg(test)]
 #[path = "panel_responsive_tests.rs"]
 mod responsive_tests;
+
+#[cfg(test)]
+#[path = "panel_todoist_tests.rs"]
+mod todoist_tests;
