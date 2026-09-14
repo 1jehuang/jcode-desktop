@@ -53,3 +53,22 @@ live `https://jcode.sh/desktop/latest.json` channel establish delivery.
 
 These local checks do not replace the platform packaging and public-install
 acceptance gates. Unrelated local staged and unstaged work remains excluded.
+
+## Actions artifact quota recovery
+
+The immutable beta.28 tag is `ddad95424cd098e82cc76ca91c99742a6f654927`.
+Original macOS run `34804105441` passed universal packaging, Developer ID
+signing, notarization, installed-app checks, and signed Sparkle appcast
+creation. At 04:22 UTC on September 14, its Actions artifact transfer
+failed because the account's artifact-storage quota was exhausted. The run
+failed and never published the private release. Its earlier passing checks are
+not evidence that the public release was delivered.
+
+The concurrent Linux/Windows run `34804105442` was stopped because its required
+Actions artifact transfers would hit the same quota. Recovery must rebuild the
+same immutable Desktop and runtime sources, transfer packages through a private
+draft GitHub release instead of Actions artifacts, and retain all signing,
+notarization, package, and launch checks. Only a complete, verified platform set
+may leave draft state and enter the unchanged public publisher. No billing
+settings or existing artifacts are changed. The recovered Sparkle build number
+must exceed beta.27's build 46.

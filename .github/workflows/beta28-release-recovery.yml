@@ -1,0 +1,506 @@
+# One-off recovery for quota failures in runs 34804105441 and 34804105442.
+# No package sources are taken from main. Release assets replace Actions storage.
+name: Recover beta28 desktop release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  RELEASE_TAG: desktop-v0.1.0-beta.28
+  DESKTOP_SHA: ddad95424cd098e82cc76ca91c99742a6f654927
+  RUNTIME_SHA: 56fb1f163aff19f5baeeda642c79f8499e597d0f
+
+concurrency:
+  group: desktop-release-desktop-v0.1.0-beta.28
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out immutable desktop tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Assert immutable desktop source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C jcode-desktop rev-parse HEAD)" = "$DESKTOP_SHA"
+          test "$(git -C jcode-desktop rev-parse "$RELEASE_TAG^{}")" = "$DESKTOP_SHA"
+      - name: Create or require private draft prerelease for existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --prerelease --title "Jcode Desktop 0.1.0-beta.28" \
+              --notes "Recovery of immutable beta28. All platform gates must pass before publication."
+          fi
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq 'select(.tagName == env.RELEASE_TAG and .isDraft == true and .isPrerelease == true) | .tagName' \
+            | grep -Fx "$RELEASE_TAG"
+
+  macos:
+    needs: prepare
+    runs-on: macos-14
+    timeout-minutes: 180
+    env:
+      # beta27 shipped Sparkle build 46. Recovery run_number is unrelated.
+      BUILD_NUMBER: "47"
+      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      HAS_APPLE_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+      HAS_SPARKLE_KEYS: ${{ secrets.SPARKLE_PUBLIC_KEY != '' && secrets.SPARKLE_PRIVATE_KEY != '' }}
+    steps:
+      - name: Check out immutable desktop tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Assert immutable desktop source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C jcode-desktop rev-parse HEAD)" = "$DESKTOP_SHA"
+          test "$(git -C jcode-desktop rev-parse "$RELEASE_TAG^{}")" = "$DESKTOP_SHA"
+      - name: Check out Jcode runtime
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: ${{ env.RUNTIME_SHA }}
+          path: jcode
+          submodules: recursive
+          persist-credentials: false
+      - name: Assert immutable runtime source
+        shell: bash
+        run: test "$(git -C jcode rev-parse HEAD)" = "$RUNTIME_SHA"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: |
+            jcode-desktop
+            jcode
+      - name: Validate release credentials
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          signing=0
+          notarization=0
+          updates=0
+          [[ -n "$CERTIFICATE_P12" && -n "$CERTIFICATE_PASSWORD" && -n "$SIGNING_IDENTITY" ]] && signing=1
+          [[ -n "$API_KEY_P8" && -n "$API_KEY_ID" && -n "$API_ISSUER_ID" ]] && notarization=1
+          [[ -n "$SPARKLE_PUBLIC_KEY" && -n "$SPARKLE_PRIVATE_KEY" ]] && updates=1
+
+          if [[ $signing -eq 0 && -n "$CERTIFICATE_P12$CERTIFICATE_PASSWORD$SIGNING_IDENTITY" ]]; then
+            echo "Signing credentials must be configured as a complete set." >&2
+            exit 1
+          fi
+          if [[ $notarization -eq 0 && -n "$API_KEY_P8$API_KEY_ID$API_ISSUER_ID" ]]; then
+            echo "Notarization credentials must be configured as a complete set." >&2
+            exit 1
+          fi
+          if [[ $notarization -eq 1 && $signing -eq 0 ]]; then
+            echo "Notarization requires Developer ID signing credentials." >&2
+            exit 1
+          fi
+          if [[ $signing -eq 0 || $notarization -eq 0 ]]; then
+            echo "Tagged macOS releases require Developer ID signing and notarization credentials." >&2
+            exit 1
+          fi
+          if [[ $updates -eq 0 ]]; then
+            echo "Tagged macOS releases require Sparkle public and private keys." >&2
+            exit 1
+          fi
+          if [[ $updates -eq 0 && -n "$SPARKLE_PUBLIC_KEY$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "Sparkle public and private keys must be configured together." >&2
+            exit 1
+          fi
+      - name: Import Developer ID certificate
+        if: env.HAS_APPLE_CERTIFICATE == 'true'
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/jcode-signing.keychain-db"
+          security create-keychain -p runner "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p runner "$KEYCHAIN"
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k runner "$KEYCHAIN"
+      - name: Configure notarization
+        if: env.HAS_APPLE_NOTARY_KEY == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool store-credentials jcode-notary \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID"
+      - name: Build universal app, DMG, and ZIP
+        env:
+          VERSION: ${{ env.RELEASE_TAG }}
+          JCODE_REPO: ${{ github.workspace }}/jcode
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_API_KEY_P8 != '' && 'jcode-notary' || '' }}
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
+          REQUIRE_SECURE_UPDATES: "1"
+        run: jcode-desktop/scripts/package-macos.sh
+      - name: Verify app bundle and DMG install path
+        env:
+          EXPECT_NOTARIZED: "1"
+          FIRST_LAUNCH_CHECK: "1"
+        run: jcode-desktop/scripts/verify-macos-package.sh
+      - name: Sign automatic update and generate appcast
+        if: startsWith(env.RELEASE_TAG, 'desktop-v') && env.HAS_SPARKLE_KEYS == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          VERSION="${RELEASE_TAG#desktop-v}"
+          UPDATES="$RUNNER_TEMP/jcode-updates"
+          ARCHIVE="Jcode-${VERSION}-macOS-universal.zip"
+          mkdir -p "$UPDATES"
+          cp jcode-desktop/dist/macos/Jcode-macOS-universal.zip "$UPDATES/$ARCHIVE"
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" | \
+            jcode-desktop/dist/macos/sparkle/bin/generate_appcast \
+              --ed-key-file - \
+              --download-url-prefix "https://jcode.sh/desktop/releases/$RELEASE_TAG/" \
+              "$UPDATES"
+          test -s "$UPDATES/appcast.xml"
+          grep -q 'sparkle:edSignature=' "$UPDATES/appcast.xml"
+          cp "$UPDATES/appcast.xml" jcode-desktop/dist/macos/appcast.xml
+          cp "$UPDATES/$ARCHIVE" jcode-desktop/dist/macos/
+          (
+            cd jcode-desktop/dist/macos
+            shasum -a 256 "$ARCHIVE" Jcode-macOS-universal.dmg > SHA256SUMS
+          )
+      - name: Transfer verified macos assets to private draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq 'select(.tagName == env.RELEASE_TAG and .isDraft == true and .isPrerelease == true) | .tagName' \
+            | grep -Fx "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            jcode-desktop/dist/macos/Jcode-macOS-universal.dmg \
+            jcode-desktop/dist/macos/Jcode-0.1.0-beta.28-macOS-universal.zip \
+            jcode-desktop/dist/macos/SHA256SUMS \
+            jcode-desktop/dist/macos/appcast.xml
+
+  cross-platform:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2025
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    # Cold Windows builds plus the multi-GB post-job cache save exceeded 120m
+    # in beta27 after packaging, smoke tests, and artifact upload had passed.
+    timeout-minutes: 180
+    steps:
+      - name: Check out immutable desktop tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Assert immutable desktop source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C jcode-desktop rev-parse HEAD)" = "$DESKTOP_SHA"
+          test "$(git -C jcode-desktop rev-parse "$RELEASE_TAG^{}")" = "$DESKTOP_SHA"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: ${{ env.RUNTIME_SHA }}
+          path: jcode
+          submodules: recursive
+          persist-credentials: false
+      - name: Assert immutable runtime source
+        shell: bash
+        run: test "$(git -C jcode rev-parse HEAD)" = "$RUNTIME_SHA"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: |
+            jcode-desktop
+            jcode
+          cache-on-failure: true
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dri \
+            mesa-vulkan-drivers openbox wayland-utils weston x11-utils xvfb
+      - name: Build and package Linux
+        if: matrix.platform == 'linux'
+        env:
+          VERSION: ${{ env.RELEASE_TAG }}
+          JCODE_REPO: ${{ github.workspace }}/jcode
+        run: jcode-desktop/scripts/package-linux.sh
+      - name: Verify Linux package
+        if: matrix.platform == 'linux'
+        run: |
+          python3 jcode-desktop/scripts/verify-release-package.py jcode-desktop/dist/linux/*.tar.gz
+          dpkg-deb --info jcode-desktop/dist/linux/*.deb
+          dpkg-deb --contents jcode-desktop/dist/linux/*.deb | grep -E 'jcode-desktop|jcode-harness-api-bridge|jcode.desktop|jcode.png'
+          (cd jcode-desktop/dist/linux && sha256sum -c SHA256SUMS-linux)
+      - name: Smoke-test Linux package on X11
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find jcode-desktop/dist/linux -type f -name jcode-desktop | head -1)
+          cli=$(dirname "$app")/jcode
+          "$cli" --version
+          smoke="$RUNNER_TEMP/jcode-linux-smoke/x11"
+          runtime="$smoke/runtime"
+          home="$smoke/home"
+          mkdir -p "$runtime" "$home"
+          chmod 700 "$runtime"
+          timeout 25s xvfb-run -a -s '-screen 0 1280x800x24' bash -c '
+            set -euo pipefail
+            app=$1; runtime=$2; home=$3; smoke=$4
+            openbox >"$smoke/openbox.log" 2>&1 &
+            openbox_pid=$!
+            trap '\''kill "$openbox_pid" 2>/dev/null || true'\'' EXIT
+            for _ in {1..50}; do
+              xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break
+              sleep 0.1
+            done
+            xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null
+            env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$runtime" HOME="$home" \
+              LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=vulkan \
+              "$app" >"$smoke/app.log" 2>&1 &
+            pid=$!
+            sleep 8
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || status=$?
+              echo "X11 app exited before smoke completed (status ${status:-0})" >&2
+              exit 1
+            fi
+            kill "$pid"
+            wait "$pid" || true
+          ' bash "$app" "$runtime" "$home" "$smoke"
+      - name: Smoke-test Linux package on native Wayland
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find jcode-desktop/dist/linux -type f -name jcode-desktop | head -1)
+          smoke="$RUNNER_TEMP/jcode-linux-smoke/wayland"
+          runtime="$smoke/runtime"
+          home="$smoke/home"
+          mkdir -p "$runtime" "$home"
+          chmod 700 "$runtime"
+          # Weston's headless backend has no wl_seat, which GPUI requires.
+          # Nest Weston in Xvfb to expose a virtual seat, then remove DISPLAY
+          # from the app so the tested client path is still native Wayland.
+          timeout 30s xvfb-run -a -s '-screen 0 1280x800x24' bash -c '
+            set -euo pipefail
+            app=$1; runtime=$2; home=$3; smoke=$4
+            openbox >"$smoke/openbox.log" 2>&1 &
+            openbox_pid=$!
+            XDG_RUNTIME_DIR="$runtime" LIBGL_ALWAYS_SOFTWARE=1 \
+              weston --backend=x11-backend.so --use-pixman \
+                --socket=jcode-ci-wayland --idle-time=0 >"$smoke/weston.log" 2>&1 &
+            weston_pid=$!
+            trap '\''kill "$weston_pid" "$openbox_pid" 2>/dev/null || true'\'' EXIT
+            ready=0
+            for _ in {1..100}; do
+              if [[ -S "$runtime/jcode-ci-wayland" ]] && \
+                 XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=jcode-ci-wayland \
+                   timeout 2s wayland-info >"$smoke/registry.log" 2>&1 && \
+                 grep -q wl_seat "$smoke/registry.log"; then
+                ready=1
+                break
+              fi
+              kill -0 "$weston_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            [[ "$ready" == 1 ]]
+            env -u DISPLAY XDG_RUNTIME_DIR="$runtime" HOME="$home" \
+              WAYLAND_DISPLAY=jcode-ci-wayland LIBGL_ALWAYS_SOFTWARE=1 \
+              WGPU_BACKEND=vulkan "$app" >"$smoke/app.log" 2>&1 &
+            pid=$!
+            sleep 8
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || status=$?
+              echo "Wayland app exited before smoke completed (status ${status:-0})" >&2
+              exit 1
+            fi
+            kill "$pid"
+            wait "$pid" || true
+          ' bash "$app" "$runtime" "$home" "$smoke"
+      - name: Print Linux smoke diagnostics
+        if: always() && matrix.platform == 'linux'
+        shell: bash
+        run: |
+          shopt -s nullglob globstar
+          for file in "$RUNNER_TEMP"/jcode-linux-smoke/**/*.log; do
+            echo "===== $file ====="
+            cat "$file"
+          done
+          for file in "$RUNNER_TEMP"/jcode-linux-smoke/*/home/.local/state/jcode-desktop/*.log; do
+            echo "===== $file ====="
+            cat "$file"
+          done
+      - name: Build and package Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ env.RELEASE_TAG }}
+          JCODE_REPO: ${{ github.workspace }}/jcode
+        run: ./jcode-desktop/scripts/package-windows.ps1
+      - name: Verify Windows package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          python jcode-desktop/scripts/verify-release-package.py (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName
+          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-x86_64' | Select-Object -First 1
+          & "$($stage.FullName)/jcode.exe" --version
+          if ($LASTEXITCODE) { throw 'Bundled Jcode CLI did not start' }
+      - name: Smoke-test Windows package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-x86_64' | Select-Object -First 1
+          $log = Join-Path $env:RUNNER_TEMP 'jcode-desktop-windows.log'
+          $process = Start-Process -FilePath "$($stage.FullName)/jcode-desktop.exe" -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) {
+            Get-Content $log, "$log.err" -ErrorAction SilentlyContinue
+            throw "Jcode Desktop exited during launch with code $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id
+          $process.WaitForExit()
+      - name: Transfer verified linux assets to private draft
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq 'select(.tagName == env.RELEASE_TAG and .isDraft == true and .isPrerelease == true) | .tagName' \
+            | grep -Fx "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            jcode-desktop/dist/linux/Jcode-0.1.0-beta.28-linux-x86_64.tar.gz \
+            jcode-desktop/dist/linux/Jcode-0.1.0-beta.28-linux-amd64.deb \
+            jcode-desktop/dist/linux/SHA256SUMS-linux
+      - name: Transfer verified windows assets to private draft
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq 'select(.tagName == env.RELEASE_TAG and .isDraft == true and .isPrerelease == true) | .tagName' \
+            | grep -Fx "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            jcode-desktop/dist/windows/Jcode-0.1.0-beta.28-windows-x86_64.zip \
+            jcode-desktop/dist/windows/SHA256SUMS-windows
+
+  publish:
+    needs: [macos, cross-platform]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out immutable desktop tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Assert immutable desktop source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C jcode-desktop rev-parse HEAD)" = "$DESKTOP_SHA"
+          test "$(git -C jcode-desktop rev-parse "$RELEASE_TAG^{}")" = "$DESKTOP_SHA"
+      - name: Run immutable publication contract suite (26 Python tests)
+        working-directory: jcode-desktop
+        run: python3 -m unittest discover -s tests -v
+      - name: Download explicit private draft assets and validate complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq 'select(.tagName == env.RELEASE_TAG and .isDraft == true and .isPrerelease == true) | .tagName' \
+            | grep -Fx "$RELEASE_TAG"
+          mkdir -p artifacts
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir artifacts \
+            --pattern Jcode-macOS-universal.dmg \
+            --pattern Jcode-0.1.0-beta.28-macOS-universal.zip \
+            --pattern SHA256SUMS \
+            --pattern appcast.xml \
+            --pattern Jcode-0.1.0-beta.28-linux-x86_64.tar.gz \
+            --pattern Jcode-0.1.0-beta.28-linux-amd64.deb \
+            --pattern SHA256SUMS-linux \
+            --pattern Jcode-0.1.0-beta.28-windows-x86_64.zip \
+            --pattern SHA256SUMS-windows
+          python3 jcode-desktop/scripts/prepare-public-release.py artifacts "$RELEASE_TAG" --manifest artifacts/latest.json
+      - name: Publish validated private prerelease and dispatch public distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq 'select(.tagName == env.RELEASE_TAG and .isDraft == true and .isPrerelease == true) | .tagName' \
+            | grep -Fx "$RELEASE_TAG"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
+          gh workflow run publish-public-release.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
