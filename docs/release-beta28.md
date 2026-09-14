@@ -34,3 +34,22 @@ promoted manifest automatically, without a website source change.
 
 This preparation record is not evidence of publication. CI results and the
 live `https://jcode.sh/desktop/latest.json` channel establish delivery.
+
+## Local preflight
+
+- Tested an isolated export of committed Desktop source against the exact pinned
+  runtime, not the dirty development checkout.
+- Release publication/package Python tests: 26 passed.
+- Linux/macOS packaging and macOS verification shell syntax checks passed.
+- Final locked serial workspace suite: 866 passed, 9 ignored, zero failures.
+- Updated three image fixtures for the SDK's optional history-message index.
+- Fixed a real narrow-footer flex bug that reduced model/login controls to zero
+  width. Responsive acceptance covers 240x240 through 800x600, long model/account
+  labels, and long drafts, with clipping and nonoverlap assertions.
+- Corrected two stale activity-row test expectations while preserving exact
+  geometry, no-scroll, title-stability, and status-state checks. All original
+  failures were reproduced individually before correction, and the corrected
+  cases also pass with an empty Desktop config.
+
+These local checks do not replace the platform packaging and public-install
+acceptance gates. Unrelated local staged and unstaged work remains excluded.
