@@ -40,7 +40,7 @@ fn settings_machine_entry_opens_the_connectable_picker(cx: &mut gpui::TestAppCon
     assert!(vcx.debug_bounds("machines-picker").is_some());
     assert!(vcx.debug_bounds("machine-host-input").is_some());
     workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.sidebar_view, SidebarView::Machines)
+        assert_eq!(w.sidebar_view, SidebarView::Settings)
     });
 }
 
@@ -69,7 +69,7 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     );
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"));
-        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots.len(), 2);
     });
     // All generic and pinned new-panel shortcuts honor the remote preference,
     // without accidentally forwarding this computer's pinned directory.
@@ -318,34 +318,126 @@ fn remote_history_never_becomes_a_local_pinned_folder() {
 }
 
 #[gpui::test]
-fn hiding_machines_returns_focus_to_the_existing_composer(cx: &mut gpui::TestAppContext) {
+fn machines_panel_preserves_sidebar_reuses_tabs_and_restores_input(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
     cx.update(crate::input::bind_keys);
-    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
         w.push_test_panel("existing", cx);
-        w.open_machines(window, cx);
+        w.sidebar_view = SidebarView::Files;
         w
     });
+    click(vcx, "machines-picker-button");
+    vcx.simulate_input("user@reload-host");
+    let original = workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.sidebar_view, SidebarView::Files);
+        assert_eq!(w.slots.len(), 2);
+        assert!(!w.slots[w.active].panel.read(cx).can_fork());
+        w.slots[0].panel.entity_id()
+    });
+    click(vcx, "machines-picker-button");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots[0].panel.entity_id(), original);
+        assert_eq!(
+            w.slots[w.active]
+                .panel
+                .read(cx)
+                .input
+                .read(cx)
+                .snapshot()
+                .content,
+            "user@reload-host"
+        );
+    });
+    // Sidebar visibility and selected view are independent of the workspace panel.
+    workspace.update(vcx, |w, cx| {
+        w.show_sidebar = false;
+        cx.notify();
+    });
     vcx.run_until_parked();
-    for hide_sidebar in [false, true] {
-        vcx.update(|window, cx| {
-            workspace.update(cx, |w, cx| w.open_machines(window, cx));
-        });
-        vcx.run_until_parked();
-        workspace.update(vcx, |w, cx| {
-            if hide_sidebar {
-                w.show_sidebar = false;
-            } else {
-                w.sidebar_view = SidebarView::Sessions;
-            }
-            cx.notify();
-        });
-        vcx.run_until_parked();
-        vcx.update(|window, cx| {
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], 1);
+            let bytes = w.snapshot(window, cx).unwrap().encode().unwrap();
+            w.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
+            w.restore_focus(window, cx);
+            assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], 1);
+            assert_eq!(w.sidebar_view, SidebarView::Files);
             assert_eq!(
-                workspace.read(cx).navigation_state(window, cx)["keyboard_panel"],
-                0
+                w.slots[1].panel.read(cx).input.read(cx).snapshot().content,
+                "user@reload-host"
             );
         });
-    }
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Watch {session_id}) if session_id == "existing")
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "Machines must never be watched"
+    );
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("enter");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {host, ..}) if host == "user@reload-host")
+    );
+    vcx.simulate_keystrokes("super-h");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        workspace.read_with(cx, |w, cx| {
+            assert_eq!(w.active, 0);
+            assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], 0);
+        })
+    });
+    vcx.simulate_keystrokes("super-l");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        workspace.read_with(cx, |w, cx| {
+            assert_eq!(w.active, 1);
+            assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], 1);
+        })
+    });
+    vcx.simulate_keystrokes("super-q");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert!(w.machines_panel_index(cx).is_none());
+        assert_eq!(w.slots[w.active].panel.read(cx).session_id, "existing");
+    });
+    assert!(
+        commands.try_recv().is_err(),
+        "Machines must never be unwatched"
+    );
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.open_machines(window, cx);
+            w.close_panel(&ClosePanel, window, cx);
+            w.open_machines(window, cx);
+            assert_eq!(w.slots.len(), 2);
+            assert_eq!(
+                w.slots
+                    .iter()
+                    .filter(|slot| slot.panel.read(cx).is_machines())
+                    .count(),
+                1
+            );
+        });
+    });
+    vcx.run_until_parked();
+    click(vcx, "machines-panel-close");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 1);
+        assert!(w.machines_panel_index(cx).is_none());
+    });
+    assert!(commands.try_recv().is_err());
+}
+
+#[test]
+fn legacy_machines_sidebar_restores_sessions() {
+    assert_eq!(
+        serde_json::from_str::<SidebarView>("\"Machines\"").unwrap(),
+        SidebarView::Sessions
+    );
 }

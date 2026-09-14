@@ -31,7 +31,13 @@ The local directory behavior below applies when **This computer** is the default
 ## Remote machines
 
 Click **Machines** beneath the sidebar tabs, or open **Settings → Machines and
-default new-panel location**. SSH aliases from `~/.ssh/config` and previously
+default new-panel location**. Machines opens in its own focusable workspace panel,
+leaving the current sidebar page in place. Clicking it again returns to the same
+panel and preserves your unfinished host input. Close it with Escape, its close
+button, or the usual panel shortcut. The Default directory and Machines rows stay
+above the sidebar's scrollable content and scrollbar.
+
+SSH aliases from `~/.ssh/config` and previously
 entered hosts appear automatically. Click **Connect**, or enter an SSH alias or
 `user@hostname` and press Enter. Connections open normal native chat panels, not
 terminal wrappers. Local and remote panels can remain open together.

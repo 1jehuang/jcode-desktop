@@ -49,6 +49,11 @@ def main():
             wm_config.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>')
             manager = subprocess.Popen(["openbox", "--sm-disable", "--config-file", str(wm_config)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             processes.append(manager)
+            # GPUI must see an initialized window manager when opening its first
+            # native window. Match the private-display screenshot workflow.
+            time.sleep(0.5)
+            if manager.poll() is not None:
+                raise RuntimeError("Private Openbox failed to start")
             drivers = sorted(Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json"))
             if drivers:
                 env["VK_DRIVER_FILES"] = str(drivers[0])
@@ -61,18 +66,23 @@ def main():
                 deadline = time.monotonic() + 30
                 while True:
                     command("import", "-window", "root", str(path))
-                    tsv = command("tesseract", str(path), "stdout", "tsv")
                     words = []
-                    for line in tsv.splitlines()[1:]:
-                        fields = line.split("\t", 11)
-                        if len(fields) == 12 and fields[11].strip():
-                            words.append({"text": fields[11].strip(), "x": int(fields[6]) + int(fields[8]) // 2, "y": int(fields[7]) + int(fields[9]) // 2})
+                    sidebar_path = output / (name + "-sidebar.png")
+                    command("convert", str(path), "-crop", "264x1000+0+0", str(sidebar_path))
+                    for image, sidebar in [(path, False), (sidebar_path, True)]:
+                        tsv = command("tesseract", str(image), "stdout", "tsv")
+                        for line in tsv.splitlines()[1:]:
+                            fields = line.split("\t", 11)
+                            if len(fields) == 12 and fields[11].strip():
+                                x = int(fields[6]) + int(fields[8]) // 2
+                                if (x < 275) == sidebar:
+                                    words.append({"text": fields[11].strip(), "x": x, "y": int(fields[7]) + int(fields[9]) // 2})
                     if words or time.monotonic() > deadline:
                         return words
                     time.sleep(0.5)
 
-            def click_word(words, text, after=0):
-                candidates = [w for w in words if w["text"] == text and w["x"] < 275 and w["y"] > after]
+            def click_word(words, text, after=0, sidebar=False):
+                candidates = [w for w in words if w["text"].casefold() == text.casefold() and (w["x"] < 275 if sidebar else w["x"] >= 275) and w["y"] > after]
                 if not candidates:
                     raise AssertionError(f"Cannot find {text!r} after y={after}: {words}")
                 word = min(candidates, key=lambda w: (w["y"], w["x"]))
@@ -88,7 +98,7 @@ def main():
                 state.unlink(missing_ok=True)
                 app = subprocess.Popen([str(args.binary.resolve()), "--no-hot-reload"], env=env, cwd=root, stdout=log, stderr=log)
                 processes.append(app)
-                for _ in range(100):
+                for _ in range(600):
                     if app.poll() is not None:
                         raise RuntimeError(f"App exited {app.returncode}, see {label}.log")
                     try:
@@ -119,9 +129,15 @@ def main():
                     raise AssertionError(f"Default click did not persist {host!r}: {preference()}")
 
             launch("initial")
-            click_word(capture("initial"), "Machines")
+            initial = capture("initial")
+            directory = next(w for w in initial if w["text"] == "Default" and w["x"] < 275)
+            click_word(initial, "Machines", sidebar=True)
             words = capture("picker")
-            workstation = next(w for w in words if w["text"] == "workstation" and w["x"] < 275)
+            assert any(w["text"] == "Default" and abs(w["x"] - directory["x"]) <= 2 and abs(w["y"] - directory["y"]) <= 2 for w in words), "Opening Machines must preserve sidebar controls"
+            workstation = next(w for w in words if w["text"] == "workstation" and w["x"] >= 275)
+            click_word(words, "Machines", sidebar=True)
+            words = capture("reused-picker")
+            assert sum(w["text"] == "workstation" and w["x"] >= 275 for w in words) == 1, "Clicking Machines again reuses its panel"
             click_word(words, "Set", after=workstation["y"])
             wait_default("workstation")
             capture("remote-default")
@@ -130,20 +146,13 @@ def main():
             launch("restored")
             words = capture("restored")
             assert any(w["text"] == "workstation" and w["x"] < 275 for w in words), words
-            if any(w["text"] == "Add" and w["x"] < 275 for w in words):
-                click_word(words, "Add")
-            else:
-                click_word(words, "Machines")
+            click_word(words, "Machines", sidebar=True)
             words = capture("ready-to-type")
             windows = command("xdotool", "search", "--onlyvisible", "--class", "^jcode-desktop$").splitlines()
             command("xdotool", "windowactivate", "--sync", windows[-1])
             time.sleep(0.3)
-            # Target the host box immediately above its Connect via SSH
-            # button. Cursor glyphs make placeholder OCR unstable, and matching
-            # "SSH" alone accidentally targets the help paragraph below it.
-            connect = next(w for w in words if w["text"] == "via" and w["x"] < 275)
-            command("xdotool", "mousemove", "132", str(connect["y"] - 50), "click", "1")
-            time.sleep(0.5)
+            # Opening the Machines panel must focus its real host input, just
+            # as navigating to an ordinary chat focuses that panel's composer.
             command("xdotool", "type", "--clearmodifiers", "--delay", "50", "builder@lab")
             capture("typed-host")
             command("xdotool", "key", "Return")
@@ -156,7 +165,7 @@ def main():
             click_word(words, "Set")  # This computer is the first row.
             wait_default("")
             capture("local-default")
-            report = {"native_picker": "passed", "remote_default_persisted": "passed", "remote_default_restored_after_restart": "passed", "typed_host_enter": "passed", "local_default_restored": "passed", "runtime": "offline fixture, no SSH or model calls", "config": preference()}
+            report = {"native_picker": "passed", "standalone_panel_preserves_sidebar": "passed", "repeated_open_reuses_panel": "passed", "remote_default_persisted": "passed", "remote_default_restored_after_restart": "passed", "typed_host_enter": "passed", "local_default_restored": "passed", "runtime": "offline fixture, no SSH or model calls", "config": preference()}
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report, indent=2))
         finally:

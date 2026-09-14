@@ -9,7 +9,7 @@ pub(super) struct Machines {
     pub failed: bool,
     pub startup_failed: bool,
     startup_requested: bool,
-    input: Option<Entity<PromptInput>>,
+    pub(super) input: Option<Entity<PromptInput>>,
     notice: Option<String>,
     discovery: Option<gpui::Task<()>>,
 }
@@ -37,7 +37,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if (!self.show_sidebar || self.sidebar_view != SidebarView::Machines)
+        if (self.overview
+            || self.slots.get(self.active).is_none_or(|slot| {
+                slot.closing || slot.row != self.active_row || !slot.panel.read(cx).is_machines()
+            }))
             && self
                 .remotes
                 .input
@@ -85,26 +88,58 @@ impl Workspace {
     }
 
     pub(super) fn open_machines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_sidebar = true;
-        self.sidebar_view = SidebarView::Machines;
-        self.focus_pending = false;
-        if self.remotes.input.is_none() {
-            let weak = cx.weak_entity();
-            let cancel = weak.clone();
-            self.remotes.input = Some(cx.new(|cx| {
-                PromptInput::new(cx, "SSH alias or user@hostname", move |host, _, _, app| {
-                    let _ = weak.update(app, |this, cx| this.connect_machine(Some(host), cx));
-                })
-                .with_on_overlay_cancel(move |app| {
-                    let _ = cancel.update(app, |this, cx| {
-                        this.sidebar_view = SidebarView::Sessions;
-                        this.focus_pending = true;
-                        cx.notify();
-                    });
-                    true
-                })
-            }));
+        if let Some(index) = self.machines_panel_index(cx) {
+            self.set_active(index, cx);
+        } else {
+            let input = self.create_machine_input(cx);
+            self.remotes.input = Some(input.clone());
+            let panel = cx.new(|cx| {
+                let mut panel = Panel::new(
+                    Panel::MACHINES_SESSION_ID.into(),
+                    Some("Machines".into()),
+                    None,
+                    self.bridge.clone(),
+                    cx,
+                );
+                panel.input = input;
+                panel
+            });
+            let width_fraction = 0.5;
+            let insert_at = if self.slots.is_empty() {
+                0
+            } else {
+                self.active + 1
+            };
+            self.slots.insert(
+                insert_at,
+                Slot {
+                    panel,
+                    row: self.active_row,
+                    width_fraction,
+                    animated_width: AnimatedValue::new(
+                        width_fraction,
+                        transition::policy(Transition::PanelOpen).duration,
+                    ),
+                    order_offset: AnimatedValue::new(
+                        0.0,
+                        transition::policy(Transition::PanelOrder).duration,
+                    ),
+                    order_distance_fraction: width_fraction,
+                    close_progress: AnimatedValue::new(
+                        1.0,
+                        transition::policy(Transition::PanelClose).duration,
+                    ),
+                    closing: false,
+                    restore_fraction: None,
+                },
+            );
+            self.set_active(insert_at, cx);
+            crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
         }
+        self.overview = false;
+        self.overview_progress.set(0.0, Instant::now());
+        self.focus_pending = true;
+        self.focus_active(window, cx);
         #[cfg(not(test))]
         if !harness::screenshot_mode() {
             self.remotes.discovery = Some(cx.spawn(async move |this, cx| {
@@ -122,12 +157,71 @@ impl Workspace {
                 });
             }));
         }
-        cx.defer_in(window, |this, window, cx| {
-            if let Some(input) = &this.remotes.input {
-                let focus = input.read(cx).focus_handle.clone();
-                window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub(super) fn machines_panel_index(&self, cx: &App) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.read(cx).is_machines())
+    }
+
+    pub(super) fn create_machine_input(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
+        let weak = cx.weak_entity();
+        let cancel = weak.clone();
+        cx.new(|cx| {
+            PromptInput::new(cx, "SSH alias or user@hostname", move |host, _, _, app| {
+                let _ = weak.update(app, |this, cx| this.connect_machine(Some(host), cx));
+            })
+            .with_on_overlay_cancel(move |app| {
+                let _ = cancel.update(app, |this, cx| this.close_machines(cx));
+                true
+            })
+        })
+    }
+
+    pub(super) fn close_machines(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.machines_panel_index(cx) else {
+            return;
+        };
+        let active_id = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+        let removed_id = self.slots.remove(index).panel.entity_id();
+        crate::sounds::play(crate::sounds::Cue::PanelClose, cx);
+        if self.previous == Some(removed_id) {
+            self.previous = None;
+        }
+        for remembered in &mut self.row_focus {
+            if *remembered == Some(removed_id) {
+                *remembered = None;
             }
-        });
+        }
+        self.active = active_id
+            .filter(|id| *id != removed_id)
+            .and_then(|id| {
+                self.slots
+                    .iter()
+                    .position(|slot| slot.panel.entity_id() == id)
+            })
+            .unwrap_or_else(|| {
+                let remaining: Vec<_> = self
+                    .row_indices(self.active_row)
+                    .filter(|&index| !self.slots[index].closing)
+                    .collect();
+                focus_after_close(index, &remaining)
+            });
+        if let Some(slot) = self
+            .slots
+            .get(self.active)
+            .filter(|slot| slot.row == self.active_row && !slot.closing)
+        {
+            self.row_focus[self.active_row] = Some(slot.panel.entity_id());
+        }
+        self.remotes.input = None;
+        self.focus_pending = true;
+        self.retarget_camera();
         cx.notify();
     }
 
@@ -206,13 +300,7 @@ impl Workspace {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    if this.sidebar_view == SidebarView::Machines {
-                        this.sidebar_view = SidebarView::Sessions;
-                        this.focus_pending = true;
-                        cx.notify();
-                    } else {
-                        this.open_machines(window, cx);
-                    }
+                    this.open_machines(window, cx);
                 }),
             )
             .child(div().text_color(Theme::global().TEXT_DIM).child("Machines"))
@@ -235,19 +323,19 @@ impl Workspace {
             .when(self.remotes.failed, |el| {
                 el.child(div().text_color(Theme::global().ERROR).child("!"))
             })
-            .child(if self.sidebar_view == SidebarView::Machines {
-                "▴"
-            } else {
-                "▾"
-            })
+            .child("→")
             .into_any_element()
     }
 
     pub(super) fn render_machines(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let mut picker = div().id("machines-picker").debug_selector(|| "machines-picker".into())
-            .p_3().flex().flex_col().gap_2().overflow_y_scroll().text_size(px(11.0))
-            .child(div().text_size(px(14.0)).child("Machines"))
+            .size_full().p_3().flex().flex_col().gap_2().overflow_y_scroll().text_size(px(11.0))
+            .child(div().flex().justify_between()
+                .child(div().text_size(px(14.0)).child("Machines"))
+                .child(div().id("machines-panel-close").debug_selector(|| "machines-panel-close".into())
+                    .cursor_pointer().child("close")
+                    .on_click(cx.listener(|this, _, _, cx| { cx.stop_propagation(); this.close_machines(cx); }))))
             .child(div().text_color(theme.TEXT_DIM)
                 .child("Connect opens a new panel. Default applies to new session panels, including after restart."))
             .child(div().debug_selector(|| "machine-connection-status".into())
@@ -278,6 +366,9 @@ impl Workspace {
                             cx.listener(|this, _, window, cx| {
                                 if let Some(input) = &this.remotes.input {
                                     let focus = input.read(cx).focus_handle.clone();
+                                    if let Some(index) = this.machines_panel_index(cx) {
+                                        this.set_active(index, cx);
+                                    }
                                     window.focus(&focus, cx);
                                     this.focus_pending = false;
                                 }

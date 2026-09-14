@@ -264,13 +264,13 @@ fn sidebar_header_left_padding(fullscreen: bool) -> f32 {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 enum SidebarView {
     #[default]
+    #[serde(alias = "Machines")]
     Sessions,
     Learn,
     Files,
     Accounts,
     Theme,
     Settings,
-    Machines,
 }
 
 // Minimap: a compact card in the top right that maps every strip to
@@ -1245,12 +1245,17 @@ impl Workspace {
                 });
                 if !Panel::is_pending_session_id(&session_id)
                     && session_id != Panel::DEFAULT_DIRECTORY_SESSION_ID
+                    && session_id != Panel::MACHINES_SESSION_ID
                 {
                     self.bridge.send(Command::Watch { session_id });
                 }
                 panel
             };
-            if !panel.read(cx).is_default_directory() {
+            if panel.read(cx).is_machines() {
+                let input = self.create_machine_input(cx);
+                panel.update(cx, |panel, _| panel.input = input.clone());
+                self.remotes.input = Some(input);
+            } else if !panel.read(cx).is_default_directory() {
                 Panel::connect_input(&panel, cx);
             }
             panel.update(cx, |panel, cx| panel.restore_snapshot(panel_state, cx));
@@ -2924,6 +2929,11 @@ impl Workspace {
             self.focus_active(window, cx);
             return;
         }
+        if self.slots[self.active].panel.read(cx).is_machines() {
+            self.close_machines(cx);
+            self.focus_active(window, cx);
+            return;
+        }
         self.learned("close_panel", cx);
         crate::sounds::play(crate::sounds::Cue::PanelClose, cx);
         let closed = self.active;
@@ -2935,6 +2945,7 @@ impl Workspace {
             && !Panel::is_pending_session_id(&session_id)
             && !self.slots[closed].panel.read(cx).is_change_review()
             && !self.slots[closed].panel.read(cx).is_accounts_panel()
+            && !self.slots[closed].panel.read(cx).is_machines()
             && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
             self.bridge.send(Command::Unwatch { session_id });
@@ -3582,6 +3593,8 @@ impl Workspace {
                 )
                 .child(if slot.panel.read(cx).is_default_directory() {
                     self.render_folder_picker(cx)
+                } else if slot.panel.read(cx).is_machines() {
+                    self.render_machines(cx)
                 } else {
                     // Unrelated workspace chrome updates must not rebuild every
                     // visible transcript. GPUI invalidates this definite-size
@@ -5128,6 +5141,8 @@ impl Workspace {
                     )
                     .into_any_element()
             })
+            .child(self.render_default_directory_button(cx))
+            .child(self.render_machine_switcher(cx))
             .child(
                 div()
                     .flex_1()
@@ -5139,15 +5154,12 @@ impl Workspace {
                     .when(self.sidebar_view == SidebarView::Files, |el| {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
-                    .child(self.render_default_directory_button(cx))
-                    .child(self.render_machine_switcher(cx))
                     .child(match self.sidebar_view {
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Learn => self.render_tutorial_guides(cx),
                         SidebarView::Files => self.render_files_sidebar(cx),
                         SidebarView::Theme => self.render_theme_settings(cx),
                         SidebarView::Settings => self.render_settings(cx),
-                        SidebarView::Machines => self.render_machines(cx),
                         SidebarView::Accounts => self.render_accounts(cx).unwrap_or_else(|| {
                             div()
                                 .debug_selector(|| "accounts-empty".into())
@@ -8740,6 +8752,17 @@ mod tests {
                     cx.notify();
                 });
                 vcx.run_until_parked();
+                let directory = vcx.debug_bounds("default-directory-button").unwrap();
+                let machines = vcx.debug_bounds("machines-picker-button").unwrap();
+                let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
+                let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+                assert!(gutter.top() >= directory.bottom());
+                assert_eq!(
+                    gutter.top(), machines.bottom(),
+                    "scrollbar starts below both fixed rows"
+                );
+                assert_eq!(gutter.top(), body.top());
+                assert_eq!(gutter.bottom(), body.bottom());
                 let tabs_before =
                     workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
                 let offset = |w: &Workspace| match view {
@@ -8799,6 +8822,10 @@ mod tests {
                         }
                     });
                 }
+                assert_eq!(
+                    vcx.debug_bounds("default-directory-button").unwrap(), directory
+                );
+                assert_eq!(vcx.debug_bounds("machines-picker-button").unwrap(), machines);
             }
         }
     }
@@ -8956,6 +8983,20 @@ mod tests {
         vcx.run_until_parked();
 
         click_sidebar_navigation(&workspace, vcx, "sidebar-unfinished-work");
+        workspace.update(vcx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "unfinished-work"
+            );
+            // Leaving the navigation popup repaints the workspace while the
+            // panel surface is cached. Repaint that entity so this frame's
+            // debug-selector map includes its descendants before inspecting it.
+            workspace.slots[workspace.active]
+                .panel
+                .update(cx, |_, cx| cx.notify());
+        });
+        vcx.run_until_parked();
 
         assert!(
             vcx.debug_bounds("unfinished-work-list").is_some(),
@@ -12922,8 +12963,8 @@ mod tests {
                 cx.run_until_parked();
                 if selector.ends_with("-tab") {
                     let selected = cx.debug_bounds(selector).unwrap();
-                    let body = cx.debug_bounds("sidebar-tab-body").unwrap();
-                    assert_eq!(selected.bottom(), body.top());
+                    let directory = cx.debug_bounds("default-directory-button").unwrap();
+                    assert_eq!(selected.bottom(), directory.top());
                     assert_eq!(selected.size.height, px(34.0));
                 }
                 return;

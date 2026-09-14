@@ -183,7 +183,8 @@ impl Workspace {
                     })
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .justify_center()
+                    .relative()
                     .text_size(px(12.0))
                     .text_color(Theme::global().TEXT)
                     .cursor_pointer()
@@ -201,6 +202,8 @@ impl Workspace {
                     .child(
                         div()
                             .debug_selector(|| "sidebar-section-chevron".into())
+                            .absolute()
+                            .right(px(8.0))
                             .text_color(Theme::global().TEXT_DIM)
                             .child(if self.sidebar_roller.expanded {
                                 "⌃"
@@ -458,6 +461,10 @@ mod tests {
         let label = vcx.debug_bounds("sidebar-sessions-tab").unwrap();
         let chevron = vcx.debug_bounds("sidebar-section-chevron").unwrap();
         assert!(label.left() >= trigger.left());
+        assert_eq!(
+            label.center().x, trigger.center().x,
+            "section title is centered independently of the chevron"
+        );
         assert!(label.right() < chevron.left());
         assert!(chevron.right() <= trigger.right());
         assert!(vcx.debug_bounds("sidebar-learn-tab").is_none());
@@ -468,6 +475,10 @@ mod tests {
         assert_eq!(
             vcx.debug_bounds("sidebar-section-trigger").unwrap(),
             trigger
+        );
+        assert_eq!(
+            vcx.debug_bounds("sidebar-sessions-tab").unwrap().center().x,
+            trigger.center().x
         );
         let menu = vcx.debug_bounds("sidebar-section-menu").unwrap();
         assert!(

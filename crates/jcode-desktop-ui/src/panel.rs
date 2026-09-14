@@ -546,6 +546,7 @@ impl Panel {
     /// panel behave like bare canvas and move between strips instead.
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
         self.is_default_directory()
+            || self.is_machines()
             || self.is_change_review()
             || self.is_accounts_panel()
             || self.code_file.is_some()
@@ -556,6 +557,12 @@ impl Panel {
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
             || !self.streaming_reasoning.is_empty()
+    }
+
+    pub const MACHINES_SESSION_ID: &str = "settings://machines";
+
+    pub(crate) fn is_machines(&self) -> bool {
+        self.session_id == Self::MACHINES_SESSION_ID
     }
 
     pub const DEFAULT_DIRECTORY_SESSION_ID: &str = "settings://default-directory";
@@ -1893,6 +1900,7 @@ impl Panel {
     pub(crate) fn can_fork(&self) -> bool {
         self.preview_state.is_none()
             && !self.is_default_directory()
+            && !self.is_machines()
             && !self.is_change_review()
             && !self.is_accounts_panel()
             && self.terminal.is_none()
