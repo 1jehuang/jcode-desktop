@@ -4114,23 +4114,6 @@ impl Render for Panel {
                         render_pinned_todo_summary(&payload).into_any_element()
                     })
             }))
-            .children(
-                self.offscreen_prompt
-                    .and_then(|index| self.items.get(index).map(|item| (index, item.clone())))
-                    .map(|(index, item)| {
-                        div()
-                            .id("pinned-latest-prompt")
-                            .debug_selector(|| "pinned-latest-prompt".into())
-                            .flex_none()
-                            .min_w_0()
-                            .max_h(px((f32::from(window.viewport_size().height) * 0.2).min(180.)))
-                            .overflow_y_scroll()
-                            .px_3()
-                            .pt_2p5()
-                            .text_size(px(13.5))
-                            .child(self.render_item(index, &item, window, cx))
-                    }),
-            )
             .child(
                 div()
                     .flex_1()
@@ -4199,6 +4182,7 @@ impl Render for Panel {
                         .size_full(),
                     )
                     .child(transcript)
+                    .children(self.render_pinned_prompt(window, cx))
                     .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))

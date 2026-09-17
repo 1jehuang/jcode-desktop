@@ -221,7 +221,6 @@ mod tests {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
-                edit_stats: None,
             });
         }
         workspace.set_active(0, cx);

@@ -49,6 +49,40 @@ pub(super) fn user_prompt_label(items: &[Item], index: usize) -> String {
 }
 
 impl Panel {
+    /// Keep the reminder out of flex layout. Inserting it above the list moves
+    /// every visible row by its height at the pin boundary, and also changes
+    /// the viewport used to decide whether the original prompt is visible.
+    pub(super) fn render_pinned_prompt(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let index = self.offscreen_prompt?;
+        let item = self.items.get(index)?.clone();
+        Some(
+            div()
+                .id("pinned-latest-prompt")
+                .debug_selector(|| "pinned-latest-prompt".into())
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .min_w_0()
+                .max_h(px(
+                    (f32::from(window.viewport_size().height) * 0.2).min(180.)
+                ))
+                .overflow_y_scroll()
+                .bg(Theme::global().PANEL_BG)
+                .occlude()
+                .px_3()
+                .pt_2p5()
+                .pb_2()
+                .text_size(px(13.5))
+                .child(self.render_item(index, &item, window, cx))
+                .into_any_element(),
+        )
+    }
+
     /// Read visibility after the list paints. Measuring during render would
     /// still describe the previous scroll position, width, or transcript.
     pub(super) fn prompt_visibility_observer(
@@ -266,6 +300,78 @@ mod tests {
     }
 
     #[gpui::test]
+    fn pinned_prompt_transition_does_not_move_the_transcript(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "prompt-transition".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::User("First prompt".into()));
+            for n in 0..40 {
+                panel
+                    .items
+                    .push(Item::Assistant(format!("Response paragraph {n}")));
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.stick_to_bottom = false;
+            panel.transcript_list.scroll_to(gpui::ListOffset::default());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let viewport = vcx.debug_bounds("transcript").unwrap();
+        assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
+
+        for (delta, expected_pin) in [(-4., true), (4., false)] {
+            let mut crossed = false;
+            for _ in 0..80 {
+                let before = vcx.debug_bounds("transcript-row-1").unwrap().top();
+                vcx.simulate_event(gpui::ScrollWheelEvent {
+                    position: viewport.center(),
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(delta))),
+                    modifiers: Default::default(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                });
+                vcx.run_until_parked();
+                scroll_momentum_tests::settle(vcx);
+                assert_eq!(
+                    vcx.debug_bounds("transcript").unwrap(),
+                    viewport,
+                    "pinning must not resize or move the scroll viewport"
+                );
+                let after = vcx.debug_bounds("transcript-row-1").unwrap().top();
+                assert!(
+                    (f32::from(after - before) - delta).abs() < 0.5,
+                    "text must move only by the scroll delta, not the header height"
+                );
+                if vcx.debug_bounds("pinned-latest-prompt").is_some() == expected_pin {
+                    crossed = true;
+                    break;
+                }
+            }
+            assert!(crossed, "native scrolling must cross the pin boundary");
+            for _ in 0..4 {
+                panel.update(vcx, |_, cx| cx.notify());
+                vcx.run_until_parked();
+                assert_eq!(vcx.debug_bounds("transcript").unwrap(), viewport);
+                assert_eq!(
+                    vcx.debug_bounds("pinned-latest-prompt").is_some(),
+                    expected_pin
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
     fn pinned_prompt_tracks_scrolling_and_new_prompts(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
@@ -353,7 +459,8 @@ mod tests {
         let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
         let transcript = vcx.debug_bounds("transcript").unwrap();
         assert!(todos.bottom() <= prompt.top());
-        assert!(prompt.bottom() <= transcript.top());
+        assert_eq!(prompt.top(), transcript.top());
+        assert!(prompt.bottom() < transcript.bottom());
 
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(1600.)));
         vcx.run_until_parked();

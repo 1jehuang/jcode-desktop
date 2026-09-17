@@ -608,7 +608,6 @@ fn refresh_sessions(
                 let started = std::time::Instant::now();
                 let mut sessions = merge_persisted_sessions(Vec::new(), home.as_deref());
                 jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
-                jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
                 eprintln!(
                     "jcode desktop: local session metadata loaded in {:.1}ms ({} sessions)",
                     started.elapsed().as_secs_f64() * 1_000.0,
@@ -630,7 +629,6 @@ fn refresh_sessions(
                 };
             let mut sessions = merge_persisted_sessions(api_sessions, home.as_deref());
             jcode_sdk::enrich_sessions_from_local_swarm_state(&mut sessions);
-            jcode_sdk::enrich_sessions_from_local_edit_stats(&mut sessions);
             eprintln!(
                 "jcode desktop: session list completed in {:.1}ms ({} sessions)",
                 started.elapsed().as_secs_f64() * 1_000.0,
@@ -1010,7 +1008,6 @@ pub(crate) fn merge_persisted_sessions(
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
-                edit_stats: None,
             },
         ));
     }
@@ -1724,7 +1721,6 @@ mod tests {
             parent_session_id: None,
             agent_label: None,
             swarm_status: None,
-            edit_stats: None,
         }
     }
 

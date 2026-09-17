@@ -284,14 +284,10 @@ pub enum ThemePreset {
     RoseDawn,
     #[default]
     Parchment,
-    Graphite,
-    Slate,
-    Paper,
-    Silver,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 10] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -302,10 +298,6 @@ impl ThemePreset {
         Self::Plum,
         Self::RoseDawn,
         Self::Parchment,
-        Self::Graphite,
-        Self::Slate,
-        Self::Paper,
-        Self::Silver,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -319,10 +311,6 @@ impl ThemePreset {
             Self::Plum => "plum",
             Self::RoseDawn => "rose-dawn",
             Self::Parchment => "parchment",
-            Self::Graphite => "graphite",
-            Self::Slate => "slate",
-            Self::Paper => "paper",
-            Self::Silver => "silver",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -337,10 +325,6 @@ impl ThemePreset {
             Self::Plum => "Plum",
             Self::RoseDawn => "Rose dawn",
             Self::Parchment => "Parchment",
-            Self::Graphite => "Graphite",
-            Self::Slate => "Slate",
-            Self::Paper => "Paper",
-            Self::Silver => "Silver",
         }
     }
     const fn index(self) -> usize {
@@ -355,10 +339,6 @@ impl ThemePreset {
             Self::Plum => 7,
             Self::RoseDawn => 8,
             Self::Parchment => 9,
-            Self::Graphite => 10,
-            Self::Slate => 11,
-            Self::Paper => 12,
-            Self::Silver => 13,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -556,10 +536,6 @@ fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
             configured(palettes::PLUM.theme()),
             configured(palettes::ROSE_DAWN.theme()),
             configured(palettes::PARCHMENT.theme()),
-            configured(palettes::GRAPHITE.theme()),
-            configured(palettes::SLATE.theme()),
-            configured(palettes::PAPER.theme()),
-            configured(palettes::SILVER.theme()),
         ];
         ACTIVE_THEME.store(
             ThemePreset::from_id(&crate::config::get().appearance.theme).index(),
