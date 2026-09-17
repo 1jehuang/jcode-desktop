@@ -4332,7 +4332,9 @@ impl Render for Panel {
                     )
                     .child(
                         div()
+                            .id("panel-build")
                             .debug_selector(|| "panel-build".into())
+                            .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
                             // Build metadata must yield space to interactive controls.
                             .flex_shrink_1()
                             .min_w(px(24.))
