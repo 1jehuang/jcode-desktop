@@ -5,8 +5,11 @@ mod host {
     pub mod reload;
     pub mod reload_config;
     pub mod resources;
+    pub mod window_controls;
 }
 mod diagnostics;
+#[cfg(test)]
+mod window_controls_tests;
 
 use std::{
     cell::{Cell, RefCell},
@@ -297,6 +300,7 @@ fn main() {
         ));
 
         let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
+        host::window_controls::install(cx, manager.clone(), current_window.clone());
         let rebuild_state = Rc::new(RebuildState::default());
         *reopen_state.borrow_mut() = Some((manager.clone(), current_window.clone()));
         window

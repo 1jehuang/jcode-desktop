@@ -8,6 +8,7 @@ const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
+const TAB_CLOSE_WIDTH: f32 = 40.0;
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
 
@@ -327,7 +328,8 @@ impl Workspace {
                 *row == self.active_row && index.is_none_or(|index| index == self.active)
             })
             .unwrap_or(0);
-        let available = (canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH).max(0.0);
+        let available =
+            (canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH).max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
         let targets: Vec<_> = entries
@@ -354,7 +356,7 @@ impl Workspace {
             .absolute()
             .top_0()
             .left(px(TAB_STATUS_WIDTH))
-            .right(px(TAB_NEW_WIDTH))
+            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
         self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
@@ -593,7 +595,7 @@ impl Workspace {
                     .id("tab-new-session")
                     .debug_selector(|| "tab-new-session".into())
                     .absolute()
-                    .right_0()
+                    .right(px(TAB_CLOSE_WIDTH))
                     .top_0()
                     .size(px(TAB_HEIGHT))
                     .flex()
@@ -620,6 +622,42 @@ impl Workspace {
                     )
                     .child("+"),
             )
+            .child(
+                div()
+                    .id("tab-close-window")
+                    .debug_selector(|| "tab-close-window".into())
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .size(px(TAB_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .text_size(px(20.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .cursor_pointer()
+                    .occlude()
+                    .hover(|el| {
+                        el.bg(Theme::global().ERROR_BG)
+                            .text_color(Theme::global().ERROR)
+                    })
+                    .tooltip(|_, cx| cx.new(|_| TabTooltip("Close window".into())).into())
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                    })
+                    .on_click(|_, window, cx| {
+                        cx.stop_propagation();
+                        // Build the host's action rather than passing a UI-generation
+                        // Rust type across the hot-reload boundary. The host snapshots
+                        // the workspace before removing its native window.
+                        if let Ok(action) = cx.build_action("jcode_desktop_host::CloseWindow", None) {
+                            window.dispatch_action(action, cx);
+                        }
+                    })
+                    .child("×"),
+            )
             .into_any_element()
     }
 }
@@ -627,6 +665,42 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    gpui::actions!(jcode_desktop_host, [CloseWindow]);
+
+    #[gpui::test]
+    fn tab_close_window_is_separate_from_new_session_and_dispatches_host_action(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let requests = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update({
+            let requests = requests.clone();
+            move |cx| {
+                cx.on_action(move |_: &CloseWindow, _| requests.set(requests.get() + 1));
+            }
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Keep this session", cx);
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [1440., 800., 480.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
+            vcx.run_until_parked();
+            let close = vcx.debug_bounds("tab-close-window").unwrap();
+            let plus = vcx.debug_bounds("tab-new-session").unwrap();
+            let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
+            assert!(tabs.right() <= plus.left());
+            assert!(plus.right() < close.left());
+            assert!(close.right() <= px(width));
+            assert_eq!(close.size, gpui::size(px(TAB_HEIGHT), px(TAB_HEIGHT)));
+            vcx.simulate_click(close.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
+        }
+        assert_eq!(requests.get(), 3);
+    }
 
     #[test]
     fn workspace_tab_groups_prioritize_current_row_and_keep_number_order() {
