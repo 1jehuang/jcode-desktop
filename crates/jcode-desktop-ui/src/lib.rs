@@ -229,6 +229,9 @@ unsafe extern "C-unwind" fn activate(
     let activated = catch_unwind(AssertUnwindSafe(|| {
         let window = unsafe { &mut *window.cast::<Window>() };
         let app = unsafe { &mut *app.cast::<App>() };
+        // App globals survive hot reload. Reapply the saved sound preference so
+        // a persisted mute cannot be overridden by the previous UI generation.
+        sounds::set_enabled(config::get().sounds.enabled, app);
         // Retrofit already-running hosts on reload. New hosts set the ID in
         // WindowOptions before mapping. Updating WM_CLASS during initial X11
         // setup can disrupt the first paint, so defer until the next frame.

@@ -542,6 +542,23 @@ mod tests {
         ));
     }
 
+    #[gpui::test]
+    fn reapplying_mute_clears_existing_state_and_cancels_playback(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            set_enabled(true, cx);
+            let state = cx.default_global::<Sounds>();
+            state.pending = Some(Cue::Complete);
+            let cancellation = Arc::clone(&state.cancel_epoch);
+            let previous_epoch = cancellation.load(Ordering::Acquire);
+
+            set_enabled(false, cx);
+
+            assert!(!enabled(cx));
+            assert!(cx.global::<Sounds>().pending.is_none());
+            assert!(cancellation.load(Ordering::Acquire) > previous_epoch);
+        });
+    }
+
     #[test]
     fn pending_slot_prioritizes_and_coalesces_storms() {
         assert_eq!(pending_cue(None, Cue::Sent), None);
