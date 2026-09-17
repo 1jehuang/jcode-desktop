@@ -127,6 +127,7 @@ mod interaction_tests {
                     parent_session_id: None,
                     agent_label: None,
                     swarm_status: None,
+                    edit_stats: None,
                 });
             }
             w

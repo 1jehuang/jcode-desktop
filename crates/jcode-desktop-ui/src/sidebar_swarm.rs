@@ -133,6 +133,14 @@ impl Workspace {
                 Theme::global().TEXT_DIM
             };
             let state = state.to_owned();
+            let edits = session.edit_stats.as_ref().map(|stats| {
+                super::sidebar_edits::render(
+                    &session.session_id,
+                    stats.added,
+                    stats.removed,
+                    stats.approximate,
+                )
+            });
             content = content.child(
                 div()
                     .id(gpui::SharedString::from(format!("swarm-child-{id}")))
@@ -174,6 +182,7 @@ impl Workspace {
                             .text_size(px(10.0))
                             .child(title),
                     )
+                    .children(edits)
                     .child(
                         div()
                             .flex_none()
