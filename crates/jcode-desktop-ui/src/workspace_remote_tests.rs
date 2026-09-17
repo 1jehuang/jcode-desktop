@@ -16,6 +16,7 @@ fn session(id: &str) -> jcode_sdk::SessionInfo {
         parent_session_id: None,
         agent_label: None,
         swarm_status: None,
+        edit_stats: None,
     }
 }
 

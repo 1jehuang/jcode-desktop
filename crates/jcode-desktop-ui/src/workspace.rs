@@ -22,6 +22,8 @@ mod sidebar_gesture;
 mod sidebar_selection;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
+#[path = "sidebar_edits.rs"]
+mod sidebar_edits;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -679,6 +681,9 @@ impl Workspace {
         let session_refresh_interval = crate::config::get().session_refresh_interval();
         let housekeeping_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
+            // The first catalog read queues cached legacy edit statistics.
+            // Pick those up promptly, then resume the configured idle cadence.
+            let mut next_session_refresh = session_refresh_interval.min(Duration::from_secs(2));
             let mut last_update_state = updates::current();
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -690,9 +695,10 @@ impl Workspace {
                     }
                 }
                 let accounts = accounts_feed.latest();
-                if last_session_refresh.elapsed() >= session_refresh_interval {
+                if last_session_refresh.elapsed() >= next_session_refresh {
                     housekeeping_bridge.send(Command::RefreshSessions);
                     last_session_refresh = Instant::now();
+                    next_session_refresh = session_refresh_interval;
                 }
                 let Some(accounts) = accounts else {
                     continue;
@@ -860,6 +866,7 @@ impl Workspace {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
+                edit_stats: Some(jcode_sdk::SessionEditStats { added: 128, removed: 37, approximate: false }),
             };
             workspace.connected = true;
             workspace.sessions = vec![session.clone()];
@@ -878,6 +885,11 @@ impl Workspace {
                     child.parent_session_id = Some("screenshot-fixture".into());
                     child.agent_label = Some(label.into());
                     child.swarm_status = Some(status.into());
+                    child.edit_stats = Some(jcode_sdk::SessionEditStats {
+                        added: 14 + index as u64 * 50,
+                        removed: 2 + index as u64 * 8,
+                        approximate: index == 1,
+                    });
                     workspace.sessions.push(child);
                 }
             }
@@ -961,6 +973,7 @@ impl Workspace {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
+                edit_stats: None,
             },
             cx,
         );
@@ -1481,6 +1494,7 @@ impl Workspace {
                     parent_session_id: None,
                     agent_label: None,
                     swarm_status: None,
+                    edit_stats: None,
                 });
             }
         }
@@ -1631,6 +1645,9 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if sidebar_edits::refresh_after(&event) {
+                    self.bridge.send(Command::RefreshSessions);
+                }
                 if let Some(session) = self
                     .sessions
                     .iter_mut()
@@ -1859,6 +1876,7 @@ impl Workspace {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
+                edit_stats: None,
             });
         // This can run from a click listener on the active unfinished-work
         // panel. Do not read that same entity while GPUI is updating it.
@@ -4430,7 +4448,8 @@ impl Workspace {
                     .as_deref()
                     .is_some_and(|dir| !dir.trim().is_empty())
                     || sidebar_session_created_ms(&session.session_id).is_some()
-                    || session.transcript_bytes.is_some_and(|bytes| bytes > 0),
+                    || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
+                    || session.edit_stats.is_some(),
             })
             .collect::<Vec<_>>();
         sync_sidebar_session_layout(
@@ -4620,6 +4639,9 @@ impl Workspace {
                             tests::SIDEBAR_TITLE_RENDERS.with(|count| count.set(count.get() + 1));
                             let directory = sidebar_session_directory(session);
                             let meta = sidebar_session_meta(session);
+                            let edits = session.edit_stats.as_ref().map(|stats| {
+                                sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
+                            });
                             let details = match (directory, meta) {
                                 (Some(directory), Some(meta)) => {
                                     Some(format!("{directory} · {meta}"))
@@ -4748,14 +4770,18 @@ impl Workspace {
                                                 )
                                             }),
                                     )
-                                    .when_some(details, |row, details| {
+                                    .when(details.is_some() || edits.is_some(), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
-                                                .truncate()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .min_w_0()
                                                 .text_size(px(9.0))
                                                 .text_color(Theme::global().TEXT_DIM)
-                                                .child(details),
+                                                .child(div().flex_1().min_w_0().truncate().children(details))
+                                                .children(edits),
                                         )
                                     })
                                     .when_some(swarm_content, |row, content| row.child(content)),
@@ -7986,6 +8012,7 @@ mod tests {
             parent_session_id: None,
             agent_label: None,
             swarm_status: None,
+            edit_stats: None,
         }
     }
 
