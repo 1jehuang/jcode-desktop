@@ -130,17 +130,21 @@ impl Panel {
         name: &str,
         input: &str,
         done: bool,
-        failed: bool,
+        error: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let files = Arc::new(tool_diffs(name, input));
         if files.is_empty() {
             return None;
         }
+        let failed = error.is_some();
+        let intent = serde_json::from_str::<serde_json::Value>(input)
+            .ok()
+            .and_then(|value| value.get("intent")?.as_str().map(str::to_owned))
+            .filter(|intent| !intent.trim().is_empty());
         let rich_arguments = Arc::new((name.to_owned(), input.to_owned()));
         let mut card = div()
             .debug_selector(|| "code-edit-preview".into())
-            .ml(px(24.))
             .my_1()
             .flex()
             .flex_col()
@@ -167,15 +171,17 @@ impl Panel {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .truncate()
-                        .font_family(Theme::global().FONT_MONO)
                         .text_color(Theme::global().TEXT)
-                        .child(file.path.clone()),
-                )
-                .child(
-                    div()
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(file.kind.clone()),
+                        .when_some(intent.clone(), |el, intent| {
+                            el.child(
+                                div()
+                                    .debug_selector(move || format!("edit-preview-intent-{index}").into())
+                                    .mb_1()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(intent),
+                            )
+                        })
+                        .child(div().font_family(Theme::global().FONT_MONO).truncate().child(file.path.clone())),
                 )
                 .child(counts(file))
                 .child(div().text_color(Theme::global().ACCENT).child("Review ›"))
@@ -217,18 +223,40 @@ impl Panel {
                         .child(format!("… {} more lines in review", file.lines.len() - 6)),
                 );
             }
-            card = card.child(header).child(snippet);
-        }
-        Some(
-            card.child(
+            card = card.child(
                 div()
-                    .px_2()
-                    .text_size(px(10.))
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(source_label(done, failed)),
-            )
-            .into_any_element(),
-        )
+                    .debug_selector(move || format!("edit-preview-card-{index}").into())
+                    .min_w_0()
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .bg(Theme::global().CODE_BG)
+                    .child(header)
+                    .child(snippet)
+                    // GPUI clips overflow to a rectangle, not the rounded
+                    // outline. Keep diff fills above a self-rounded footer.
+                    .child(
+                        div()
+                            .debug_selector(move || format!("edit-preview-footer-{index}").into())
+                            .rounded_b_lg()
+                            .bg(Theme::global().CODE_BG)
+                            .px_3()
+                            .py_2()
+                            .text_size(px(10.))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(source_label(done, failed))
+                            .when_some(error, |el, message| {
+                                el.child(
+                                    div()
+                                        .debug_selector(|| "tool-error".into())
+                                        .pt_1()
+                                        .text_color(Theme::global().ERROR)
+                                        .child(message.to_owned()),
+                                )
+                            }),
+                    ),
+            );
+        }
+        Some(card.into_any_element())
     }
 
     pub(crate) fn is_change_review(&self) -> bool {

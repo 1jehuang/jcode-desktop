@@ -3310,6 +3310,18 @@ impl Panel {
                         .child(render_todo_card(&payload))
                         .into_any_element();
                 }
+                if let Some(preview) =
+                    self.render_edit_metadata(name, input, *done, error.as_deref(), cx)
+                {
+                    return div()
+                        .id(("tool", index))
+                        .debug_selector(|| "tool-edit".into())
+                        .flex_none()
+                        .ml(px(offset))
+                        .opacity(opacity)
+                        .child(preview)
+                        .into_any_element();
+                }
                 let status = match (done, error) {
                     (false, _) => div()
                         .w(px(12.0))
@@ -3338,9 +3350,7 @@ impl Panel {
                 let expanded = self.expanded_tools.contains(call_id);
                 let summary = tool_summary(input);
                 let detail = tool_detail(name, input, output);
-                let edit_preview =
-                    self.render_edit_metadata(name, input, *done, error.is_some(), cx);
-                let has_detail = !detail.is_empty() || edit_preview.is_some();
+                let has_detail = !detail.is_empty();
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 div()
@@ -3426,7 +3436,6 @@ impl Panel {
                                 )
                             }),
                     )
-                    .when_some(edit_preview, |el, preview| el.child(preview))
                     .when(expanded && has_detail, |el| {
                         el.child(
                             div()
@@ -6819,11 +6828,26 @@ mod tests {
             ),
             (
                 "edit",
-                r#"{"file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
+                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
                 true,
                 None,
                 true,
             ),
+            (
+                "edit",
+                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
+                false,
+                None,
+                true,
+            ),
+            (
+                "edit",
+                r#"{"intent":"Clarify navigation","file_path":"src/main.rs","old_string":"old","new_string":"new"}"#,
+                true,
+                Some("original text not found"),
+                true,
+            ),
+            ("edit", r#"{"intent":"Clarify navigation","file_path":"# , false, None, false),
         ] {
             panel.update(vcx, |panel, cx| {
                 panel.items = vec![Item::Tool {
@@ -6837,6 +6861,23 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
+            assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
+            if preview {
+                let card = vcx.debug_bounds("edit-preview-card-0").expect("edit card paints");
+                for selector in ["tool-inline", "tool-header", "tool-output-size", "tool-detail"] {
+                    assert!(vcx.debug_bounds(selector).is_none(), "no duplicate {selector}");
+                }
+                for selector in ["edit-preview-intent-0", "edit-preview-footer-0", "tool-error"] {
+                    if selector == "tool-error" && error.is_none() { continue; }
+                    let content = vcx.debug_bounds(selector).expect("card content paints");
+                    assert!(content.origin.x >= card.origin.x);
+                    assert!(content.right() <= card.right());
+                    assert!(content.origin.y >= card.origin.y);
+                    assert!(content.bottom() <= card.bottom());
+                }
+                continue;
+            }
             let row = vcx.debug_bounds("tool-inline").expect("inline row paints");
             let header = vcx
                 .debug_bounds("tool-header")
