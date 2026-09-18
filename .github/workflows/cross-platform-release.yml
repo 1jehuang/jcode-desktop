@@ -59,6 +59,11 @@ jobs:
           submodules: recursive
       - name: Validate release target and publication contracts
         run: python -m unittest discover -s jcode-desktop/tests -p test_release_targets.py -v
+      - name: Configure MSVC build environment
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: ${{ matrix.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}

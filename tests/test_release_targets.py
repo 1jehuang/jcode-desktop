@@ -32,6 +32,7 @@ class ReleaseTargetTests(unittest.TestCase):
         self.assertIn("name: linux-smoke-diagnostics-${{ matrix.arch }}", workflow)
         self.assertIn("name: desktop-linux-${{ matrix.arch }}", workflow)
         self.assertIn("name: desktop-${{ matrix.platform }}-${{ matrix.arch }}", workflow)
+        self.assertIn("arch: ${{ matrix.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}", workflow)
 
     def test_macos_keeps_both_universal_slices(self):
         workflow = (ROOT / ".github/workflows/macos-beta.yml").read_text()
