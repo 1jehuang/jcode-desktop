@@ -3283,10 +3283,8 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .text_color(Theme::global().TEXT_DIM)
-                // An empty strip has no transcripts to protect, so any
-                // vertical touchpad travel past the break threshold hops
-                // strips directly. Without this, a gesture that lands on an
-                // empty strip is stranded there until a keyboard shortcut.
+                // Empty strips still allow an upward touchpad hop. Moving
+                // down requires the keyboard shortcut, even on an empty row.
                 .on_scroll_wheel(cx.listener(
                     move |this, event: &gpui::ScrollWheelEvent, window, cx| {
                         if this.active_row != row || !event.delta.precise() {
@@ -3294,6 +3292,13 @@ impl Workspace {
                         }
                         let delta = event.delta.pixel_delta(window.line_height());
                         let dy = f32::from(delta.y);
+                        // Moving down a workspace requires an explicit shortcut.
+                        // Ignore touch travel in that direction, including previews.
+                        if dy < 0.0 {
+                            this.gesture.pull = 0.0;
+                            cx.notify();
+                            return;
+                        }
                         if dy == 0.0 {
                             return;
                         }
@@ -3834,6 +3839,17 @@ impl Workspace {
             && self
                 .gesture_seen
                 .is_some_and(|seen| now.duration_since(seen) <= GESTURE_RESET);
+        // Downward workspace navigation is keyboard-only for now. Keep normal
+        // transcript scrolling and horizontal panning, but do not accumulate a
+        // downward pull over empty panels or during a horizontally locked pan.
+        if dy < 0.0
+            && (empty_panel
+                || horizontally_locked
+                || (self.gesture.axis == GestureAxis::Vertical && self.gesture.pull != 0.0))
+        {
+            self.gesture.pull = 0.0;
+            dy = 0.0;
+        }
         if empty_panel && !horizontally_locked && dx == 0.0 && dy != 0.0 {
             // With no conversation beneath the pointer, vertical scrolling is
             // workspace navigation. A wheel notch moves one row immediately;
@@ -10453,12 +10469,10 @@ mod tests {
         assert_eq!(gesture.axis, GestureAxis::Undecided);
     }
 
-    /// The full breakout on a real rendered workspace: a horizontal swipe
-    /// commits the gesture to the strip, continued vertical pull within the
-    /// same gesture hops focus to the strip below, and the panel transcript
-    /// never scrolls.
+    /// Horizontal panning still owns its vertical deltas, but cannot move down
+    /// a workspace or leak the blocked pull into the panel transcript.
     #[gpui::test]
-    fn a_committed_pan_breaks_out_vertically_and_switches_strips(cx: &mut gpui::TestAppContext) {
+    fn a_committed_pan_cannot_move_down_a_workspace(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -10526,8 +10540,8 @@ mod tests {
         swipe(cx, 0.0, -STRIP_BREAK * 0.6, gpui::TouchPhase::Moved);
         workspace.read_with(cx, |workspace, _| {
             assert_eq!(
-                workspace.active_row, 1,
-                "enough vertical pull must break the axis and hop down a strip"
+                workspace.active_row, 0,
+                "even a large vertical pull must not hop down a strip"
             );
         });
         let scroll_after = panel.read_with(cx, |panel, _| panel.test_scroll_offset_y());
@@ -10538,7 +10552,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn vertical_scroll_over_an_empty_panel_moves_between_strips(cx: &mut gpui::TestAppContext) {
+    fn vertical_scroll_over_an_empty_panel_cannot_move_down_a_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -10569,10 +10585,60 @@ mod tests {
         }
         workspace.read_with(cx, |workspace, _| {
             assert_eq!(
-                workspace.active_row, 1,
-                "vertical travel over an empty conversation should navigate strips"
+                workspace.active_row, 0,
+                "vertical travel over an empty conversation must not move down a workspace"
             );
         });
+    }
+
+    #[gpui::test]
+    fn empty_workspace_requires_a_shortcut_to_move_down(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, cx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        cx.run_until_parked();
+        let target = cx.debug_bounds("empty-strip-hint").unwrap().center();
+        for phase in [
+            gpui::TouchPhase::Started,
+            gpui::TouchPhase::Moved,
+            gpui::TouchPhase::Ended,
+        ] {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: target,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-STRIP_BREAK * 3.0))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: phase,
+            });
+            cx.run_until_parked();
+            workspace.read_with(cx, |w, _| {
+                assert_eq!(w.active_row, 0);
+                assert_eq!(w.gesture.pull, 0.0);
+            });
+        }
+        cx.simulate_keystrokes("super-down");
+        workspace.update_in(cx, |w, window, cx| {
+            assert_eq!(
+                w.active_row, 1,
+                "the keyboard shortcut must still move down"
+            );
+            w.row_progress.sample(Instant::now() + Duration::from_secs(1));
+            cx.notify();
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        let target = cx.debug_bounds("empty-strip-hint").unwrap().center();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: target,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(STRIP_BREAK * 3.0))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Started,
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            workspace.read_with(cx, |w, _| w.active_row),
+            0,
+            "upward workspace gestures are unchanged"
+        );
     }
 
     /// Only the vertical pull during a horizontally locked touchpad gesture
@@ -10624,7 +10690,7 @@ mod tests {
         // toward another strip and should make both indicators visible.
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: panel.center(),
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-20.))),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(20.))),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });

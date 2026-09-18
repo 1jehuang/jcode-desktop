@@ -66,7 +66,7 @@ fn assert_hover_scroll(cx: &mut gpui::TestAppContext, precise: bool, active_empt
     });
 
     // Without clicking, move the wheel back to the active panel. An empty
-    // panel retains workspace navigation; a populated one scrolls itself.
+    // panel must not navigate down a workspace; a populated one scrolls itself.
     let target = vcx.debug_bounds("panel-0").unwrap().center();
     let direction = if active_empty { -1.0 } else { 1.0 };
     vcx.simulate_event(gpui::ScrollWheelEvent {
@@ -86,7 +86,7 @@ fn assert_hover_scroll(cx: &mut gpui::TestAppContext, precise: bool, active_empt
     });
     vcx.run_until_parked();
     if active_empty {
-        assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 1);
+        assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 0);
     } else {
         let active_after = panels[0].read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         assert_ne!(
