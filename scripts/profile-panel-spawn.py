@@ -103,11 +103,16 @@ def main():
                         help='delay each real API CreateSession through a private proxy')
     parser.add_argument('--verify-early-input', action='store_true',
                         help='require a focused draft before delayed attachment and verify native text survives')
+    parser.add_argument('--verify-input', action='store_true',
+                        help='verify native focus and typed text through real undelayed attachment')
     args = parser.parse_args()
     if args.samples < 1 or args.create_delay < 0:
         parser.error('samples must be positive and create-delay nonnegative')
     if args.verify_early_input and (args.create_delay < 1 or not (shutil.which('xclip') or shutil.which('tesseract'))):
         parser.error('early-input verification requires create-delay >= 1 and xclip or tesseract')
+    verify_input = args.verify_input or args.verify_early_input
+    if verify_input and not (shutil.which('xclip') or shutil.which('tesseract')):
+        parser.error('input verification requires xclip or tesseract')
     binary = args.binary.resolve(strict=True)
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -122,7 +127,8 @@ def main():
     jcode = str((args.jcode or Path(shutil.which('jcode'))).resolve(strict=True))
     env['PATH'] = str(Path(jcode).parent) + ':/usr/bin:/bin'
     env['VK_DRIVER_FILES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
-    (root / 'desktop.toml').write_text('[workspace]\ncoaching_hints = false\n')
+    (root / 'desktop.toml').write_text(
+        '[workspace]\ncoaching_hints = false\naccount_sign_in_handled = true\n')
     processes, logs = [], []
 
     def launch(name, command, **kwargs):
@@ -179,6 +185,19 @@ def main():
         launch('desktop', [str(binary), '--no-hot-reload'])
         state_path = root / 'state'
         wait(lambda: any(p.get('session', '').startswith('session_') for p in panels(navigation(state_path))))
+        subprocess.run(['xdotool', 'search', '--sync', '--onlyvisible', '--class',
+                        '^jcode-desktop$', 'windowactivate', '--sync'],
+                       env=env, check=True, timeout=10)
+        # Exercise the real first-launch controls, rather than leaving a beta
+        # overlay or release-notes panel in front of the editor being measured.
+        key('Escape')
+        time.sleep(.2)
+        if any(p.get('focused') and p.get('session') == 'desktop://changelog'
+               for p in panels(navigation(state_path))):
+            key('ctrl+shift+w')
+            wait(lambda: all(p.get('session') != 'desktop://changelog'
+                             for p in panels(navigation(state_path))))
+        wait(lambda: navigation(state_path).get('keyboard_panel') is not None)
         time.sleep(1)
         samples = []
         for index in range(args.samples):
@@ -188,14 +207,16 @@ def main():
             shown = wait(lambda: (p if len(p := panels(navigation(state_path))) > len(before) else None))
             visible_ms = (time.perf_counter() - started) * 1000
             focused = next(p for p in shown if p.get('focused'))
+            assert focused['id'] not in {p['id'] for p in before}, 'New panel did not receive focus'
+            assert navigation(state_path)['keyboard_panel'] == focused['slot']
             text = 'Typing before connection survives'
             if args.verify_early_input:
                 assert focused['session'].startswith('startup://draft/'), focused
                 assert visible_ms < args.create_delay * 500, 'Panel still waits for runtime'
-                assert navigation(state_path)['keyboard_panel'] == focused['slot']
+            if verify_input:
                 subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '0', text],
                                env=env, check=True, timeout=10)
-                if index == 0:
+                if index == 0 and args.verify_early_input:
                     # The timing above ends at render-state construction. Give
                     # the normal 150ms layout animation time to present before
                     # taking independent pixel evidence, still before attach.
@@ -207,9 +228,9 @@ def main():
             attached = wait(lambda: next((p for p in panels(navigation(state_path))
                                           if p.get('focused') and p.get('session', '').startswith('session_')), None))
             attached_ms = (time.perf_counter() - started) * 1000
-            if args.verify_early_input:
-                assert attached['id'] == focused['id'], 'Attachment replaced the panel entity'
-                if index == 0 and shutil.which('tesseract'):
+            assert attached['id'] == focused['id'], 'Attachment replaced the panel entity'
+            if verify_input:
+                if index == 0 and args.verify_early_input and shutil.which('tesseract'):
                     pending_text = subprocess.check_output(
                         ['tesseract', str(root / 'pending-input.png'), 'stdout', '--psm', '11'],
                         env=env, timeout=15, stderr=subprocess.DEVNULL).decode()
@@ -229,6 +250,7 @@ def main():
                     assert text.lower() in ' '.join(rendered.lower().split()), rendered
             sample = dict(sample=index, panel_render_state_ms=visible_ms, attached_ms=attached_ms,
                           first_session_id=focused.get('session'), session_id=attached['session'],
+                          input_verified=verify_input,
                           early_input_verified=args.verify_early_input)
             samples.append(sample)
             print(json.dumps(sample), flush=True)
