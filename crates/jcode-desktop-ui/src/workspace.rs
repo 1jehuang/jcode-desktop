@@ -183,6 +183,9 @@ mod tutorial;
 #[path = "onboarding_simulator.rs"]
 mod onboarding_simulator;
 
+#[path = "workspace_beta_notice.rs"]
+mod beta_notice;
+
 #[cfg(test)]
 #[path = "tutorial_geometry_tests.rs"]
 mod tutorial_geometry_tests;
@@ -534,6 +537,8 @@ pub struct Workspace {
     remotes: remotes::Machines,
     host: HostHandle,
     show_sidebar: bool,
+    // Launch-only chrome. Reload snapshots must never re-open the notice.
+    show_beta_notice: bool,
     compact_sidebar_open: bool,
     last_canvas_width: Option<f32>,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
@@ -759,6 +764,7 @@ impl Workspace {
             preview_task: None,
             bridge,
             host,
+            show_beta_notice: snapshot.is_none(),
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
             folder_frame: Default::default(),
@@ -1002,6 +1008,7 @@ impl Workspace {
             preview_task: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
+            show_beta_notice: false,
             show_sidebar: true,
             show_minimap: false,
             layout_mode: crate::config::LayoutMode::FolderTabs,
@@ -1361,7 +1368,7 @@ impl Workspace {
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.onboarding_simulator.is_some() {
+        if self.show_beta_notice || self.onboarding_simulator.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -3212,7 +3219,7 @@ impl Workspace {
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates may restore focus while the rehearsal hides panels.
-        if self.onboarding_simulator.is_some() {
+        if self.show_beta_notice || self.onboarding_simulator.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -6848,6 +6855,11 @@ impl Render for Workspace {
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
+                if this.show_beta_notice {
+                    this.dismiss_beta_notice(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.compact_sidebar_open {
                     this.compact_sidebar_open = false;
                     this.focus_active(window, cx);
@@ -6856,6 +6868,13 @@ impl Render for Workspace {
                 }
             }))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.show_beta_notice {
+                    if matches!(event.keystroke.key.as_str(), "escape" | "enter" | "space") {
+                        this.dismiss_beta_notice(window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.compact_sidebar_open && event.keystroke.key == "escape" {
                     this.compact_sidebar_open = false;
                     this.focus_active(window, cx);
@@ -6997,7 +7016,10 @@ impl Render for Workspace {
             .when(
                 self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
                 |root| root.child(self.render_folder_picker(cx)),
-            );
+            )
+            .when(self.show_beta_notice, |root| {
+                root.child(self.render_beta_notice(cx))
+            });
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
         let action_capture_pending = self

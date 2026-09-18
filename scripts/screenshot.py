@@ -36,6 +36,10 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--beta-notice", action="store_true",
+                        help="capture the initial beta overlay instead of dismissing it")
+    parser.add_argument("--beta-notice-interact", action="store_true",
+                        help="verify startup beta overlay dismissal and native typing")
     parser.add_argument("--onboarding-interact", action="store_true",
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
@@ -99,6 +103,12 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.beta_notice_interact and not shutil.which("tesseract"):
+        parser.error("beta-notice-interact requires tesseract")
+    if (args.beta_notice or args.beta_notice_interact) and any(
+            value for key, value in vars(args).items()
+            if key.endswith("_interact") and key != "beta_notice_interact"):
+        parser.error("beta-notice modes cannot be combined with other interactions")
     if args.onboarding_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "onboarding_interact")
@@ -274,9 +284,9 @@ def main():
     canvas_insets = 288 if args.layout_mode == "folder_tabs" else 264
     if args.focus_panel is not None and (width - canvas_insets) / args.panels < 320:
         parser.error("native focus verification needs at least 320px per panel beside the sidebar")
-    for tool in ("Xvfb", "import", "openbox"):
+    for tool in ("Xvfb", "import", "openbox", "xdotool"):
         if not shutil.which(tool):
-            parser.error(f"missing {tool}: install Xvfb, ImageMagick, and Openbox")
+            parser.error(f"missing {tool}: install Xvfb, ImageMagick, Openbox, and xdotool")
     drivers = sorted(Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json"))
     if not drivers:
         parser.error("missing Mesa lavapipe: install vulkan-swrast (Arch) or mesa-vulkan-drivers (Debian/Ubuntu)")
@@ -364,6 +374,11 @@ def main():
                     time.sleep(0.1)
                 # Allow opening animation and font rasterization to settle.
                 time.sleep(2)
+                # Exercise the real launch overlay, then leave other fixtures unobscured.
+                if not (args.beta_notice or args.beta_notice_interact):
+                    subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
+                                   env=env, cwd=root, check=True, timeout=10)
+                    time.sleep(0.3)
                 if args.history_interact:
                     # Locate rendered titles so header rows (such as Default
                     # directory) can grow without silently clicking another session.
@@ -420,6 +435,9 @@ def main():
                     verify(output, env, root)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
+                if args.beta_notice_interact:
+                    from beta_notice_acceptance import verify
+                    verify(output, env, root)
                 if args.slash_interact:
                     from slash_menu_acceptance import verify
                     verify(output, env, root)
