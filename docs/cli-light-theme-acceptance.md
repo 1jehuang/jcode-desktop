@@ -70,6 +70,27 @@ Reports record the resolved executable path and SHA-256, so evidence is tied
 to the tested binary rather than a potentially moving `current` symlink.
 Artifacts are local generated files under `target`, not committed screenshots.
 
+## Stronger contrast follow-up
+
+The initial repair still looked too faint to the user. CLI commit `b7b4cdd47`
+raises built-in light text to a 7:1 contrast target, leaving backgrounds, explicit
+user colors, and dark mode unchanged. On intermediate surfaces where neither
+black nor white reaches 7:1, it uses the best available endpoint.
+
+| Light screenshot sample | Initial repair | Stronger repair |
+| --- | ---: | ---: |
+| Unselected metadata | 5.608 | 8.673 |
+| Selected metadata | 4.555 | 7.063 |
+| Keyboard-help footer | 5.608 | 8.673 |
+
+`target/cli-contrast-stronger/{light,dark}/report.json` passed the stricter
+`--min-light-contrast 6.5` gate with SHA-256
+`4bd775bc11bf701b32b9b4383925f849d9a22c565e1c97cfbc31705d7e5e84a6`.
+That binary was installed into the current channel. Metadata/footer glyphs are
+now RGB(71,71,71), and selected metadata is RGB(60,60,60). All three dark samples
+retain their previous ratios. Full screenshots and the enlarged
+`first-fix-left-stronger-right.png` comparison were visually inspected.
+
 ## Isolation and limits
 
 Desktop uses the existing screenshot harness's environment allowlist and a
