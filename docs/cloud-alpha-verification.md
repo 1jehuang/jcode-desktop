@@ -1,8 +1,47 @@
 # Personal cloud alpha verification
 
-Date: 2026-09-18 UTC. Result: **single-user alpha is running and usable through
+Original deployment: 2026-09-18 UTC. Observed then: **single-user alpha was running and usable through
 Desktop's existing native SSH machine support**. This is not a launched
 subscription control plane or public customer service.
+
+## Daily-use follow-up, 2026-09-18 23:08 UTC
+
+- Desktop now wakes the personal alias before explicit Connect or default new
+  session creation. Wake failure does not fall back to local execution.
+- Added monthly allowance, estimated two-hour cutoff, and a persistent Machines
+  warning within ten minutes of lease or monthly allowance exhaustion. These
+  remain advisory. The independent AWS and host guards are unchanged.
+- Seven cloud routing/status tests and 47 remote-related tests passed, including
+  the seven cloud tests. Four machine-picker tests also passed. The helper's
+  86 offline alpha tests passed before adding export/recovery tests.
+- The real running release Desktop accepted the Ctrl+R-equivalent rebuild
+  request and activated UI generation 4. The workstation preference was set to
+  `jcode-cloud-alpha` for new panels. Existing panels were preserved.
+- **Live AWS verification is currently blocked by expired AWS browser-login
+  authentication.** A fresh sign-in was opened for the operator. This follow-up
+  has not woken a VM, run a new cloud model turn, changed model permissions, or
+  provisioned a non-root identity. The older live evidence below is historical,
+  not proof of the current AWS state.
+- A private-Xvfb render of the current app succeeded. The old native Machines
+  acceptance script's click changed the workspace to `settings://machines`,
+  but its captured image still showed the prior transcript. This visual
+  acceptance mismatch is under investigation. Unit routing tests are not
+  claimed as complete native-input/paint acceptance.
+- All 103 offline alpha tests passed, including 17 new filtered-export and
+  recovery tests. The export was exercised through its real script-over-stdin
+  interface against local synthetic fixture homes and recovered into a fresh
+  local directory. **No live VM backup was made or restored.** See
+  [the precise export limitations](cloud-alpha-backup.md).
+- Model and non-root access recommendations are documented in
+  [cloud-alpha-access.md](cloud-alpha-access.md). They remain setup work, not
+  deployed capabilities.
+- The broader headless UI run was not clean: 972 passed, 13 failed and 9 were
+  ignored, with failures in changelog, panel-surface, motion, theme, and sidebar
+  assertions. A serial isolated-config rerun was blocked at compilation by
+  three temporary-borrow errors in concurrently edited
+  `sidebar_worktrees_tests.rs`. Cloud-focused and remote-focused results above
+  were obtained before those later edits. No full-suite success is claimed.
+
 
 ## Observed acceptance evidence
 

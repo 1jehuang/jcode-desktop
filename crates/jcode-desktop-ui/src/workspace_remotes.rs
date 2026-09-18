@@ -1,6 +1,9 @@
 //! Machine selection is a workspace preference, not a mutation of existing panels.
 use super::*;
 
+#[path = "workspace_cloud_alpha.rs"]
+mod cloud_alpha;
+
 #[derive(Default)]
 pub(super) struct Machines {
     pub default_host: Option<String>,
@@ -12,6 +15,8 @@ pub(super) struct Machines {
     pub(super) input: Option<Entity<PromptInput>>,
     notice: Option<String>,
     discovery: Option<gpui::Task<()>>,
+    cloud: cloud_alpha::Lifecycle,
+    cloud_monitor: Option<gpui::Task<()>>,
 }
 
 impl Machines {
@@ -51,7 +56,8 @@ impl Workspace {
         }
     }
 
-    pub(super) fn start_default_startup(&mut self, cx: &App) {
+    pub(super) fn start_default_startup(&mut self, cx: &mut Context<Self>) {
+        self.start_cloud_monitor(cx);
         if !self.remotes.startup_requested
             && self
                 .slots
@@ -74,6 +80,10 @@ impl Workspace {
         local_directory: Option<String>,
         request_id: Option<String>,
     ) {
+        if self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST) {
+            self.remotes.cloud.connect(self.bridge.clone(), request_id);
+            return;
+        }
         self.bridge.send(match &self.remotes.default_host {
             Some(host) => Command::CreateRemoteSession {
                 host: host.clone(),
@@ -87,7 +97,54 @@ impl Workspace {
         });
     }
 
+    fn start_cloud_monitor(&mut self, cx: &mut Context<Self>) {
+        if self.remotes.cloud_monitor.is_some() || harness::screenshot_mode() || cfg!(test) {
+            return;
+        }
+        self.remotes.cloud_monitor = Some(cx.spawn(async move |this, cx| {
+            let mut previous_summary = String::new();
+            loop {
+                if this
+                    .update(cx, |this, cx| {
+                        let configured = this
+                            .remotes
+                            .hosts
+                            .iter()
+                            .any(|host| host == cloud_alpha::HOST)
+                            || this.remotes.default_host.as_deref() == Some(cloud_alpha::HOST);
+                        if configured {
+                            this.remotes.cloud.refresh();
+                        }
+                        let updates = this.remotes.cloud.take_updates();
+                        let changed = !updates.is_empty();
+                        for (message, failed, startup) in updates {
+                            this.remotes.status = Some(message);
+                            this.remotes.failed = failed;
+                            if startup {
+                                this.remotes.startup_failed = failed;
+                            }
+                        }
+                        let summary = if configured {
+                            this.remotes.cloud.summary()
+                        } else {
+                            String::new()
+                        };
+                        if summary != previous_summary || changed {
+                            previous_summary = summary;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+            }
+        }));
+    }
+
     pub(super) fn open_machines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_cloud_monitor(cx);
         if let Some(index) = self.machines_panel_index(cx) {
             self.set_active(index, cx);
         } else {
@@ -245,11 +302,17 @@ impl Workspace {
                 .err()
                 .map(|error| format!("Could not save machines: {error}"));
             self.remotes.status = Some(format!("Connecting to {host}…"));
-            self.bridge.send(Command::CreateRemoteSession {
-                host,
-                working_dir: None,
-                request_id: None,
-            });
+            if host == cloud_alpha::HOST {
+                self.start_cloud_monitor(cx);
+                self.remotes.status = Some("Waking jcode-cloud-alpha before connecting…".into());
+                self.remotes.cloud.connect(self.bridge.clone(), None);
+            } else {
+                self.bridge.send(Command::CreateRemoteSession {
+                    host,
+                    working_dir: None,
+                    request_id: None,
+                });
+            }
         } else {
             self.remotes.notice = None;
             self.bridge.send(Command::CreateSession {
@@ -323,6 +386,12 @@ impl Workspace {
             .when(self.remotes.failed, |el| {
                 el.child(div().text_color(Theme::global().ERROR).child("!"))
             })
+            .children(self.remotes.cloud.lease_warning().map(|warning| {
+                div()
+                    .debug_selector(|| "cloud-alpha-lease-warning".into())
+                    .text_color(Theme::global().ERROR)
+                    .child(warning)
+            }))
             .child("→")
             .into_any_element()
     }
@@ -432,6 +501,8 @@ impl Workspace {
         let is_default = self.remotes.default_host == host;
         let label = host.clone().unwrap_or_else(|| "This computer".into());
         let default_host = host.clone();
+        let cloud_status =
+            (host.as_deref() == Some(cloud_alpha::HOST)).then(|| self.remotes.cloud.summary());
         div()
             .px_2()
             .py_2()
@@ -448,6 +519,12 @@ impl Workspace {
                     .text_ellipsis()
                     .child(label),
             )
+            .children(cloud_status.map(|status| {
+                div()
+                    .debug_selector(|| "cloud-alpha-status".into())
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(status)
+            }))
             .child(
                 div()
                     .flex()
@@ -499,5 +576,54 @@ impl Workspace {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod cloud_routing_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn cloud_default_new_session_waits_for_wake_not_local_directory(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let workspace = cx.new(|cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace.remotes.default_host = Some(cloud_alpha::HOST.into());
+            workspace
+        });
+        workspace.update(cx, |workspace, _| {
+            workspace
+                .create_default_session(Some("/local-only".into()), Some("new-session".into()));
+            assert!(commands.try_recv().is_err(), "must not connect before wake");
+            let updates = workspace.remotes.cloud.take_updates();
+            assert!(
+                updates
+                    .iter()
+                    .any(|(message, _, _)| message.contains("Waking"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn cloud_explicit_connect_uses_same_wake_gate(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let workspace = cx.new(|cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.connect_machine(Some(cloud_alpha::HOST.into()), cx);
+            assert!(commands.try_recv().is_err());
+            assert!(
+                workspace
+                    .remotes
+                    .cloud
+                    .take_updates()
+                    .iter()
+                    .any(|(message, _, _)| message.contains("Waking"))
+            );
+        });
     }
 }

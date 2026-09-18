@@ -16,7 +16,12 @@ jcode-cloud-alpha stop
 ```
 
 Use the existing native **Machines** panel. Reopen it if it was already open
-before SSH configuration was installed. Local panels are unaffected. The alpha
+before SSH configuration was installed. **Connect** now runs the fixed local
+`~/.local/bin/jcode-cloud-alpha wake` helper before creating the cloud session.
+Choose **Set default** for `jcode-cloud-alpha` to apply the same wake-and-connect
+path to new session panels. Explicit local-folder actions and existing panels
+are unaffected. A failed wake is reported in Machines and never opens a local
+session instead. The alpha
 uses the existing SSH transport, so its label is SSH, not the future managed
 Cloud label. For a terminal, `jcode-cloud-alpha ssh` wakes and connects.
 Repositories belong under `~/workspaces` on the VM. No local checkout, model
@@ -24,8 +29,24 @@ credential, AWS credential, or SSH private key is copied to the VM.
 
 Closing a panel does not delete the disk or promise that an agent has stopped.
 `stop` is explicit and ends running processes. Stop/start preserves files and
-saved conversation history, **not process memory**. Use `wake` before reconnecting
-an asleep machine. This alpha does not implement seamless managed wake yet.
+saved conversation history, **not process memory**. New cloud panels wake
+automatically, but reconnecting an existing panel to an asleep machine may
+still require `wake`. This is personal-alpha integration, not managed
+subscription provisioning or credential-free customer access.
+
+Machines shows the last checked monthly allowance and an estimated two-hour
+cutoff. The sidebar's Machines control warns with ten minutes or less left on
+the lease or the monthly allowance, even when the management panel is closed.
+These are advisory displays, not a renewed lease or guaranteed usable runtime.
+AWS status is refreshed about once a minute. Expired AWS login still requires
+`aws login --profile jcode-personal --region us-east-1` on the workstation.
+
+For an explicit, bounded local working-file/session export and an offline
+recovery drill, see [backup and recovery](../../docs/cloud-alpha-backup.md).
+This filtered export is not a complete repository or VM backup.
+See [access setup](../../docs/cloud-alpha-access.md) for the remaining non-root
+operator and coding-model prerequisites. These have not been provisioned by
+the Desktop lifecycle integration.
 
 ## Actual alpha resources and limits
 
