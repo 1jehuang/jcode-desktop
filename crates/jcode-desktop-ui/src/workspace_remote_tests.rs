@@ -207,6 +207,40 @@ fn remote_new_panel_exposes_progress_failure_retry_and_explicit_local_choice(
 }
 
 #[gpui::test]
+fn cloud_new_panel_shows_wake_progress_before_any_session_exists(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("jcode-cloud-alpha".into());
+        w.push_test_panel("existing", cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("ctrl-alt-enter");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("machine-connection-status").is_some());
+    assert!(vcx.debug_bounds("cloud-alpha-status").is_some());
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 2);
+        assert!(w.slots[w.active].panel.read(cx).is_machines());
+        assert_eq!(w.remotes.default_host.as_deref(), Some("jcode-cloud-alpha"));
+        assert!(
+            w.remotes
+                .status
+                .as_deref()
+                .unwrap()
+                .starts_with("Waking jcode-cloud-alpha")
+        );
+    });
+    // Test builds refuse the wake, so no remote creation or implicit local
+    // fallback may be issued. The explicit recovery controls remain mounted.
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
 fn explicit_folder_and_help_stay_local_with_a_remote_default(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {

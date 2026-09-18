@@ -61,7 +61,7 @@ def main():
             def command(*args):
                 return subprocess.check_output(args, env=env, text=True, stderr=subprocess.DEVNULL, timeout=30)
 
-            def capture(name):
+            def capture(name, ready=None):
                 path = output / (name + ".png")
                 deadline = time.monotonic() + 30
                 while True:
@@ -70,15 +70,21 @@ def main():
                     sidebar_path = output / (name + "-sidebar.png")
                     command("convert", str(path), "-crop", "264x1000+0+0", str(sidebar_path))
                     for image, sidebar in [(path, False), (sidebar_path, True)]:
-                        tsv = command("tesseract", str(image), "stdout", "tsv")
+                        # Small UI monospace glyphs are ambiguous at native size.
+                        # Enlarge only OCR input, preserving real screenshot pixels.
+                        ocr_path = output / (name + ("-sidebar-ocr.png" if sidebar else "-ocr.png"))
+                        command("convert", str(image), "-resize", "300%", str(ocr_path))
+                        tsv = command("tesseract", str(ocr_path), "stdout", "tsv")
                         for line in tsv.splitlines()[1:]:
                             fields = line.split("\t", 11)
                             if len(fields) == 12 and fields[11].strip():
-                                x = int(fields[6]) + int(fields[8]) // 2
+                                x = (int(fields[6]) + int(fields[8]) // 2) // 3
                                 if (x < 275) == sidebar:
-                                    words.append({"text": fields[11].strip(), "x": x, "y": int(fields[7]) + int(fields[9]) // 2})
-                    if words or time.monotonic() > deadline:
+                                    words.append({"text": fields[11].strip(), "x": x, "y": (int(fields[7]) + int(fields[9]) // 2) // 3})
+                    if words and (ready is None or ready(words)):
                         return words
+                    if time.monotonic() > deadline:
+                        raise AssertionError(f"Timed out waiting for rendered {name}: {words}")
                     time.sleep(0.5)
 
             def click_word(words, text, after=0, sidebar=False):
@@ -86,7 +92,11 @@ def main():
                 if not candidates:
                     raise AssertionError(f"Cannot find {text!r} after y={after}: {words}")
                 word = min(candidates, key=lambda w: (w["y"], w["x"]))
-                command("xdotool", "mousemove", str(word["x"]), str(word["y"]), "click", "1")
+                command("xdotool", "mousemove", "--sync", str(word["x"]), str(word["y"]))
+                time.sleep(0.15)
+                command("xdotool", "mousedown", "1")
+                time.sleep(0.1)
+                command("xdotool", "mouseup", "1")
                 time.sleep(0.7)
                 return word["y"]
 
@@ -111,6 +121,10 @@ def main():
                                     raise RuntimeError(f"App did not render; see {label}.log")
                                 time.sleep(0.1)
                             time.sleep(2)
+                            # Establish native pointer focus on inert sidebar space
+                            # before exercising controls on the private X11 window.
+                            command("xdotool", "mousemove", "10", "500", "click", "1")
+                            time.sleep(0.2)
                             return
                     except subprocess.CalledProcessError:
                         pass
@@ -132,7 +146,7 @@ def main():
             initial = capture("initial")
             directory = next(w for w in initial if w["text"] == "Default" and w["x"] < 275)
             click_word(initial, "Machines", sidebar=True)
-            words = capture("picker")
+            words = capture("picker", lambda words: any(w["text"] == "workstation" and w["x"] >= 275 for w in words))
             assert any(w["text"] == "Default" and abs(w["x"] - directory["x"]) <= 2 and abs(w["y"] - directory["y"]) <= 2 for w in words), "Opening Machines must preserve sidebar controls"
             workstation = next(w for w in words if w["text"] == "workstation" and w["x"] >= 275)
             click_word(words, "Machines", sidebar=True)
@@ -146,6 +160,25 @@ def main():
             launch("restored")
             words = capture("restored")
             assert any(w["text"] == "workstation" and w["x"] < 275 for w in words), words
+            # A remote default must not make New Panel silently do nothing
+            # while the backend is pending or fails before creating a session.
+            command("xdotool", "key", "ctrl+alt+Return")
+            time.sleep(0.7)
+            words = capture("remote-new-panel", lambda words: all(any(w["text"] == text and w["x"] >= 275 for w in words) for text in ("Connecting", "computer")))
+            assert any(w["text"] == "Connecting" and w["x"] >= 275 for w in words), words
+            assert any(w["text"] == "computer" and w["x"] >= 275 for w in words), words
+            assert preference()["default_remote_host"] == "workstation"
+            local_row = next(w for w in words if w["text"] == "computer" and w["x"] >= 275)
+            click_word(words, "Connect", after=local_row["y"])
+            # Leave the caret clear of the final glyph for exact OCR matching.
+            command("xdotool", "type", "--clearmodifiers", "--delay", "50", "Local draft remains editable  ")
+            words = capture("explicit-local-draft", lambda words: any(w["text"] == "editable" and w["x"] >= 275 for w in words))
+            assert any(w["text"] == "editable" and w["x"] >= 275 for w in words), words
+            navigation = json.loads(next(line.removeprefix("navigation=") for line in Path(env["JCODE_DESKTOP_STATE"]).read_text().splitlines() if line.startswith("navigation=")))
+            focused = next(panel for row in navigation["rows"] for panel in row["panels"] if panel["slot"] == navigation["focused_slot"])
+            assert focused["session"].startswith("startup://draft/"), focused
+            assert navigation["keyboard_panel"] == navigation["focused_slot"], navigation
+            assert preference()["default_remote_host"] == "workstation"
             click_word(words, "Machines", sidebar=True)
             words = capture("ready-to-type")
             windows = command("xdotool", "search", "--onlyvisible", "--class", "^jcode-desktop$").splitlines()
@@ -165,7 +198,7 @@ def main():
             click_word(words, "Set")  # This computer is the first row.
             wait_default("")
             capture("local-default")
-            report = {"native_picker": "passed", "standalone_panel_preserves_sidebar": "passed", "repeated_open_reuses_panel": "passed", "remote_default_persisted": "passed", "remote_default_restored_after_restart": "passed", "typed_host_enter": "passed", "local_default_restored": "passed", "runtime": "offline fixture, no SSH or model calls", "config": preference()}
+            report = {"native_picker": "passed", "standalone_panel_preserves_sidebar": "passed", "repeated_open_reuses_panel": "passed", "remote_default_persisted": "passed", "remote_default_restored_after_restart": "passed", "remote_new_panel_progress": "passed", "explicit_local_draft_focus_and_typing": "passed", "typed_host_enter": "passed", "local_default_restored": "passed", "runtime": "offline fixture, no SSH or model calls", "config": preference()}
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report, indent=2))
         finally:
