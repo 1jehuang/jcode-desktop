@@ -251,3 +251,146 @@ fn native_mouse_selection_copy_and_wheel_scroll(cx: &mut gpui::TestAppContext) {
         assert!(panel.terminal.grid.selection.is_none());
     });
 }
+
+#[gpui::test]
+fn image_history_scrolls_clips_and_reuses_the_same_texture(cx: &mut gpui::TestAppContext) {
+    cx.update(bind_keys);
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+    vcx.run_until_parked();
+    let (rows, wheel_position, texture_id, image_generation) = vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.status.clear();
+            panel.focus(window, cx);
+            panel.process_output(
+                b"\x1b[H\x1b_Ga=T,f=32,s=1,v=1,i=7,c=4,r=6;/wAA/w==\x1b\\",
+                false,
+            );
+            let scene = panel.prepare(panel.bounds, window, cx);
+            let image = scene.image_bounds();
+            assert_eq!(image.len(), 1);
+            assert_eq!(image[0].origin.y, panel.bounds.origin.y);
+            let rows = panel.terminal.rows;
+            let position = panel.bounds.origin + gpui::point(px(20.), px(20.));
+            let id = panel.images[&7].image.id;
+            let generation = panel.image_generation;
+            panel.process_output(
+                format!("\x1b[{rows};1H{}", "\r\n".repeat(rows as usize)).as_bytes(),
+                false,
+            );
+            assert_eq!(panel.terminal.kitty_placements()[0].row, -i64::from(rows));
+            assert!(
+                panel
+                    .prepare(panel.bounds, window, cx)
+                    .image_bounds()
+                    .is_empty()
+            );
+            assert_eq!(panel.images[&7].image.id, id);
+            assert_eq!(
+                panel.image_generation, generation,
+                "geometry-only changes must not sync pixels"
+            );
+            cx.notify();
+            (rows, position, id, generation)
+        })
+    });
+    vcx.run_until_parked();
+
+    // Native wheel events reveal the bottom half of the historical image. Its
+    // full six-row geometry must retain a negative origin so GPUI clips UVs,
+    // rather than shrinking/repositioning the entire image into three rows.
+    vcx.simulate_event(ScrollWheelEvent {
+        position: wheel_position,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., rows as f32 - 3.)),
+        ..Default::default()
+    });
+    vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            let images = panel.prepare(panel.bounds, window, cx).image_bounds();
+            assert_eq!(images.len(), 1);
+            assert_eq!(
+                images[0].origin.y,
+                panel.bounds.origin.y - px(3. * LINE_HEIGHT)
+            );
+            assert_eq!(images[0].size.height, px(6. * LINE_HEIGHT));
+            assert_eq!(
+                images[0].intersect(&panel.bounds).size.height,
+                px(3. * LINE_HEIGHT)
+            );
+            assert_eq!(panel.images[&7].image.id, texture_id);
+            assert_eq!(panel.image_generation, image_generation);
+        })
+    });
+    vcx.simulate_event(ScrollWheelEvent {
+        position: wheel_position,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
+        ..Default::default()
+    });
+    vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            let images = panel.prepare(panel.bounds, window, cx).image_bounds();
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].origin.y, panel.bounds.origin.y);
+            assert_eq!(panel.images[&7].image.id, texture_id);
+            panel.process_output(b"\x1b_Ga=d,d=I,i=7\x1b\\", true);
+            assert!(
+                panel
+                    .prepare(panel.bounds, window, cx)
+                    .image_bounds()
+                    .is_empty()
+            );
+            assert!(
+                panel.images.is_empty(),
+                "deletion must release the historical texture"
+            );
+            assert_eq!(panel.terminal.grid.scroll_offset, rows as usize);
+        })
+    });
+}
+
+#[gpui::test]
+fn image_history_survives_alt_screen_and_resize_without_reupload(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.status.clear();
+            panel.process_output(
+                b"\x1b[HHISTORY\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=7,c=4,r=6;/wAA/w==\x1b\\",
+                false,
+            );
+            let rows = panel.terminal.rows;
+            panel.prepare(panel.bounds, window, cx);
+            let texture = panel.images[&7].image.id;
+            panel.process_output(
+                format!("\x1b[{rows};1H{}", "\r\n".repeat(rows as usize)).as_bytes(),
+                false,
+            );
+            panel.terminal.grid.scroll_offset = rows as usize;
+            assert_eq!(
+                panel.prepare(panel.bounds, window, cx).image_bounds().len(),
+                1
+            );
+            panel.process_output(b"\x1b[?1049h", false);
+            assert!(
+                panel
+                    .prepare(panel.bounds, window, cx)
+                    .image_bounds()
+                    .is_empty()
+            );
+            panel.process_output(b"\x1b[?1049l", false);
+            assert_eq!(
+                panel.prepare(panel.bounds, window, cx).image_bounds().len(),
+                1
+            );
+            assert_eq!(panel.images[&7].image.id, texture);
+            let mut narrower = panel.bounds;
+            narrower.size.width -= panel.cell_width * 5.;
+            assert_eq!(panel.prepare(narrower, window, cx).image_bounds().len(), 1);
+            assert_eq!(panel.terminal.grid.scrollback_len(), rows as usize);
+            assert_eq!(panel.terminal.grid.cell_at_scroll(0, 0).char_display(), 'H');
+            assert_eq!(panel.images[&7].image.id, texture);
+        })
+    });
+}

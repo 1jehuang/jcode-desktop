@@ -31,6 +31,7 @@ from screenshot import isolated_env
 
 
 IMAGE_COLORS = ((23, 213, 199), (241, 55, 173))
+HISTORY_TEXT_COLOR = (255, 180, 40)
 
 
 def kitty_packet():
@@ -100,6 +101,15 @@ def fixture_worker(root):
                 emit(b"\x1b[?1049l")
             elif key == b"i":
                 emit(kitty_packet())
+            elif key == b"h":
+                # This runs after all layout/debug checks. Never resize once
+                # these anchored text and image rows enter scrollback.
+                emit(b"\x1b[2J\x1b[H" + kitty_packet()
+                     + b"\x1b[11;20H\x1b[38;2;255;180;40mHISTORY ANCHOR\x1b[0m")
+            elif key == b"s":
+                emit(f"\x1b[{size.lines};1H".encode())
+                for line in range(size.lines + 12):
+                    emit(f"\r\nHISTORY FILL {line:04d}".encode())
             elif key == b"d":
                 emit(b"\x1b_Ga=d,d=I,i=4242,q=2\x1b\\")
     finally:
@@ -195,6 +205,125 @@ def color_counts(path):
             for color in IMAGE_COLORS]
 
 
+def pixel_region(path, colors=IMAGE_COLORS):
+    """Return exact-color counts and a half-open bounding box of their union."""
+    from PIL import Image, ImageChops
+    counts = []
+    with Image.open(path) as image:
+        channels = image.convert("RGB").split()
+        union = Image.new("L", image.size)
+        for color in colors:
+            masks = [channel.point([255 if abs(value - target) <= 3 else 0
+                                    for value in range(256)])
+                     for channel, target in zip(channels, color)]
+            mask = ImageChops.multiply(ImageChops.multiply(masks[0], masks[1]), masks[2])
+            counts.append(mask.histogram()[255])
+            union = ImageChops.lighter(union, mask)
+        bbox = union.getbbox()
+    return {"counts": counts, "bbox": list(bbox) if bbox else None}
+
+
+def verify_image_history(h):
+    from PIL import Image
+
+    def sample(label):
+        path = h.capture(label)
+        result = {"screenshot": path.name, **pixel_region(path),
+                  "anchor": pixel_region(path, (HISTORY_TEXT_COLOR,))}
+        # Write evidence before assertions, including failing screenshots.
+        h.report["checks"][label] = result
+        return path, result
+
+    def wheel(button):
+        h.native("mousemove", "--sync", mouse_x, mouse_y)
+        h.native("click", button)
+
+    def dimensions(box):
+        return box[2] - box[0], box[3] - box[1]
+
+    h.key("h")
+    original_path, original = sample("history-original")
+    box = original["bbox"]
+    anchor = original["anchor"]["bbox"]
+    if not box or not anchor or min(original["counts"]) < 100:
+        raise AssertionError(f"History fixture image/anchor missing: {original}")
+    if "HISTORY ANCHOR" not in h.text(original_path):
+        raise AssertionError("History fixture text marker not readable")
+    mouse_x, mouse_y = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+    h.key("s")
+    _, live = sample("history-live-hidden")
+    if sum(live["counts"]) or live["anchor"]["bbox"]:
+        raise AssertionError(f"Image and anchor did not wholly enter history: {live}")
+    up_steps = 0
+    revealed = None
+    # One native wheel notch per frame avoids assuming engine wheel line size.
+    for step in range(h.proof()["rows"] * 2):
+        wheel(4)
+        up_steps += 1
+        path, state = sample(f"history-up-{step:03d}")
+        if state["bbox"] and dimensions(state["bbox"]) == dimensions(box):
+            revealed = state
+            delta = state["bbox"][1] - box[1]
+            expected_anchor = [anchor[0], anchor[1] + delta, anchor[2], anchor[3] + delta]
+            if state["anchor"]["bbox"] != expected_anchor:
+                raise AssertionError(f"History image detached from text: {state}, expected {expected_anchor}")
+            if "HISTORY ANCHOR" not in h.text(path):
+                raise AssertionError("Revealed image lacks correct nearby history text")
+            if state["counts"] != original["counts"]:
+                raise AssertionError(f"Revealed image pixels changed: {state}")
+            break
+        # The text marker is at the image top. If it becomes visible without
+        # an image, the old engine has discarded that image on scroll-out.
+        if state["anchor"]["bbox"] and not state["bbox"]:
+            h.text(path)
+            raise AssertionError("Persistent image scrollback missing: native wheel revealed anchored text but no image pixels")
+    if revealed is None:
+        raise AssertionError("Native wheel never revealed the complete history image")
+
+    clipped = False
+    for step in range(up_steps + 1):
+        wheel(5)
+        path, state = sample(f"history-down-{step:03d}")
+        current = state["bbox"]
+        if current and 0 < dimensions(current)[1] < dimensions(box)[1]:
+            clipped = True
+            if dimensions(current)[0] != dimensions(box)[0] or min(state["counts"]) < 20:
+                raise AssertionError(f"Clipped image lost width/colors: {state}")
+            # The top is clipped as we scroll toward live output. Compare the
+            # actual remaining checkerboard with the original bottom slice,
+            # not a rescaled image which can preserve overall color counts.
+            height = dimensions(current)[1]
+            with Image.open(original_path) as before, Image.open(path) as after:
+                expected = before.convert("RGB").crop((box[0], box[3] - height, box[2], box[3]))
+                actual = after.convert("RGB").crop(tuple(current))
+                if actual.tobytes() != expected.tobytes():
+                    raise AssertionError("Partially clipped history image stretched or changed pixels")
+        if not current:
+            break
+    else:
+        raise AssertionError("Wheel down did not hide history image")
+    if not clipped:
+        raise AssertionError("Native wheel did not exercise partial image clipping")
+    # Return to live bottom without any geometry changes, delete while the
+    # placement is offscreen, and revisit the exact same text history.
+    for _ in range(up_steps + 2):
+        wheel(5)
+    h.key("d")
+    _, deleted = sample("history-deleted-live")
+    if sum(deleted["counts"]):
+        raise AssertionError("Deleted offscreen image remains live")
+    for _ in range(up_steps):
+        wheel(4)
+    path, deleted = sample("history-deleted-revisited")
+    if sum(deleted["counts"]):
+        raise AssertionError("Deleted image resurrected from scrollback")
+    if deleted["anchor"]["bbox"] != revealed["anchor"]["bbox"] or "HISTORY ANCHOR" not in h.text(path):
+        raise AssertionError("Deletion check did not revisit the same anchored text history")
+    h.report["checks"]["image_history"] = {"native_wheel_up_steps": up_steps,
+                                             "partial_clip_verified": clipped,
+                                             "delete_no_resurrection": True}
+
+
 def verify(harness, kitty, require_debug_state=False):
     h = harness
     h.wait(lambda: h.navigation().get("rows"), "Fixture did not render", timeout=45)
@@ -274,6 +403,8 @@ def verify(harness, kitty, require_debug_state=False):
             raise AssertionError(f"Unexpected terminal state after image deletion: {snapshot}")
         h.report["checks"]["debug_state"] = snapshot
         h.expect_text("resized-restored", ["TERMINAL ACCEPTANCE", "KEYBOARD OK"])
+    if kitty:
+        verify_image_history(h)
     h.report["pty"] = h.proof()
     h.report["navigation"] = h.navigation()
     h.native("key", "--clearmodifiers", "q")

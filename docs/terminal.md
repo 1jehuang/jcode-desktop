@@ -48,12 +48,36 @@ GPUI canvas <- styled cells and image placements <- Handterm <- host output
 - Remote OSC52 clipboard writes are not automatically honored. Explicit user
   copy/paste gestures remain the clipboard permission boundary.
 
-This is not full Kitty graphics or Sixel support. Non-inline image transports,
-advanced placement/animation features, and persistent image scrollback remain
-outside the supported subset. Images follow live-screen scrolling, disappear
-when scrolled off the top, and are hidden while viewing text history. Sixel
-payload recognition is not Sixel rendering. Cursor rendering is currently steady
-rather than blinking. Text scrollback is configurable, defaulting to 10,000 lines.
+This is not full Kitty graphics or Sixel support. Non-inline image transports
+and advanced placement/animation features remain outside the supported subset.
+Sixel payload recognition is not Sixel rendering. Cursor rendering is currently
+steady rather than blinking.
+
+## Image scrollback
+
+Images stay attached to their output as full-screen main-buffer scrolling moves
+it into text history. Wheel scrolling projects those shared anchors into the
+viewport. Partially visible images are cropped, not stretched or moved to the
+viewport edge. Alternate-screen and scroll-region operations do not create fake
+main-buffer history.
+
+The shared Handterm engine owns retention, projection, deletion, and main/alternate
+buffer isolation. Desktop only paints the projected geometry. Its texture cache
+uses a separate image-content generation, so scrolling does not repeatedly hash
+or upload the retained image pixels.
+
+Retention follows the configured text scrollback (10,000 lines by default), with
+Handterm's additional image limits: 16 MiB decoded per image, 64 MiB decoded total,
+1,024 stored images, and 4,096 placements across the active and saved main buffer.
+When text-history eviction removes an image's final placement, its pixels can be
+released. Explicitly uploaded-but-unplaced images retain their normal semantics.
+Image deletion also removes historical references, so scrolling cannot resurrect
+an image that was explicitly deleted.
+
+Resizing preserves history rows and their image anchors. Text columns are padded
+or truncated to the new width, matching the engine's live-grid policy, rather
+than fully reflowed. The Handterm internal placement wire format uses signed row
+anchors and requires matching peer revisions. Desktop's host ABI is unchanged.
 
 ## Hot reload
 
@@ -91,5 +115,6 @@ python3 scripts/screenshot.py target/ui-review.png --no-build
 
 The terminal acceptance harness runs the real Desktop and shell on a private
 Xvfb display. It exercises ANSI colors/cursor movement, native input, alternate
-screen restoration, Kitty image pixels and deletion. Read the generated PNGs,
-not only JSON assertions. Never use niri for verification.
+screen restoration, Kitty image pixels and deletion, native-wheel image/text
+scrollback alignment, exact partial-image cropping, and deletion while offscreen.
+Read the generated PNGs, not only JSON assertions. Never use niri for verification.

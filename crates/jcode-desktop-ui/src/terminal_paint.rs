@@ -22,6 +22,11 @@ pub(super) struct Scene {
 }
 
 impl Scene {
+    #[cfg(test)]
+    pub(super) fn image_bounds(&self) -> Vec<Bounds<Pixels>> {
+        self.images.iter().map(|(bounds, _)| *bounds).collect()
+    }
+
     pub(super) fn paint(self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for quad in self.backgrounds {
@@ -59,7 +64,9 @@ pub(super) fn bgra_image(
 
 impl TerminalPanel {
     fn sync_images(&mut self, window: &mut Window) {
-        let generation = self.terminal.kitty_generation();
+        // Scrolling changes placement geometry, not pixels. Retained image
+        // history must not rehash or reupload every texture on every wheel tick.
+        let generation = self.terminal.kitty_image_generation();
         if self.image_generation == Some(generation) {
             return;
         }
@@ -220,19 +227,26 @@ impl TerminalPanel {
                 scene.lines.push((origin, shaped));
             }
         }
-        for placement in self.terminal.kitty_placements() {
+        for placement in self.terminal.kitty_viewport_placements() {
             if let Some(image) = self.images.get(&placement.image_id) {
-                scene.images.push((
-                    Bounds::new(
-                        bounds.origin
-                            + point(cell_width * placement.col, px(LINE_HEIGHT) * placement.row),
-                        size(
-                            cell_width * placement.cols.max(1),
-                            px(LINE_HEIGHT) * placement.rows.max(1),
+                // Keep the original, possibly negative, image origin. GPUI
+                // clips against the viewport and samples the corresponding
+                // image region instead of squashing a partly visible image.
+                let image_bounds = Bounds::new(
+                    bounds.origin
+                        + point(
+                            cell_width * placement.col,
+                            px(LINE_HEIGHT * placement.row as f32),
                         ),
+                    size(
+                        cell_width * placement.cols.max(1),
+                        px(LINE_HEIGHT) * placement.rows.max(1),
                     ),
-                    image.image.clone(),
-                ));
+                );
+                let visible = bounds.intersect(&image_bounds);
+                if visible.size.width > px(0.) && visible.size.height > px(0.) {
+                    scene.images.push((image_bounds, image.image.clone()));
+                }
             }
         }
         if show_cursor {
