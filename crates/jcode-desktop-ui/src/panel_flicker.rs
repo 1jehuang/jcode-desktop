@@ -11,6 +11,9 @@ use std::{
 
 use gpui::{AnyElement, Bounds, EntityId, ListState, Pixels, canvas, prelude::*};
 
+#[path = "panel_scroll_diagnostics.rs"]
+mod scroll;
+
 const MAX_SAMPLE_GAP: Duration = Duration::from_millis(500);
 const LOG_COOLDOWN: Duration = Duration::from_secs(10);
 
@@ -25,6 +28,7 @@ struct Geometry {
 
 #[derive(Default)]
 pub(super) struct Detector {
+    scroll: scroll::Recorder,
     // Fixed-size storage even during an indefinitely oscillating layout.
     recent: [Option<Geometry>; 4],
     last_sample: Option<Instant>,
@@ -32,6 +36,14 @@ pub(super) struct Detector {
 }
 
 impl Detector {
+    pub(super) fn scroll_input(&mut self, pixels: f32, precise: bool) {
+        self.scroll.input(pixels, precise, Instant::now());
+    }
+
+    pub(super) fn scroll_applied(&mut self, pixels: f32) {
+        self.scroll.applied(pixels, Instant::now());
+    }
+
     fn observe(&mut self, geometry: Geometry, now: Instant) -> Option<[Geometry; 2]> {
         if self
             .last_sample
@@ -90,6 +102,7 @@ pub(super) fn observer(
                 input: input.get().map(|bounds| relative_rect(bounds, panel_bounds)),
                 pinned_prompt,
             };
+            detector.borrow_mut().scroll.paint(&list, geometry.viewport, entity_id);
             if let Some([a, b]) = detector.borrow_mut().observe(geometry, Instant::now()) {
                 let timestamp_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

@@ -775,6 +775,7 @@ impl Panel {
         if !pixels.is_finite() || pixels == 0.0 {
             return;
         }
+        self.flicker_diagnostics.borrow_mut().scroll_input(pixels, precise);
         if crate::config::get().appearance.reduce_motion || cx.reduce_motion() {
             self.scroll_transcript_direct(-pixels, cx);
             return;
@@ -812,6 +813,9 @@ impl Panel {
         let current = self.transcript_list.scroll_px_offset_for_scrollbar();
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, current.y + px(delta_y)));
+        self.flicker_diagnostics.borrow_mut().scroll_applied(f32::from(
+            current.y - self.transcript_list.scroll_px_offset_for_scrollbar().y,
+        ));
         cx.notify();
     }
 
@@ -860,6 +864,7 @@ impl Panel {
         let target = (f32::from(current.y) - step).clamp(-max, 0.0);
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, px(target)));
+        self.flicker_diagnostics.borrow_mut().scroll_applied(f32::from(current.y) - target);
         // Discard travel into an edge instead of accumulating invisible debt.
         if (step < 0.0 && target >= 0.0) || (step > 0.0 && target <= -max) {
             self.transcript_wheel_glide.remaining = 0.0;
