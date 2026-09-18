@@ -60,6 +60,156 @@ fn worktree_ownership_uses_components_and_most_specific_checkout() {
     assert_eq!(owner("/repo-other", &entries), None);
 }
 
+#[test]
+fn worktree_labels_cover_branch_detached_and_bare_checkouts() {
+    let mut checkout = entry("/project", "feature/long/name");
+    assert_eq!(checkout_label(&checkout), "feature/long/name");
+    checkout.branch = None;
+    checkout.detached = true;
+    assert_eq!(checkout_label(&checkout), "Detached · abc12345");
+    checkout.locked = Some("keep this checkout".into());
+    assert!(checkout_available(&checkout));
+    checkout.prunable = Some("missing".into());
+    assert!(!checkout_available(&checkout));
+    checkout.bare = true;
+    assert_eq!(checkout_label(&checkout), "Bare repository");
+}
+
+#[gpui::test]
+fn worktree_groups_are_compact_and_collapse_without_navigation(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    click(vcx, "sidebar-mode-worktrees");
+    let header = vcx.debug_bounds("worktree-0").unwrap();
+    let chat = vcx.debug_bounds("worktree-session-main-session").unwrap();
+    assert_eq!(header.size.height, px(30.0));
+    assert_eq!(chat.size.height, px(28.0));
+    assert!(chat.left() > header.left());
+    assert!(
+        vcx.debug_bounds("worktree-session-main-session-selected")
+            .is_some()
+    );
+    click(vcx, "worktree-toggle-0");
+    assert!(vcx.debug_bounds("worktree-session-main-session").is_none());
+    assert!(vcx.debug_bounds("worktree-1").is_some());
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.slots.len(), 1);
+        assert!(w.worktrees.collapsed.contains("/project"));
+    });
+    assert!(commands.try_recv().is_err());
+    click(vcx, "worktree-toggle-0");
+    assert!(vcx.debug_bounds("worktree-session-main-session").is_some());
+}
+
+#[gpui::test]
+fn worktree_new_chat_is_local_and_visible_before_backend_reply(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    click(vcx, "sidebar-mode-worktrees");
+    click(vcx, "worktree-toggle-0");
+    workspace.update(vcx, |w, _| {
+        w.remotes.default_host = Some("elsewhere".into())
+    });
+    click(vcx, "worktree-new-chat-0");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/project")
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "new-chat click must not bubble into checkout navigation"
+    );
+    let id = workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 2);
+        assert!(!w.worktrees.collapsed.contains("/project"));
+        assert_eq!(w.worktrees.entries.len(), 2);
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
+    assert!(
+        vcx.debug_bounds(format!("worktree-session-{id}").leak())
+            .is_some()
+    );
+    assert!(
+        vcx.debug_bounds(format!("worktree-session-{id}-selected").leak())
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn worktree_navigation_keeps_groups_and_collapse_state(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    click(vcx, "sidebar-mode-worktrees");
+    click(vcx, "worktree-toggle-0");
+    click(vcx, "worktree-empty-1");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/project-trees/search")
+    );
+    assert!(vcx.debug_bounds("worktree-0").is_some());
+    assert!(vcx.debug_bounds("worktree-1").is_some());
+    assert!(vcx.debug_bounds("worktree-session-main-session").is_none());
+    workspace.read_with(vcx, |w, _| {
+        assert!(w.worktrees.collapsed.contains("/project"));
+        assert!(!w.worktrees.loading);
+        assert!(w.worktrees.error.is_none());
+    });
+    click(vcx, "worktree-toggle-0");
+    click(vcx, "worktree-session-main-session");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 2, "existing chat is reused");
+        assert_eq!(w.slots[w.active].panel.read(cx).session_id, "main-session");
+    });
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn worktree_groups_hide_archived_remote_and_sibling_sessions_and_sort_by_recency(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, _) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        for (id, directory, archived, updated) in [
+            ("older", "/project", false, 100),
+            ("newer", "/project/src", false, 200),
+            ("archived", "/project", true, 300),
+            ("ssh://server/remote", "/project", false, 300),
+            ("sibling", "/project-other", false, 300),
+        ] {
+            let mut session = crate::workspace::tests::session_info(id, Some(id));
+            session.working_dir = Some(directory.into());
+            session.archived = archived;
+            session.updated_at_ms = Some(updated);
+            w.sessions.push(session);
+        }
+        cx.notify();
+    });
+    click(vcx, "sidebar-mode-worktrees");
+    assert!(
+        vcx.debug_bounds("worktree-session-newer").unwrap().top()
+            < vcx.debug_bounds("worktree-session-older").unwrap().top()
+    );
+    for id in ["archived", "ssh://server/remote", "sibling"] {
+        assert!(
+            vcx.debug_bounds(format!("worktree-session-{id}").leak())
+                .is_none()
+        );
+    }
+}
+
+#[gpui::test]
+fn worktree_unavailable_checkout_disables_chat_and_creation(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.worktrees.entries[1].prunable = Some("missing".into());
+        let mut session = crate::workspace::tests::session_info("missing-chat", Some("History"));
+        session.working_dir = Some("/project-trees/search".into());
+        w.sessions.push(session);
+        cx.notify();
+    });
+    click(vcx, "sidebar-mode-worktrees");
+    assert!(vcx.debug_bounds("worktree-new-chat-1").is_none());
+    click(vcx, "worktree-1");
+    click(vcx, "worktree-session-missing-chat");
+    assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
+    assert!(commands.try_recv().is_err());
+}
+
 #[gpui::test]
 fn worktree_toggle_preserves_sessions_and_persists_with_legacy_default(
     cx: &mut gpui::TestAppContext,
