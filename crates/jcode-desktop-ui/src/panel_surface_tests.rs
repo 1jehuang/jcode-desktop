@@ -113,7 +113,7 @@ fn normal_mode_uses_separate_equal_height_panels_without_the_folder_surface(
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("native-folder-surface").is_none());
     assert!(
-        vcx.debug_bounds("sidebar-roller-next")
+        vcx.debug_bounds("sidebar-section-trigger")
             .is_none()
     );
     let a = vcx.debug_bounds("panel-0").unwrap();
@@ -129,7 +129,7 @@ fn normal_mode_uses_separate_equal_height_panels_without_the_folder_surface(
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("native-folder-surface").is_some());
     assert!(
-        vcx.debug_bounds("sidebar-roller-next")
+        vcx.debug_bounds("sidebar-section-trigger")
             .is_some()
     );
     let a = vcx.debug_bounds("panel-0").unwrap();

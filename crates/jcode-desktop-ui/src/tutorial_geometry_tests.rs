@@ -61,12 +61,12 @@ fn tutorial_tab_lists_all_lessons_without_resizing_canvas(cx: &mut gpui::TestApp
     vcx.run_until_parked();
     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
     assert!(vcx.debug_bounds("tutorial-guides").is_none());
-    click(vcx, "sidebar-learn-tab");
+    super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-learn-tab");
     assert_all_lessons(vcx);
     assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
-    click(vcx, "sidebar-sessions-tab");
+    super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-sessions-tab");
     assert!(vcx.debug_bounds("tutorial-guides").is_none());
-    click(vcx, "sidebar-learn-tab");
+    super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-learn-tab");
     assert_all_lessons(vcx);
 }
 
@@ -75,7 +75,7 @@ fn tutorial_legacy_pages_restore_as_complete_reference(cx: &mut gpui::TestAppCon
     let (workspace, vcx) =
         cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
     vcx.run_until_parked();
-    click(vcx, "sidebar-learn-tab");
+    super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-learn-tab");
     for page in 0..3 {
         let mut snapshot =
             vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
@@ -105,7 +105,7 @@ fn tutorial_list_scrolls_to_width_and_overview_actions(cx: &mut gpui::TestAppCon
         workspace
     });
     vcx.run_until_parked();
-    click(vcx, "sidebar-learn-tab");
+    super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-learn-tab");
     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
     scroll_to_bottom(vcx);
     let content = vcx.debug_bounds("tutorial-content").unwrap();
