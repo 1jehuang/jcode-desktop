@@ -54,6 +54,18 @@ Persistent before/after evidence from this run:
 - `target/cli-contrast-gate-old-final/light/report.json` records the expected rejection
   of the old CLI at a threshold of 4.0, with screenshots preserved.
 
+- `target/cli-contrast-final-verified/{light,dark}/report.json` records the final
+  combined palette/contrast implementation passing the same gate. Both reports
+  identify SHA-256 `0b9a133084d9663e4ea5ab8918a2c0036238276ba47cdd5670b38b84b0b90eb3`,
+  which also matches the installed current-channel CLI.
+
+One concurrent-load run in `target/cli-contrast-final/light` hit the existing
+120 ms OSC 11 detection timeout and fell back to dark. A late color reply then
+appeared in the picker filter. That failed run is retained separately, not
+counted as a contrast pass. The fresh isolated final run above detected light
+correctly. This contrast change does not fix that intermittent startup-query
+race.
+
 Reports record the resolved executable path and SHA-256, so evidence is tied
 to the tested binary rather than a potentially moving `current` symlink.
 Artifacts are local generated files under `target`, not committed screenshots.
