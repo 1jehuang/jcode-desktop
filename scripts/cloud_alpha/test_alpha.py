@@ -120,6 +120,41 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(ssh.call_count, 2)
             wait.assert_called_once_with(4)
 
+    def test_status_reports_original_launch_deadline_and_remaining_allowance(self):
+        now = datetime(2026, 9, 18, 23, 0, tzinfo=timezone.utc)
+        launch = now - timedelta(minutes=115)
+        host = {'State': {'Name': 'running'}, 'InstanceType': 'm7i.large',
+                'LaunchTime': launch.isoformat()}
+        with patch.object(control, 'instance', return_value=host), patch.object(control, 'ledger', return_value=(120, 3000, False)):
+            result = control.status(self.config, now)
+        self.assertEqual(result['lease_remaining_seconds'], 300)
+        self.assertEqual(result['lease_deadline'], (launch + timedelta(hours=2)).isoformat())
+        self.assertEqual(result['remaining_minutes'], 2880)
+
+    def test_stopped_status_has_no_running_lease(self):
+        host = {'State': {'Name': 'stopped'}, 'InstanceType': 'm7i.large'}
+        with patch.object(control, 'instance', return_value=host), patch.object(control, 'ledger', return_value=(3010, 3000, True)):
+            result = control.status(self.config)
+        self.assertIsNone(result['lease_remaining_seconds'])
+        self.assertIsNone(result['lease_deadline'])
+        self.assertEqual(result['remaining_minutes'], 0)
+
+    def test_expired_lease_does_not_display_negative_time(self):
+        now = datetime.now(timezone.utc)
+        host = {'State': {'Name': 'stopping'}, 'InstanceType': 'm7i.large',
+                'LaunchTime': (now - timedelta(hours=3)).isoformat()}
+        with patch.object(control, 'instance', return_value=host), patch.object(control, 'ledger', return_value=(20, 3000, False)):
+            self.assertEqual(control.status(self.config, now)['lease_remaining_seconds'], 0)
+
+    def test_status_refuses_future_or_naive_launch(self):
+        now = datetime.now(timezone.utc)
+        for launch in (now + timedelta(minutes=5), now.replace(tzinfo=None)):
+            host = {'State': {'Name': 'running'}, 'InstanceType': 'm7i.large',
+                    'LaunchTime': launch.isoformat()}
+            with patch.object(control, 'instance', return_value=host), patch.object(control, 'ledger', return_value=(20, 3000, False)):
+                with self.assertRaisesRegex(RuntimeError, 'launch time'):
+                    control.status(self.config, now)
+
 
 if __name__ == '__main__':
     unittest.main()

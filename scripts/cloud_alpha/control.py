@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Operate one configured personal alpha. Never creates infrastructure or exports credentials."""
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -104,6 +104,28 @@ def wake(config):
     raise RuntimeError("Host did not become SSM-ready within four minutes. Check bootstrap via SSM.")
 
 
+def status(config, now=None):
+    """Read-only status. Countdown is advisory, never permission to extend a lease."""
+    host = instance(config)
+    used, budget, depleted = ledger(config)
+    now = now or datetime.now(timezone.utc)
+    state = host["State"]["Name"]
+    deadline, remaining = None, None
+    if state in ("pending", "running", "stopping"):
+        launch = datetime.fromisoformat(host["LaunchTime"])
+        if launch.tzinfo is None or now.tzinfo is None or launch > now:
+            raise RuntimeError("Invalid cloud launch time. Cannot estimate shutdown deadline.")
+        deadline = launch + timedelta(hours=2)
+        remaining = max(0, int((deadline - now).total_seconds()))
+    return {"instance_id": config["instance_id"], "state": state,
+            "machine": host["InstanceType"], "used_minutes": used,
+            "allowance_minutes": budget, "remaining_minutes": max(0, budget - used),
+            "depleted": depleted, "maximum_continuous_hours": 2,
+            "lease_deadline": deadline.isoformat() if deadline else None,
+            "lease_remaining_seconds": remaining,
+            "observed_at": now.isoformat(), "persistent_disk_gb": 30}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["status", "wake", "stop", "ssh", "proxy"])
@@ -119,12 +141,7 @@ def main():
         aws(config, "ec2", "stop-instances", "--instance-ids", config["instance_id"])
         print("Stop requested. Saved files remain. Running processes will end.")
     elif args.action == "status":
-        host = instance(config)
-        used, budget, depleted = ledger(config)
-        print(json.dumps({"instance_id": config["instance_id"], "state": host["State"]["Name"],
-                          "machine": host["InstanceType"], "used_minutes": used,
-                          "allowance_minutes": budget, "depleted": depleted,
-                          "maximum_continuous_hours": 2, "persistent_disk_gb": 30}, indent=2))
+        print(json.dumps(status(config), indent=2))
     elif args.action == "ssh":
         wake(config)
         os.execvp("ssh", ["ssh", "jcode-cloud-alpha"])
