@@ -3508,6 +3508,12 @@ impl Panel {
     }
 
     /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
+    pub(crate) fn set_terminal_surface_focused(&self, focused: bool, cx: &mut App) {
+        if let Some(terminal) = &self.terminal {
+            terminal.update(cx, |terminal, cx| terminal.set_surface_focused(focused, cx));
+        }
+    }
+
     pub fn terminal_debug_snapshot(&self, cx: &App) -> Option<serde_json::Value> {
         self.terminal
             .as_ref()

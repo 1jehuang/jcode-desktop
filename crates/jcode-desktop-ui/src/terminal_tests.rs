@@ -6,15 +6,24 @@ use handterm_common::grid::{ATTR_BOLD, COLOR_FLAG_RGB};
 fn color_queries_follow_desktop_theme_and_changes() {
     let mut terminal = Terminal::new(80, 24);
     let mut theme = Theme::global().clone();
-    for (foreground, background) in [(0x292724, 0xeeeae4), (0xe4ddd3, 0x1c1a18)] {
+    for (foreground, background, focused) in [
+        (0x292724, 0xeeeae4, false),
+        (0x292724, 0xfbf9f5, true),
+        (0xe4ddd3, 0x1c1a18, false),
+        (0xe4ddd3, 0x292724, true),
+    ] {
         theme.TEXT = gpui::rgb(foreground);
-        theme.BG = gpui::rgb(background);
-        sync_terminal_colors(&mut terminal, &theme);
+        if focused {
+            theme.PANEL_BG = gpui::rgb(background);
+        } else {
+            theme.HEADER_BG = gpui::rgb(background);
+        }
+        sync_terminal_colors(&mut terminal, &theme, focused);
         // Queries can cross PTY read boundaries, with either terminator.
         terminal.process(b"\x1b]10;?");
         terminal.process(b"\x07\x1b]11;?\x1b");
         terminal.process(b"\\");
-        let expected = [(10, theme.TEXT), (11, theme.BG)]
+        let expected = [(10, theme.TEXT), (11, theme.panel_background(focused))]
             .into_iter()
             .map(|(command, color)| {
                 let [r, g, b] = color_channels(color);
@@ -140,11 +149,29 @@ fn panel_replay_sets_theme_colors_without_sending_historical_replies(
             panel.process_output(b"\x1b]11;?\x07", false);
             assert!(panel.terminal.drain_responses().is_none());
             panel.terminal.process(b"\x1b]11;?\x07");
-            let [r, g, b] = color_channels(Theme::global().BG);
+            let [r, g, b] = color_channels(Theme::global().panel_background(false));
             assert_eq!(
                 panel.terminal.drain_responses().unwrap(),
                 format!("\x1b]11;rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\").as_bytes()
             );
+        });
+    });
+}
+
+#[gpui::test]
+fn pane_focus_updates_color_queries_without_waiting_for_pty_output(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        let panel = cx.new(|cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+        panel.update(cx, |panel, cx| {
+            for focused in [true, false, true] {
+                panel.set_surface_focused(focused, cx);
+                panel.terminal.process(b"\x1b]11;?\x07");
+                let [r, g, b] = color_channels(Theme::global().panel_background(focused));
+                assert_eq!(
+                    panel.terminal.drain_responses().unwrap(),
+                    format!("\x1b]11;rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\").as_bytes()
+                );
+            }
         });
     });
 }

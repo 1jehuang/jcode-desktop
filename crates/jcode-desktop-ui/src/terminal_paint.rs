@@ -132,7 +132,8 @@ impl TerminalPanel {
         };
         let grid = &self.terminal.grid;
         let base_fg = packed(theme.TEXT);
-        let base_bg = packed(theme.BG);
+        let background = theme.panel_background(self.surface_focused);
+        let base_bg = packed(background);
         let cursor = grid.cursor_pos();
         let show_cursor = self.terminal.cursor_visible && grid.scroll_offset == 0 && !self.exited;
         let focused = self.focus.is_focused(window);
@@ -306,7 +307,7 @@ impl TerminalPanel {
             };
             scene.backgrounds.push(fill(
                 Bounds::new(origin, size(bounds.size.width, px(LINE_HEIGHT))),
-                theme.BG,
+                background,
             ));
             scene.lines.push((origin, shaped));
         }

@@ -29,11 +29,15 @@ GPUI canvas <- styled cells and image placements <- Handterm <- host output
 ## Input and protocols
 
 - Styled ANSI text, indexed/true colors, wide characters and grapheme cells.
-- OSC 10/11 foreground/background queries report Desktop's actual `TEXT`/`BG`
-  colors, synchronized before parsing output, including after replay/reset and
-  theme changes. Jcode uses the background reply at startup to select its light
-  or dark palette. Already-running Jcode clients retain their startup choice and
-  must be relaunched after switching Desktop between light and dark themes.
+- Terminal backgrounds follow the workspace's active/inactive pane surfaces,
+  including padding, default cells, and status messages. Explicit ANSI cell
+  backgrounds retain their own colors.
+- OSC 10/11 foreground/background queries report Desktop's actual `TEXT` and
+  pane surface colors, synchronized before parsing output, including after
+  focus changes, replay/reset, and theme changes. Jcode uses the background reply
+  at startup to select its light or dark palette. Already-running Jcode clients
+  retain their startup choice and must be relaunched after switching Desktop
+  between light and dark themes.
 - Application-cursor keys and Handterm's shared legacy/Kitty keyboard encoder.
   GPUI does not expose all physical/keypad distinctions available to standalone
   Handterm, so those mappings are not claimed to be identical.

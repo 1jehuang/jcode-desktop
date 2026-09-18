@@ -338,6 +338,35 @@ def verify(harness, kitty, require_debug_state=False):
 
     terminal = h.wait(focused_terminal, "Super+T did not create and focus terminal")
     h.report["checks"]["terminal_open"] = terminal
+    # Keep both panes visible so the terminal's pixels can be compared directly
+    # with the ordinary pane's active and inactive surface colors.
+    h.native("key", "--clearmodifiers", "super+u")
+    h.native("key", "--clearmodifiers", "super+f")
+    h.native("key", "--clearmodifiers", "super+p")
+    h.wait(focused_terminal, "Could not refocus terminal for surface check")
+    from PIL import Image
+
+    def surfaces(label):
+        path = h.capture(label)
+        with Image.open(path) as image:
+            image = image.convert("RGB")
+            # Avoid the clicked cell at y=850, which correctly gains selection.
+            return image.getpixel((500, 800)), image.getpixel((1100, 800))
+
+    inactive, active = surfaces("focus-terminal-active")
+    h.native("mousemove", "--sync", 500, 850)
+    h.native("click", 1)
+    h.wait(lambda: h.navigation().get("focused_slot") == 0, "Neighbor click did not move focus")
+    neighbor_active, terminal_inactive = surfaces("focus-terminal-inactive")
+    if active == inactive or (neighbor_active, terminal_inactive) != (active, inactive):
+        raise AssertionError(f"Terminal focus surface mismatch: {(inactive, active)} -> "
+                             f"{(neighbor_active, terminal_inactive)}")
+    h.native("mousemove", "--sync", 1100, 850)
+    h.native("click", 1)
+    h.wait(focused_terminal, "Terminal click did not restore focus")
+    if surfaces("focus-terminal-restored") != (inactive, active):
+        raise AssertionError("Terminal background did not restore after refocusing")
+    h.report["checks"]["focus_background"] = {"active": active, "inactive": inactive}
     h.native("key", "--clearmodifiers", "super+f")
     time.sleep(.5)
     # Copy only this script and screenshot's import helper into the sandbox. The
@@ -350,7 +379,6 @@ def verify(harness, kitty, require_debug_state=False):
     if not proof["stdin_tty"] or not proof["stdout_tty"] or proof["rows"] < 20 or proof["cols"] < 40:
         raise AssertionError(f"Not a usable real terminal PTY: {proof}")
     base = h.capture("background-query")
-    from PIL import Image
     background = tuple(proof["colors"]["11"])
     with Image.open(base) as image:
         histogram = image.convert("RGB").getcolors(image.width * image.height)

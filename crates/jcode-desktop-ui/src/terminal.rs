@@ -34,11 +34,14 @@ fn color_channels(color: gpui::Rgba) -> [u8; 3] {
     [color.r, color.g, color.b].map(|channel| (channel * 255.).round() as u8)
 }
 
-fn sync_terminal_colors(terminal: &mut Terminal, theme: &Theme) {
+fn sync_terminal_colors(terminal: &mut Terminal, theme: &Theme, focused: bool) {
     // OSC 10/11 must describe the colors we actually paint, not Handterm's
     // standalone white-on-black defaults. Apps such as Jcode query these to
     // choose a readable palette.
-    terminal.set_default_colors(color_channels(theme.TEXT), color_channels(theme.BG));
+    terminal.set_default_colors(
+        color_channels(theme.TEXT),
+        color_channels(theme.panel_background(focused)),
+    );
 }
 
 actions!(terminal, [Copy, Paste]);
@@ -63,6 +66,7 @@ struct CachedImage {
 
 pub struct TerminalPanel {
     focus: FocusHandle,
+    surface_focused: bool,
     terminal: Terminal,
     host: HostHandle,
     resource_id: Option<u64>,
@@ -179,6 +183,7 @@ impl TerminalPanel {
         .detach();
         Self {
             focus: cx.focus_handle(),
+            surface_focused: false,
             terminal: Terminal::new_with_scrollback(
                 COLS,
                 ROWS,
@@ -206,7 +211,7 @@ impl TerminalPanel {
     fn process_output(&mut self, output: &[u8], reply: bool) {
         // Sync before parsing queries, including the first output after creation,
         // replay/reset, and a Desktop theme change.
-        sync_terminal_colors(&mut self.terminal, Theme::global());
+        sync_terminal_colors(&mut self.terminal, Theme::global(), self.surface_focused);
         self.terminal.process(output);
         if let Some(responses) = self.terminal.drain_responses() {
             if reply {
@@ -351,7 +356,11 @@ impl TerminalPanel {
             });
             cx.notify();
         }
-        cx.stop_propagation();
+        // The workspace must also select this pane, not just move keyboard
+        // focus into its terminal. Keep local selection/reporting above intact.
+        if event.button != MouseButton::Left {
+            cx.stop_propagation();
+        }
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -440,6 +449,14 @@ impl TerminalPanel {
         window.focus(&self.focus, cx);
     }
 
+    pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
+        if self.surface_focused != focused {
+            self.surface_focused = focused;
+            sync_terminal_colors(&mut self.terminal, Theme::global(), focused);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn debug_snapshot(&self) -> serde_json::Value {
         serde_json::json!({
             "resource_id": self.resource_id, "rows": self.terminal.rows, "cols": self.terminal.cols,
@@ -487,7 +504,7 @@ impl Render for TerminalPanel {
             .size_full()
             .overflow_hidden()
             .p(px(PADDING))
-            .bg(Theme::global().BG)
+            .bg(Theme::global().panel_background(self.surface_focused))
             .child(
                 canvas(
                     move |bounds, window, cx| {
