@@ -27,6 +27,8 @@ mod sidebar_selection;
 mod sidebar_swarm;
 #[path = "sidebar_edits.rs"]
 mod sidebar_edits;
+#[path = "sidebar_workspaces.rs"]
+mod sidebar_workspaces;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -5251,6 +5253,9 @@ impl Workspace {
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
+            .when(self.sidebar_view == SidebarView::Sessions, |el| {
+                el.children(self.render_sidebar_workspaces(cx))
+            })
             .into_any_element()
     }
 

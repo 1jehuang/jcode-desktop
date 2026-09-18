@@ -74,6 +74,8 @@ def main():
                         help="verify native tab clicks travel continuously across the 2D map")
     parser.add_argument("--workspace-interact", action="store_true",
                         help="measure four workspace identities and verify numbered map navigation")
+    parser.add_argument("--sidebar-workspaces-interact", action="store_true",
+                        help="verify pinned workspace navigation beneath a long chat history")
     parser.add_argument("--close-interact", action="store_true",
                         help="hold Super+Q from the right edge of six panels and verify focus through retirement and reopen")
     parser.add_argument("--login-interact", action="store_true",
@@ -224,6 +226,11 @@ def main():
             parser.error("model-interact requires xdotool and tesseract")
     if args.fps_header_interact and (args.panels != 4 or args.layout_mode != "folder_tabs"):
         parser.error("fps-header-interact requires four panels and folder_tabs layout")
+    if args.sidebar_workspaces_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "sidebar_workspaces_interact")
+        if others or args.panels != 4 or args.size != "1440x1000" or args.layout_mode != "folder_tabs":
+            parser.error("sidebar-workspaces-interact requires four panels, default size/folder layout, and no other interactions")
     if args.map_motion_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "map_motion_interact")
@@ -335,7 +342,7 @@ def main():
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
         if args.model_interact:
             env["JCODE_DESKTOP_SCREENSHOT_MODELS"] = "1"
-        if args.history_interact:
+        if args.history_interact or args.sidebar_workspaces_interact:
             env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
         env["VK_DRIVER_FILES"] = str(drivers[0])
         wm_config = root / "openbox.xml"
@@ -438,6 +445,9 @@ def main():
                 if args.workspace_interact:
                     from workspace_identity_acceptance import verify
                     verify(output, env, root, theme=args.theme)
+                if args.sidebar_workspaces_interact:
+                    from sidebar_workspaces_acceptance import verify
+                    verify(output, env, root)
                 if app.poll() is not None:
                     raise RuntimeError("App exited before capture")
                 if args.sounds_interact:
