@@ -95,6 +95,7 @@ mod default_directory_tests;
 #[action(no_json)]
 pub(crate) struct OpenAccounts {
     pub source: gpui::EntityId,
+    pub login_command: Option<String>,
 }
 
 actions!(
@@ -2551,6 +2552,11 @@ impl Workspace {
         if let Some(index) = self.slots.iter().position(|slot| {
             !slot.closing && slot.panel.read(cx).session_id == format!("accounts://{source_session}")
         }) {
+            if let Some(command) = &request.login_command {
+                self.slots[index].panel.update(cx, |panel, cx| {
+                    panel.login_command(command, cx);
+                });
+            }
             self.set_active(index, cx);
             self.retarget_camera();
             self.focus_active(window, cx);
@@ -2560,6 +2566,11 @@ impl Workspace {
         let row = self.slots[source_index].row;
         let preview = source.read(cx).preview_state;
         let panel = cx.new(|cx| Panel::new_accounts(&source_session, preview, self.bridge.clone(), cx));
+        if let Some(command) = &request.login_command {
+            panel.update(cx, |panel, cx| {
+                panel.login_command(command, cx);
+            });
+        }
         let source_for_close = source.clone();
         cx.subscribe_in(
             &panel,
@@ -13122,6 +13133,10 @@ mod pending_tests;
 mod sound_settings;
 
 #[cfg(test)]
+#[path = "workspace_login_tests.rs"]
+mod login_tests;
+
+#[cfg(test)]
 mod accounts_panel_tests {
     use super::*;
 
@@ -13165,7 +13180,10 @@ mod accounts_panel_tests {
             panel.preview_state = None;
             panel.session_id = Panel::STARTUP_SESSION_ID.into();
         });
-        let request = OpenAccounts { source: source.entity_id() };
+        let request = OpenAccounts {
+            source: source.entity_id(),
+            login_command: None,
+        };
         workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
         let accounts = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
         accounts.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelClosed));
@@ -13265,6 +13283,7 @@ mod accounts_panel_tests {
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
         let request = OpenAccounts {
             source: source.entity_id(),
+            login_command: None,
         };
         workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
         let first = workspace.read_with(vcx, |w, _| {

@@ -187,8 +187,52 @@ def verify(output, env, root):
         assert "chooseanaccount" not in text and "pastefromclipboard" not in text, "Login overlay stayed open"
         assert normalized(SECRET) not in text, "Secret leaked into the restored composer"
         report["checks"][stage] = True
+
+        stage = "native-slash-login-opens-separate-panel"
+        native("key", "ctrl+a")
+        native("type", "--clearmodifiers", "/login")
+        native("key", "Return")
+        _, words, _ = wait_words("slash-providers", "Choose an account to connect")
+        opened = panels()
+        assert len(opened) == 2 and opened[0]["id"] == source["id"], opened
+        assert opened[1]["session"].startswith("accounts://") and opened[1]["focused"], opened
+        assert opened[0]["history_items"] == source["history_items"], opened
+        report["checks"][stage] = True
+
+        stage = "native-slash-provider-back-refresh-close"
+        for attempt in range(12):
+            try:
+                api_choice = phrase_bounds(words, "OpenAI API")
+                break
+            except AssertionError:
+                native("mousemove", 1200, 740, "click", "--repeat", 3, "--delay", 80, "5")
+                words = ocr(capture("slash-providers-scrolled"), "slash-providers-scrolled")
+        else:
+            raise AssertionError("Slash login API choice was not reachable")
+        click(api_choice)
+        _, words, _ = wait_words("slash-api-key", "Paste your API key")
+        click(phrase_bounds(words, "Choose another provider"))
+        _, words, _ = wait_words("slash-back", "Choose an account to connect")
+        click(phrase_bounds(words, "Refresh status"))
+        _, words, _ = wait_words("slash-refreshed", "Refresh status")
+        click(phrase_bounds(words, "Close"))
+        time.sleep(.5)
+        assert len(panels()) == 1 and panels()[0]["id"] == source["id"], panels()
+        assert panels()[0]["focused"], panels()
+        report["checks"][stage] = True
+
+        stage = "native-slash-provider-argument-and-escape"
+        native("type", "--clearmodifiers", "/login openai-api")
+        native("key", "Return")
+        _, words, _ = wait_words("slash-provider-argument", "Paste your API key")
+        assert len(panels()) == 2 and panels()[1]["focused"], panels()
+        native("key", "Escape")
+        time.sleep(.5)
+        assert len(panels()) == 1 and panels()[0]["id"] == source["id"], panels()
+        assert panels()[0]["focused"], panels()
+        report["checks"][stage] = True
         report["passed"] = True
-        print("Login acceptance passed: native account/provider clicks, clipboard paste, masked pixels, restored draft")
+        print("Login acceptance passed: footer and /login panels, provider/back/refresh/close clicks, masked paste, draft restoration, provider argument and Escape")
     except Exception as error:
         report.update(passed=False, failed_stage=stage, error=str(error))
         raise

@@ -176,7 +176,7 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn login_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn login_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         let mut words = content.split_whitespace();
         if words.next() != Some("/login") {
             return false;

@@ -7,8 +7,8 @@ opens and focuses a dedicated **Accounts** panel immediately to the right of the
 conversation, without replacing its transcript or draft. Clicking again reuses the
 same source's accounts panel. Close or Escape returns to the source conversation.
 Accounts panels are transient and never become harness sessions or saved logins in
-reload snapshots. `/login` and `/login <provider>` still open the native dialog in
-the current panel. Browser sign-in, device-code
+reload snapshots. `/login` and `/login <provider>` open the same dedicated Accounts
+panel, with an optional provider selected there. Browser sign-in, device-code
 sign-in, and API-key entries come from the SDK's capability-filtered shared provider
 catalog. The dialog has mouse-operated provider choices, browser launch, clipboard
 paste, completion, back, and cancel controls. It does not run login as an agent prompt.

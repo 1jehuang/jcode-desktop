@@ -2071,6 +2071,20 @@ impl Panel {
                         }
                         let echoed_images = images.clone();
                         if let Some(panel) = weak.upgrade() {
+                            // Login owns a separate, transient panel just like the
+                            // Accounts footer. Never cover the source conversation.
+                            if images.is_empty()
+                                && content.split_whitespace().next() == Some("/login")
+                            {
+                                _window.dispatch_action(
+                                    Box::new(crate::workspace::OpenAccounts {
+                                        source: panel.entity_id(),
+                                        login_command: Some(content),
+                                    }),
+                                    app,
+                                );
+                                return;
+                            }
                             panel.update(app, |this, cx| {
                                 if this.preview_state.is_some() {
                                     this.handle_preview_command(&content, cx);
@@ -4340,6 +4354,7 @@ impl Render for Panel {
                                     window.dispatch_action(
                                         Box::new(crate::workspace::OpenAccounts {
                                             source: cx.entity_id(),
+                                            login_command: None,
                                         }),
                                         cx,
                                     );
