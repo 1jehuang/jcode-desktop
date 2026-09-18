@@ -9225,11 +9225,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let files = vcx
-            .debug_bounds("sidebar-files-tab")
-            .expect("files tab paints in the sidebar");
-        vcx.simulate_click(files.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-files-tab");
         let source = vcx
             .debug_bounds("file-tree-main.rs")
             .expect("source file paints in the file tree");
@@ -9379,33 +9375,28 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_top_folder_tabs_join_their_content_when_clicked(cx: &mut gpui::TestAppContext) {
+    fn sidebar_section_menu_switches_pages_without_moving_content(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         vcx.run_until_parked();
+        let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+        let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+        let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         for (selector, view) in [
             ("sidebar-files-tab", SidebarView::Files),
             ("sidebar-accounts-tab", SidebarView::Accounts),
             ("sidebar-sessions-tab", SidebarView::Sessions),
         ] {
-            let tab = vcx.debug_bounds(selector).unwrap();
-            vcx.simulate_click(tab.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
+            click_sidebar_navigation(&workspace, vcx, selector);
             assert_eq!(workspace.read_with(vcx, |w, _| w.sidebar_view), view);
-            workspace.update(vcx, |w, cx| {
-                w.sidebar_roller.settle();
-                cx.notify();
-            });
-            vcx.run_until_parked();
             let selected = vcx.debug_bounds(selector).unwrap();
-            let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-            assert_eq!(
-                selected.bottom(),
-                body.top(),
-                "active tab must touch its sidebar page"
-            );
-            assert_eq!(selected.size.height, px(34.0));
-            assert!(vcx.debug_bounds("sidebar-roller-next").is_some());
+            assert!(selected.left() >= trigger.left() && selected.right() <= trigger.right());
+            assert_eq!(selected.center().x, trigger.center().x);
+            assert_eq!(vcx.debug_bounds("sidebar-section-trigger").unwrap(), trigger);
+            assert_eq!(vcx.debug_bounds("sidebar-tab-body").unwrap(), body);
+            assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
+            assert!(vcx.debug_bounds("sidebar-roller-next").is_none());
+            assert!(vcx.debug_bounds("sidebar-roller-previous").is_none());
         }
     }
 
@@ -9418,9 +9409,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("accounts-section").is_none());
         assert!(vcx.debug_bounds("accounts-empty").is_none());
-        let tab = vcx.debug_bounds("sidebar-accounts-tab").unwrap();
-        vcx.simulate_click(tab.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-accounts-tab");
         assert_eq!(
             workspace.read_with(vcx, |w, _| w.sidebar_view),
             SidebarView::Accounts
@@ -9443,9 +9432,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("accounts-section").is_some());
         assert!(vcx.debug_bounds("accounts-empty").is_none());
-        let tab = vcx.debug_bounds("sidebar-sessions-tab").unwrap();
-        vcx.simulate_click(tab.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-sessions-tab");
         assert!(vcx.debug_bounds("accounts-section").is_none());
         assert!(vcx.debug_bounds("sidebar-session-list").is_some());
     }
@@ -11198,21 +11185,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        for _ in 0..1 {
-            let previous = vcx.debug_bounds("sidebar-roller-previous").unwrap();
-            vcx.simulate_click(previous.center(), gpui::Modifiers::default());
-            workspace.update(vcx, |w, cx| {
-                w.sidebar_roller.settle();
-                cx.notify();
-            });
-            vcx.run_until_parked();
-        }
-
-        let button = vcx
-            .debug_bounds("sidebar-new-session")
-            .expect("the new-session button should have painted");
-        vcx.simulate_click(button.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-new-session");
 
         workspace.update(vcx, |workspace, _| {
             let coach = workspace.test_coach();
@@ -11289,25 +11262,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        for _ in 0..3 {
-            let previous = vcx.debug_bounds("sidebar-roller-previous").unwrap();
-            vcx.simulate_click(previous.center(), gpui::Modifiers::default());
-            workspace.update(vcx, |w, cx| {
-                w.sidebar_roller.settle();
-                cx.notify();
-            });
-            vcx.run_until_parked();
-        }
-
-        let button = vcx
-            .debug_bounds("open-gmail")
-            .expect("the Inbox button should have painted");
-        assert!(
-            f32::from(button.center().x) < SIDEBAR_WIDTH,
-            "the Inbox button should be inside the left sidebar"
-        );
-        vcx.simulate_click(button.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "open-gmail");
 
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(
@@ -13081,7 +13036,7 @@ mod tests {
         Theme::select(original);
     }
 
-    fn click_sidebar_navigation(
+    pub(super) fn click_sidebar_navigation(
         workspace: &Entity<Workspace>,
         cx: &mut gpui::VisualTestContext,
         selector: &'static str,
@@ -13089,24 +13044,30 @@ mod tests {
         if workspace.read_with(cx, |w, _| {
             w.layout_mode == crate::config::LayoutMode::FolderTabs
         }) {
-            for _ in 0..11 {
-                let tabs = cx.debug_bounds("sidebar-navigation-tabs").unwrap();
-                if let Some(tab) = cx.debug_bounds(selector)
-                    && (f32::from(tab.center().x - tabs.center().x)).abs() < 1.0
-                {
-                    cx.simulate_click(tab.center(), gpui::Modifiers::default());
-                    cx.run_until_parked();
-                    return;
-                }
-                let next = cx.debug_bounds("sidebar-roller-next").unwrap();
-                cx.simulate_click(next.center(), gpui::Modifiers::default());
-                workspace.update(cx, |w, cx| {
-                    w.sidebar_roller.settle();
-                    cx.notify();
-                });
-                cx.run_until_parked();
-            }
-            panic!("sidebar roller tab {selector} was not reachable");
+            let trigger = cx.debug_bounds("sidebar-section-trigger").unwrap();
+            cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            let menu = cx.debug_bounds("sidebar-section-menu").unwrap();
+            assert!(menu.top() >= trigger.bottom());
+            let expanded = Box::leak(format!("{selector}-expanded").into_boxed_str());
+            let option = cx
+                .debug_bounds(expanded)
+                .expect("menu option must be reachable");
+            assert!(option.left() >= menu.left() && option.right() <= menu.right());
+            assert!(
+                f32::from(option.center().x) < SIDEBAR_WIDTH,
+                "action stays inside the sidebar"
+            );
+            assert!(option.top() >= menu.top() && option.bottom() <= menu.bottom());
+            cx.simulate_click(option.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            // Page selection keeps the menu open until the pointer leaves it.
+            // Move into the canvas so subsequent clicks reach the sidebar body.
+            let canvas = cx.debug_bounds("workspace-canvas").unwrap();
+            cx.update(|window, cx| window.simulate_mouse_move(canvas.center(), cx));
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("sidebar-section-menu").is_none());
+            return;
         }
 
         // Use the real navigation scroll path so tabs beyond the narrow sidebar
