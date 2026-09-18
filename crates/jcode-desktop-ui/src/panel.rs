@@ -194,6 +194,8 @@ pub struct PanelSnapshot {
     pub stick_to_bottom: bool,
     pub terminal_resource_id: Option<u64>,
     #[serde(default)]
+    pub terminal_output_cursor: Option<u64>,
+    #[serde(default)]
     pub startup_layout: Option<StartupLayout>,
 }
 
@@ -1949,9 +1951,12 @@ impl Panel {
         bridge: Bridge,
         host: HostHandle,
         resource_id: Option<u64>,
+        replay_until: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let terminal = cx.new(|cx| TerminalPanel::new(working_dir.clone(), resource_id, host, cx));
+        let terminal = cx.new(|cx| {
+            TerminalPanel::new(working_dir.clone(), resource_id, replay_until, host, cx)
+        });
         let mut panel = Self::new(
             "terminal".into(),
             Some("terminal".into()),
@@ -2022,6 +2027,10 @@ impl Panel {
                 .terminal
                 .as_ref()
                 .and_then(|terminal| terminal.read(cx).resource_id()),
+            terminal_output_cursor: self
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.read(cx).output_cursor()),
         }
     }
 
@@ -3496,6 +3505,13 @@ impl Panel {
         } else {
             self.input.read(cx).focus_handle.clone()
         }
+    }
+
+    /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
+    pub fn terminal_debug_snapshot(&self, cx: &App) -> Option<serde_json::Value> {
+        self.terminal
+            .as_ref()
+            .map(|terminal| terminal.read(cx).debug_snapshot())
     }
 
     #[cfg(test)]

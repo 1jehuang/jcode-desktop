@@ -19,6 +19,12 @@ pub const ACTIVATE_STATE_INCOMPATIBLE: i32 = 2;
 pub const HOST_OK: i32 = 0;
 pub const HOST_FAILED: i32 = 1;
 
+/// Reply to the reserved `terminal_read(0, 0, empty)` capability probe.
+/// Real resource IDs start at one. Older hosts return a missing-resource reply
+/// with next_cursor=0, so a new UI can reload without restarting live PTYs.
+/// A matching host delegates terminal query replies to the UI engine.
+pub const TERMINAL_ENGINE_REPLIES: u64 = 0x4a43_5445_524d_0001;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerminalRead {
@@ -123,6 +129,10 @@ impl HostHandle {
                 output.len(),
             )
         }
+    }
+
+    pub fn terminal_engine_replies(self) -> bool {
+        self.terminal_read(0, 0, &mut []).next_cursor == TERMINAL_ENGINE_REPLIES
     }
 
     pub fn terminal_resize(self, id: u64, rows: u16, cols: u16) -> bool {

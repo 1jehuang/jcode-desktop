@@ -35,6 +35,7 @@ impl Workspace {
                             "session": slot.panel.read(cx).session_id,
                             "history_loaded": slot.panel.read(cx).history_loaded(),
                             "history_items": slot.panel.read(cx).items.len(),
+                            "terminal": slot.panel.read(cx).terminal_debug_snapshot(cx),
                             "width": slot.width_fraction,
                             "focused": focused == Some(index),
                             "closing": slot.closing,

@@ -3599,6 +3599,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "handterm-common"
+version = "0.1.0"
+source = "git+https://github.com/1jehuang/handterm?rev=559a6132b2fc24f1425efa2abb8d716c5730a4d0#559a6132b2fc24f1425efa2abb8d716c5730a4d0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "mdwright-latex",
+ "png 0.17.16",
+ "serde",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "harfrust"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4363,13 +4377,13 @@ dependencies = [
  "anyhow",
  "gpui",
  "gpui_platform",
+ "handterm-common",
  "jcode-desktop-api",
  "jcode-desktop-ui",
  "libc",
  "libloading",
  "portable-pty",
  "tempfile",
- "vt100",
 ]
 
 [[package]]
@@ -4394,6 +4408,7 @@ dependencies = [
  "flate2",
  "gpui",
  "gpui_platform",
+ "handterm-common",
  "hdrhistogram",
  "image",
  "jcode-base",
@@ -4417,7 +4432,6 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "unicode-segmentation",
- "vt100",
 ]
 
 [[package]]
@@ -5129,6 +5143,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "logos"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb2c55a318a87600ea870ff8c2012148b44bf18b74fad48d0f835c38c7d07c5f"
+dependencies = [
+ "logos-derive",
+]
+
+[[package]]
+name = "logos-codegen"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58b3ffaa284e1350d017a57d04ada118c4583cf260c8fb01e0fe28a2e9cf8970"
+dependencies = [
+ "fnv",
+ "proc-macro2",
+ "quote",
+ "regex-automata",
+ "regex-syntax",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "logos-derive"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52d3a9855747c17eaf4383823f135220716ab49bea5fbea7dd42cc9a92f8aa31"
+dependencies = [
+ "logos-codegen",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5277,6 +5323,17 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "mdwright-latex"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f0cbb1d26a0d205c963a29220d71e23133836ead2ac344896a86d95c204cfba"
+dependencies = [
+ "logos",
+ "unicode-normalization",
+ "unicode-width",
 ]
 
 [[package]]
@@ -9854,27 +9911,6 @@ checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
  "libc",
-]
-
-[[package]]
-name = "vt100"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "054ff75fb8fa83e609e685106df4faeffdf3a735d3c74ebce97ec557d5d36fd9"
-dependencies = [
- "itoa",
- "unicode-width",
- "vte",
-]
-
-[[package]]
-name = "vte"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
-dependencies = [
- "arrayvec",
- "memchr",
 ]
 
 [[package]]

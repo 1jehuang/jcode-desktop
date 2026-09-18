@@ -1234,12 +1234,14 @@ impl Workspace {
             } else if terminal {
                 let working_dir = panel_state.working_dir.clone();
                 let resource_id = panel_state.terminal_resource_id;
+                let replay_until = panel_state.terminal_output_cursor;
                 cx.new(|cx| {
                     Panel::new_terminal(
                         working_dir,
                         self.bridge.clone(),
                         self.host,
                         resource_id,
+                        replay_until,
                         cx,
                     )
                 })
@@ -2455,6 +2457,7 @@ impl Workspace {
                 default_working_dir(),
                 self.bridge.clone(),
                 self.host,
+                None,
                 None,
                 cx,
             )
@@ -7963,6 +7966,7 @@ mod tests {
                     scroll_y: -128.5,
                     stick_to_bottom: false,
                     terminal_resource_id: Some(42),
+                    terminal_output_cursor: Some(1234),
                     startup_layout: None,
                 },
                 row: 2,
@@ -7991,9 +7995,14 @@ mod tests {
 
         let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         legacy.as_object_mut().unwrap().remove("layout_mode");
+        legacy["slots"][0]["panel"]
+            .as_object_mut()
+            .unwrap()
+            .remove("terminal_output_cursor");
         let legacy = WorkspaceSnapshot::decode(&serde_json::to_vec(&legacy).unwrap())
             .expect("old workspace snapshot remains compatible");
         assert_eq!(legacy.layout_mode, crate::config::LayoutMode::FolderTabs);
+        assert_eq!(legacy.slots[0].panel.terminal_output_cursor, None);
     }
 
     #[test]
@@ -8165,6 +8174,7 @@ mod tests {
                             scroll_y: 0.0,
                             stick_to_bottom: true,
                             terminal_resource_id: None,
+                            terminal_output_cursor: None,
                             startup_layout: None,
                         },
                         row: 0,

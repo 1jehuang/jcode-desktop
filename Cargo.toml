@@ -47,8 +47,8 @@ gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
 
 [dev-dependencies]
+handterm-common = { git = "https://github.com/1jehuang/handterm", rev = "559a6132b2fc24f1425efa2abb8d716c5730a4d0" }
 gpui = { workspace = true, features = ["test-support"] }
-vt100 = "0.16"
 
 [profile.dev]
 opt-level = 0
@@ -125,7 +125,7 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.parking_lot_core]
 opt-level = 2
-[profile.dev.package.vt100]
+[profile.dev.package.handterm-common]
 opt-level = 2
 [profile.dev.package.unicode-segmentation]
 opt-level = 2

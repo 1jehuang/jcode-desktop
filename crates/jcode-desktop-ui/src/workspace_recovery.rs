@@ -130,11 +130,12 @@ fn restore(checkpoint: &Checkpoint, now: u64, alive: bool) -> Option<WorkspaceSn
     // Validate the workspace schema as strictly as the hot-reload boundary.
     let mut snapshot = WorkspaceSnapshot::decode(&checkpoint.snapshot.encode().ok()?).ok()?;
     for slot in &mut snapshot.slots {
-        // PTY resource handles belong to the dead host. Reopen the terminal in
-        // its directory instead of accidentally attaching an unrelated new PTY.
+        // PTY resource handles and output cursors belong to the dead host.
+        // Reopen in its directory without suppressing the new PTY's replies.
         if slot.panel.terminal_resource_id.take().is_some() {
             slot.panel.session_id = "terminal".into();
         }
+        slot.panel.terminal_output_cursor = None;
     }
     Some(snapshot)
 }
@@ -279,7 +280,7 @@ mod tests {
                     "selection_reversed": false, "history": [], "history_index": null,
                     "live_draft": "", "attachments": []},
                 "scroll_x": 0, "scroll_y": 0, "stick_to_bottom": true,
-                "terminal_resource_id": 42
+                "terminal_resource_id": 42, "terminal_output_cursor": 1234
             },
             "row": 1, "width_fraction": 0.5, "restore_fraction": null
         }]);
@@ -291,6 +292,7 @@ mod tests {
         };
         let restored = restore(&record, 110_000, false).unwrap();
         assert_eq!(restored.slots[0].panel.terminal_resource_id, None);
+        assert_eq!(restored.slots[0].panel.terminal_output_cursor, None);
         assert_eq!(restored.slots[0].panel.session_id, "terminal");
         assert_eq!(restored.slots[0].row, 1);
         assert_eq!(
@@ -301,6 +303,10 @@ mod tests {
             record.snapshot.slots[0].panel.terminal_resource_id,
             Some(42),
             "hot-reload snapshots remain untouched"
+        );
+        assert_eq!(
+            record.snapshot.slots[0].panel.terminal_output_cursor,
+            Some(1234)
         );
         record.snapshot.format_version = 999;
         assert!(restore(&record, 110_000, false).is_none());
