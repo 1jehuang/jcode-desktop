@@ -54,6 +54,7 @@ actions!(
         HistoryNext,
         Clear,
         Submit,
+        Queue,
     ]
 );
 
@@ -119,6 +120,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-home", Home, Some("PromptInput")),
         KeyBinding::new("ctrl-end", End, Some("PromptInput")),
         KeyBinding::new("enter", Submit, Some("PromptInput")),
+        KeyBinding::new("ctrl-enter", Queue, Some("PromptInput")),
     ]);
 }
 
@@ -144,16 +146,18 @@ pub struct PromptInput {
     /// thumbnail. The index keeps simultaneous attachments independent.
     attachment_preview: Option<paste_preview::Preview>,
     preview_panel_bounds: paste_preview::MeasuredBounds,
-    on_submit: Box<dyn Fn(String, Vec<(String, String)>, &mut Window, &mut App)>,
+    on_submit: Box<dyn Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App)>,
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
+    command_completion: bool,
     command_selection: usize,
     model_logo_providers: HashMap<String, String>,
     model_details: HashMap<String, model_menu::ModelDetails>,
     current_model: Option<String>,
     command_scroll: gpui::ScrollHandle,
     command_layout_key: Option<(SharedString, usize, usize, gpui::Size<Pixels>)>,
+    command_entrance: jcode_desktop_motion::MenuEntrance,
     editor_scroll: gpui::ScrollHandle,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
     submission_enabled: bool,
@@ -354,6 +358,16 @@ impl PromptInput {
         placeholder: impl Into<SharedString>,
         on_submit: impl Fn(String, Vec<(String, String)>, &mut Window, &mut App) + 'static,
     ) -> Self {
+        Self::new_with_queue(cx, placeholder, move |text, images, _, window, cx| {
+            on_submit(text, images, window, cx)
+        })
+    }
+
+    pub(crate) fn new_with_queue(
+        cx: &mut Context<Self>,
+        placeholder: impl Into<SharedString>,
+        on_submit: impl Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
@@ -378,12 +392,14 @@ impl PromptInput {
             on_change: None,
             on_overlay_cancel: None,
             command_models: Vec::new(),
+            command_completion: true,
             command_selection: 0,
             model_logo_providers: HashMap::new(),
             model_details: HashMap::new(),
             current_model: None,
             command_scroll: gpui::ScrollHandle::new(),
             command_layout_key: None,
+            command_entrance: jcode_desktop_motion::MenuEntrance::default(),
             editor_scroll: gpui::ScrollHandle::new(),
             revealed_caret: None,
             submission_enabled: true,
@@ -396,6 +412,12 @@ impl PromptInput {
             self.spacious = spacious;
             cx.notify();
         }
+    }
+
+    /// Plain metadata editors should not interpret titles as slash commands.
+    pub(crate) fn without_command_completion(mut self) -> Self {
+        self.command_completion = false;
+        self
     }
 
     pub fn with_on_change(mut self, on_change: impl Fn(&str, &mut App) + 'static) -> Self {
@@ -488,6 +510,9 @@ impl PromptInput {
     }
 
     fn command_suggestions(&self) -> Vec<CommandSuggestion> {
+        if !self.command_completion {
+            return Vec::new();
+        }
         let now = model_menu::now_unix_secs();
         command_suggestions(&self.content, &self.command_models)
             .into_iter()
@@ -511,6 +536,14 @@ impl PromptInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_prompt(false, window, cx);
+    }
+
+    fn queue(&mut self, _: &Queue, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_prompt(true, window, cx);
+    }
+
+    fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.submission_enabled {
             return;
         }
@@ -519,7 +552,7 @@ impl PromptInput {
         if content.is_empty() && self.attachments.is_empty() {
             return;
         }
-        if self.attachments.is_empty() {
+        if self.command_completion && self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
             if raw_content.trim_start().starts_with("/model ") && suggestions.is_empty() {
                 return;
@@ -551,7 +584,7 @@ impl PromptInput {
         self.history_index = None;
         self.live_draft.clear();
         self.command_selection = 0;
-        (self.on_submit)(content, images, window, cx);
+        (self.on_submit)(content, images, queued, window, cx);
         cx.notify();
     }
 
@@ -1396,6 +1429,19 @@ impl Render for PromptInput {
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
         }
+        let command_visible = self.command_completion
+            && (!suggestions.is_empty() || self.content.trim_start().starts_with("/model "));
+        let menu_duration = jcode_desktop_motion::policy(
+            crate::transition::Transition::Menu,
+            crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
+        )
+        .duration;
+        let menu_progress =
+            self.command_entrance
+                .update(command_visible, Instant::now(), menu_duration);
+        if self.command_entrance.is_animating() {
+            window.request_animation_frame();
+        }
         let command_selection = self.command_selection;
         let command_layout_key = (!suggestions.is_empty()).then(|| {
             (
@@ -1482,7 +1528,7 @@ impl Render for PromptInput {
             .track_focus(&self.focus_handle(cx))
             .relative()
             .when(
-                !suggestions.is_empty() || self.content.trim_start().starts_with("/model "),
+                command_visible,
                 |el| {
                     el.child(
                         div()
@@ -1492,7 +1538,8 @@ impl Render for PromptInput {
                             .left_0()
                             .right_0()
                             .bottom_full()
-                            .mb_1()
+                            .mb(px(4.0 + 6.0 * (1.0 - menu_progress)))
+                            .opacity(0.65 + 0.35 * menu_progress)
                             .flex()
                             .flex_col()
                             .rounded_lg()
@@ -1742,6 +1789,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::queue))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -2038,6 +2086,53 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ctrl_enter_preserves_images_and_respects_empty_and_disabled_input(cx: &mut TestAppContext) {
+        let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = submitted.clone();
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            PromptInput::new_with_queue(cx, "test", move |text, images, queued, _, _| {
+                seen.lock().unwrap().push((text, images, queued));
+            })
+        });
+        vcx.update(|window, cx| {
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+        });
+        vcx.simulate_keystrokes("ctrl-enter");
+        assert!(submitted.lock().unwrap().is_empty());
+        input.update(vcx, |input, cx| {
+            input.attachments.push(Attachment {
+                media_type: "image/png".into(),
+                encoded: "cG5n".into(),
+                label: "4×3".into(),
+                preview: preview_image("image/png", Vec::new()).unwrap(),
+                bounds: Default::default(),
+            });
+            input.set_submission_enabled(false, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-enter");
+        assert!(submitted.lock().unwrap().is_empty());
+        input.update(vcx, |input, cx| {
+            assert_eq!(input.attachments.len(), 1);
+            input.set_submission_enabled(true, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-enter");
+        assert_eq!(
+            &*submitted.lock().unwrap(),
+            &[(
+                "[image]".into(),
+                vec![("image/png".into(), "cG5n".into())],
+                true
+            )]
+        );
+        input.read_with(vcx, |input, _| {
+            assert!(input.attachments.is_empty());
+            assert_eq!(input.visual_line_count, 1);
+            assert_eq!(input.history, vec!["[image]"]);
+        });
+    }
+
+    #[gpui::test]
     fn history_and_escape_dispatch_through_the_real_keymap(cx: &mut TestAppContext) {
         let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = submitted.clone();
@@ -2071,9 +2166,8 @@ mod tests {
 
     #[gpui::test]
     fn composer_editor_has_no_prompt_prefix_in_compact_or_spacious_mode(cx: &mut TestAppContext) {
-        let (input, vcx) = cx.add_window_view(|_, cx| {
-            PromptInput::new(cx, "Type something…", |_, _, _, _| {})
-        });
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "Type something…", |_, _, _, _| {}));
         for spacious in [false, true] {
             input.update(vcx, |input, cx| {
                 input.spacious = spacious;

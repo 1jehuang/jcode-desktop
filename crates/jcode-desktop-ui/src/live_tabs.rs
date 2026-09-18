@@ -34,6 +34,17 @@ struct TabGeometry {
     height: f32,
 }
 
+/// A quiet chip uses only existing air to the right of every tab.
+fn coach_chip_left(available: f32, current: &[TabGeometry], target: &[TabGeometry]) -> Option<f32> {
+    let right = current
+        .iter()
+        .chain(target)
+        .map(|tab| tab.left + tab.width)
+        .fold(0.0_f32, f32::max);
+    let left = available - notifications::COACH_CHIP_WIDTH - 8.0;
+    (left >= right + 16.0).then_some(left)
+}
+
 impl TabLayout {
     /// Keep each workspace together, with the active workspace taking priority.
     /// `rows` is in workspace/session navigation order, including an empty
@@ -298,6 +309,7 @@ impl Workspace {
     pub(super) fn render_workspace_bar(
         &mut self,
         canvas_width: f32,
+        coach_progress: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -306,6 +318,7 @@ impl Workspace {
         } else {
             0.0
         };
+        let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
             // Closing surfaces stay mounted for their fade, but their tabs
@@ -350,6 +363,20 @@ impl Workspace {
             transition::policy(Transition::Focus).duration,
             Instant::now(),
         );
+        // Never reserve width or squeeze the tabs for a hint. Check both the
+        // current and destination geometry so an incoming tab cannot cross it.
+        let coach_left = coach_chip_left(available, &geometry, &layout);
+        if coach_left.is_none() {
+            self.coach.hover_hint(false, learning::now());
+        }
+        let coach_chip = coach_left.and_then(|left| {
+            self.coach_display_hint
+                .as_ref()
+                .filter(|_| coach_progress > 0.0)
+                .map(|hint| {
+                    self.render_coach_chip(hint, coach_progress, TAB_STATUS_WIDTH + left, cx)
+                })
+        });
         let mut tabs = div()
             .id("live-session-tabs")
             .debug_selector(|| "live-session-tabs".into())
@@ -433,10 +460,95 @@ impl Workspace {
                             .truncate()
                             .child(title.clone()),
                     )
+                    .when(focused && can_rename && visible >= 88.0, |el| {
+                        el.child(
+                            div()
+                                .id("rename-session-button")
+                                .debug_selector(|| "rename-session-button".into())
+                                .flex_none()
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .text_size(px(14.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .opacity(0.0)
+                                .group_hover("live-session-tab", |style| style.opacity(1.0))
+                                .hover(|style| {
+                                    style
+                                        .bg(Theme::global().PANEL_BG)
+                                        .text_color(Theme::global().TEXT)
+                                })
+                                .cursor_pointer()
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| TabTooltip("Rename session (F2)".into())).into()
+                                })
+                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.rename_session(&RenameSession, window, cx);
+                                }))
+                                .child(
+                                    gpui::svg()
+                                        .data(include_bytes!("../../../assets/icons/pencil.svg"))
+                                        .size(px(12.0))
+                                        .text_color(Theme::global().TEXT_DIM),
+                                ),
+                        )
+                    })
+                    .when(index.is_some() && visible >= 88.0, |el| {
+                        let index = index.unwrap();
+                        el.child(
+                            div()
+                                .id(("close-session-button", index))
+                                .debug_selector(move || format!("close-session-button-{index}"))
+                                .flex_none()
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .text_size(px(16.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .opacity(0.0)
+                                .group_hover("live-session-tab", |style| style.opacity(1.0))
+                                .hover(|style| {
+                                    style
+                                        .bg(Theme::global().ERROR_BG)
+                                        .text_color(Theme::global().ERROR)
+                                })
+                                .cursor_pointer()
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        TabTooltip(if cfg!(target_os = "macos") {
+                                            "Close tab (⌘Q)".into()
+                                        } else {
+                                            "Close tab (Super+Q)".into()
+                                        })
+                                    })
+                                    .into()
+                                })
+                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.set_active(index, cx);
+                                    this.close_panel(&ClosePanel, window, cx);
+                                }))
+                                .child("×"),
+                        )
+                    })
                 });
             tabs = tabs.child(
                 div()
                     .id(("workspace-session", index.unwrap_or(usize::MAX)))
+                    .group("live-session-tab")
                     .debug_selector(move || match index {
                         Some(index) => format!("live-session-tab-{index}"),
                         None => "live-session-empty-tab".into(),
@@ -590,6 +702,7 @@ impl Workspace {
                     ),
             )
             .child(tabs)
+            .children(coach_chip)
             .child(
                 div()
                     .id("tab-new-session")
@@ -610,7 +723,16 @@ impl Workspace {
                         el.bg(Theme::global().PANEL_BG)
                             .text_color(Theme::global().TEXT)
                     })
-                    .tooltip(|_, cx| cx.new(|_| TabTooltip("New session".into())).into())
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            TabTooltip(if cfg!(target_os = "macos") {
+                                "New session (⌘N)".into()
+                            } else {
+                                "New session (Super+N)".into()
+                            })
+                        })
+                        .into()
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -652,7 +774,8 @@ impl Workspace {
                         // Build the host's action rather than passing a UI-generation
                         // Rust type across the hot-reload boundary. The host snapshots
                         // the workspace before removing its native window.
-                        if let Ok(action) = cx.build_action("jcode_desktop_host::CloseWindow", None) {
+                        if let Ok(action) = cx.build_action("jcode_desktop_host::CloseWindow", None)
+                        {
                             window.dispatch_action(action, cx);
                         }
                     })
@@ -661,6 +784,10 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "live_tab_actions_tests.rs"]
+mod action_tests;
 
 #[cfg(test)]
 mod tests {
@@ -700,6 +827,25 @@ mod tests {
             assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
         }
         assert_eq!(requests.get(), 3);
+    }
+
+    #[test]
+    fn coaching_chip_never_claims_current_or_incoming_tab_space() {
+        let left = TabGeometry {
+            left: 100.0,
+            width: 200.0,
+            height: 32.0,
+        };
+        let right = TabGeometry {
+            left: 600.0,
+            ..left
+        };
+        assert_eq!(coach_chip_left(1000.0, &[left], &[left]), Some(692.0));
+        assert_eq!(coach_chip_left(1000.0, &[left], &[right]), None);
+        assert_eq!(coach_chip_left(1000.0, &[right], &[left]), None);
+        for available in [0.0, 240.0, 400.0, 600.0] {
+            assert_eq!(coach_chip_left(available, &[left], &[left]), None);
+        }
     }
 
     #[test]
@@ -1314,12 +1460,12 @@ mod tests {
                     w.resolve_camera_target(1200.0);
                     w.camera_x[0] = w.camera_target[0];
                     let before_camera = w.camera_target[0];
-                    let _ = w.render_workspace_bar(1200.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
                     w.live_tabs.settle();
                     let closed_id = w.slots[initial].panel.entity_id().as_u64();
                     w.close_panel(&ClosePanel, window, cx);
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
                     assert_eq!(w.slots.len(), 5, "surface is still fading");
                     assert_eq!(w.live_tabs.tabs.len(), 4);
                     assert!(!w.live_tabs.tabs.contains_key(&closed_id));
@@ -1341,7 +1487,7 @@ mod tests {
                         cx,
                     );
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
                     assert_eq!(w.slots.len(), 4);
                     assert_eq!(w.camera_target[0], camera, "no second camera move");
                     for (id, tab) in &w.live_tabs.tabs {
@@ -1373,7 +1519,7 @@ mod tests {
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.close_panel(&ClosePanel, window, cx);
-                let _ = w.render_workspace_bar(1200.0, window, cx);
+                let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert!(w.live_tabs.hit_targets.is_empty());
                 assert_eq!(w.live_tabs.tabs.len(), 1);

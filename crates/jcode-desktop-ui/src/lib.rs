@@ -3,6 +3,7 @@
 mod accounts;
 mod ack;
 mod build_info;
+mod changelog;
 mod clipboard_image;
 mod commands;
 mod config;
@@ -16,9 +17,9 @@ mod harness;
 mod html_preview;
 mod image_cache;
 mod input;
-pub mod login_input;
 mod learning;
 mod live_profile;
+pub mod login_input;
 mod markdown;
 mod native_mermaid;
 #[cfg(test)]
@@ -37,6 +38,7 @@ mod text_selection;
 mod theme;
 pub mod todoist;
 mod transition;
+mod update_notes;
 mod updates;
 mod workspace;
 
@@ -128,6 +130,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-o", ToggleOverview, None),
         KeyBinding::new("super-/", ToggleHints, None),
         KeyBinding::new("f1", ToggleHints, None),
+        KeyBinding::new("f2", workspace::RenameSession, None),
         KeyBinding::new("alt-9", workspace::ToggleOnboardingSimulator, None),
         KeyBinding::new("super-shift-s", ToggleShowcase, None),
         KeyBinding::new("super-shift-t", CycleTheme, None),
@@ -242,6 +245,12 @@ unsafe extern "C-unwind" fn activate(
             window.replace_root(app, |window, cx| Workspace::new(window, cx, host, snapshot));
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
+            let fixture = harness::screenshot_mode();
+            let changelog_enabled =
+                !fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some();
+            if changelog_enabled && changelog::should_open(snapshot_len != 0) {
+                workspace.open_changelog(&workspace::OpenChangelog, window, cx);
+            }
         });
         workspace::recovery::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup

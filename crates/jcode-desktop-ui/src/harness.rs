@@ -104,7 +104,9 @@ pub enum Command {
     /// Final UI handle dropped. Stop workers, including their SSH transports.
     Shutdown,
     RefreshSessions,
-    RefreshRuntime { session_id: String },
+    RefreshRuntime {
+        session_id: String,
+    },
     CreateSession {
         working_dir: Option<String>,
         request_id: Option<String>,
@@ -514,9 +516,12 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                 });
             }
             Command::RefreshRuntime { session_id } => {
-                send_to_session_worker(&mut workers, session_id, SessionCommand::RefreshRuntime, |session_id| {
-                    spawn_session_worker(session_id, &updates)
-                });
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RefreshRuntime,
+                    |session_id| spawn_session_worker(session_id, &updates),
+                );
             }
             Command::SessionOperation {
                 session_id,
@@ -1249,8 +1254,10 @@ fn session_worker_with_connector(
                             let _ = updates.send(Update::Event {
                                 session_id: session_id.clone(),
                                 event: ApiEvent::RuntimeInfo {
-                                    session_id: session_id.clone(), provider: info.provider,
-                                    model: info.model, routes: info.routes,
+                                    session_id: session_id.clone(),
+                                    provider: info.provider,
+                                    model: info.model,
+                                    routes: info.routes,
                                     reasoning_effort: info.reasoning_effort,
                                 },
                             });
@@ -1400,7 +1407,8 @@ fn session_worker_with_connector(
                         continuation_message,
                         turn_active || !unaccepted_sends.is_empty(),
                     ) {
-                        if let Err(error) = client.send_system_reminder(real_id, continuation_message)
+                        if let Err(error) =
+                            client.send_system_reminder(real_id, continuation_message)
                         {
                             recovery.finish_submission();
                             let _ = updates.send(Update::CommandFailed {
@@ -1703,7 +1711,10 @@ mod tests {
                 _ => panic!("unexpected event"),
             }));
         }
-        assert_eq!(received, (0..1000).map(|i| i.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            received,
+            (0..1000).map(|i| i.to_string()).collect::<Vec<_>>()
+        );
         assert!(bridge.drain_up_to(128).is_empty());
         drop(updates);
         assert!(bridge.drain_up_to(128).is_empty());

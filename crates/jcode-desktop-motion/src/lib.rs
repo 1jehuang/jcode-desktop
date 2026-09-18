@@ -29,6 +29,10 @@ pub enum Transition {
     Transcript,
     PromptDelivery,
     ToolArrival,
+    /// Floating drawers fade and slide without changing the workspace layout.
+    Overlay,
+    /// Command menus enter gently, but dismiss immediately to avoid stale targets.
+    Menu,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +48,17 @@ pub struct Policy {
     pub duration: Duration,
 }
 
-pub const POLICIES: [Policy; 15] = [
+pub const POLICIES: [Policy; 17] = [
+    Policy {
+        transition: Transition::Overlay,
+        motion: Motion::Animate,
+        duration: MODAL_DURATION,
+    },
+    Policy {
+        transition: Transition::Menu,
+        motion: Motion::Animate,
+        duration: STANDARD_DURATION,
+    },
     Policy {
         transition: Transition::Focus,
         motion: Motion::Animate,
@@ -220,6 +234,42 @@ pub fn arrival_motion(started_at: Instant, now: Instant, duration: Duration) -> 
     (6.0 * (1.0 - eased), 0.55 + 0.45 * eased, true)
 }
 
+/// Entrance-only motion for live menus. Filtering and selection do not restart
+/// the animation. Closing removes obsolete click targets immediately, and a
+/// subsequent opening starts a fresh entrance. No timer is needed while idle.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MenuEntrance {
+    visible: bool,
+    started: Option<Instant>,
+}
+
+impl MenuEntrance {
+    pub fn update(&mut self, visible: bool, now: Instant, duration: Duration) -> f32 {
+        if !visible {
+            self.visible = false;
+            self.started = None;
+            return 0.0;
+        }
+        if !self.visible {
+            self.started = Some(now);
+        }
+        self.visible = true;
+        let Some(started) = self.started else {
+            return 1.0;
+        };
+        let elapsed = now.saturating_duration_since(started);
+        if duration.is_zero() || elapsed >= duration {
+            self.started = None;
+            return 1.0;
+        }
+        ease_out_cubic(elapsed.as_secs_f32() / duration.as_secs_f32())
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.started.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +292,8 @@ mod tests {
             Transition::Transcript,
             Transition::PromptDelivery,
             Transition::ToolArrival,
+            Transition::Overlay,
+            Transition::Menu,
         ];
         for transition in all {
             assert_eq!(
@@ -288,5 +340,37 @@ mod tests {
             policy(Transition::Transcript, true).duration,
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn menu_entrance_filters_without_restart_and_closes_immediately() {
+        let start = Instant::now();
+        let duration = policy(Transition::Menu, false).duration;
+        let mut menu = MenuEntrance::default();
+        assert_eq!(menu.update(false, start, duration), 0.0);
+        assert!(!menu.is_animating());
+        assert_eq!(menu.update(true, start, duration), 0.0);
+        let middle = menu.update(true, start + duration / 2, duration);
+        assert!(middle > 0.0 && middle < 1.0);
+        assert_eq!(menu.update(true, start + duration, duration), 1.0);
+        assert!(!menu.is_animating());
+        assert_eq!(menu.update(true, start + duration * 2, duration), 1.0);
+        assert_eq!(menu.update(false, start + duration * 2, duration), 0.0);
+        assert!(!menu.is_animating());
+        assert_eq!(menu.update(true, start + duration * 3, duration), 0.0);
+        assert!(menu.is_animating());
+    }
+
+    #[test]
+    fn menu_entrance_reduced_motion_settles_even_mid_flight() {
+        let start = Instant::now();
+        let mut menu = MenuEntrance::default();
+        menu.update(true, start, STANDARD_DURATION);
+        assert_eq!(menu.update(true, start, Duration::ZERO), 1.0);
+        assert!(!menu.is_animating());
+        assert_eq!(menu.update(true, start, STANDARD_DURATION), 1.0);
+        menu.update(false, start, Duration::ZERO);
+        assert_eq!(menu.update(true, start, Duration::ZERO), 1.0);
+        assert!(!menu.is_animating());
     }
 }

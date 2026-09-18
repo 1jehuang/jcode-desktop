@@ -25,6 +25,10 @@ impl Panel {
                         data: String::new(),
                         label: Some("Mermaid diagram".into()),
                         preview: Some(preview),
+                        source: jcode_sdk::RenderedImageSource::Other {
+                            role: "assistant".into(),
+                        },
+                        anchor: None,
                     },
                     window,
                     cx,
@@ -479,7 +483,9 @@ mod tests {
         let panned = panel.read_with(vcx, |panel, _| panel.image_preview_scroll.offset());
         assert!(panned.x < offset.x && panned.y < offset.y);
 
-        for (selector, expected_zoom) in [("image-preview-fit", 1.0), ("image-preview-zoom-in", 1.5)] {
+        for (selector, expected_zoom) in
+            [("image-preview-fit", 1.0), ("image-preview-zoom-in", 1.5)]
+        {
             let button = vcx.debug_bounds(selector).unwrap();
             vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();

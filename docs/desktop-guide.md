@@ -15,6 +15,17 @@ and how to add independently testable states.
 
 ## New panel shortcuts
 
+On **macOS**, **Control+Command+I (⌃⌘I)** globally brings Jcode Desktop forward,
+including when minimized or after closing its window with the red traffic light.
+Reopening restores the workspace rather than creating a new session. The shortcut
+belongs to the main app, survives UI hot reloads, and does not change Command+J's
+workspace navigation. It needs no Accessibility permission. If another app owns
+the chord, Desktop logs the registration failure and continues opening normally.
+Open Desktop once to enable it. Fully quitting the app unregisters the shortcut,
+so launching after a full Quit requires an external macOS Shortcuts launcher.
+See [macOS shortcut and window lifecycle](macos-global-shortcut.md) for
+close/reopen behavior and verification details.
+
 These shortcuts use the default machine selected under **Machines**. When the
 default is remote, new session panels start in that machine's home directory.
 The local directory behavior below applies when **This computer** is the default.

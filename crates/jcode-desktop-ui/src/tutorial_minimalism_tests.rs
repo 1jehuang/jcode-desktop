@@ -4,7 +4,7 @@ use super::*;
 
 #[gpui::test]
 fn tutorial_minimalism_measurement(cx: &mut gpui::TestAppContext) {
-    let (_workspace, vcx) = cx.add_window_view(|_, cx| {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
         workspace.push_test_panel("Previous prompt", cx);
         workspace
@@ -15,7 +15,9 @@ fn tutorial_minimalism_measurement(cx: &mut gpui::TestAppContext) {
         vcx.run_until_parked();
         let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
         let default_guides = vcx.debug_bounds("tutorial-guides");
-        let tab = vcx.debug_bounds("sidebar-learn-tab");
+        let tab = vcx
+            .debug_bounds("sidebar-view-trigger")
+            .or_else(|| vcx.debug_bounds("sidebar-learn-tab"));
         let controls = [
             "tutorial-nav-left",
             "tutorial-nav-down",
@@ -36,18 +38,15 @@ fn tutorial_minimalism_measurement(cx: &mut gpui::TestAppContext) {
                 .unwrap_or(0.0),
             tab.is_some(),
         );
-        if let Some(tab) = tab {
-            vcx.simulate_click(tab.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
+        if tab.is_some() {
+            tests::click_sidebar_navigation(&workspace, vcx, "sidebar-learn-tab");
             let guide = vcx.debug_bounds("tutorial-guides").unwrap();
             assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
             assert!(guide.right() <= canvas.left());
             println!(
                 "MINIMAL_UI_OPEN width={width} canvas_unchanged=true tutorial_outside_canvas=true"
             );
-            let chat = vcx.debug_bounds("sidebar-sessions-tab").unwrap();
-            vcx.simulate_click(chat.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
+            tests::click_sidebar_navigation(&workspace, vcx, "sidebar-sessions-tab");
         }
     }
 }

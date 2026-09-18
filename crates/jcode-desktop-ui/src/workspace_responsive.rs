@@ -19,6 +19,12 @@ pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
     }
 }
 
+/// Drawer dismissal is immediate: retaining sidebar controls would intercept
+/// input, while dropping only the children would flash an empty closing shell.
+/// GPUI has no inert subtree API, so this live navigation surface deliberately
+/// uses entrance-only motion. Every reopen starts a fresh bounded entrance.
+pub(super) type VisibilityMotion = jcode_desktop_motion::MenuEntrance;
+
 struct RailTooltip(gpui::SharedString);
 
 impl Render for RailTooltip {
@@ -152,9 +158,12 @@ impl Workspace {
     pub(super) fn render_compact_sidebar_overlay(
         &mut self,
         fullscreen: bool,
+        progress: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let offset = -SIDEBAR_WIDTH * (1.0 - progress);
         div()
+            .opacity(progress)
             .absolute()
             .top_0()
             .bottom_0()
@@ -181,7 +190,7 @@ impl Workspace {
             .child(
                 div()
                     .absolute()
-                    .left_0()
+                    .left(px(offset))
                     .top_0()
                     .bottom_0()
                     .w(px(SIDEBAR_WIDTH))
@@ -196,7 +205,7 @@ impl Workspace {
                     .id("compact-sidebar-close")
                     .debug_selector(|| "compact-sidebar-close".into())
                     .absolute()
-                    .left(px(SIDEBAR_WIDTH + 8.0))
+                    .left(px(SIDEBAR_WIDTH + 8.0 + offset))
                     .top(px(10.0))
                     .size(px(36.0))
                     .rounded_md()
@@ -223,6 +232,42 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawer_entrance_has_intermediate_frames_and_bounded_idle() {
+        let mut motion = VisibilityMotion::default();
+        let now = Instant::now();
+        let duration = std::time::Duration::from_millis(180);
+        assert_eq!(motion.update(false, now, duration), 0.0);
+        assert!(!motion.is_animating());
+        assert_eq!(motion.update(true, now, duration), 0.0);
+        let midway = motion.update(true, now + duration / 2, duration);
+        assert!(midway > 0.0 && midway < 1.0);
+        assert_eq!(motion.update(true, now + duration, duration), 1.0);
+        assert!(!motion.is_animating());
+        assert_eq!(motion.update(true, now + duration * 5, duration), 1.0);
+        assert!(!motion.is_animating());
+    }
+
+    #[test]
+    fn drawer_dismissal_is_immediate_and_reopen_starts_fresh() {
+        let mut motion = VisibilityMotion::default();
+        let now = Instant::now();
+        let duration = std::time::Duration::from_millis(180);
+        motion.update(true, now, duration);
+        assert!(motion.update(true, now + duration / 2, duration) > 0.0);
+        assert_eq!(motion.update(false, now + duration / 2, duration), 0.0);
+        assert!(!motion.is_animating());
+        assert_eq!(motion.update(true, now + duration / 2, duration), 0.0);
+        assert!(motion.is_animating());
+        assert_eq!(
+            motion.update(true, now + duration / 2, std::time::Duration::ZERO),
+            1.0
+        );
+        assert!(!motion.is_animating());
+        assert_eq!(motion.update(false, now, std::time::Duration::ZERO), 0.0);
+        assert!(!motion.is_animating());
+    }
 
     #[gpui::test]
     fn resize_prioritizes_one_chat_and_restores_width_presets(cx: &mut gpui::TestAppContext) {
@@ -291,6 +336,40 @@ mod tests {
     }
 
     #[gpui::test]
+    fn reduced_motion_drawer_snaps_and_dismissal_restores_input(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Draft", cx);
+            w
+        });
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        let toggle = vcx.debug_bounds("compact-sidebar-toggle").unwrap();
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(vcx.debug_bounds("sidebar").unwrap().left(), px(0.0));
+        workspace.read_with(vcx, |w, _| {
+            assert!(w.compact_sidebar_open);
+            assert!(!w.compact_sidebar_motion.is_animating());
+        });
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("compact-sidebar-overlay").is_none());
+        vcx.simulate_input("Input restored");
+        workspace.read_with(vcx, |w, cx| {
+            assert!(!w.compact_sidebar_open);
+            assert!(!w.compact_sidebar_motion.is_animating());
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "Input restored"
+            );
+        });
+    }
+
+    #[gpui::test]
     fn compact_sidebar_opens_without_reflow_and_escape_preserves_draft(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -318,6 +397,14 @@ mod tests {
             let toggle = vcx.debug_bounds("compact-sidebar-toggle").unwrap();
             vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
+            // Settle deterministically without a wall-clock sleep. The first
+            // frame still exercises the real entrance geometry.
+            workspace.update(vcx, |w, cx| {
+                w.compact_sidebar_motion
+                    .update(true, Instant::now(), std::time::Duration::ZERO);
+                cx.notify();
+            });
+            vcx.run_until_parked();
             assert!(vcx.debug_bounds("sidebar").is_some());
             assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), before);
             match dismiss {
@@ -337,6 +424,7 @@ mod tests {
             );
             workspace.read_with(vcx, |w, cx| {
                 assert!(!w.compact_sidebar_open);
+                assert!(!w.compact_sidebar_motion.is_animating());
                 assert_eq!(
                     w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
                     "Keep this draft"

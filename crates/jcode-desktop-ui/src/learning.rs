@@ -452,6 +452,7 @@ pub struct Coach {
     traces: HashMap<String, Trace>,
     /// The hint currently on screen.
     active: Option<Hint>,
+    hint_paused_at: Option<Seconds>,
     /// Skill whose hint was shown most recently, awaiting a use or a decline.
     pending_credit: Option<(&'static str, Seconds)>,
     last_hint_at: Option<Seconds>,
@@ -477,6 +478,7 @@ impl Coach {
         Self {
             traces: HashMap::new(),
             active: None,
+            hint_paused_at: None,
             pending_credit: None,
             last_hint_at: None,
             hints_this_session: 0,
@@ -534,7 +536,7 @@ impl Coach {
             self.pending_credit = None;
             // Taking the advice retires the hint without counting as a decline.
             if self.active.as_ref().is_some_and(|h| h.skill_id == skill_id) {
-                self.active = None;
+                self.dismiss_hint();
             }
         }
         let evidence = if prompted {
@@ -656,6 +658,7 @@ impl Coach {
     fn show(&mut self, skill: &'static Skill, now: Seconds) {
         // An unanswered previous hint was not taken up.
         self.decline_pending(now);
+        self.hint_paused_at = None;
         self.active = Some(Hint {
             skill_id: skill.id,
             keys: skill.keys,
@@ -683,7 +686,7 @@ impl Coach {
     /// hint whose window has closed was not acted on.
     pub fn active_hint(&mut self, now: Seconds) -> Option<Hint> {
         if let Some(hint) = &self.active
-            && hint.remaining_seconds(now) == 0
+            && hint.remaining_seconds(self.hint_paused_at.unwrap_or(now)) == 0
         {
             self.active = None;
         }
@@ -699,6 +702,20 @@ impl Coach {
     /// Dismiss the visible hint without judging it either way.
     pub fn dismiss_hint(&mut self) {
         self.active = None;
+        self.hint_paused_at = None;
+    }
+
+    /// Hovering offers time to read without extending the learning credit window.
+    pub fn hover_hint(&mut self, hovered: bool, now: Seconds) {
+        if hovered {
+            if self.active_hint(now).is_some() && self.hint_paused_at.is_none() {
+                self.hint_paused_at = Some(now);
+            }
+        } else if let Some(paused_at) = self.hint_paused_at.take() {
+            if let Some(hint) = &mut self.active {
+                hint.shown_at += now.saturating_sub(paused_at);
+            }
+        }
     }
 
     /// The skill currently being taught, without touching expiry. For
@@ -919,6 +936,31 @@ mod tests {
     use super::*;
 
     const DAY: Seconds = 86_400;
+
+    #[test]
+    fn hovered_hint_pauses_then_resumes_remaining_lifetime() {
+        let mut coach = Coach::new();
+        coach.used_slow_path("new_panel", 100);
+        coach.hover_hint(true, 103);
+        coach.hover_hint(true, 105); // Repeated hover notifications cannot reset it.
+        assert!(coach.active_hint(130).is_some());
+        coach.hover_hint(false, 130);
+        assert!(coach.active_hint(135).is_some());
+        assert!(coach.active_hint(136).is_none());
+    }
+
+    #[test]
+    fn dismissed_hovered_hint_cannot_be_revived_or_pause_next_hint() {
+        let mut coach = Coach::new();
+        coach.used_slow_path("new_panel", 100);
+        coach.hover_hint(true, 103);
+        coach.dismiss_hint();
+        coach.hover_hint(false, 130);
+        assert!(coach.active_hint(130).is_none());
+        coach.used_slow_path("new_panel", 1000);
+        assert!(coach.active_hint(1000).is_some());
+        assert!(coach.active_hint(1009).is_none());
+    }
 
     #[test]
     fn catalog_prerequisites_all_resolve() {

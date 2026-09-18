@@ -29,41 +29,43 @@ mod activity;
 #[path = "panel_scroll_motion.rs"]
 mod scroll_motion;
 use scroll_motion::WheelGlide;
-#[cfg(test)]
-#[path = "panel_scroll_momentum_tests.rs"]
-mod scroll_momentum_tests;
 #[path = "panel_diff.rs"]
 mod diff_review;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_preview.rs"]
 mod image_preview;
-#[path = "panel_preview.rs"]
-mod preview;
-#[path = "panel_login.rs"]
-mod login;
 #[path = "panel_latest.rs"]
 mod latest;
+#[path = "panel_login.rs"]
+mod login;
+#[path = "panel_preview.rs"]
+mod preview;
+#[path = "panel_prompt.rs"]
+mod prompt;
+#[path = "panel_queue.rs"]
+mod queue;
+#[path = "panel_recovery.rs"]
+mod recovery;
+#[cfg(test)]
+#[path = "panel_scroll_momentum_tests.rs"]
+mod scroll_momentum_tests;
+#[path = "panel_startup.rs"]
+mod startup;
 #[cfg(test)]
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
-#[path = "panel_recovery.rs"]
-mod recovery;
-#[path = "panel_prompt.rs"]
-mod prompt;
-#[path = "panel_startup.rs"]
-mod startup;
 pub use startup::StartupLayout;
+#[path = "panel_response_stats.rs"]
+mod response_stats;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
-#[path = "panel_response_stats.rs"]
-mod response_stats;
-#[path = "panel_voice.rs"]
-mod voice;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
+#[path = "panel_voice.rs"]
+mod voice;
 
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
@@ -159,6 +161,8 @@ pub struct TranscriptImage {
     data: String,
     label: Option<String>,
     preview: Option<Arc<gpui::Image>>,
+    source: jcode_sdk::RenderedImageSource,
+    anchor: Option<jcode_sdk::RenderedImageAnchor>,
 }
 
 impl TranscriptImage {
@@ -177,16 +181,31 @@ impl TranscriptImage {
             data,
             label,
             preview,
+            source: jcode_sdk::RenderedImageSource::UserInput,
+            anchor: None,
         }
     }
 
     fn from_rendered(image: jcode_sdk::RenderedImage) -> Self {
-        Self::new(image.media_type, image.data, image.label)
+        let mut transcript = Self::new(image.media_type, image.data, image.label);
+        transcript.source = image.source;
+        transcript.anchor = image.anchor;
+        transcript
+    }
+
+    fn model_input_caption(&self) -> Option<&'static str> {
+        matches!(
+            self.source,
+            jcode_sdk::RenderedImageSource::ToolResult { .. }
+        )
+        .then_some("Image provided to model")
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default)]
+    pub prompt_queue: queue::PromptQueue,
     pub session_id: String,
     pub title: String,
     pub working_dir: Option<String>,
@@ -238,6 +257,7 @@ pub struct Panel {
     voice: voice::VoiceState,
     image_preview: Option<TranscriptImage>,
     diff_review: Option<diff_review::DiffReview>,
+    edit_previews: diff_review::EditPreviews,
     image_preview_zoom: f32,
     image_preview_scroll: gpui::ScrollHandle,
     image_preview_drag: Option<gpui::Point<gpui::Pixels>>,
@@ -250,6 +270,7 @@ pub struct Panel {
     offscreen_prompt: Option<usize>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
+    changelog_view: crate::update_notes::View,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -264,6 +285,7 @@ pub struct Panel {
     history_loaded: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
+    prompt_queue: queue::PromptQueue,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
@@ -562,7 +584,16 @@ async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<Gmai
     Ok(GmailMessageDetail { summary, to, body })
 }
 
+#[path = "panel_changelog.rs"]
+mod changelog_panel;
+
 impl Panel {
+    pub(crate) const CHANGELOG_SESSION_ID: &str = "desktop://changelog";
+
+    pub(crate) fn is_changelog(&self) -> bool {
+        self.session_id == Self::CHANGELOG_SESSION_ID
+    }
+
     pub(crate) fn tab_activity(&self) -> Option<gpui::AnyView> {
         self.activity_active()
             .then(|| self.tab_emoji.clone().into())
@@ -579,6 +610,7 @@ impl Panel {
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
         self.is_default_directory()
             || self.is_machines()
+            || self.is_changelog()
             || self.is_change_review()
             || self.is_accounts_panel()
             || self.code_file.is_some()
@@ -675,7 +707,7 @@ impl Panel {
             panel.transcript_measurements.dirty = true;
             cx.notify();
         })
-            .detach();
+        .detach();
         // The panel owns this ListState. A strong entity in its persistent
         // callback would keep the panel and its transcript alive after close
         // or hot reload, even when no window references it anymore.
@@ -728,6 +760,7 @@ impl Panel {
             voice: voice::VoiceState::default(),
             image_preview: None,
             diff_review: None,
+            edit_previews: diff_review::EditPreviews::default(),
             image_preview_zoom: 1.0,
             image_preview_scroll: gpui::ScrollHandle::new(),
             image_preview_drag: None,
@@ -740,6 +773,7 @@ impl Panel {
             offscreen_prompt: None,
             pinned_todo_expanded: false,
             transcript_selection,
+            changelog_view: crate::update_notes::View::Latest,
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
@@ -750,6 +784,7 @@ impl Panel {
             preview_state: None,
             history_loaded: false,
             expanded_tools: HashSet::new(),
+            prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
@@ -779,7 +814,9 @@ impl Panel {
         if !pixels.is_finite() || pixels == 0.0 {
             return;
         }
-        self.flicker_diagnostics.borrow_mut().scroll_input(pixels, precise);
+        self.flicker_diagnostics
+            .borrow_mut()
+            .scroll_input(pixels, precise);
         if crate::config::get().appearance.reduce_motion || cx.reduce_motion() {
             self.scroll_transcript_direct(-pixels, cx);
             return;
@@ -817,9 +854,11 @@ impl Panel {
         let current = self.transcript_list.scroll_px_offset_for_scrollbar();
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, current.y + px(delta_y)));
-        self.flicker_diagnostics.borrow_mut().scroll_applied(f32::from(
-            current.y - self.transcript_list.scroll_px_offset_for_scrollbar().y,
-        ));
+        self.flicker_diagnostics
+            .borrow_mut()
+            .scroll_applied(f32::from(
+                current.y - self.transcript_list.scroll_px_offset_for_scrollbar().y,
+            ));
         cx.notify();
     }
 
@@ -868,7 +907,9 @@ impl Panel {
         let target = (f32::from(current.y) - step).clamp(-max, 0.0);
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, px(target)));
-        self.flicker_diagnostics.borrow_mut().scroll_applied(f32::from(current.y) - target);
+        self.flicker_diagnostics
+            .borrow_mut()
+            .scroll_applied(f32::from(current.y) - target);
         // Discard travel into an edge instead of accumulating invisible debt.
         if (step < 0.0 && target >= 0.0) || (step > 0.0 && target <= -max) {
             self.transcript_wheel_glide.remaining = 0.0;
@@ -1963,9 +2004,8 @@ impl Panel {
         replay_until: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let terminal = cx.new(|cx| {
-            TerminalPanel::new(working_dir.clone(), resource_id, replay_until, host, cx)
-        });
+        let terminal = cx
+            .new(|cx| TerminalPanel::new(working_dir.clone(), resource_id, replay_until, host, cx));
         let mut panel = Self::new(
             "terminal".into(),
             Some("terminal".into()),
@@ -1983,6 +2023,7 @@ impl Panel {
             && !self.is_machines()
             && !self.is_change_review()
             && !self.is_accounts_panel()
+            && !self.is_changelog()
             && self.terminal.is_none()
             && self.code_file.is_none()
             && self.session_id != "unfinished-work"
@@ -2021,6 +2062,7 @@ impl Panel {
     pub fn snapshot(&self, cx: &App) -> PanelSnapshot {
         let offset = self.transcript_list.scroll_px_offset_for_scrollbar();
         PanelSnapshot {
+            prompt_queue: self.prompt_queue.clone(),
             session_id: self.session_id.clone(),
             title: self.title.to_string(),
             working_dir: self.working_dir.clone(),
@@ -2044,6 +2086,7 @@ impl Panel {
     }
 
     pub fn restore_snapshot(&mut self, snapshot: PanelSnapshot, cx: &mut Context<Self>) {
+        self.prompt_queue = snapshot.prompt_queue;
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
         self.stick_to_bottom = snapshot.stick_to_bottom;
@@ -2061,14 +2104,13 @@ impl Panel {
     pub fn connect_input(panel: &Entity<Panel>, cx: &mut App) {
         let weak = panel.downgrade();
         panel.update(cx, |this, cx| {
-            let bridge = this.bridge.clone();
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
             this.input = cx.new(|cx| {
-                PromptInput::new(
+                PromptInput::new_with_queue(
                     cx,
                     "Type something…",
-                    move |content, images, _window, app| {
+                    move |content, images, queued, _window, app| {
                         if images.is_empty()
                             && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
                         {
@@ -2078,7 +2120,10 @@ impl Panel {
                             );
                             return;
                         }
-                        let echoed_images = images.clone();
+                        if images.is_empty() && content.trim() == "/changelog" {
+                            _window.dispatch_action(Box::new(crate::workspace::OpenChangelog), app);
+                            return;
+                        }
                         if let Some(panel) = weak.upgrade() {
                             // Login owns a separate, transient panel just like the
                             // Accounts footer. Never cover the source conversation.
@@ -2102,33 +2147,7 @@ impl Panel {
                                 if images.is_empty() && this.handle_slash_command(&content, cx) {
                                     return;
                                 }
-                                bridge.send(Command::Send {
-                                    session_id: this.session_id.clone(),
-                                    content: content.clone(),
-                                    images,
-                                });
-                                if !this.items.iter().any(|item| matches!(item, Item::User(_)))
-                                    && custom_session_title(&this.session_id, this.title.as_ref())
-                                        .is_none()
-                                    && let Some(title) = first_prompt_title(&content)
-                                {
-                                    this.title = title.into();
-                                }
-                                if let Some(layout) = &mut this.startup_layout {
-                                    layout.committed = true;
-                                }
-                                let index = this.items.len();
-                                this.items.push(Item::User(content));
-                                this.items.extend(echoed_images.into_iter().map(
-                                    |(media_type, data)| {
-                                        Item::Image(TranscriptImage::new(media_type, data, None))
-                                    },
-                                ));
-                                this.pending_users.push_back(index);
-                                crate::sounds::play(crate::sounds::Cue::Sent, cx);
-                                this.stick_to_bottom = true;
-                                this.transcript_list.scroll_to_end();
-                                cx.notify();
+                                this.submit_or_queue(content, images, queued, cx);
                             });
                         }
                     },
@@ -2175,6 +2194,7 @@ impl Panel {
                                         session_id: this.session_id.clone(),
                                     });
                                 }
+                                this.prompt_queue.paused = true;
                                 this.sound_events.cancel();
                                 this.finish_response();
                                 handled = true;
@@ -2451,7 +2471,9 @@ impl Panel {
     }
 
     fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
-        if self.preview_state.is_some() { return; }
+        if self.preview_state.is_some() {
+            return;
+        }
         self.bridge.send(Command::SessionOperation {
             session_id: self.session_id.clone(),
             operation,
@@ -2528,8 +2550,18 @@ impl Panel {
             self.startup_layout = None;
         }
         let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
+        let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
         for image in images {
+            if let Some(index) = image.history_message_index {
+                // The boundary counts protocol messages, including hidden tool
+                // rows, rather than visible desktop transcript items.
+                images_by_message
+                    .entry(index.min(messages.len()))
+                    .or_default()
+                    .push(image);
+                continue;
+            }
             match &image.anchor {
                 Some(jcode_sdk::RenderedImageAnchor::UserPrompt { ordinal }) => {
                     images_by_prompt.entry(*ordinal).or_default().push(image);
@@ -2539,7 +2571,15 @@ impl Panel {
         }
         let mut items = Vec::with_capacity(messages.len() + trailing_images.len());
         let mut user_ordinal = 0;
-        for message in messages {
+        let message_count = messages.len();
+        for (index, message) in messages.into_iter().enumerate() {
+            if let Some(images) = images_by_message.remove(&index) {
+                items.extend(
+                    images
+                        .into_iter()
+                        .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
+                );
+            }
             match message.role.as_str() {
                 "user" => {
                     items.push(Item::User(message.content));
@@ -2565,6 +2605,9 @@ impl Panel {
                 }
                 _ => {}
             }
+        }
+        if let Some(images) = images_by_message.remove(&message_count) {
+            trailing_images.splice(0..0, images);
         }
         for images in images_by_prompt.into_values() {
             trailing_images.extend(images);
@@ -2632,10 +2675,14 @@ impl Panel {
         // Streaming appends only affect the live suffix. Keep a conservative
         // full invalidation for tools, status transitions, images and errors.
         // Metadata-only events still repaint chrome without discarding heights.
-        if !matches!(event,
-            ApiEvent::TextDelta { .. } | ApiEvent::ReasoningDelta { .. }
-                | ApiEvent::TokenUsage { .. } | ApiEvent::ModelInfo { .. }
-                | ApiEvent::RuntimeInfo { .. } | ApiEvent::SessionRenamed { .. }
+        if !matches!(
+            event,
+            ApiEvent::TextDelta { .. }
+                | ApiEvent::ReasoningDelta { .. }
+                | ApiEvent::TokenUsage { .. }
+                | ApiEvent::ModelInfo { .. }
+                | ApiEvent::RuntimeInfo { .. }
+                | ApiEvent::SessionRenamed { .. }
         ) {
             self.transcript_measurements.dirty = true;
         }
@@ -2810,12 +2857,13 @@ impl Panel {
                 cache_creation_input,
                 ..
             } => {
-                self.context_tokens = Some(jcode_base::compaction::effective_context_tokens_from_usage(
-                    self.provider.as_deref().unwrap_or_default(),
-                    *input,
-                    *cache_read_input,
-                    *cache_creation_input,
-                ));
+                self.context_tokens =
+                    Some(jcode_base::compaction::effective_context_tokens_from_usage(
+                        self.provider.as_deref().unwrap_or_default(),
+                        *input,
+                        *cache_read_input,
+                        *cache_creation_input,
+                    ));
             }
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
@@ -2826,6 +2874,7 @@ impl Panel {
             }
             _ => {}
         }
+        self.observe_prompt_queue(event, cx);
         // Follow only during render, after pending user input. Installing an
         // end sentinel here replaces the painted scroll position before layout,
         // so an intervening upward wheel delta is clamped back to the bottom.
@@ -2874,7 +2923,8 @@ impl Panel {
     fn insert_rendered_image(&mut self, image: jcode_sdk::RenderedImage) {
         if self.items.iter().any(|item| {
             matches!(item, Item::Image(existing)
-                if existing.media_type == image.media_type && existing.data == image.data)
+                if existing.anchor == image.anchor && existing.source == image.source
+                    && existing.media_type == image.media_type && existing.data == image.data)
         }) {
             return;
         }
@@ -2883,10 +2933,35 @@ impl Panel {
                 .items
                 .iter()
                 .rposition(|item| matches!(item, Item::Tool { call_id, .. } if call_id == id))
-                .map(|index| index + 1),
+                .map(|index| {
+                    // A batch may return several images. Preserve their order
+                    // instead of inserting each one directly after the tool.
+                    index + 1
+                        + self.items[index + 1..]
+                            .iter()
+                            .take_while(|item| {
+                                matches!(item, Item::Image(existing) if existing.anchor == image.anchor)
+                            })
+                            .count()
+                }),
             _ => None,
+        };
+        let insertion = insertion.unwrap_or_else(|| {
+            // Unanchored images still belong after already-streamed text,
+            // not before it when the stream is eventually flushed.
+            self.flush_reasoning();
+            self.flush_streaming();
+            self.items.len()
+        });
+        for index in &mut self.pending_users {
+            if *index >= insertion {
+                *index += 1;
+            }
         }
-        .unwrap_or(self.items.len());
+        self.accepted_users = std::mem::take(&mut self.accepted_users)
+            .into_iter()
+            .map(|(index, at)| (index + usize::from(index >= insertion), at))
+            .collect();
         self.items.insert(
             insertion,
             Item::Image(TranscriptImage::from_rendered(image)),
@@ -2950,6 +3025,7 @@ impl Panel {
     }
 
     pub fn message_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.prompt_queue.paused = true;
         self.sound_events.cancel();
         if self.preview_state.is_none() {
             crate::sounds::play(crate::sounds::Cue::Error, cx);
@@ -3155,7 +3231,7 @@ impl Panel {
                 let label = image
                     .label
                     .clone()
-                    .unwrap_or_else(|| "image read by model".to_string());
+                    .unwrap_or_else(|| "Image attachment".to_string());
                 div()
                     .id(("transcript-image", index))
                     .debug_selector(|| "transcript-image".into())
@@ -3166,6 +3242,15 @@ impl Panel {
                     .rounded_md()
                     .p_2()
                     .bg(Theme::global().USER_BG)
+                    .when_some(image.model_input_caption(), |el, caption| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "image-model-input".into())
+                                .text_size(px(11.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child(caption),
+                        )
+                    })
                     .when(image.preview.is_some(), |el| {
                         el.cursor_pointer()
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -3343,7 +3428,7 @@ impl Panel {
                         .into_any_element();
                 }
                 if let Some(preview) =
-                    self.render_edit_metadata(name, input, *done, error.as_deref(), cx)
+                    self.render_edit_metadata(call_id, name, input, *done, error.as_deref(), cx)
                 {
                     return div()
                         .id(("tool", index))
@@ -3518,6 +3603,7 @@ impl Panel {
         } else if let Some(terminal) = &self.terminal {
             terminal.read(cx).focus_handle(cx)
         } else if self.unfinished_work.is_some()
+            || self.is_changelog()
             || self.code_file.is_some()
             || self.gmail_inbox.is_some()
         {
@@ -3582,6 +3668,9 @@ impl Render for Panel {
         self.schedule_transcript_wheel_frame(window, cx);
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
+        if self.is_changelog() {
+            return self.render_changelog(window, cx);
+        }
         if self.is_accounts_panel() {
             return div()
                 .debug_selector(|| "accounts-panel".into())
@@ -3841,13 +3930,18 @@ impl Render for Panel {
             .latest_todo_payload()
             .filter(|payload| !payload.todos.is_empty());
         let rows = Arc::new(self.transcript_render_rows());
-        let prompt_rows: Vec<(usize, usize)> = rows.iter().enumerate().filter_map(|(row, entry)| {
-            match entry.source {
+        let prompt_rows: Vec<(usize, usize)> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row, entry)| match entry.source {
                 TranscriptRowSource::Settled(index)
-                    if prompt::is_pinnable_prompt(&self.items[index]) => Some((row, index)),
+                    if prompt::is_pinnable_prompt(&self.items[index]) =>
+                {
+                    Some((row, index))
+                }
                 _ => None,
-            }
-        }).collect();
+            })
+            .collect();
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
         let row_count = rows.len() + usize::from(self.activity_active());
@@ -3993,14 +4087,13 @@ impl Render for Panel {
                                         };
                                         matches!(previous, Item::Tool { .. })
                                     });
-                                let top_padding =
-                                    if matches!(item, Item::ResponseStats(_)) {
-                                        2.0
-                                    } else if matches!(item, Item::Tool { .. }) && follows_tool {
-                                        2.0
-                                    } else {
-                                        10.0
-                                    };
+                                let top_padding = if matches!(item, Item::ResponseStats(_)) {
+                                    2.0
+                                } else if matches!(item, Item::Tool { .. }) && follows_tool {
+                                    2.0
+                                } else {
+                                    10.0
+                                };
                                 let element = panel.render_item(row.index, item, window, cx);
                                 let element = if row.show_label && !matches!(item, Item::User(_)) {
                                     role_caption(row.role.unwrap_or(""), element)
@@ -4159,7 +4252,9 @@ impl Render for Panel {
                         div()
                             .id("pinned-todo-expanded-scroll")
                             .debug_selector(|| "pinned-todo-expanded".into())
-                            .max_h(px((f32::from(window.viewport_size().height) * 0.25).min(240.)))
+                            .max_h(px(
+                                (f32::from(window.viewport_size().height) * 0.25).min(240.)
+                            ))
                             .overflow_y_scroll()
                             .child(render_todo_card(&payload))
                             .into_any_element()
@@ -4193,7 +4288,9 @@ impl Render for Panel {
                                         // Fresh/startup editors live inside this body. Let
                                         // their own scroll containers receive wheel events.
                                         if input_bounds.get().is_some_and(
-                                            |bounds: gpui::Bounds<gpui::Pixels>| bounds.contains(&event.position),
+                                            |bounds: gpui::Bounds<gpui::Pixels>| {
+                                                bounds.contains(&event.position)
+                                            },
                                         ) {
                                             return;
                                         }
@@ -4402,6 +4499,7 @@ impl Render for Panel {
             )
             .children(self.render_voice_status(cx))
             .children(self.render_preview_badge(cx))
+            .children(self.render_prompt_queue(cx))
             // Input
             .when(!fresh_session && self.startup_layout.is_none(), |el| {
                 el.child(
@@ -4441,17 +4539,19 @@ impl Render for Panel {
     }
 }
 
-/// Unnamed session tabs use a friendly label instead of an internal session ID.
+/// Session tabs and sidebar rows share one label, never an internal session ID.
 pub(crate) fn folder_session_title(session_id: &str, title: &str) -> SharedString {
     custom_session_title(session_id, title)
         .unwrap_or("New session")
-        .to_owned()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .into()
 }
 
 fn custom_session_title<'a>(session_id: &str, title: &'a str) -> Option<&'a str> {
     let title = title.trim();
-    (!title.is_empty() && title != short_id(session_id)).then_some(title)
+    (!title.is_empty() && title != session_id && title != short_id(session_id)).then_some(title)
 }
 
 /// Give a new conversation an immediate, useful label while the agent is still
@@ -4669,10 +4769,7 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
     }
 }
 
-fn context_usage_label(
-    model: Option<&str>,
-    context_tokens: Option<u64>,
-) -> Option<String> {
+fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(used) = context_tokens {
         match model.and_then(context_window_for_model) {
@@ -5242,6 +5339,9 @@ mod fresh_session_tests;
 #[cfg(test)]
 #[path = "panel_image_flicker_tests.rs"]
 mod image_flicker_tests;
+#[cfg(test)]
+#[path = "panel_image_transcript_tests.rs"]
+mod image_transcript_tests;
 #[cfg(test)]
 #[path = "panel_startup_lifecycle_tests.rs"]
 mod startup_lifecycle_tests;
@@ -6882,7 +6982,13 @@ mod tests {
                 Some("original text not found"),
                 true,
             ),
-            ("edit", r#"{"intent":"Clarify navigation","file_path":"# , false, None, false),
+            (
+                "edit",
+                r#"{"intent":"Clarify navigation","file_path":"#,
+                false,
+                None,
+                false,
+            ),
         ] {
             panel.update(vcx, |panel, cx| {
                 panel.items = vec![Item::Tool {
@@ -6899,12 +7005,28 @@ mod tests {
             assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
             assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
             if preview {
-                let card = vcx.debug_bounds("edit-preview-card-0").expect("edit card paints");
-                for selector in ["tool-inline", "tool-header", "tool-output-size", "tool-detail"] {
-                    assert!(vcx.debug_bounds(selector).is_none(), "no duplicate {selector}");
+                let card = vcx
+                    .debug_bounds("edit-preview-card-0")
+                    .expect("edit card paints");
+                for selector in [
+                    "tool-inline",
+                    "tool-header",
+                    "tool-output-size",
+                    "tool-detail",
+                ] {
+                    assert!(
+                        vcx.debug_bounds(selector).is_none(),
+                        "no duplicate {selector}"
+                    );
                 }
-                for selector in ["edit-preview-intent-0", "edit-preview-footer-0", "tool-error"] {
-                    if selector == "tool-error" && error.is_none() { continue; }
+                for selector in [
+                    "edit-preview-intent-0",
+                    "edit-preview-footer-0",
+                    "tool-error",
+                ] {
+                    if selector == "tool-error" && error.is_none() {
+                        continue;
+                    }
                     let content = vcx.debug_bounds(selector).expect("card content paints");
                     assert!(content.origin.x >= card.origin.x);
                     assert!(content.right() <= card.right());
@@ -7962,7 +8084,12 @@ Goals: []"#,
             payload.todos = (0..count)
                 .map(|index| TodoCardItem {
                     content: format!("Task {index}"),
-                    status: if index % 2 == 0 { "completed" } else { "pending" }.into(),
+                    status: if index % 2 == 0 {
+                        "completed"
+                    } else {
+                        "pending"
+                    }
+                    .into(),
                     group: None,
                     blocked_by: vec![],
                 })
@@ -8179,9 +8306,27 @@ fn demo_items() -> Vec<Item> {
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("image")
     {
+        let mut image = image_preview::fixture_image();
+        image.source = jcode_sdk::RenderedImageSource::ToolResult {
+            tool_name: "read".into(),
+        };
+        image.anchor = Some(jcode_sdk::RenderedImageAnchor::ToolCall {
+            id: "read-chart".into(),
+        });
         return vec![
-            Item::User("Click this chart to see it larger.".into()),
-            Item::Image(image_preview::fixture_image()),
+            Item::User("Read this chart and tell me what it shows.".into()),
+            Item::Tool {
+                call_id: "read-chart".into(),
+                name: "read".into(),
+                input: r#"{"file_path":"chart.png","intent":"Read the chart"}"#.into(),
+                output: "Image loaded".into(),
+                done: true,
+                error: None,
+            },
+            Item::Image(image),
+            Item::Assistant(
+                "The chart compares three bars. Click the image above to see it larger.".into(),
+            ),
         ];
     }
     if crate::harness::screenshot_mode()

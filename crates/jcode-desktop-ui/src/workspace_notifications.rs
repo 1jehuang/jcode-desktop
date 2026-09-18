@@ -2,6 +2,30 @@
 //! a tip, so clicking its text never unexpectedly changes the workspace below.
 use super::*;
 
+const SHOWCASE_PRESS: Duration = Duration::from_millis(160);
+pub(super) const SHOWCASE_FADE: Duration = Duration::from_millis(280);
+
+/// A short press acknowledgement, a quiet reading interval, then a soft exit.
+/// The pulse restarts even when the same shortcut is pressed repeatedly.
+fn showcase_motion(elapsed: Duration, reduce_motion: bool) -> (f32, f32, bool) {
+    if reduce_motion {
+        return (1.0, 0.0, false);
+    }
+    let press = 1.0
+        - transition::ease_out_cubic(
+            (elapsed.as_secs_f32() / SHOWCASE_PRESS.as_secs_f32()).min(1.0),
+        );
+    let fade_start = SHOWCASE_DURATION - SHOWCASE_FADE;
+    let fade =
+        (elapsed.saturating_sub(fade_start).as_secs_f32() / SHOWCASE_FADE.as_secs_f32()).min(1.0);
+    let opacity = (1.0 - 0.15 * press) * (1.0 - fade * fade * (3.0 - 2.0 * fade));
+    (
+        opacity,
+        press,
+        elapsed < SHOWCASE_PRESS || (elapsed >= fade_start && elapsed < SHOWCASE_DURATION),
+    )
+}
+
 fn key_label(key: &str) -> String {
     match key.to_ascii_lowercase().as_str() {
         "super" => if cfg!(target_os = "macos") {
@@ -84,8 +108,48 @@ fn compact_coach_keys(keys: &str) -> String {
     keys.to_owned()
 }
 
-pub(super) fn coach_strip_height(compact: bool) -> f32 {
-    if compact { 80.0 } else { 56.0 }
+pub(super) const COACH_CHIP_WIDTH: f32 = 300.0;
+
+fn chip_keys(keys: &str) -> String {
+    compact_coach_keys(keys)
+        .split_whitespace()
+        .map(|part| {
+            if matches!(part, "/" | "..") {
+                part.to_owned()
+            } else {
+                part.split('-').map(key_label).collect::<Vec<_>>().join("+")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+struct CoachDetails(learning::Hint);
+
+impl Render for CoachDetails {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global();
+        div()
+            .debug_selector(|| "coach-details".into())
+            .max_w(px(360.0))
+            .p_3()
+            .rounded_md()
+            .bg(theme.PANEL_BG)
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
+            .text_size(px(12.0))
+            .text_color(theme.TEXT)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.0.label)
+            .child(shortcut_keys(&self.0.keys))
+            .child(
+                div()
+                    .text_color(theme.TEXT_DIM)
+                    .child(self.0.because.clone()),
+            )
+    }
 }
 
 fn coach_visual(skill: &str) -> (&'static str, &'static str) {
@@ -107,154 +171,91 @@ fn coach_visual(skill: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Tiny panel silhouettes keep the action visual without a paragraph of copy.
-fn coach_diagram(skill: &str, symbol: &'static str) -> gpui::AnyElement {
-    let theme = Theme::global();
-    let vertical = matches!(skill, "focus_up_down" | "move_panel_strip");
-    let sizing = matches!(skill, "cycle_width" | "maximize" | "width_presets");
-    div()
-        .debug_selector(|| "coach-diagram".into())
-        .w(px(60.0))
-        .h(px(34.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(3.0))
-        .when(vertical, |el| el.flex_col())
-        .children((0..3).map(|index| {
-            let active = if skill == "focus_first_last" {
-                index != 1
-            } else {
-                index == 1
-            };
-            div()
-                .w(px(if vertical {
-                    28.0
-                } else if sizing && index == 1 {
-                    28.0
-                } else {
-                    16.0
-                }))
-                .h(px(if vertical { 9.0 } else { 28.0 }))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(3.0))
-                .border_1()
-                .border_color(if active {
-                    theme.ACCENT.opacity(0.7)
-                } else {
-                    theme.PANEL_BORDER
-                })
-                .bg(if active {
-                    theme.ACCENT.opacity(0.12)
-                } else {
-                    theme.HEADER_BG
-                })
-                .text_size(px(if vertical { 10.0 } else { 14.0 }))
-                .text_color(theme.ACCENT)
-                .when(index == 1, |el| el.child(symbol))
-        }))
-        .into_any_element()
-}
-
 impl Workspace {
-    pub(super) fn render_coach_toast(
+    pub(super) fn render_coach_chip(
         &self,
         hint: &learning::Hint,
         progress: f32,
-        compact: bool,
+        left: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
-        let now = learning::now();
-        let (label, symbol) = coach_visual(hint.skill_id);
-        let label = if label == "Shortcut" { hint.label } else { label };
+        let (label, _) = coach_visual(hint.skill_id);
+        let label = if label == "Shortcut" {
+            hint.label
+        } else {
+            label
+        };
+        let slide = if transition::policy(Transition::Coach).duration.is_zero() {
+            0.0
+        } else {
+            -6.0 * (1.0 - progress)
+        };
         div()
             .id("coach-toast")
             .debug_selector(|| "coach-toast".into())
-            .occlude()
-            .w_full()
-            .h(px(coach_strip_height(compact)))
-            .flex_none()
-            .min_w_0()
-            .overflow_hidden()
+            .absolute()
+            .left(px(left))
+            .top(px(2.0 + slide))
+            .w(px(COACH_CHIP_WIDTH))
+            .h(px(28.0))
+            .rounded_md()
+            .bg(theme.PANEL_BG.opacity(0.65))
             .opacity(progress)
-            .border_t_1()
-            .border_color(theme.PANEL_BORDER)
-            .bg(theme.PANEL_BG)
-            .px(px(12.0))
+            .occlude()
+            .px(px(8.0))
             .flex()
             .items_center()
-            .gap(px(12.0))
-            .child(coach_diagram(hint.skill_id, symbol))
+            .gap(px(8.0))
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.coach.hover_hint(*hovered, learning::now());
+                this.after_coach_update(cx);
+            }))
+            .tooltip({
+                let hint = hint.clone();
+                move |_, cx| cx.new(|_| CoachDetails(hint.clone())).into()
+            })
             .child(
                 div()
-                    .min_w_0()
+                    .debug_selector(|| "coach-title".into())
                     .flex_1()
-                    .flex()
-                    .when(compact, |el| el.flex_col().items_start())
-                    .when(!compact, |el| el.items_center())
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .debug_selector(|| "coach-title".into())
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "coach-keys".into())
-                            .child(shortcut_keys(&compact_coach_keys(hint.keys))),
-                    ),
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.0))
+                    .text_color(theme.TEXT_DIM)
+                    .child(label),
             )
             .child(
                 div()
-                    .debug_selector(|| "coach-countdown".into())
-                    .w(px(28.0))
+                    .debug_selector(|| "coach-keys".into())
                     .flex_none()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(4.0))
                     .font_family(theme.FONT_MONO)
-                    .text_size(px(11.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child(format!("{}s", hint.remaining_seconds(now)))
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(2.0))
-                            .rounded_full()
-                            .bg(theme.PANEL_BORDER)
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(gpui::relative(hint.remaining_fraction(now)))
-                                    .bg(theme.ACCENT),
-                            ),
-                    ),
+                    .text_size(px(10.0))
+                    .text_color(theme.TEXT)
+                    .child(chip_keys(hint.keys)),
             )
             .child(
                 div()
                     .id("coach-dismiss")
                     .debug_selector(|| "coach-dismiss".into())
-                    .size(px(28.0))
+                    .size(px(20.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(6.0))
+                    .rounded(px(4.0))
                     .cursor_pointer()
-                    .text_size(px(18.0))
+                    .text_size(px(14.0))
                     .text_color(theme.TEXT_DIM)
                     .hover(|s| s.bg(theme.HEADER_BG).text_color(theme.TEXT))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
+                        cx.listener(|this, _, window, cx| {
+                            window.prevent_default();
                             cx.stop_propagation();
                             this.dismiss_coach_hint(cx);
                         }),
@@ -264,15 +265,29 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(super) fn render_showcase_cue(&self, cue: &ShowcaseCue) -> gpui::AnyElement {
+    pub(super) fn render_showcase_cue(
+        &self,
+        cue: &ShowcaseCue,
+        window: &mut Window,
+    ) -> gpui::AnyElement {
         let theme = Theme::global();
+        let (opacity, press, animating) = cue.started_at.map_or((1.0, 0.0, false), |start| {
+            showcase_motion(
+                start.elapsed(),
+                crate::config::get().appearance.reduce_motion,
+            )
+        });
+        if animating {
+            window.request_animation_frame();
+        }
         div()
             .id("showcase-shortcut")
             .debug_selector(|| "showcase-shortcut".into())
             .absolute()
             .left(px(16.0))
             .right(px(16.0))
-            .bottom(px(56.0))
+            .bottom(px(56.0 - 4.0 * press))
+            .opacity(opacity)
             .flex()
             .justify_center()
             .child(
@@ -291,7 +306,7 @@ impl Workspace {
                     .rounded(px(10.0))
                     .bg(theme.PANEL_BG)
                     .border_1()
-                    .border_color(theme.PANEL_BORDER)
+                    .border_color(theme.PANEL_BORDER.blend(theme.ACCENT.opacity(0.45 * press)))
                     .shadow_md()
                     .child(
                         div()
@@ -315,6 +330,40 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn showcase_press_settles_then_fades_without_animating_the_hold() {
+        assert_eq!(showcase_motion(Duration::ZERO, false), (0.85, 1.0, true));
+        let (opacity, press, animating) = showcase_motion(SHOWCASE_PRESS / 2, false);
+        assert!(opacity > 0.85 && opacity < 1.0);
+        assert!(press > 0.0 && press < 1.0 && animating);
+        assert_eq!(showcase_motion(SHOWCASE_PRESS, false), (1.0, 0.0, false));
+        assert_eq!(
+            showcase_motion(SHOWCASE_DURATION - SHOWCASE_FADE, false),
+            (1.0, 0.0, true)
+        );
+        let (opacity, press, animating) =
+            showcase_motion(SHOWCASE_DURATION - SHOWCASE_FADE / 2, false);
+        assert!((opacity - 0.5).abs() < 0.001);
+        assert_eq!((press, animating), (0.0, true));
+        assert_eq!(showcase_motion(SHOWCASE_DURATION, false), (0.0, 0.0, false));
+        let mut previous = 1.0;
+        for ms in 0..=SHOWCASE_FADE.as_millis() as u64 {
+            let (opacity, _, _) = showcase_motion(
+                SHOWCASE_DURATION - SHOWCASE_FADE + Duration::from_millis(ms),
+                false,
+            );
+            assert!(opacity <= previous && opacity >= 0.0);
+            previous = opacity;
+        }
+    }
+
+    #[test]
+    fn showcase_reduced_motion_stays_readable_without_requesting_frames() {
+        for elapsed in [Duration::ZERO, SHOWCASE_PRESS, SHOWCASE_DURATION] {
+            assert_eq!(showcase_motion(elapsed, true), (1.0, 0.0, false));
+        }
+    }
 
     #[test]
     fn coach_keycaps_share_only_matching_modifiers() {

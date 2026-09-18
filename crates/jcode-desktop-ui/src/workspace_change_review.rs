@@ -146,9 +146,7 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn review_button_opens_adjacent_preserves_chat_and_focuses_review(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn diff_counts_open_adjacent_preserve_chat_and_focus_review(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -177,8 +175,8 @@ mod tests {
         vcx.run_until_parked();
         let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
         let header = vcx
-            .debug_bounds("diff-file-0")
-            .expect("review button paints");
+            .debug_bounds("edit-change-counts-0")
+            .expect("change counts paint");
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let review = workspace.read_with(vcx, |workspace, cx| {

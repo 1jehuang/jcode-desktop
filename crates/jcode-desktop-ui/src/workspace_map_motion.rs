@@ -34,8 +34,11 @@ impl Workspace {
                     },
                 )
             });
-            (x, old_row as f32)
+            // Continue from the resisted pull already on screen, rather than
+            // snapping home before starting the committed row transition.
+            (x, old_row as f32 + self.workspace_pull.take(now))
         };
+        self.gesture.pull = 0.0;
         self.outgoing_row = Some(self.active_row);
         self.row_progress = AnimatedValue::new(0.0, transition::policy(Transition::Row).duration);
         self.row_progress.set(1.0, now);

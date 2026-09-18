@@ -44,13 +44,20 @@ def main():
                         help="capture the initial beta overlay instead of dismissing it")
     parser.add_argument("--beta-notice-interact", action="store_true",
                         help="verify startup beta overlay dismissal and native typing")
+    parser.add_argument("--queue-interact", action="store_true",
+                        help="verify Ctrl+Enter queues prompts on the private display")
     parser.add_argument("--onboarding-interact", action="store_true",
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
                         help="verify sound opt-in, preview, and saved mute on the private display")
+    parser.add_argument("--rename-interact", action="store_true",
+                        help="verify native rename button, F2, validation, dismissal, and preserved composer draft")
+    parser.add_argument("--tab-actions-interact", action="store_true",
+                        help="verify hover-only tab actions and shortcut tooltips")
     parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
+    parser.add_argument("--changelog", action="store_true", help="show the read-only Desktop changelog panel")
     parser.add_argument("--fresh-interact", action="store_true",
                         help="measure fresh composer pixels and verify native typing and submission")
     parser.add_argument("--html-interact", action="store_true",
@@ -116,6 +123,35 @@ def main():
             value for key, value in vars(args).items()
             if key.endswith("_interact") and key != "beta_notice_interact"):
         parser.error("beta-notice modes cannot be combined with other interactions")
+    if args.queue_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "queue_interact")
+        if others or args.transcript != "streaming" or args.panels != 1:
+            parser.error("queue-interact requires --transcript streaming, one panel, and no other interactions")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("queue-interact requires xdotool and tesseract")
+    if args.rename_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "rename_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript != "empty" or args.focus_panel is not None
+                or args.learn_stage is not None or args.preview_state is not None
+                or args.changelog or args.notification or args.swarm):
+            parser.error("rename-interact requires --transcript empty, one panel, default size/theme/layout, and no other interactions or overlays")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("rename-interact requires xdotool and tesseract")
+    if args.tab_actions_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "tab_actions_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript != "empty" or args.focus_panel is not None
+                or args.learn_stage is not None or args.preview_state is not None
+                or args.changelog or args.notification or args.swarm):
+            parser.error("tab-actions-interact requires --transcript empty and the default single-tab fixture")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("tab-actions-interact requires xdotool and tesseract")
     if args.account_sign_in or args.account_sign_in_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "account_sign_in_interact")
@@ -149,7 +185,7 @@ def main():
             parser.error("sounds-interact requires xdotool and tesseract")
     if args.preview_state is not None:
         if (args.panels != 1 or args.transcript != "all" or args.swarm
-                or args.notification or args.learn_stage is not None
+                or args.notification or args.changelog or args.learn_stage is not None
                 or args.focus_panel is not None
                 or any(value for key, value in vars(args).items()
                        if key.endswith("_interact") and key != "preview_interact")):
@@ -325,6 +361,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_WORKTREES"] = "1"
         if args.swarm:
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
+        if args.changelog:
+            env["JCODE_DESKTOP_SCREENSHOT_CHANGELOG"] = "1"
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
@@ -402,6 +440,21 @@ def main():
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)
+                if args.queue_interact:
+                    # The streaming fixture has an active turn but no network.
+                    subprocess.run(["xdotool", "mousemove", str((canvas_left + width) // 2),
+                                    str(height - 50), "click", "1"], env=env, check=True)
+                    for prompt in ("Review the final changes", "Then run the tests"):
+                        subprocess.run(["xdotool", "type", "--clearmodifiers", prompt], env=env, check=True)
+                        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+Return"], env=env, check=True)
+                    time.sleep(0.5)
+                    proof = root / "queued.png"
+                    subprocess.run(["import", "-window", "root", str(proof)], env=env, check=True)
+                    text = subprocess.check_output(["tesseract", str(proof), "stdout"], env=env, stderr=subprocess.DEVNULL).decode()
+                    for expected in ("Queued", "Review the final changes", "Then run the tests", "Remove"):
+                        if expected not in text:
+                            raise RuntimeError("Ctrl+Enter did not paint the expected queue: " + text)
+                    print("Native Ctrl+Enter queue verified on the private display")
                 if args.history_interact:
                     # Locate rendered titles so header rows (such as Default
                     # directory) can grow without silently clicking another session.
@@ -466,6 +519,12 @@ def main():
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.beta_notice_interact:
                     from beta_notice_acceptance import verify
+                    verify(output, env, root)
+                if args.tab_actions_interact:
+                    from tab_actions_acceptance import verify
+                    verify(output, env, root)
+                if args.rename_interact:
+                    from rename_acceptance import verify
                     verify(output, env, root)
                 if args.slash_interact:
                     from slash_menu_acceptance import verify

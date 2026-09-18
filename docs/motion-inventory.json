@@ -1,0 +1,784 @@
+{
+  "version": 1,
+  "scope": "named-ui-methods-v1",
+  "additional_sites": [
+    {
+      "path": "crates/jcode-desktop-ui/src/workspace_responsive.rs",
+      "symbol": "render_compact_sidebar_overlay"
+    },
+    {
+      "path": "crates/jcode-desktop-ui/src/input.rs",
+      "symbol": "render"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "crates/jcode-desktop-ui/src/input.rs::render",
+      "sha256": "313df6a492e200384b017ef7300ac91879ce03498bf7e3ece4f281be744ff81a",
+      "decision": "animated",
+      "reason": "Slash/model suggestion overlay slides and fades on entrance using MenuEntrance. Filtering does not restart entrance. Dismissal is intentionally immediate so obsolete interactive choices do not linger. Config and GPUI reduced motion snap; no frames requested after settling.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/input.rs",
+          "symbol": "render",
+          "sha256": "313df6a492e200384b017ef7300ac91879ce03498bf7e3ece4f281be744ff81a",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-motion/src/lib.rs",
+          "symbol": "update",
+          "note": "Shared MenuEntrance implementation: bounded entrance, immediate hide, fresh reopen, and zero-duration snap.",
+          "sha256": "ba2aeab7923c8bbf0eedd90591f1a8653b6728aaa0b6b4655c483f83cd64382c"
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-motion/src/lib.rs",
+          "symbol": "menu_entrance_filters_without_restart_and_closes_immediately",
+          "note": "Shared motion lifecycle regression source, not proof of complete input UI acceptance.",
+          "sha256": "31f2616446615619560ba9e049f45019ea31c8a55263569ed6af48995b179055"
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-motion/src/lib.rs",
+          "symbol": "menu_entrance_reduced_motion_settles_even_mid_flight",
+          "note": "Shared motion lifecycle regression source, not proof of complete input UI acceptance.",
+          "sha256": "99347a183c02691f7973eb4426d939d820075e92f00b91f4dc5ee8308fcbd936"
+        }
+      ]
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/onboarding_simulator.rs::close_onboarding_simulator",
+      "sha256": "e902e7cc35cc31b71a98871e3d947c9c36bb082f6386915d01edbee53ed5619c",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Clears the simulator Option immediately. Retain closing surface until exit settles.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/onboarding_simulator.rs",
+          "symbol": "close_onboarding_simulator",
+          "sha256": "e902e7cc35cc31b71a98871e3d947c9c36bb082f6386915d01edbee53ed5619c",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/onboarding_simulator.rs::toggle_onboarding_simulator",
+      "sha256": "3fe836adc350f0cb07a79ac8aa8e2b7d438cc0e793d37e0f4223bccb2c865406",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Mounts simulator immediately. Add reversible entrance and exit without delaying focus.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/onboarding_simulator.rs",
+          "symbol": "toggle_onboarding_simulator",
+          "sha256": "3fe836adc350f0cb07a79ac8aa8e2b7d438cc0e793d37e0f4223bccb2c865406",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel.rs::close_model_picker",
+      "sha256": "ff62995eaf8e46105e1d670621717c9587421cfe37e6db508ebbb32f309dc66e",
+      "decision": "gap",
+      "priority": 1,
+      "reason": "Clears model_picker_open immediately. Panel picker needs an explicit dismissal decision distinct from input suggestions.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel.rs",
+          "symbol": "close_model_picker",
+          "sha256": "ff62995eaf8e46105e1d670621717c9587421cfe37e6db508ebbb32f309dc66e",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel.rs::open_gmail_message",
+      "sha256": "5bf8d5d37d2dc872b803cfd2e87d29614fe87e993236be81e071af43651e6724",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "Loading and ready detail states replace each other immediately. Consider a restrained content transition.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel.rs",
+          "symbol": "open_gmail_message",
+          "sha256": "5bf8d5d37d2dc872b803cfd2e87d29614fe87e993236be81e071af43651e6724",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel.rs::open_model_picker",
+      "sha256": "97e73c836f107fa3de5cdb2d6b20a2e115a185346ac73fd556f8616695fc0d75",
+      "decision": "gap",
+      "priority": 1,
+      "reason": "Sets model_picker_open and seeds input directly. Review panel picker entrance separately from slash suggestions.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel.rs",
+          "symbol": "open_model_picker",
+          "sha256": "97e73c836f107fa3de5cdb2d6b20a2e115a185346ac73fd556f8616695fc0d75",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel_diff.rs::close_diff_review",
+      "sha256": "bf43f0dd188a4b7b4c9b1ee8ac1e5b8bd038d3b8fccce506e15ab82859d7e4c0",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Dedicated review delegates animated panel close, but inline fallback clears diff_review immediately.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel_diff.rs",
+          "symbol": "close_diff_review",
+          "sha256": "bf43f0dd188a4b7b4c9b1ee8ac1e5b8bd038d3b8fccce506e15ab82859d7e4c0",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel_image_preview.rs::close_image_preview",
+      "sha256": "1c10ec2eb69912e71c2efdafbce8dff8344593fc5c2600697ef394a4e809d447",
+      "decision": "gap",
+      "priority": 1,
+      "reason": "Lightbox Option is cleared immediately. Preserve mounted image through exit and restore focus safely.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel_image_preview.rs",
+          "symbol": "close_image_preview",
+          "sha256": "1c10ec2eb69912e71c2efdafbce8dff8344593fc5c2600697ef394a4e809d447",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel_image_preview.rs::open_image_preview",
+      "sha256": "722e28b511c406d65e098083e35aae2290f4da57c98936b3246d33b21c480f92",
+      "decision": "gap",
+      "priority": 1,
+      "reason": "Lightbox mounts at full visibility. Add reversible entrance while preserving zoom and image identity.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel_image_preview.rs",
+          "symbol": "open_image_preview",
+          "sha256": "722e28b511c406d65e098083e35aae2290f4da57c98936b3246d33b21c480f92",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel_login.rs::close_login_picker",
+      "sha256": "6cad22f9c49ac7314094d8b7f691f387be5cb77c1a9163151a36267565615fda",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Clears login state immediately. Review exit with sensitive-input cleanup and focus safety.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel_login.rs",
+          "symbol": "close_login_picker",
+          "sha256": "6cad22f9c49ac7314094d8b7f691f387be5cb77c1a9163151a36267565615fda",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel_login.rs::open_login_picker",
+      "sha256": "bf394503369a377e0db6dd166386e0e5347763c9c1463911212c4b16be7dc18f",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Creates login picker state directly. Add entrance without delaying provider controls.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel_login.rs",
+          "symbol": "open_login_picker",
+          "sha256": "bf394503369a377e0db6dd166386e0e5347763c9c1463911212c4b16be7dc18f",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/panel_recovery.rs::open_recovery_models",
+      "sha256": "d004de46659ca6bec9c4dcbe0b4f86bfec5006d8bb2eae0bd5d10a5a0827f720",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Replaces login with recovery picker immediately. Review cross-surface entrance/exit.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/panel_recovery.rs",
+          "symbol": "open_recovery_models",
+          "sha256": "d004de46659ca6bec9c4dcbe0b4f86bfec5006d8bb2eae0bd5d10a5a0827f720",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/sidebar_selection.rs::close_sidebar_sessions",
+      "sha256": "d772825c9441886adcb682fbfb918619475d31c5815e0805064ca0deabdb0b85",
+      "decision": "animated",
+      "reason": "Delegates each dismissal to close_panel. Default-directory immediate exception is tracked under close_folder_picker.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/sidebar_selection.rs",
+          "symbol": "close_sidebar_sessions",
+          "sha256": "d772825c9441886adcb682fbfb918619475d31c5815e0805064ca0deabdb0b85",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "close_panel",
+          "note": "Delegated close implementation retains ordinary slots while close_progress settles.",
+          "sha256": "ba0a184ce3147a6510e140f73d2437fd4e02c72caf33fe98d6cd24b1bc22ab68"
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::close_accounts",
+      "sha256": "0c4d1a7a9666036ec9b1d3f7002c4b1f7ddb3c32cdaf6690bcd6065081b32915",
+      "decision": "animated",
+      "reason": "Delegates dismissal to close_panel, then restores originating panel focus.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "close_accounts",
+          "sha256": "0c4d1a7a9666036ec9b1d3f7002c4b1f7ddb3c32cdaf6690bcd6065081b32915",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "close_panel",
+          "note": "Delegated close implementation retains ordinary slots while close_progress settles.",
+          "sha256": "ba0a184ce3147a6510e140f73d2437fd4e02c72caf33fe98d6cd24b1bc22ab68"
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::close_folder_picker",
+      "sha256": "7ced00d2d7b0bc272c7938803fd07d861eee037e3932c54dc6d67641cba09d43",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Removes default-directory panel and clears picker immediately, bypassing ordinary panel close motion.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "close_folder_picker",
+          "sha256": "7ced00d2d7b0bc272c7938803fd07d861eee037e3932c54dc6d67641cba09d43",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::close_panel",
+      "sha256": "ba0a184ce3147a6510e140f73d2437fd4e02c72caf33fe98d6cd24b1bc22ab68",
+      "decision": "animated",
+      "reason": "Ordinary panels target close_progress to zero and remain closing until settlement. Default-directory exception is tracked separately.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "close_panel",
+          "sha256": "ba0a184ce3147a6510e140f73d2437fd4e02c72caf33fe98d6cd24b1bc22ab68",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_accounts",
+      "sha256": "d2a1dc28c748a4c88ef6406a17507c789d304b4a55b2f79ae7efa4e842311f96",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_accounts",
+          "sha256": "d2a1dc28c748a4c88ef6406a17507c789d304b4a55b2f79ae7efa4e842311f96",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_code_file",
+      "sha256": "70ee2af6cfba4cb68798abd298eb84d60118413b550f02a37550fa7042fec73b",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_code_file",
+          "sha256": "70ee2af6cfba4cb68798abd298eb84d60118413b550f02a37550fa7042fec73b",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_folder",
+      "sha256": "12ea6b00b015f3988f8471eff311e80c7a3934cf2bedeac002143568fe2b4027",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Sets folder picker state directly. Overlay entrance and dismissal need a paired decision.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_folder",
+          "sha256": "12ea6b00b015f3988f8471eff311e80c7a3934cf2bedeac002143568fe2b4027",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_gmail",
+      "sha256": "6aabcb135d240b5bf29180a8119f311ec15b4a56c354ba1c64ea237b4c2f9f7b",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_gmail",
+          "sha256": "6aabcb135d240b5bf29180a8119f311ec15b4a56c354ba1c64ea237b4c2f9f7b",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_new_session",
+      "sha256": "352f9af7c1180f6b643519ac9dc2b5fc6dff2d017437d38012017d60853b00a5",
+      "decision": "animated",
+      "reason": "Delegates to open_default_draft, preserving local draft spatial entrance.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_new_session",
+          "sha256": "352f9af7c1180f6b643519ac9dc2b5fc6dff2d017437d38012017d60853b00a5",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending_tests.rs",
+          "symbol": "local_draft_entrance_slides_a_full_width_editor",
+          "note": "Existing local draft motion regression source. Audit checks freshness only and does not execute this Rust test.",
+          "sha256": "eb344fbd4d3fa0eee22584e08990eaef55fbd5e7049013b1575ba179afde1bfa"
+        }
+      ]
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_searched_folder",
+      "sha256": "b4ce927e39d5afe6449011ee622ea710021beab69261978a5bd3da9d541d5201",
+      "decision": "animated",
+      "reason": "Resolves folder and delegates new session to open_local_draft. Default-directory settings branch is separate.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_searched_folder",
+          "sha256": "b4ce927e39d5afe6449011ee622ea710021beab69261978a5bd3da9d541d5201",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending_tests.rs",
+          "symbol": "local_draft_entrance_slides_a_full_width_editor",
+          "note": "Existing local draft motion regression source. Audit checks freshness only and does not execute this Rust test.",
+          "sha256": "eb344fbd4d3fa0eee22584e08990eaef55fbd5e7049013b1575ba179afde1bfa"
+        }
+      ]
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_session",
+      "sha256": "73ba22ad6e91b950ec7e081d73aeed61125214504c0e67c76aff8760402b5d05",
+      "decision": "animated",
+      "reason": "Initializes newcomer animated_width at zero and targets the spawned width.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_session",
+          "sha256": "73ba22ad6e91b950ec7e081d73aeed61125214504c0e67c76aff8760402b5d05",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_startup_draft",
+      "sha256": "a7234d4b50f8abc24b18db6cfe9ec581c3dd56a952f08dff44eae667cca1ea14",
+      "decision": "instant",
+      "reason": "Initial window draft creation is intentionally immediately usable. Startup first paint is not a user-triggered overlay transition.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_startup_draft",
+          "sha256": "a7234d4b50f8abc24b18db6cfe9ec581c3dd56a952f08dff44eae667cca1ea14",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::open_todoist",
+      "sha256": "565e951abbb64e13434b02a048c322aea9e81d383fe5b6a187e86e510c79a17a",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "open_todoist",
+          "sha256": "565e951abbb64e13434b02a048c322aea9e81d383fe5b6a187e86e510c79a17a",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::toggle_hints",
+      "sha256": "655a6a50b06e330156f636fab3b7805d8804957ad54bfee5f058305e22cdd938",
+      "decision": "animated",
+      "reason": "Targets hints_progress on both open and close.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "toggle_hints",
+          "sha256": "655a6a50b06e330156f636fab3b7805d8804957ad54bfee5f058305e22cdd938",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::toggle_overview",
+      "sha256": "60f6534fd4acb4ad6dd7edf3d86f8b01ec8850a8fd2a7206c0af4f086e34cc47",
+      "decision": "animated",
+      "reason": "Targets overview_progress and hints_progress rather than treating the boolean as visual completion.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "toggle_overview",
+          "sha256": "60f6534fd4acb4ad6dd7edf3d86f8b01ec8850a8fd2a7206c0af4f086e34cc47",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::toggle_showcase",
+      "sha256": "e8a6faf4a290c65ac116f80b3a00b9327e418749ea5616b562dbc1b0082ef1e0",
+      "decision": "instant",
+      "reason": "Developer showcase preference and cue update should acknowledge immediately. Cue expiry/visual transitions are not claimed covered by this decision.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "toggle_showcase",
+          "sha256": "e8a6faf4a290c65ac116f80b3a00b9327e418749ea5616b562dbc1b0082ef1e0",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace.rs::toggle_sidebar",
+      "sha256": "cf3f75ae4473328cae3c0213965fbc44d4fdc3b56860cef325740f8661cf473c",
+      "decision": "gap",
+      "priority": 1,
+      "reason": "Flips persistent sidebar visibility immediately, changing horizontal layout budget without a tween.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "toggle_sidebar",
+          "sha256": "cf3f75ae4473328cae3c0213965fbc44d4fdc3b56860cef325740f8661cf473c",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_change_review.rs::close_change_review",
+      "sha256": "73b07bacbf6111731b06d23d0beb8ab95fc3d3bdbb4dfe95042321b9c2b23a74",
+      "decision": "animated",
+      "reason": "Delegates dismissal to close_panel, then focuses the originating conversation.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_change_review.rs",
+          "symbol": "close_change_review",
+          "sha256": "73b07bacbf6111731b06d23d0beb8ab95fc3d3bdbb4dfe95042321b9c2b23a74",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "close_panel",
+          "note": "Delegated close implementation retains ordinary slots while close_progress settles.",
+          "sha256": "ba0a184ce3147a6510e140f73d2437fd4e02c72caf33fe98d6cd24b1bc22ab68"
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_change_review.rs::open_change_review",
+      "sha256": "2facf053a8efa0c2d8f7013832e8f014de717457c857607ffdac622f78df47e8",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_change_review.rs",
+          "symbol": "open_change_review",
+          "sha256": "2facf053a8efa0c2d8f7013832e8f014de717457c857607ffdac622f78df47e8",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_changelog.rs::open_changelog",
+      "sha256": "f318a3a4b150f927e899a0f6d33fa53a171e041dd0c5092fbec0c70ec732f34f",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_changelog.rs",
+          "symbol": "open_changelog",
+          "sha256": "f318a3a4b150f927e899a0f6d33fa53a171e041dd0c5092fbec0c70ec732f34f",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_default_directory.rs::open_default_directory_picker",
+      "sha256": "fe308eda2c9c6cdd3691e9d4c9a82cd1b98d9a2b9059ee5044ff711712f1e9fb",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_default_directory.rs",
+          "symbol": "open_default_directory_picker",
+          "sha256": "fe308eda2c9c6cdd3691e9d4c9a82cd1b98d9a2b9059ee5044ff711712f1e9fb",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_pending.rs::open_default_draft",
+      "sha256": "b2df1f08d60ade9823c32a98a5abb6d5b0ff2534f602880eb384ab9ce41dad9f",
+      "decision": "animated",
+      "reason": "Routes local creation to open_local_draft entrance. Remote creation follows asynchronous session creation rather than this local path.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending.rs",
+          "symbol": "open_default_draft",
+          "sha256": "b2df1f08d60ade9823c32a98a5abb6d5b0ff2534f602880eb384ab9ce41dad9f",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending_tests.rs",
+          "symbol": "local_draft_entrance_slides_a_full_width_editor",
+          "note": "Existing local draft motion regression source. Audit checks freshness only and does not execute this Rust test.",
+          "sha256": "eb344fbd4d3fa0eee22584e08990eaef55fbd5e7049013b1575ba179afde1bfa"
+        }
+      ]
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_pending.rs::open_local_draft",
+      "sha256": "afdc3cc289c5de8fb4a8c7879af078656126d4286933bc2ad9bd92e05ba06227",
+      "decision": "animated",
+      "reason": "Delegates to open_local_draft_kind, which animates newcomer offset while keeping editor geometry usable.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending.rs",
+          "symbol": "open_local_draft",
+          "sha256": "afdc3cc289c5de8fb4a8c7879af078656126d4286933bc2ad9bd92e05ba06227",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending_tests.rs",
+          "symbol": "local_draft_entrance_slides_a_full_width_editor",
+          "note": "Existing local draft motion regression source. Audit checks freshness only and does not execute this Rust test.",
+          "sha256": "eb344fbd4d3fa0eee22584e08990eaef55fbd5e7049013b1575ba179afde1bfa"
+        }
+      ]
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_pending.rs::open_local_draft_kind",
+      "sha256": "8f8e768605f61cfeba987b5374d38bb0924b545eb8e39d078b51536df94c77d9",
+      "decision": "animated",
+      "reason": "Snaps editor geometry for immediate input and animates order_offset from 0.12 to zero under PanelOpen policy.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending.rs",
+          "symbol": "open_local_draft_kind",
+          "sha256": "8f8e768605f61cfeba987b5374d38bb0924b545eb8e39d078b51536df94c77d9",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_pending_tests.rs",
+          "symbol": "local_draft_entrance_slides_a_full_width_editor",
+          "note": "Existing local draft motion regression source. Audit checks freshness only and does not execute this Rust test.",
+          "sha256": "eb344fbd4d3fa0eee22584e08990eaef55fbd5e7049013b1575ba179afde1bfa"
+        }
+      ]
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_preview.rs::open_preview",
+      "sha256": "4449db79f33e01641e1143f9a0ba393f37bef9b5410c71e7fcd152c84620abf3",
+      "decision": "instant",
+      "reason": "Capability guard and delegation only. Motion belongs to open_preview_unchecked, tracked separately.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_preview.rs",
+          "symbol": "open_preview",
+          "sha256": "4449db79f33e01641e1143f9a0ba393f37bef9b5410c71e7fcd152c84620abf3",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_preview.rs::open_preview_unchecked",
+      "sha256": "1a5702435e2214d227b13adcb530eb0e7f8d78379fd39f2963edad8dfd6a9128",
+      "decision": "gap",
+      "priority": 3,
+      "reason": "New slot initializes animated_width at its final width. Camera/sibling motion is not evidence of newcomer entrance. Review intentional instant geometry versus a separate arrival cue.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_preview.rs",
+          "symbol": "open_preview_unchecked",
+          "sha256": "1a5702435e2214d227b13adcb530eb0e7f8d78379fd39f2963edad8dfd6a9128",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_remotes.rs::open_machines",
+      "sha256": "50c7fd4b96c086459887b68ba3c47c67b3385a0427bbc6714797d1f9a7a6aa9f",
+      "decision": "gap",
+      "priority": 2,
+      "reason": "Shows sidebar and switches Sessions to Machines immediately. Review width and content changes.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_remotes.rs",
+          "symbol": "open_machines",
+          "sha256": "50c7fd4b96c086459887b68ba3c47c67b3385a0427bbc6714797d1f9a7a6aa9f",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        }
+      ],
+      "test_gap": "No site-specific animation acceptance test claimed by this review. Add intermediate-frame, reversal, reduced-motion and settled-idle checks when implementing motion."
+    },
+    {
+      "id": "crates/jcode-desktop-ui/src/workspace_responsive.rs::render_compact_sidebar_overlay",
+      "sha256": "aeeb063ddc32bcdc97b63846039fb24ffd0c57096c734fe5a822ae1fea05be02",
+      "decision": "animated",
+      "reason": "Compact drawer slides/fades on entrance. Immediate whole-drawer dismissal is intentional: retained live children would intercept input and removing only children would show an empty closing shell without an inert subtree API. Reopen starts a fresh bounded entrance; reduced motion snaps.",
+      "evidence": [
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace_responsive.rs",
+          "symbol": "render_compact_sidebar_overlay",
+          "sha256": "aeeb063ddc32bcdc97b63846039fb24ffd0c57096c734fe5a822ae1fea05be02",
+          "note": "Reviewed implementation of this entry point. The decision is bounded by the reason, not a claim about every downstream branch."
+        },
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-motion/src/lib.rs",
+          "symbol": "update",
+          "note": "Shared MenuEntrance implementation: bounded entrance, immediate hide, fresh reopen, and zero-duration snap.",
+          "sha256": "ba2aeab7923c8bbf0eedd90591f1a8653b6728aaa0b6b4655c483f83cd64382c"
+        },
+        {
+          "kind": "source",
+          "path": "crates/jcode-desktop-ui/src/workspace.rs",
+          "symbol": "render",
+          "note": "Workspace samples drawer motion, honors reduced motion, requests frames only while animating, and mounts only when open.",
+          "sha256": "ea9646dc358de401a2c3f23915e09e8ee797bb9a51a26b66be54bf0ee1a07ba6"
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_responsive.rs",
+          "symbol": "drawer_entrance_has_intermediate_frames_and_bounded_idle",
+          "note": "Drawer lifecycle or UI regression source. Implementation worker separately reported this test passed.",
+          "sha256": "a619b96e96a225895dc47b40411fd4b05be2fe9c808ec0a963724f1408fd9481"
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_responsive.rs",
+          "symbol": "drawer_dismissal_is_immediate_and_reopen_starts_fresh",
+          "note": "Drawer lifecycle or UI regression source. Implementation worker separately reported this test passed.",
+          "sha256": "55c5dcf0e648687bae900f6578cd9b85d50b45560053b57add357863124bb2ad"
+        },
+        {
+          "kind": "test",
+          "path": "crates/jcode-desktop-ui/src/workspace_responsive.rs",
+          "symbol": "reduced_motion_drawer_snaps_and_dismissal_restores_input",
+          "note": "Drawer lifecycle or UI regression source. Implementation worker separately reported this test passed.",
+          "sha256": "79f4ae27115cb48492539e6f232256302df6d87c62f96f42c49013812feb611a"
+        }
+      ]
+    }
+  ]
+}

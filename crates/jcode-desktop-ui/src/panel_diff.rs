@@ -2,6 +2,10 @@
 use super::*;
 use crate::diff::{FileDiff, tool_diffs};
 
+#[path = "edit_preview.rs"]
+mod edit_preview;
+pub(super) use edit_preview::EditPreviews;
+
 pub(super) struct DiffReview {
     files: Arc<Vec<FileDiff>>,
     selected: usize,
@@ -124,16 +128,109 @@ fn source_label(done: bool, failed: bool) -> &'static str {
     }
 }
 
+type PreviewCacheEntry = (String, String, Arc<Vec<FileDiff>>);
+
+thread_local! {
+    // Transcript repainting must not rerun snippet comparison. Cache data only,
+    // never themed elements, and bound retained arguments for large tool calls.
+    static PREVIEW_CACHE: std::cell::RefCell<std::collections::VecDeque<PreviewCacheEntry>> = const {
+        std::cell::RefCell::new(std::collections::VecDeque::new())
+    };
+}
+
+fn inline_files(name: &str, input: &str) -> Arc<Vec<FileDiff>> {
+    PREVIEW_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((_, _, files)) = cache
+            .iter()
+            .find(|(tool, arguments, _)| tool == name && arguments == input)
+        {
+            return files.clone();
+        }
+        let mut files = tool_diffs(name, input);
+        // Keep file identity/order aligned with the full-review action while
+        // using the same minimal snippet comparison as the detailed viewer.
+        if let Some(preview) = crate::diff_model::from_tool(name, input).filter(|preview| {
+            preview.files.len() == files.len()
+                && preview
+                    .files
+                    .iter()
+                    .zip(&files)
+                    .all(|(a, b)| a.path == b.path)
+        }) {
+            use crate::diff_model::LineKind;
+            for (file, rich) in files.iter_mut().zip(preview.files) {
+                file.lines = rich
+                    .hunks
+                    .into_iter()
+                    .flat_map(|hunk| {
+                        let header = if hunk.header.starts_with("@@ -") {
+                            hunk.header
+                        } else {
+                            let old = hunk
+                                .lines
+                                .iter()
+                                .filter_map(|line| line.old_line)
+                                .collect::<Vec<_>>();
+                            let new = hunk
+                                .lines
+                                .iter()
+                                .filter_map(|line| line.new_line)
+                                .collect::<Vec<_>>();
+                            format!(
+                                "@@ -{},{} +{},{} @@{}",
+                                old.first().copied().unwrap_or(0),
+                                old.len(),
+                                new.first().copied().unwrap_or(0),
+                                new.len(),
+                                if hunk.header.contains("snippet-relative") {
+                                    " (snippet-relative lines)"
+                                } else {
+                                    ""
+                                }
+                            )
+                        };
+                        let header = Some(header);
+                        header.into_iter().chain(hunk.lines.into_iter().map(|line| {
+                            let prefix = match line.kind {
+                                LineKind::Added => "+",
+                                LineKind::Removed => "-",
+                                LineKind::Context => " ",
+                                LineKind::Meta => "\\ ",
+                            };
+                            format!("{prefix}{}", line.text)
+                        }))
+                    })
+                    .collect();
+            }
+        }
+        let files = Arc::new(files);
+        // Keep at most eight small calls or one oversized call. Re-parsing a
+        // large write on every countdown frame is much costlier than retaining
+        // its already-resident transcript arguments until another tool arrives.
+        while !cache.is_empty()
+            && (cache.len() >= 8
+                || cache.iter().map(|(_, input, _)| input.len()).sum::<usize>() + input.len()
+                    > 1024 * 1024)
+        {
+            cache.pop_front();
+        }
+        cache.push_back((name.to_owned(), input.to_owned(), files.clone()));
+        files
+    })
+}
+
 impl Panel {
     pub(super) fn render_edit_metadata(
         &self,
+        call_id: &str,
         name: &str,
         input: &str,
         done: bool,
         error: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let files = Arc::new(tool_diffs(name, input));
+        let files = inline_files(name, input);
         if files.is_empty() {
             return None;
         }
@@ -142,87 +239,34 @@ impl Panel {
             .ok()
             .and_then(|value| value.get("intent")?.as_str().map(str::to_owned))
             .filter(|intent| !intent.trim().is_empty());
-        let rich_arguments = Arc::new((name.to_owned(), input.to_owned()));
         let mut card = div()
             .debug_selector(|| "code-edit-preview".into())
-            .my_1()
+            .my_2()
             .flex()
             .flex_col()
-            .gap_1();
-        for (index, file) in files.iter().enumerate() {
-            let rich_arguments = rich_arguments.clone();
-            let header = div()
-                .id(("diff-file", index))
-                .debug_selector(move || format!("diff-file-{index}").into())
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1p5()
-                .rounded_md()
-                // Overflow clips children to a rectangle in GPUI, so the
-                // header must round its own fill to match the card frame.
-                .rounded_t_lg()
-                .bg(Theme::global().CODE_HEADER_BG)
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::global().ACCENT_DIM))
-                .text_size(px(11.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_color(Theme::global().TEXT)
-                        .when_some(intent.clone(), |el, intent| {
-                            el.child(
-                                div()
-                                    .debug_selector(move || format!("edit-preview-intent-{index}").into())
-                                    .mb_1()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(intent),
-                            )
-                        })
-                        .child(div().font_family(Theme::global().FONT_MONO).truncate().child(file.path.clone())),
-                )
-                .child(counts(file))
-                .child(div().text_color(Theme::global().ACCENT).child("Review ›"))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.focus_handle.focus(window, cx);
-                        window.dispatch_action(Box::new(crate::workspace::change_review::OpenChangeReview {
-                            source: cx.entity_id(),
-                            name: rich_arguments.0.clone(),
-                            input: rich_arguments.1.clone(),
-                            selected: index,
-                            done,
-                            failed,
-                        }), cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
-                // The workspace's generic mouse-up focus handler must not
-                // reactivate the source after this click opens its review.
-                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
-            let mut snippet = div()
-                .px_2()
-                .font_family(Theme::global().FONT_MONO)
-                .text_size(px(11.));
-            for line in file.lines.iter().take(6) {
-                snippet = snippet.child(
-                    div()
-                        .truncate()
-                        .text_color(line_color(line))
-                        .child(line.clone()),
-                );
-            }
-            if file.lines.len() > 6 {
-                snippet = snippet.child(
-                    div()
-                        .text_color(Theme::global().TEXT_FAINT)
-                        .child(format!("… {} more lines in review", file.lines.len() - 6)),
-                );
-            }
+            .gap_2();
+        for index in 0..files.len() {
+            let header = edit_preview::PreviewHeader {
+                intent: intent.clone(),
+                review: crate::workspace::change_review::OpenChangeReview {
+                    source: cx.entity_id(),
+                    name: name.to_owned(),
+                    input: input.to_owned(),
+                    selected: index,
+                    done,
+                    failed,
+                },
+                focus: self.focus_handle.clone(),
+            };
+            let preview = self.edit_previews.view(
+                format!("{call_id}-{index}"),
+                files.clone(),
+                index,
+                done,
+                header,
+                cx,
+            );
+            let footer_preview = preview.clone();
             card = card.child(
                 div()
                     .debug_selector(move || format!("edit-preview-card-{index}").into())
@@ -230,20 +274,30 @@ impl Panel {
                     .rounded_lg()
                     .overflow_hidden()
                     .bg(Theme::global().CODE_BG)
-                    .child(header)
-                    .child(snippet)
+                    .child(preview)
                     // GPUI clips overflow to a rectangle, not the rounded
                     // outline. Keep diff fills above a self-rounded footer.
                     .child(
                         div()
+                            .id(("edit-preview-footer", index))
                             .debug_selector(move || format!("edit-preview-footer-{index}").into())
+                            .cursor_pointer()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, _, cx| {
+                                footer_preview.update(cx, |view, cx| view.toggle_inline(cx));
+                                cx.stop_propagation();
+                            })
                             .rounded_b_lg()
                             .bg(Theme::global().CODE_BG)
                             .px_3()
-                            .py_2()
+                            // Reserve the full 8px corner radius below any
+                            // rectangular metadata, progress, or diff fill.
+                            .h(px(8.))
+                            .when(error.is_some(), |el| el.h_auto().py_1())
                             .text_size(px(10.))
-                            .text_color(Theme::global().TEXT_FAINT)
-                            .child(source_label(done, failed))
                             .when_some(error, |el, message| {
                                 el.child(
                                     div()
@@ -270,7 +324,13 @@ impl Panel {
         bridge: Bridge,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut panel = Self::new(session_id, Some("Change review".into()), working_dir, bridge, cx);
+        let mut panel = Self::new(
+            session_id,
+            Some("Change review".into()),
+            working_dir,
+            bridge,
+            cx,
+        );
         panel.set_change_review(request, cx);
         panel
     }
@@ -281,15 +341,29 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         let files = Arc::new(tool_diffs(&request.name, &request.input));
-        let source = format!("{} · {}", request.name, source_label(request.done, request.failed));
+        let source = format!(
+            "{} · {}",
+            request.name,
+            source_label(request.done, request.failed)
+        );
         let mut review = DiffReview::new(files.clone(), request.selected, source);
         // Parse structured comparisons only on open and never pair mismatched files.
-        if let Some(preview) = crate::diff_model::from_tool(&request.name, &request.input)
-            .filter(|preview| preview.files.len() == files.len()
-                && preview.files.iter().zip(files.iter()).all(|(new, old)| new.path == old.path))
+        if let Some(preview) =
+            crate::diff_model::from_tool(&request.name, &request.input).filter(|preview| {
+                preview.files.len() == files.len()
+                    && preview
+                        .files
+                        .iter()
+                        .zip(files.iter())
+                        .all(|(new, old)| new.path == old.path)
+            })
         {
             review.rich = Some(crate::diff_review_content::ReviewContent::new(
-                preview, request.selected, request.done, request.failed, cx,
+                preview,
+                request.selected,
+                request.done,
+                request.failed,
+                cx,
             ));
         }
         self.diff_review = Some(review);
@@ -299,9 +373,12 @@ impl Panel {
     pub(super) fn close_diff_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_change_review() {
             self.focus_handle.focus(window, cx);
-            window.dispatch_action(Box::new(crate::workspace::change_review::CloseChangeReview {
-                panel: cx.entity_id(),
-            }), cx);
+            window.dispatch_action(
+                Box::new(crate::workspace::change_review::CloseChangeReview {
+                    panel: cx.entity_id(),
+                }),
+                cx,
+            );
             return;
         }
         self.diff_review = None;
@@ -518,7 +595,7 @@ fn line_color(line: &str) -> gpui::Rgba {
 pub(super) fn fixture_items() -> Vec<Item> {
     vec![
         Item::User("Make the navigation clearer and add a regression test.".into()),
-        Item::Assistant("The update touches two files. Click a file to review its changes.".into()),
+        Item::Assistant("The update touches two files. Click a card for its inline diff, or the change counts for a full review.".into()),
         Item::Tool {
             call_id: "diff-fixture".into(), name: "apply_patch".into(),
             input: serde_json::json!({"intent": "Improve navigation labels", "patch_text": "*** Begin Patch\n*** Update File: src/navigation.rs\n@@\n fn label() -> &'static str {\n-    \"Go\"\n+    \"Continue\"\n }\n*** Add File: tests/navigation.rs\n+#[test]\n+fn navigation_label_is_clear() {\n+    assert_eq!(label(), \"Continue\");\n+}\n*** End Patch"}).to_string(),
@@ -530,6 +607,98 @@ pub(super) fn fixture_items() -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_preview_minimizes_unchanged_code_and_reuses_parsing() {
+        let input = serde_json::json!({
+            "file_path": "src/example.rs",
+            "old_string": "fn label() {\n    let label = \"Go\";\n    show(label);\n}\n",
+            "new_string": "fn label() {\n    let label = \"Continue\";\n    show(label);\n}\n"
+        })
+        .to_string();
+        let files = inline_files("edit", &input);
+        assert_eq!(files[0].added(), 1);
+        assert_eq!(files[0].removed(), 1);
+        assert!(files[0].lines.iter().any(|line| line == " fn label() {"));
+        assert!(Arc::ptr_eq(&files, &inline_files("edit", &input)));
+        let changed = input.replace("Continue", "Next");
+        let newer = inline_files("edit", &changed);
+        assert!(!Arc::ptr_eq(&files, &newer));
+        assert!(newer[0].lines.iter().any(|line| line.contains("Next")));
+        assert!(inline_files("read", &input).is_empty());
+    }
+
+    #[test]
+    fn inline_preview_retains_multiedit_boundaries_and_noop_counts() {
+        let input = serde_json::json!({"file_path": "same.rs", "edits": [
+            {"old_string": "same\n", "new_string": "same\n"},
+            {"old_string": "one\n", "new_string": "two\n"},
+            {"old_string": "three\n", "new_string": "four\n"}
+        ]})
+        .to_string();
+        let files = inline_files("multiedit", &input);
+        assert_eq!((files[0].added(), files[0].removed()), (2, 2));
+        assert!(
+            files[0]
+                .lines
+                .iter()
+                .filter(|line| line.starts_with("@@"))
+                .count()
+                >= 2
+        );
+        let noop =
+            serde_json::json!({"file_path": "same.rs", "old_string": "same", "new_string": "same"})
+                .to_string();
+        let files = inline_files("edit", &noop);
+        assert_eq!((files[0].added(), files[0].removed()), (0, 0));
+    }
+
+    #[gpui::test]
+    fn inline_preview_numbers_full_diff_without_expanding_long_lines(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("balanced-preview", cx);
+            workspace
+        });
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.items = vec![Item::Tool {
+                call_id: "balanced".into(), name: "edit".into(),
+                input: serde_json::json!({
+                    "file_path": format!("src/{}/example.rs", "long-directory/".repeat(20)),
+                    "old_string": (0..30).map(|n| format!("old {n} {}\n", "界".repeat(400))).collect::<String>(),
+                    "new_string": (0..30).map(|n| format!("new {n} {}\n", "界".repeat(400))).collect::<String>(),
+                }).to_string(),
+                output: String::new(), done: true, error: None,
+            }];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let card = vcx.debug_bounds("edit-preview-card-0").unwrap();
+        for selector in [
+            "edit-preview-line-1",
+            "edit-preview-line-2",
+            "edit-preview-line-3",
+        ] {
+            let line = vcx.debug_bounds(selector).unwrap();
+            assert!(line.size.height >= px(22.));
+            assert!(line.size.width <= card.size.width);
+        }
+        assert!(vcx.debug_bounds("edit-countdown-bar").is_some());
+        assert!(vcx.debug_bounds("edit-preview-old-number-1").is_some());
+        assert!(
+            card.size.width < px(1000.),
+            "long paths and code must not widen the panel"
+        );
+        let header = vcx.debug_bounds("edit-change-counts-0").unwrap();
+        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("diff-review").is_some());
+        assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.is_empty()));
+    }
 
     #[test]
     fn diff_numbers_only_claim_locations_present_in_hunks() {
@@ -578,10 +747,11 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let header = vcx.debug_bounds("diff-file-0").unwrap();
+        let header = vcx.debug_bounds("edit-change-counts-0").unwrap();
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        let review_panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
+        let review_panel =
+            workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
         assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
         assert_eq!(
             review_panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().rows.len()),
@@ -633,7 +803,7 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let click_position = vcx.debug_bounds("diff-file-0").unwrap().center();
+        let click_position = vcx.debug_bounds("edit-change-counts-0").unwrap().center();
         vcx.simulate_click(click_position, gpui::Modifiers::default());
         vcx.run_until_parked();
         let click_position = vcx.debug_bounds("diff-split").unwrap().center();
@@ -676,17 +846,18 @@ mod tests {
         vcx.run_until_parked();
         let before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
         let header = vcx
-            .debug_bounds("diff-file-0")
-            .expect("clickable file metadata");
+            .debug_bounds("edit-change-counts-0")
+            .expect("clickable change counts");
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("diff-review").is_some());
         assert!(vcx.debug_bounds("diff-file-tree").is_some());
-        let review_panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
+        let review_panel =
+            workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
         assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
         assert!(
             panel.read_with(vcx, |p, _| p.expanded_tools.is_empty()),
-            "file click must not toggle raw JSON"
+            "counts click must not toggle raw JSON"
         );
         let file = vcx.debug_bounds("diff-tree-file-1").unwrap();
         vcx.simulate_click(file.center(), gpui::Modifiers::default());
@@ -721,10 +892,11 @@ mod tests {
             panel.read_with(vcx, |p, _| p.test_scroll_offset_y()),
             before
         );
-        let header = vcx.debug_bounds("diff-file-1").unwrap();
+        let header = vcx.debug_bounds("edit-change-counts-1").unwrap();
         vcx.simulate_click(header.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        let review_panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
+        let review_panel =
+            workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).unwrap());
         assert_eq!(
             review_panel.read_with(vcx, |p, _| p.diff_review.as_ref().unwrap().selected),
             1

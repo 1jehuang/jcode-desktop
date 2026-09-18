@@ -2,7 +2,8 @@
 """Real Desktop -> system SSH -> native daemon acceptance, with no model calls.
 
 Uses two private daemons, temporary SSH keys/config, and Xvfb. No screenshot
-fixture or mocked bridge is used. Requires a fresh CLI supporting api --stdio.
+fixture or mocked bridge is used. Requires a fresh CLI supporting api --stdio,
+OpenSSH, Xvfb, Openbox, xdotool, ImageMagick, Tesseract, and Python GTK3.
 """
 import argparse
 import json
@@ -15,6 +16,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import tomllib
 from urllib.parse import unquote
 
 from screenshot import isolated_env
@@ -87,21 +89,30 @@ def main():
             path = output / f"{label}.png"
             command("import", "-window", "root", str(path))
             words = []
-            for line in command("tesseract", str(path), "stdout", "tsv").splitlines()[1:]:
-                fields = line.split("\t", 11)
-                if len(fields) == 12 and fields[11].strip():
-                    words.append(dict(text=fields[11].strip(), x=int(fields[6])+int(fields[8])//2, y=int(fields[7])+int(fields[9])//2))
+            for sidebar in (False, True):
+                ocr_path = output / f"{label}-{'sidebar-' if sidebar else ''}ocr.png"
+                crop = ["-crop", "264x1000+0+0"] if sidebar else []
+                command("convert", str(path), *crop, "-resize", "300%", str(ocr_path))
+                for line in command("tesseract", str(ocr_path), "stdout", "tsv").splitlines()[1:]:
+                    fields = line.split("\t", 11)
+                    if len(fields) == 12 and fields[11].strip():
+                        x = (int(fields[6])+int(fields[8])//2)//3
+                        if (x < 275) == sidebar:
+                            words.append(dict(text=fields[11].strip(), x=x, y=(int(fields[7])+int(fields[9])//2)//3))
             return words
 
-        def click(words, text, after=0, index=0):
+        def click(text, after=0, index=0, sidebar=False):
             previous = None
             def candidates():
-                nonlocal words, previous
+                nonlocal previous
                 words = capture("waiting-for-control")
-                if any(w["text"].startswith("Connecting") and w["x"] < 275 for w in words):
-                    previous = None
-                    return None
-                matches = sorted((w for w in words if w["text"] == text and w["x"] < 275 and w["y"] > after and (text != "Connect" or 45 <= w["x"] <= 65)), key=lambda w: w["y"])
+                minimum_y = after
+                if text == "Connect" and not sidebar:
+                    local_rows = [w["y"] for w in words if w["text"] == "computer" and w["x"] >= 275]
+                    if not local_rows:
+                        return None
+                    minimum_y = max(minimum_y, min(local_rows))
+                matches = sorted((w for w in words if w["text"].casefold() == text.casefold() and (w["x"] < 275) == sidebar and w["y"] > minimum_y), key=lambda w: (w["y"], w["x"]))
                 if len(matches) <= index:
                     return None
                 coordinate = (matches[index]["x"], matches[index]["y"])
@@ -110,8 +121,12 @@ def main():
                 previous = coordinate
                 return None
             w = wait(f"rendered stable {text} control {index}", candidates)[index]
-            command("xdotool", "mousemove", str(w["x"]), str(w["y"]), "click", "1")
-            time.sleep(.5)
+            command("xdotool", "mousemove", "--sync", str(w["x"]), str(w["y"]))
+            time.sleep(.15)
+            command("xdotool", "mousedown", "1")
+            time.sleep(.1)
+            command("xdotool", "mouseup", "1")
+            time.sleep(.7)
 
         def navigation():
             try:
@@ -126,7 +141,60 @@ def main():
             return [p for row in navigation().get("rows", []) for p in row["panels"]]
 
         def ids():
-            return [p["session"] for p in panels()]
+            return [p["session"] for p in panels() if p["session"].startswith(("session_", "ssh://"))]
+
+        def focused():
+            nav = navigation()
+            return next((p for row in nav.get("rows", []) for p in row["panels"] if p["slot"] == nav.get("focused_slot")), {})
+
+        def focus_ready():
+            return focused().get("session") in ids() and navigation().get("keyboard_panel") == focused().get("slot")
+
+        def activate(initial=False):
+            command("xdotool", "search", "--sync", "--onlyvisible", "--class", "^jcode-desktop$", "windowactivate", "--sync")
+            time.sleep(.5)
+            if not initial:
+                return
+            command("xdotool", "mousemove", "10", "500", "click", "1")
+            command("xdotool", "key", "--clearmodifiers", "Escape")
+            time.sleep(.2)
+            if focused().get("session") == "desktop://changelog":
+                command("xdotool", "key", "--clearmodifiers", "ctrl+shift+w")
+                wait("release notes dismissed", lambda: all(p["session"] != "desktop://changelog" for p in panels()))
+            wait("native composer keyboard focus", focus_ready)
+
+        def preference():
+            return tomllib.loads(config.read_text()).get("workspace", {}).get("default_remote_host", "")
+
+        def saved_session(environment, session_id):
+            paths = list(Path(environment["JCODE_HOME"]).rglob(session_id+".json"))
+            try:
+                return json.loads(paths[0].read_text()) if paths else {}
+            except (OSError, ValueError):
+                return {}
+
+        def machines(label):
+            click("Machines", sidebar=True)
+            wait("native Machines canvas panel focused", lambda: focused().get("session") == "settings://machines")
+            words = capture(label)
+            assert any(w["text"] == "computer" and w["x"] >= 275 for w in words), words
+            assert sum(p["session"] == "settings://machines" for p in panels()) == 1
+            return words
+
+        def verify_draft(label, text):
+            assert focus_ready() and focused()["session"].startswith("session_"), navigation()
+            session_id = focused()["session"]
+            command("xdotool", "type", "--clearmodifiers", "--delay", "50", text + "  ")
+            words = capture(label)
+            rendered = " ".join(w["text"] for w in words if w["x"] >= 275)
+            assert text in rendered, rendered
+            command("xdotool", "key", "--clearmodifiers", "ctrl+a", "ctrl+c")
+            copied = command("python3", "-c", 'import gi; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk, Gdk; text = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text(); print(text or "", end="")')
+            assert copied == text + "  ", (copied, text)
+            command("xdotool", "key", "--clearmodifiers", "Right")
+            assert focused()["session"] == session_id and focus_ready()
+            (output / f"{label}-clipboard.txt").write_text(copied)
+            return session_id
 
         def seed(environment, session_id):
             # Empty native sessions are provisional. Persist context without
@@ -190,7 +258,7 @@ def main():
             (bindir/"ssh").write_text(f'#!/bin/sh\nexec /usr/bin/ssh -F {shlex.quote(str(ssh_config))} "$@"\n')
             (bindir/"ssh").chmod(0o700)
             config = root / "desktop.toml"
-            config.write_text('[workspace]\ndefault_remote_host="jcode-test"\nremote_hosts=["jcode-test"]\n')
+            config.write_text('[workspace]\naccount_sign_in_handled=true\ncoaching_hints=false\ndefault_remote_host="jcode-test"\nremote_hosts=["jcode-test"]\n')
             env["JCODE_DESKTOP_CONFIG"] = str(config)
             read_fd, write_fd = os.pipe()
             xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1440x1000x24", "-nolisten", "tcp"], pass_fds=(write_fd,), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -202,24 +270,27 @@ def main():
             wm = root / "openbox.xml"
             wm.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>')
             launch("openbox", ["openbox", "--sm-disable", "--config-file", str(wm)], env)
+            time.sleep(.5)
             drivers = sorted(Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json"))
             env["VK_DRIVER_FILES"] = str(drivers[0])
             app = launch("desktop-initial", [str(desktop), "--no-hot-reload"], env)
             wait("remote startup promoted to real session", lambda: len(ids()) == 1 and ids()[0].startswith("ssh://jcode-test/"))
             first = ids()[0]
+            activate(initial=True)
             capture("real-remote-startup")
-            command("xdotool", "search", "--sync", "--onlyvisible", "--class", "^jcode-desktop$", "windowactivate", "--sync")
             command("xdotool", "type", "--clearmodifiers", "/rename Remote alpha")
             command("xdotool", "key", "Return")
-            wait("remote rename persisted", lambda: list(Path(remote_env["JCODE_HOME"]).rglob(unquote(first.split("/", 3)[3])+".json")))
+            wait("remote rename persisted exactly", lambda: saved_session(remote_env, unquote(first.split("/", 3)[3])).get("custom_title") == "Remote alpha")
             command("xdotool", "key", "--clearmodifiers", "super+n")
             wait("new panel uses remote default", lambda: len(ids()) == 2 and all(i.startswith("ssh://jcode-test/") for i in ids()))
+            wait("second remote composer focused", focus_ready)
+            assert preference() == "jcode-test"
             assert len(set(ids())) == 2
             remote_ids = ids()
             command("xdotool", "type", "--clearmodifiers", "/rename Remote beta")
             command("xdotool", "key", "Return")
             second = next(i for i in remote_ids if i != first)
-            wait("second remote rename persisted", lambda: list(Path(remote_env["JCODE_HOME"]).rglob(unquote(second.split("/", 3)[3])+".json")))
+            wait("second remote rename persisted exactly", lambda: saved_session(remote_env, unquote(second.split("/", 3)[3])).get("custom_title") == "Remote beta")
             for session in remote_ids:
                 seed(remote_env, unquote(session.split("/", 3)[3]))
             capture("two-real-remote-panels")
@@ -231,32 +302,83 @@ def main():
             wait("remote identities restored", lambda: set(ids()) == set(remote_ids))
             diagnostic = Path(env["XDG_STATE_HOME"]) / "jcode-desktop/jcode-desktop.log"
             wait("SSH reattachment after process restart", lambda: diagnostic.exists() and all(diagnostic.read_text().count(f"session {sid} connected") >= 2 for sid in remote_ids))
-            command("xdotool", "search", "--sync", "--onlyvisible", "--class", "^jcode-desktop$", "windowactivate", "--sync")
+            activate()
+            assert preference() == "jcode-test"
             command("xdotool", "key", "--clearmodifiers", "super+n")
             wait("restored default creates another remote panel", lambda: len(ids()) == 3 and all(i.startswith("ssh://jcode-test/") for i in ids()))
             capture("restored-default")
-            command("xdotool", "mousemove", "130", "66", "click", "1")
-            wait("native Machines picker opens", lambda: "sidebar=Machines" in Path(env["JCODE_DESKTOP_STATE"]).read_text())
-            words = capture("real-machines-picker")
+            machines("real-machines-picker")
             # State dumps precede rasterization. click() waits for the control.
             # The isolated picker has local and remote cards in that order.
             # Host punctuation is unreliable in OCR, but the buttons are stable.
-            click(words, "Connect", index=1)
+            click("Connect", index=1)
             wait("picker Connect opens a real remote session", lambda: len(ids()) == 4 and all(i.startswith("ssh://jcode-test/") for i in ids()))
-            click(capture("remote-connected-via-picker"), "Connect")
+            assert preference() == "jcode-test"
+            machines("remote-connected-via-picker")
+            click("Connect")
             wait("one-off local panel beside remote panels", lambda: len(ids()) == 5 and sum(not i.startswith("ssh://") for i in ids()) == 1 and all(not i.startswith("startup://") for i in ids()))
-            click(capture("mixed-machines"), "Set")
+            wait("explicit local composer focused", lambda: focus_ready() and focused()["session"].startswith("session_"))
+            local_id = focused()["session"]
+            draft = "Local draft remains editable"
+            assert verify_draft("explicit-local-draft", draft) == local_id
+            assert preference() == "jcode-test", "One-off local Connect changed the remote preference"
+            seed(env, local_id)
+            wait("explicit local session persisted by local daemon", lambda: list(Path(env["JCODE_HOME"]).rglob(local_id+".json")))
+            assert not list(Path(remote_env["JCODE_HOME"]).rglob(local_id+".json"))
+            machines("mixed-machines")
+            assert preference() == "jcode-test"
+            click("Set")
+            wait("local preference explicitly persisted", lambda: preference() == "")
             command("xdotool", "key", "--clearmodifiers", "super+n")
             wait("switching default back creates local panel", lambda: len(ids()) == 6 and sum(not i.startswith("ssh://") for i in ids()) == 2 and all(not i.startswith("startup://") for i in ids()))
-            words = capture("local-default-with-remote-panels")
+            machines("local-default-with-remote-panels")
             # Local now shows Default, leaving the remote card as the only Set.
-            click(words, "Set")
+            click("Set")
+            wait("remote preference explicitly persisted", lambda: preference() == "jcode-test")
             command("xdotool", "key", "--clearmodifiers", "super+n")
             wait("setting remote default in UI creates a real remote panel", lambda: len(ids()) == 7 and sum(i.startswith("ssh://jcode-test/") for i in ids()) == 5)
             capture("remote-default-restored-in-ui")
-            report = dict(real_desktop_bridge=True, real_openssh=True, picker_remote_connect=True, set_remote_default_in_ui=True, remote_native_rename=True, independent_local_and_remote_daemons=True, remote_startup=first, unique_remote_default_panels=True, restored_remote_session_ids=remote_ids, remote_default_after_restart=True, one_off_local_override=True, switch_default_back_local=True, final_panel_ids=ids(), model_calls=0)
+            before_failure = set(ids())
+            sshd.terminate()
+            sshd.wait(timeout=10)
+            def refused():
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                        return False
+                except ConnectionRefusedError:
+                    return True
+            wait("private SSH listener stopped", refused)
+            command("xdotool", "key", "--clearmodifiers", "super+n")
+            wait("failed remote shortcut exposes Machines", lambda: focused().get("session") == "settings://machines")
+            def rendered_failure():
+                words = capture("stopped-sshd-error")
+                text = " ".join(w["text"] for w in words if w["x"] >= 275)
+                return words if "Remote session failed" in text and "refused" in text.lower() else None
+            failure_words = wait("actual SSH refusal rendered", rendered_failure)
+            failure_text = " ".join(w["text"] for w in failure_words if w["x"] >= 275)
+            (output / "stopped-sshd-error.txt").write_text(failure_text + "\n")
+            assert set(ids()) == before_failure, "Failed SSH silently created or removed a real session"
+            assert preference() == "jcode-test"
+            click("Connect")
+            wait("failure recovery explicitly creates one local session", lambda: len(ids()) == len(before_failure)+1 and set(ids()) > before_failure and focus_ready() and focused()["session"].startswith("session_"))
+            recovered_id = verify_draft("stopped-sshd-local-recovery", "Local recovery remains editable")
+            assert recovered_id not in before_failure
+            assert preference() == "jcode-test", "Explicit recovery changed remote preference"
+            seed(env, recovered_id)
+            wait("recovered session persisted by real local daemon", lambda: list(Path(env["JCODE_HOME"]).rglob(recovered_id+".json")))
+            assert not list(Path(remote_env["JCODE_HOME"]).rglob(recovered_id+".json"))
+            report = dict(cli=str(cli), desktop=str(desktop), real_desktop_bridge=True, real_openssh=True, picker_remote_connect=True, set_remote_default_in_ui=True, remote_native_rename=True, independent_local_and_remote_daemons=True, remote_startup=first, unique_remote_default_panels=True, restored_remote_session_ids=remote_ids, remote_default_after_restart=True, one_off_local_override=True, explicit_local_session=local_id, focused_local_draft=draft, native_clipboard_verified=True, remote_preference_preserved_until_explicit_change=True, switch_default_back_local=True, stopped_sshd_error_rendered=True, failed_remote_did_not_create_local=True, explicit_local_recovery_session=recovered_id, recovery_preference=preference(), final_panel_ids=ids(), model_calls=0)
+            report["stopped_sshd_rendered_text"] = failure_text
+            report["persisted_remote_titles"] = [saved_session(remote_env, unquote(sid.split("/", 3)[3])).get("custom_title") for sid in remote_ids]
             (output/"report.json").write_text(json.dumps(report, indent=2)+"\n")
             print(json.dumps(report, indent=2), flush=True)
+        except Exception:
+            if "DISPLAY" in env:
+                try:
+                    capture("failure")
+                except Exception as error:
+                    print(f"Could not capture failure: {error}", flush=True)
+            raise
         finally:
             for p in reversed(processes):
                 if p.poll() is None:
@@ -281,6 +403,8 @@ def main():
             state = Path(env["JCODE_DESKTOP_STATE"])
             if state.exists():
                 (output/"final-state.txt").write_text(state.read_text())
+            if "config" in locals() and config.exists():
+                (output/"desktop.toml").write_text(config.read_text())
 
 
 if __name__ == "__main__":

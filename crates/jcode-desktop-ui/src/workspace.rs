@@ -10,6 +10,9 @@ mod account_sign_in;
 #[path = "workspace_preview.rs"]
 mod preview;
 
+#[path = "workspace_changelog.rs"]
+mod changelog_panel;
+
 #[path = "workspace_responsive.rs"]
 mod responsive;
 
@@ -19,18 +22,18 @@ mod notifications;
 #[path = "workspace_change_review.rs"]
 pub(crate) mod change_review;
 
+#[path = "sidebar_edits.rs"]
+mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
-#[path = "sidebar_edits.rs"]
-mod sidebar_edits;
-#[path = "sidebar_worktrees.rs"]
-mod sidebar_worktrees;
 #[path = "sidebar_workspaces.rs"]
 mod sidebar_workspaces;
+#[path = "sidebar_worktrees.rs"]
+mod sidebar_worktrees;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -68,11 +71,11 @@ mod fps_header_tests;
 #[cfg(test)]
 #[path = "hidden_animation_tests.rs"]
 mod hidden_animation_tests;
+#[path = "workspace_map_motion.rs"]
+mod map_motion;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
-#[path = "workspace_map_motion.rs"]
-mod map_motion;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 #[cfg(test)]
@@ -91,6 +94,9 @@ mod window_navigation;
 #[cfg(test)]
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
+
+#[path = "workspace_rename.rs"]
+mod rename;
 
 #[path = "workspace_default_directory.rs"]
 mod default_directory;
@@ -124,6 +130,7 @@ actions!(
         NewPanel,
         NewPanelInPinnedDirectory,
         ForkPanel,
+        RenameSession,
         NewTerminal,
         OpenGmail,
         OpenTodoist,
@@ -137,6 +144,7 @@ actions!(
         ToggleSidebar,
         CycleTheme,
         NewHelpSession,
+        OpenChangelog,
         CycleWidth,
         MaximizeWidth,
         WidthPreset1,
@@ -184,6 +192,11 @@ mod panel_surface_tests;
 #[cfg(test)]
 #[path = "hover_scroll_tests.rs"]
 mod hover_scroll_tests;
+#[path = "workspace_pull.rs"]
+mod workspace_pull;
+#[cfg(test)]
+#[path = "workspace_scroll_tests.rs"]
+mod workspace_scroll_tests;
 
 #[path = "tutorial.rs"]
 mod tutorial;
@@ -209,6 +222,8 @@ struct ShowcaseCue {
     shortcut: String,
     action: &'static str,
     tutorial_group: &'static str,
+    /// None keeps the screenshot design fixture stationary.
+    started_at: Option<Instant>,
 }
 
 /// niri `window-rule { geometry-corner-radius 6 }`.
@@ -229,6 +244,7 @@ The jcode-desktop shortcuts are:
 - Super+F: maximize or restore panel width
 - Super+O: open the overview
 - Super+/ or F1: toggle the hints overlay
+- F2: rename the active session (also available from the Rename button)
 - Super+Shift+S: toggle showcase mode for on-screen workspace motions
 - Super+Shift+T: cycle the desktop theme
 - Super+Shift+/: open this documentation-aware help session
@@ -331,15 +347,15 @@ const MINIMAP_GESTURE_DOT: f32 = 7.0;
 /// horizontal deltas pan and vertical deltas scroll, like before.
 const AXIS_LOCK: f32 = 12.0;
 /// Vertical travel, after a horizontal lock, that breaks the sticky axis and
-/// hops to the neighbouring strip. Resets per hop so a long drag steps
-/// through strips one threshold at a time.
-const STRIP_BREAK: f32 = 130.0;
+/// hops to the neighbouring strip. A gesture can hop only once, so its
+/// remaining travel and momentum cannot skip past the destination.
+const STRIP_BREAK: f32 = 260.0;
 /// A pause this long between deltas ends the gesture, since not every
 /// platform reliably delivers an Ended touch phase.
 const GESTURE_RESET: Duration = Duration::from_millis(250);
 /// Fraction of the vertical pull the reticle follows while the sticky axis
 /// resists, so the rubber band is visible before it snaps.
-const PULL_RESISTANCE: f32 = 0.35;
+const PULL_RESISTANCE: f32 = 0.22;
 
 /// Which axis a touchpad gesture has committed to.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -362,6 +378,8 @@ struct StripGesture {
     /// Vertical pull accumulated while horizontally locked. Positive pulls
     /// toward the strip below (natural: fingers up reveal what is beneath).
     pull: f32,
+    /// Remains latched through Ended and momentum until a fresh gesture.
+    switched: bool,
 }
 
 /// Where one scroll delta goes, decided by the sticky axis lock.
@@ -383,13 +401,71 @@ impl StripGesture {
         *self = Self::default();
     }
 
-    /// Advance the state machine by one precise (touchpad) delta.
-    fn feed(&mut self, dx: f32, dy: f32, phase: gpui::TouchPhase) -> Routed {
+    fn begin_phase(&mut self, phase: gpui::TouchPhase) -> bool {
         use gpui::TouchPhase::{Cancelled, Ended, Started};
-        if matches!(phase, Started | Cancelled) {
+        if phase == Started {
             self.reset();
         }
-        let routed = match self.axis {
+        if matches!(phase, Ended | Cancelled) {
+            // Some platforms send momentum as Moved after fingers lift.
+            // Clear the axis/pull, but do not re-arm a completed swipe.
+            let switched = self.switched || phase == Cancelled;
+            self.reset();
+            self.switched = switched;
+            return false;
+        }
+        true
+    }
+
+    fn pull_vertical(&mut self, dy: f32) -> i8 {
+        if self.switched {
+            return 0;
+        }
+        self.pull -= dy;
+        if self.pull.abs() < STRIP_BREAK {
+            return 0;
+        }
+        let direction = if self.pull > 0.0 { 1 } else { -1 };
+        self.pull = 0.0;
+        self.switched = true;
+        direction
+    }
+
+    /// Empty panels and empty rows share the same latch as axis breakouts.
+    fn feed_vertical(&mut self, dy: f32, phase: gpui::TouchPhase) -> i8 {
+        if !self.begin_phase(phase) {
+            return 0;
+        }
+        if self.axis != GestureAxis::Vertical {
+            self.pull = 0.0;
+            self.axis = GestureAxis::Vertical;
+        }
+        self.pull_vertical(dy)
+    }
+
+    /// Advance the state machine by one precise (touchpad) delta.
+    fn feed(&mut self, dx: f32, dy: f32, phase: gpui::TouchPhase) -> Routed {
+        let owned_by_strip = self.switched || self.axis == GestureAxis::Horizontal;
+        if !self.begin_phase(phase) {
+            if !owned_by_strip {
+                return Routed::ToPanel;
+            }
+            return Routed::Strip {
+                dx: 0.0,
+                switch: 0,
+                exclusive: true,
+            };
+        }
+        if self.switched {
+            // Do not leak the tail of a workspace swipe into the destination
+            // transcript. Horizontal panning can still continue normally.
+            return Routed::Strip {
+                dx,
+                switch: 0,
+                exclusive: true,
+            };
+        }
+        match self.axis {
             GestureAxis::Undecided => {
                 self.travel_x += dx.abs();
                 self.travel_y += dy.abs();
@@ -414,25 +490,14 @@ impl StripGesture {
             }
             GestureAxis::Vertical => Routed::ToPanel,
             GestureAxis::Horizontal => {
-                self.pull += -dy;
-                let switch = if self.pull.abs() >= STRIP_BREAK {
-                    let direction = if self.pull > 0.0 { 1 } else { -1 };
-                    self.pull = 0.0;
-                    direction
-                } else {
-                    0
-                };
+                let switch = self.pull_vertical(dy);
                 Routed::Strip {
                     dx,
                     switch,
                     exclusive: true,
                 }
             }
-        };
-        if phase == Ended {
-            self.reset();
         }
-        routed
     }
 }
 
@@ -551,6 +616,7 @@ pub struct Workspace {
     show_beta_notice: bool,
     account_sign_in: account_sign_in::State,
     compact_sidebar_open: bool,
+    compact_sidebar_motion: responsive::VisibilityMotion,
     last_canvas_width: Option<f32>,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
     show_minimap: bool,
@@ -571,6 +637,7 @@ pub struct Workspace {
     /// Row being animated out and progress of the incoming row.
     outgoing_row: Option<usize>,
     row_progress: AnimatedValue,
+    workspace_pull: workspace_pull::PullPreview,
     /// Origin of the current trip in shared map coordinates (pixels, rows).
     row_origin: (f32, f32),
     /// Shared horizontal camera while rendering rows along a map trip.
@@ -600,7 +667,9 @@ pub struct Workspace {
     /// Models which shortcuts the user knows, and teaches the ones they don't.
     coach: learning::Coach,
     learning_persistence: Option<learning::Persistence>,
-    /// Fade for the coach's hint toast.
+    /// Retain the last hint through its exit animation.
+    coach_display_hint: Option<learning::Hint>,
+    /// Fade for the coach's tab chip.
     coach_progress: AnimatedValue,
     coach_expiry_task: Option<gpui::Task<()>>,
     /// Every non-archived session offered by the runtime, oldest to newest.
@@ -643,6 +712,7 @@ pub struct Workspace {
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
+    rename_editor: Option<rename::Editor>,
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
     gpui_performance: GpuiPerformanceSnapshot,
@@ -689,7 +759,9 @@ impl Workspace {
                 // recv() is immediately ready while a producer has a backlog.
                 // Bound each batch and yield to input/layout between batches,
                 // without reintroducing idle polling or dropping stream events.
-                cx.background_executor().timer(Duration::from_millis(1)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(1))
+                    .await;
             }
         });
 
@@ -787,6 +859,7 @@ impl Workspace {
                 crate::config::get().workspace.sidebar,
             ),
             compact_sidebar_open: false,
+            compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             worktree_mode: false,
@@ -802,6 +875,7 @@ impl Workspace {
             row_origin: (0.0, 0.0),
             map_camera_x: None,
             row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
+            workspace_pull: workspace_pull::PullPreview::default(),
             previous: None,
             camera_x: [0.0; STRIP_COUNT],
             camera_target: [0.0; STRIP_COUNT],
@@ -824,6 +898,7 @@ impl Workspace {
             learning_persistence: Some(learning::Persistence::spawn()),
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
+            coach_display_hint: None,
             sessions: Vec::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             remotes: remotes::Machines::from_config(),
@@ -853,6 +928,7 @@ impl Workspace {
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
+            rename_editor: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
             gpui_performance: GpuiPerformanceSnapshot::default(),
@@ -869,7 +945,10 @@ impl Workspace {
         } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").is_ok()
         {
-            if let Ok(state) = std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE").unwrap().parse() {
+            if let Ok(state) = std::env::var("JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE")
+                .unwrap()
+                .parse()
+            {
                 workspace.open_preview_unchecked(state, cx);
             }
         } else if harness::screenshot_mode() {
@@ -888,7 +967,11 @@ impl Workspace {
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
-                edit_stats: Some(jcode_sdk::SessionEditStats { added: 128, removed: 37, approximate: false }),
+                edit_stats: Some(jcode_sdk::SessionEditStats {
+                    added: 128,
+                    removed: 37,
+                    approximate: false,
+                }),
             };
             workspace.connected = true;
             workspace.sessions = vec![session.clone()];
@@ -952,6 +1035,7 @@ impl Workspace {
                     shortcut: "Super + Shift + S".into(),
                     action: "Showcase mode on",
                     tutorial_group: "",
+                    started_at: None,
                 });
             }
             if let Some(stage) = std::env::var("JCODE_DESKTOP_SCREENSHOT_LEARN_STAGE")
@@ -1032,6 +1116,7 @@ impl Workspace {
             layout_mode: crate::config::LayoutMode::FolderTabs,
             folder_frame: Default::default(),
             compact_sidebar_open: false,
+            compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             worktree_mode: false,
@@ -1047,6 +1132,7 @@ impl Workspace {
             row_origin: (0.0, 0.0),
             map_camera_x: None,
             row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
+            workspace_pull: workspace_pull::PullPreview::default(),
             previous: None,
             camera_x: [0.0; STRIP_COUNT],
             camera_target: [0.0; STRIP_COUNT],
@@ -1069,6 +1155,7 @@ impl Workspace {
             learning_persistence: None,
             coach_progress: AnimatedValue::new(0.0, transition::policy(Transition::Coach).duration),
             coach_expiry_task: None,
+            coach_display_hint: None,
             sessions: Vec::new(),
             pinned_working_dir: None,
             remotes: remotes::Machines::default(),
@@ -1098,6 +1185,7 @@ impl Workspace {
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
+            rename_editor: None,
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
             gpui_performance: GpuiPerformanceSnapshot::default(),
@@ -1121,6 +1209,7 @@ impl Workspace {
                 !slot.closing
                     && !slot.panel.read(cx).is_change_review()
                     && !slot.panel.read(cx).is_accounts_panel()
+                    && !slot.panel.read(cx).is_changelog()
                     && slot.panel.read(cx).preview_state.is_none()
             })
             .collect();
@@ -1128,6 +1217,9 @@ impl Workspace {
             |id: gpui::EntityId| slots.iter().position(|slot| slot.panel.entity_id() == id);
         let review_source = self.slots.get(self.active).and_then(|slot| {
             let panel = slot.panel.read(cx);
+            if panel.is_changelog() {
+                return self.previous.and_then(index_for_id);
+            }
             let source_id = panel
                 .session_id
                 .strip_prefix("review://")
@@ -1214,6 +1306,7 @@ impl Workspace {
             // Preview fixture IDs are never runtime sessions, including old snapshots.
             if panel_state.session_id.starts_with("preview://")
                 || panel_state.session_id.starts_with("accounts://")
+                || panel_state.session_id == Panel::CHANGELOG_SESSION_ID
             {
                 continue;
             }
@@ -1392,7 +1485,10 @@ impl Workspace {
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.account_sign_in.visible || self.show_beta_notice || self.onboarding_simulator.is_some() {
+        if self.account_sign_in.visible
+            || self.show_beta_notice
+            || self.onboarding_simulator.is_some()
+        {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -2106,8 +2202,15 @@ impl Workspace {
     /// Reveal or retire the hint toast and persist the model when it changed.
     fn after_coach_update(&mut self, cx: &mut Context<Self>) {
         let now = learning::now();
-        let visible =
-            crate::config::get().workspace.coaching_hints && self.coach.active_hint(now).is_some();
+        let hint = crate::config::get()
+            .workspace
+            .coaching_hints
+            .then(|| self.coach.active_hint(now))
+            .flatten();
+        let visible = hint.is_some();
+        if let Some(hint) = hint {
+            self.coach_display_hint = Some(hint);
+        }
         self.coach_progress
             .set(if visible { 1.0 } else { 0.0 }, Instant::now());
         if visible {
@@ -2428,7 +2531,11 @@ impl Workspace {
         if !(0..STRIP_COUNT as isize).contains(&target) {
             return;
         }
-        if !self.slots.get(self.active).is_some_and(|slot| slot.row == self.active_row) {
+        if !self
+            .slots
+            .get(self.active)
+            .is_some_and(|slot| slot.row == self.active_row)
+        {
             return;
         }
         self.begin_map_navigation(target as usize);
@@ -2571,7 +2678,8 @@ impl Workspace {
         let source = self.slots[source_index].panel.clone();
         let source_session = source.read(cx).session_id.clone();
         if let Some(index) = self.slots.iter().position(|slot| {
-            !slot.closing && slot.panel.read(cx).session_id == format!("accounts://{source_session}")
+            !slot.closing
+                && slot.panel.read(cx).session_id == format!("accounts://{source_session}")
         }) {
             if let Some(command) = &request.login_command {
                 self.slots[index].panel.update(cx, |panel, cx| {
@@ -2586,7 +2694,8 @@ impl Workspace {
         }
         let row = self.slots[source_index].row;
         let preview = source.read(cx).preview_state;
-        let panel = cx.new(|cx| Panel::new_accounts(&source_session, preview, self.bridge.clone(), cx));
+        let panel =
+            cx.new(|cx| Panel::new_accounts(&source_session, preview, self.bridge.clone(), cx));
         if let Some(command) = &request.login_command {
             panel.update(cx, |panel, cx| {
                 panel.login_command(command, cx);
@@ -2637,7 +2746,11 @@ impl Workspace {
         if self.active >= insert_at {
             self.active += 1;
         }
-        let row_count = self.slots.iter().filter(|slot| slot.row == row && !slot.closing).count();
+        let row_count = self
+            .slots
+            .iter()
+            .filter(|slot| slot.row == row && !slot.closing)
+            .count();
         let source = &mut self.slots[source_index];
         let width = demoted_width(source.width_fraction, row_count);
         if width != source.width_fraction {
@@ -2973,6 +3086,7 @@ impl Workspace {
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
+        self.tutorial_cue("Q", "Close panel", "close", cx);
         if self
             .slots
             .get(self.active)
@@ -3005,6 +3119,7 @@ impl Workspace {
             && !Panel::is_pending_session_id(&session_id)
             && !self.slots[closed].panel.read(cx).is_change_review()
             && !self.slots[closed].panel.read(cx).is_accounts_panel()
+            && !self.slots[closed].panel.read(cx).is_changelog()
             && !self.slots[closed].panel.read(cx).is_machines()
             && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
@@ -3090,6 +3205,7 @@ impl Workspace {
     fn toggle_showcase(&mut self, _: &ToggleShowcase, _: &mut Window, cx: &mut Context<Self>) {
         self.showcase_mode = !self.showcase_mode;
         self.showcase_cue = self.showcase_mode.then(|| ShowcaseCue {
+            started_at: Some(Instant::now()),
             shortcut: if cfg!(target_os = "macos") {
                 "Cmd + Shift + S".to_owned()
             } else {
@@ -3118,6 +3234,7 @@ impl Workspace {
             "Super"
         };
         self.showcase_cue = Some(ShowcaseCue {
+            started_at: Some(Instant::now()),
             shortcut: if shifted {
                 format!("{modifier} + Shift + {key}")
             } else {
@@ -3146,6 +3263,7 @@ impl Workspace {
             "Super"
         };
         self.showcase_cue = Some(ShowcaseCue {
+            started_at: Some(Instant::now()),
             shortcut: format!("{modifier} + {key}"),
             action,
             tutorial_group,
@@ -3160,7 +3278,15 @@ impl Workspace {
             return;
         }
         self.showcase_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SHOWCASE_DURATION).await;
+            // Sleep through the readable hold, then wake rendering for the fade.
+            // Replacing this task on every press cancels the previous expiry.
+            cx.background_executor()
+                .timer(SHOWCASE_DURATION - notifications::SHOWCASE_FADE)
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_executor()
+                .timer(notifications::SHOWCASE_FADE)
+                .await;
             let _ = this.update(cx, |workspace, cx| {
                 workspace.showcase_cue = None;
                 workspace.showcase_task = None;
@@ -3202,6 +3328,16 @@ impl Workspace {
     }
 
     fn set_width(&mut self, fraction: f32, cx: &mut Context<Self>) {
+        let preset = match fraction {
+            0.25 => Some(("1", "Panel width 25%")),
+            0.5 => Some(("2", "Panel width 50%")),
+            0.75 => Some(("3", "Panel width 75%")),
+            1.0 => Some(("4", "Panel width 100%")),
+            _ => None,
+        };
+        if let Some((key, action)) = preset {
+            self.tutorial_cue(key, action, "resize", cx);
+        }
         if let Some(slot) = self
             .slots
             .get_mut(self.active)
@@ -3254,7 +3390,10 @@ impl Workspace {
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates may restore focus while the rehearsal hides panels.
-        if self.account_sign_in.visible || self.show_beta_notice || self.onboarding_simulator.is_some() {
+        if self.account_sign_in.visible
+            || self.show_beta_notice
+            || self.onboarding_simulator.is_some()
+        {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -3314,9 +3453,6 @@ impl Workspace {
                             cx.notify();
                             return;
                         }
-                        if dy == 0.0 {
-                            return;
-                        }
                         let now = cx.background_executor().now();
                         if this
                             .gesture_seen
@@ -3325,14 +3461,13 @@ impl Workspace {
                             this.gesture.reset();
                         }
                         this.gesture_seen = Some(now);
-                        this.gesture.pull += -dy;
-                        if this.gesture.pull.abs() >= STRIP_BREAK {
-                            let target = if this.gesture.pull > 0.0 {
+                        let switch = this.gesture.feed_vertical(dy, event.touch_phase);
+                        if switch != 0 {
+                            let target = if switch > 0 {
                                 (this.active_row + 1).min(STRIP_COUNT - 1)
                             } else {
                                 this.active_row.saturating_sub(1)
                             };
-                            this.gesture.pull = 0.0;
                             if target != this.active_row {
                                 this.switch_row_animated(target, window, cx);
                             }
@@ -3452,6 +3587,7 @@ impl Workspace {
 
     fn animation_active(&self) -> bool {
         self.row_progress.is_animating()
+            || self.workspace_pull.is_animating()
             || self.live_tabs.is_animating()
             || self.overview_progress.is_animating()
             || self.hints_progress.is_animating()
@@ -3715,7 +3851,7 @@ impl Workspace {
             (self.gesture.pull * PULL_RESISTANCE).clamp(-viewport_h / 3.0, viewport_h / 3.0)
         } else {
             0.0
-        };
+        } + self.workspace_pull.value * viewport_h;
         let entity = cx.entity();
         div()
             .relative()
@@ -3847,6 +3983,18 @@ impl Workspace {
         // In tests it advances explicitly, so a busy test runner cannot turn
         // consecutive touchpad events into a new gesture or expire the reticle.
         let now = cx.background_executor().now();
+        if event.delta.precise() {
+            // Apply continuity before every precise route, including empty
+            // conversations, so small pulls separated by pauses do not add up.
+            if self
+                .gesture_seen
+                .is_none_or(|seen| now.duration_since(seen) > GESTURE_RESET)
+                || event.touch_phase == gpui::TouchPhase::Started
+            {
+                self.gesture.reset();
+            }
+            self.gesture_seen = Some(now);
+        }
         let horizontally_locked = self.gesture.axis == GestureAxis::Horizontal
             && self
                 .gesture_seen
@@ -3862,26 +4010,20 @@ impl Workspace {
             self.gesture.pull = 0.0;
             dy = 0.0;
         }
-        if empty_panel && !horizontally_locked && dx == 0.0 && dy != 0.0 {
+        let vertical_workspace_pull = event.delta.precise()
+            && self.gesture.axis == GestureAxis::Vertical
+            && self.gesture.pull != 0.0;
+        if (empty_panel || vertical_workspace_pull)
+            && !horizontally_locked
+            && dx == 0.0
+            && dy != 0.0
+        {
             // With no conversation beneath the pointer, vertical scrolling is
             // workspace navigation. A wheel notch moves one row immediately;
             // precise touchpad deltas accumulate to the same deliberate
             // threshold used by a vertical breakout from a horizontal pan.
             let switch = if event.delta.precise() {
-                if event.touch_phase == gpui::TouchPhase::Started
-                    || self.gesture.axis != GestureAxis::Vertical
-                {
-                    self.gesture.reset();
-                    self.gesture.axis = GestureAxis::Vertical;
-                }
-                self.gesture.pull += dy;
-                if self.gesture.pull.abs() >= STRIP_BREAK {
-                    let switch = if self.gesture.pull < 0.0 { 1 } else { -1 };
-                    self.gesture.pull = 0.0;
-                    switch
-                } else {
-                    0
-                }
+                self.gesture.feed_vertical(dy, event.touch_phase)
             } else if dy < 0.0 {
                 1
             } else {
@@ -3897,9 +4039,6 @@ impl Workspace {
                     self.switch_row_animated(target, window, cx);
                 }
             }
-            if event.touch_phase == gpui::TouchPhase::Ended {
-                self.gesture.reset();
-            }
             cx.notify();
             return true;
         }
@@ -3912,15 +4051,6 @@ impl Workspace {
             }
             return false;
         }
-        // Not every platform delivers an Ended phase, so silence also ends
-        // the gesture: a fresh burst of deltas starts a fresh axis decision.
-        if self
-            .gesture_seen
-            .is_none_or(|seen| now.duration_since(seen) > GESTURE_RESET)
-        {
-            self.gesture.reset();
-        }
-        self.gesture_seen = Some(now);
         match self.gesture.feed(dx, dy, event.touch_phase) {
             Routed::ToPanel => false,
             Routed::Strip {
@@ -3938,8 +4068,8 @@ impl Workspace {
                 }
                 if switch != 0 {
                     // The vertical pull broke the sticky axis: hop to the
-                    // neighbouring strip, keeping the gesture alive so a
-                    // longer drag steps through several strips.
+                    // neighbouring strip. Remaining travel is latched until
+                    // the next gesture rather than skipping more strips.
                     let target = if switch > 0 {
                         (self.active_row + 1).min(STRIP_COUNT - 1)
                     } else {
@@ -4430,11 +4560,10 @@ impl Workspace {
         // within each section.
         let ordered_sessions = sidebar_session_order(&self.sessions);
         let swarm = sidebar_swarm::groups(&ordered_sessions);
-        let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) =
-            ordered_sessions
-                .into_iter()
-                .filter(|session| !swarm.nested.contains(&session.session_id))
-                .partition(|session| open_activities.contains_key(&session.session_id));
+        let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
+            .into_iter()
+            .filter(|session| !swarm.nested.contains(&session.session_id))
+            .partition(|session| open_activities.contains_key(&session.session_id));
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
         let panel_positions = panel_positions
@@ -4682,18 +4811,10 @@ impl Workspace {
                             }
                             let selected =
                                 active_id.as_deref() == Some(session.session_id.as_str());
-                            let (icon, mut title) = sidebar_session_title(session);
-                            if session
-                                .title
-                                .as_deref()
-                                .map(str::trim)
-                                .is_none_or(str::is_empty)
-                                && let Some(open_title) = open_titles.get(&session.session_id)
-                                && custom_sidebar_title(&session.session_id, open_title)
-                            {
-                                title.clone_from(open_title);
-                            }
-                            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+                            let (icon, title) = sidebar_session_title_with_open_title(
+                                session,
+                                open_titles.get(&session.session_id).map(String::as_str),
+                            );
                             #[cfg(test)]
                             tests::SIDEBAR_TITLE_RENDERS.with(|count| count.set(count.get() + 1));
                             let directory = sidebar_session_directory(session);
@@ -6323,7 +6444,7 @@ impl Workspace {
                 .bg(Theme::global().HEADER_BG)
                 .text_size(px(11.0))
                 .text_color(Theme::global().TEXT_DIM)
-                .child("Composer: ↑/↓ history · Ctrl+K/J prompts · Ctrl+W word delete · Alt+B/F word move · Ctrl+U delete to start · Ctrl/Cmd+Z undo · Esc clear"),
+                .child("F2 rename session · Composer: ↑/↓ history · Ctrl+K/J prompts · Ctrl+W word delete · Alt+B/F word move · Ctrl+U delete to start · Ctrl/Cmd+Z undo · Esc clear"),
         );
 
         for (area, rows) in self.coach.report(now) {
@@ -6726,8 +6847,21 @@ impl Render for Workspace {
         let render_started = Instant::now();
         let viewport = window.viewport_size();
         let compact = responsive::is_compact(f32::from(viewport.width));
-        if !compact {
+        if !compact || !self.show_sidebar {
             self.compact_sidebar_open = false;
+        }
+        let drawer_duration = if cx.reduce_motion() || !compact || !self.show_sidebar {
+            std::time::Duration::ZERO
+        } else {
+            transition::policy(Transition::Overlay).duration
+        };
+        let drawer_progress = self.compact_sidebar_motion.update(
+            self.compact_sidebar_open,
+            render_started,
+            drawer_duration,
+        );
+        if self.compact_sidebar_motion.is_animating() {
+            window.request_animation_frame();
         }
         let sidebar_width = responsive::sidebar_width(self.show_sidebar, compact);
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
@@ -6764,14 +6898,15 @@ impl Render for Workspace {
             self.focus_active(window, cx);
         }
         let hints_progress = self.hints_progress.sample(now);
-        // Expire the hint on a schedule of its own, so a suggestion the user
-        // ignores fades without needing another input to clear it.
-        let mut coach_hint = crate::config::get()
+        // Keep the outgoing content mounted until the fade completes.
+        let coach_hint = crate::config::get()
             .workspace
             .coaching_hints
             .then(|| self.coach.active_hint(learning::now()))
             .flatten();
-        if coach_hint.is_none() {
+        if let Some(hint) = coach_hint {
+            self.coach_display_hint = Some(hint);
+        } else {
             self.coach_progress.set(0.0, now);
         }
         let mut coach_progress = self.coach_progress.sample(now);
@@ -6779,7 +6914,7 @@ impl Render for Workspace {
         if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_NOTIFICATION").as_deref() == Ok("1")
         {
-            coach_hint = Some(learning::Hint {
+            self.coach_display_hint = Some(learning::Hint {
                 skill_id: "focus_first_last",
                 keys: "super-u / super-p",
                 label: "Jump to either end",
@@ -6788,24 +6923,20 @@ impl Render for Workspace {
             });
             coach_progress = 1.0;
         }
-        // Reserve actual layout space outside the canvas. Tips cannot occlude
-        // tabs, the minimap, transcript, composer, or workspace navigation.
-        let coach_compact = canvas_w < 620.0;
-        let coach_hint = coach_hint.filter(|_| coach_progress > 0.0);
-        let coach_height = if coach_hint.is_some() {
-            notifications::coach_strip_height(coach_compact)
-        } else {
-            0.0
-        };
-        let viewport_h = (viewport_h - coach_height).max(0.0);
+        if coach_progress <= 0.0 && !self.coach_progress.is_animating() {
+            self.coach_display_hint = None;
+        }
         let row_progress = self.row_progress.sample(now);
         if !self.row_progress.is_animating() {
             self.outgoing_row = None;
         }
+        let workspace_pull = self.sample_workspace_pull(now, cx);
         if self.overview_progress.is_animating()
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
             || self.row_progress.is_animating()
+            || workspace_pull != 0.0
+            || self.workspace_pull.is_animating()
             || Theme::is_transitioning()
         {
             if Theme::is_transitioning() {
@@ -6824,6 +6955,8 @@ impl Render for Workspace {
                 .into_any_element()
         } else if self.outgoing_row.is_some() {
             self.render_map_trip(row_progress, viewport_w, viewport_h, window, cx)
+        } else if workspace_pull != 0.0 {
+            self.render_workspace_pull(workspace_pull, viewport_w, viewport_h, window, cx)
         } else {
             // One path for both the populated and the empty strip, so the
             // empty strip's gesture handling exists everywhere it paints.
@@ -6939,6 +7072,11 @@ impl Render for Workspace {
                     cx.stop_propagation();
                     return;
                 }
+                if this.rename_editor.is_some() && event.keystroke.key == "escape" {
+                    this.close_rename_editor(cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.compact_sidebar_open && event.keystroke.key == "escape" {
                     this.compact_sidebar_open = false;
                     this.focus_active(window, cx);
@@ -6971,6 +7109,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::new_panel_in_pinned_directory))
             .on_action(cx.listener(Self::fork_panel))
+            .capture_action(cx.listener(Self::rename_session))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
             .on_action(cx.listener(Self::open_accounts))
@@ -6985,6 +7124,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::new_help_session))
+            .on_action(cx.listener(Self::open_changelog))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
             .on_action(cx.listener(|this, _: &WidthPreset1, _w, cx| this.set_width(0.25, cx)))
@@ -7033,7 +7173,12 @@ impl Render for Workspace {
                                         ))
                                     })
                                     .child(content)
-                                    .child(self.render_workspace_bar(canvas_w, window, cx))
+                                    .child(self.render_workspace_bar(
+                                        canvas_w,
+                                        coach_progress,
+                                        window,
+                                        cx,
+                                    ))
                                     .when(
                                         self.show_minimap
                                             && !self.slots.is_empty()
@@ -7044,34 +7189,25 @@ impl Render for Workspace {
                                             )
                                         },
                                     )
-                                    // Paint non-tutorial feedback last so it remains above the
-                                    // canvas without covering an animated tutorial control.
-                                    .when_some(
-                                        self.showcase_cue.as_ref().filter(|cue| {
-                                            matches!(cue.tutorial_group, "" | "help")
-                                        }),
-                                        |el, cue| el.child(self.render_showcase_cue(cue)),
-                                    )
+                                    // Showcase is independent of the Learn sidebar: every
+                                    // tutorial shortcut gets a visible keybinding/action cue.
+                                    .when_some(self.showcase_cue.as_ref(), |el, cue| {
+                                        el.child(self.render_showcase_cue(cue, window))
+                                    })
                                     // Update status stays visible in every mode, including
                                     // overview: a user whose build cannot render text still
                                     // needs to see that a fix is on its way.
                                     .when_some(self.render_update_chip(cx), |el, chip| {
                                         el.child(chip)
                                     }),
-                            )
-                            .when_some(coach_hint, |el, hint| {
-                                el.child(self.render_coach_toast(
-                                    &hint,
-                                    coach_progress,
-                                    coach_compact,
-                                    cx,
-                                ))
-                            }),
+                            ),
                     ),
             )
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
-                |root| root.child(self.render_compact_sidebar_overlay(fullscreen, cx)),
+                |root| {
+                    root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, cx))
+                },
             )
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
@@ -7081,6 +7217,9 @@ impl Render for Workspace {
                 self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
                 |root| root.child(self.render_folder_picker(cx)),
             )
+            .when(self.rename_editor.is_some(), |root| {
+                root.child(self.render_rename_editor(cx))
+            })
             .when(self.show_beta_notice, |root| {
                 root.child(self.render_beta_notice(cx))
             });
@@ -7313,23 +7452,22 @@ fn sync_sidebar_session_layout(
 }
 
 fn sidebar_session_title(session: &jcode_sdk::SessionInfo) -> (&'static str, String) {
-    let animal = jcode_core::id::extract_session_name(&session.session_id);
-    let icon = animal.map(jcode_core::id::session_icon).unwrap_or("💫");
-    let title = session
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .map(str::to_owned)
-        .or_else(|| animal.map(str::to_owned))
-        .unwrap_or_else(|| session.session_id.chars().take(12).collect());
-    (icon, title)
+    sidebar_session_title_with_open_title(session, None)
 }
 
-fn custom_sidebar_title(session_id: &str, title: &str) -> bool {
-    let title = title.trim();
-    !title.is_empty()
-        && title != jcode_core::id::extract_session_name(session_id).unwrap_or(session_id)
+fn sidebar_session_title_with_open_title(
+    session: &jcode_sdk::SessionInfo,
+    open_title: Option<&str>,
+) -> (&'static str, String) {
+    let animal = jcode_core::id::extract_session_name(&session.session_id);
+    let icon = animal.map(jcode_core::id::session_icon).unwrap_or("💫");
+    // An open panel owns the tab title, including provisional first-prompt titles
+    // that have not reached the session catalog yet.
+    let title = open_title.or(session.title.as_deref()).unwrap_or_default();
+    (
+        icon,
+        crate::panel::folder_session_title(&session.session_id, title).to_string(),
+    )
 }
 
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
@@ -8020,6 +8158,7 @@ mod tests {
             onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    prompt_queue: Default::default(),
                     session_id: "terminal".into(),
                     title: "build shell".into(),
                     working_dir: Some("/workspace".into()),
@@ -8220,6 +8359,7 @@ mod tests {
                     onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            prompt_queue: Default::default(),
                             session_id: "session_fox_1234567890000_deadbeef".into(),
                             title: "Still running".into(),
                             working_dir: Some("/home/example/project".into()),
@@ -8484,9 +8624,55 @@ mod tests {
     }
 
     #[test]
-    fn untitled_sidebar_session_falls_back_to_its_memorable_animal() {
-        let session = session_info("session_fox_1234567890_deadbeef", Some("  "));
-        assert_eq!(sidebar_session_title(&session), ("🦊", "fox".into()));
+    fn sidebar_and_tab_titles_match_for_untitled_and_named_sessions() {
+        for id in ["session_fox_1234567890_deadbeef", "opaque-session-deadbeef"] {
+            for title in [
+                None,
+                Some(""),
+                Some("  "),
+                Some("session deadbeef"),
+                Some(id),
+            ] {
+                let session = session_info(id, title);
+                assert_eq!(sidebar_session_title(&session).1, "New session");
+                assert_eq!(
+                    sidebar_session_title(&session).1,
+                    crate::panel::folder_session_title(id, title.unwrap_or_default()).as_ref(),
+                );
+            }
+        }
+        let session = session_info(
+            "session_fox_1234567890_deadbeef",
+            Some("  Plan\n the   release "),
+        );
+        assert_eq!(
+            sidebar_session_title(&session),
+            ("🦊", "Plan the release".into())
+        );
+        assert_eq!(
+            sidebar_session_title(&session).1,
+            crate::panel::folder_session_title(
+                &session.session_id,
+                session.title.as_deref().unwrap()
+            )
+            .as_ref(),
+        );
+    }
+
+    #[test]
+    fn sidebar_uses_the_open_tabs_title_even_when_catalog_is_stale() {
+        let session = session_info("session_fox_1234567890_deadbeef", Some("Old catalog title"));
+        for title in [
+            "New session",
+            "session deadbeef",
+            "  New\n prompt title  ",
+            "fox",
+        ] {
+            assert_eq!(
+                sidebar_session_title_with_open_title(&session, Some(title)).1,
+                crate::panel::folder_session_title(&session.session_id, title).as_ref(),
+            );
+        }
     }
 
     #[test]
@@ -8951,9 +9137,13 @@ mod tests {
                     });
                 }
                 assert_eq!(
-                    vcx.debug_bounds("default-directory-button").unwrap(), directory
+                    vcx.debug_bounds("default-directory-button").unwrap(),
+                    directory
                 );
-                assert_eq!(vcx.debug_bounds("machines-picker-button").unwrap(), machines);
+                assert_eq!(
+                    vcx.debug_bounds("machines-picker-button").unwrap(),
+                    machines
+                );
             }
         }
     }
@@ -9404,13 +9594,10 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_section_menu_switches_pages_without_moving_content(cx: &mut gpui::TestAppContext) {
+    fn sidebar_top_folder_tabs_join_their_content_when_clicked(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         vcx.run_until_parked();
-        let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-        let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-        let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         for (selector, view) in [
             ("sidebar-files-tab", SidebarView::Files),
             ("sidebar-accounts-tab", SidebarView::Accounts),
@@ -9418,21 +9605,17 @@ mod tests {
         ] {
             click_sidebar_navigation(&workspace, vcx, selector);
             assert_eq!(workspace.read_with(vcx, |w, _| w.sidebar_view), view);
-            let selected = vcx.debug_bounds(selector).unwrap();
-            assert!(selected.left() >= trigger.left() && selected.right() <= trigger.right());
-            assert_eq!(selected.center().x, trigger.center().x);
-            assert_eq!(vcx.debug_bounds("sidebar-section-trigger").unwrap(), trigger);
-            let current_body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-            assert_eq!(current_body.bottom(), body.bottom());
-            assert_eq!(current_body.size.width, body.size.width);
-            if view == SidebarView::Sessions {
-                assert_eq!(current_body, body);
-            } else {
-                assert!(current_body.top() < body.top());
-            }
-            assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
+            let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+            let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
+            let directory = vcx.debug_bounds("default-directory-button").unwrap();
+            assert_eq!(
+                header.bottom(),
+                directory.top(),
+                "header must touch the fixed preference rows"
+            );
+            assert_eq!(header.size.height, px(TITLEBAR_HEIGHT));
+            assert!(trigger.left() >= header.left() && trigger.right() <= header.right());
             assert!(vcx.debug_bounds("sidebar-roller-next").is_none());
-            assert!(vcx.debug_bounds("sidebar-roller-previous").is_none());
         }
     }
 
@@ -10380,7 +10563,10 @@ mod tests {
         let viewport = 1200.0;
         let panels = || [(0, 0.5), (1, 0.5), (2, 0.5)];
 
-        assert_eq!(panel_at_viewport_center(panels(), -STRUT, viewport), Some(0));
+        assert_eq!(
+            panel_at_viewport_center(panels(), -STRUT, viewport),
+            Some(0)
+        );
         assert_eq!(panel_at_viewport_center(panels(), 400.0, viewport), Some(1));
         assert_eq!(panel_at_viewport_center(panels(), 900.0, viewport), Some(2));
         assert_eq!(panel_at_viewport_center([], 0.0, viewport), None);
@@ -10428,10 +10614,10 @@ mod tests {
 
     /// A gesture that starts horizontally owns the strip exclusively, and
     /// enough vertical pull breaks the sticky axis and hops one strip per
-    /// threshold, in the natural direction (fingers up reveal the strip
+    /// gesture, in the natural direction (fingers up reveal the strip
     /// below), without ever leaking a delta into the transcript.
     #[test]
-    fn a_horizontal_gesture_breaks_out_vertically_one_strip_per_threshold() {
+    fn a_horizontal_gesture_breaks_out_vertically_one_strip_per_gesture() {
         let mut gesture = StripGesture::default();
         assert_eq!(
             gesture.feed(-40.0, 0.0, gpui::TouchPhase::Started),
@@ -10451,7 +10637,7 @@ mod tests {
                 exclusive: true
             }
         );
-        // Crossing the threshold hops down and re-arms.
+        // Crossing the threshold hops down and latches.
         assert_eq!(
             gesture.feed(0.0, -STRIP_BREAK * 0.6, gpui::TouchPhase::Moved),
             Routed::Strip {
@@ -10460,20 +10646,29 @@ mod tests {
                 exclusive: true
             }
         );
-        // A second full pull, this time downward fingers, hops back up.
+        // Even a direction reversal cannot trigger a second hop.
         assert_eq!(
             gesture.feed(0.0, STRIP_BREAK * 1.2, gpui::TouchPhase::Moved),
             Routed::Strip {
                 dx: 0.0,
-                switch: -1,
+                switch: 0,
                 exclusive: true
             }
         );
-        // Lifting the fingers ends the gesture: the next one decides afresh.
+        // Lifting the fingers preserves the latch against trailing momentum.
         gesture.feed(0.0, 0.0, gpui::TouchPhase::Ended);
         assert_eq!(gesture.axis, GestureAxis::Undecided);
         assert_eq!(
-            gesture.feed(0.0, -40.0, gpui::TouchPhase::Moved),
+            gesture.feed(0.0, -STRIP_BREAK * 3.0, gpui::TouchPhase::Moved),
+            Routed::Strip {
+                dx: 0.0,
+                switch: 0,
+                exclusive: true
+            }
+        );
+        // An explicit new gesture decides its axis afresh.
+        assert_eq!(
+            gesture.feed(0.0, -40.0, gpui::TouchPhase::Started),
             Routed::ToPanel
         );
     }
@@ -10574,6 +10769,21 @@ mod tests {
             scroll_before, scroll_after,
             "a committed pan must consume its vertical deltas, not scroll the transcript"
         );
+        workspace.update_in(cx, |w, window, cx| {
+            w.row_progress
+                .sample(Instant::now() + Duration::from_secs(1));
+            cx.notify();
+            window.simulate_next_frame(cx);
+        });
+        cx.run_until_parked();
+        for _ in 0..5 {
+            swipe(cx, 0.0, -STRIP_BREAK * 2.0, gpui::TouchPhase::Moved);
+            assert_eq!(
+                workspace.read_with(cx, |w, _| w.active_row),
+                0,
+                "continued touch travel must not move down a workspace"
+            );
+        }
     }
 
     #[gpui::test]
@@ -10646,7 +10856,8 @@ mod tests {
                 w.active_row, 1,
                 "the keyboard shortcut must still move down"
             );
-            w.row_progress.sample(Instant::now() + Duration::from_secs(1));
+            w.row_progress
+                .sample(Instant::now() + Duration::from_secs(1));
             cx.notify();
             window.simulate_next_frame(cx);
         });
@@ -11298,6 +11509,7 @@ mod tests {
         });
         vcx.run_until_parked();
 
+        assert!(vcx.debug_bounds("sidebar-section-trigger").unwrap().right() <= px(SIDEBAR_WIDTH));
         click_sidebar_navigation(&workspace, vcx, "open-gmail");
 
         workspace.update(vcx, |workspace, cx| {
@@ -11367,133 +11579,70 @@ mod tests {
         });
     }
 
-    /// The toast must actually paint. Earlier live-screenshot attempts always
-    /// caught the window after the hint had expired, so this drives the real
-    /// render pipeline and asserts the element was laid out on screen.
+    /// The hint lives in spare header space without changing panel geometry.
     #[gpui::test]
-    fn the_hint_toast_actually_paints_when_the_coach_teaches(cx: &mut gpui::TestAppContext) {
-        let now = learning::now();
-        let mut coach = learning::Coach::new();
-        for step in 0..8 {
-            coach.used_shortcut("focus_left_right", now - (8 - step) * 3 * 86_400);
-        }
-
+    fn the_hint_chip_uses_only_spare_tab_space(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
-        let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut workspace = Workspace::for_test(coach, cx);
-            workspace.enable_test_minimap();
-            for name in ["one", "two", "three", "four", "five"] {
-                workspace.push_test_panel(name, cx);
-            }
-            let _ = window;
+        let (workspace, cx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("one", cx);
             workspace
         });
-        cx.update(|window, cx| {
-            let handle = workspace.read(cx).focus_handle.clone();
-            window.focus(&handle, cx);
+        let handle = cx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+            window.window_handle()
         });
+        cx.simulate_window_resize(handle, gpui::size(px(1600.), px(800.)));
         cx.run_until_parked();
-
-        // Nothing is being taught yet, so no toast should be on screen.
-        cx.draw(
-            gpui::point(px(0.), px(0.)),
-            gpui::size(px(1200.), px(800.)),
-            |_, _| gpui::div(),
-        );
+        assert!(cx.debug_bounds("coach-toast").is_none());
+        let canvas_before = cx.debug_bounds("workspace-canvas").unwrap();
+        let tab_before = cx.debug_bounds("live-session-tab-0").unwrap();
+        workspace.update(cx, |workspace, cx| workspace.missed("new_panel", cx));
         cx.run_until_parked();
-        assert!(
-            cx.debug_bounds("coach-toast").is_none(),
-            "no toast before anything is taught"
-        );
-
-        // Grind along the strip, which is what someone without the jump key does.
-        cx.simulate_keystrokes("super-end super-h super-h super-h");
-        cx.run_until_parked();
-        workspace.update(cx, |workspace, _| {
-            assert_eq!(
-                workspace.test_coach().active_hint_id(),
-                Some("focus_first_last"),
-                "grinding should have produced a hint to render"
-            );
-        });
-
-        cx.run_until_parked();
-        let bounds = cx
+        let tip = cx
             .debug_bounds("coach-toast")
-            .expect("the hint toast should have painted");
-        let minimap = cx
-            .debug_bounds("minimap")
-            .expect("the minimap should have painted above the hint");
-        assert!(
-            bounds.size.width > px(0.) && bounds.size.height > px(0.),
-            "the toast must occupy real space, got {bounds:?}"
-        );
-        assert!(
-            bounds.origin.y >= minimap.origin.y + minimap.size.height,
-            "the toast should sit below the minimap: toast={bounds:?}, minimap={minimap:?}"
-        );
-        let canvas = cx
-            .debug_bounds("workspace-canvas")
-            .expect("workspace canvas");
-        assert!(
-            bounds.top() >= canvas.bottom(),
-            "tip has reserved space outside the canvas"
-        );
-        assert!(bounds.origin.x >= px(SIDEBAR_WIDTH));
-        assert!(bounds.size.height <= px(80.0));
-        let title = cx.debug_bounds("coach-title").expect("short action label");
-        let keys = cx.debug_bounds("coach-keys").expect("visual keycaps");
-        let timer = cx
-            .debug_bounds("coach-countdown")
-            .expect("visible countdown");
-        let diagram = cx.debug_bounds("coach-diagram").expect("action diagram");
-        for child in [title, keys, timer, diagram] {
-            assert!(child.top() >= bounds.top() && child.bottom() <= bounds.bottom());
-            assert!(child.left() >= bounds.left() && child.right() <= bounds.right());
+            .expect("hint chip should paint");
+        let row = cx.debug_bounds("workspace-tab-row").unwrap();
+        let new = cx.debug_bounds("tab-new-session").unwrap();
+        assert_eq!(cx.debug_bounds("workspace-canvas").unwrap(), canvas_before);
+        assert_eq!(cx.debug_bounds("live-session-tab-0").unwrap(), tab_before);
+        assert!(tip.left() >= tab_before.right() + px(16.0));
+        assert!(tip.right() < new.left());
+        // Entry slides from six pixels above its settled position, inside chrome.
+        assert!(tip.top() >= row.top() - px(4.0) && tip.bottom() <= row.bottom());
+        for selector in ["coach-title", "coach-keys", "coach-dismiss"] {
+            let child = cx.debug_bounds(selector).unwrap();
+            assert!(child.left() >= tip.left() && child.right() <= tip.right());
+            assert!(child.top() >= tip.top() && child.bottom() <= tip.bottom());
         }
+        let title = cx.debug_bounds("coach-title").unwrap();
         cx.simulate_click(title.center(), gpui::Modifiers::default());
-        workspace.read_with(cx, |workspace, _| {
-            assert!(
-                workspace.test_coach().active_hint_id().is_some(),
-                "body clicks do not dismiss tips"
-            );
+        cx.update(|window, cx| {
+            let workspace = workspace.read(cx);
+            assert!(workspace.coach.active_hint_id().is_some());
+            assert!(workspace.focus_handle.is_focused(window));
         });
-        let handle = cx.update(|window, _| window.window_handle());
-        for width in [1200.0, 900.0, 640.0, 480.0] {
+        for width in [900.0, 640.0, 480.0] {
             cx.simulate_window_resize(handle, gpui::size(px(width), px(800.0)));
             cx.run_until_parked();
-            let tip = cx.debug_bounds("coach-toast").unwrap();
-            let canvas = cx.debug_bounds("workspace-canvas").unwrap();
-            assert!(tip.top() >= canvas.bottom());
-            assert!(tip.right() <= px(width));
-            assert!(tip.bottom() <= px(800.0));
-            for selector in [
-                "coach-diagram",
-                "coach-title",
-                "coach-keys",
-                "coach-countdown",
-                "coach-dismiss",
-            ] {
-                let child = cx.debug_bounds(selector).unwrap();
-                assert!(
-                    child.left() >= tip.left() && child.right() <= tip.right(),
-                    "{selector} outside tip at {width}: {child:?} {tip:?}"
-                );
-                assert!(
-                    child.top() >= tip.top() && child.bottom() <= tip.bottom(),
-                    "{selector} outside tip at {width}: {child:?} {tip:?}"
-                );
-            }
+            assert!(
+                cx.debug_bounds("coach-toast").is_none(),
+                "hide when crowded at {width}"
+            );
+            assert_eq!(
+                cx.debug_bounds("workspace-canvas").unwrap().bottom(),
+                canvas_before.bottom()
+            );
         }
-        let dismiss = cx
-            .debug_bounds("coach-dismiss")
-            .expect("explicit close control");
-        assert!(dismiss.size.width >= px(28.0));
+        cx.simulate_window_resize(handle, gpui::size(px(1600.), px(800.)));
+        cx.run_until_parked();
+        let dismiss = cx.debug_bounds("coach-dismiss").unwrap();
         cx.simulate_click(dismiss.center(), gpui::Modifiers::default());
         workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.coach.active_hint_id().is_none());
             assert!(
-                workspace.test_coach().active_hint_id().is_none(),
-                "close dismisses the tip"
+                workspace.coach_display_hint.is_some(),
+                "retain content for exit fade"
             );
         });
     }
@@ -12770,9 +12919,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tutorial_lists_basics_and_arrangement_and_marks_learning(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn tutorial_lists_basics_and_arrangement_and_marks_learning(cx: &mut gpui::TestAppContext) {
         let (workspace, cx) = focused_workspace(cx);
         workspace.update(cx, |workspace, cx| {
             workspace.sidebar_view = SidebarView::Learn;
@@ -12836,7 +12983,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn showcase_is_on_by_default_and_only_paints_workspace_motions(cx: &mut gpui::TestAppContext) {
+    fn showcase_is_on_by_default_and_paints_motions_with_tutorial_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, cx) = focused_workspace(cx);
         workspace.update(cx, |workspace, cx| {
             workspace.sidebar_view = SidebarView::Learn;
@@ -12861,8 +13010,8 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(
-            cx.debug_bounds("showcase-shortcut").is_none(),
-            "tutorial motions should animate their contextual controls instead of covering them"
+            cx.debug_bounds("showcase-shortcut").is_some(),
+            "showcase motions must stay visible even with the tutorial open"
         );
         assert!(
             cx.debug_bounds("tutorial-guides").is_some(),
@@ -12880,9 +13029,9 @@ mod tests {
             "all navigation, session, and width lessons should be listed together"
         );
         assert!(
-            cx.debug_bounds("showcase-key").is_none()
-                && cx.debug_bounds("showcase-action").is_none(),
-            "tutorial feedback must stay in its lesson, not add a second overlay"
+            cx.debug_bounds("showcase-key").is_some()
+                && cx.debug_bounds("showcase-action").is_some(),
+            "showcase feedback must include both the shortcut and its action"
         );
 
         cx.simulate_keystrokes(&format!("{MOD}-b"));
@@ -12915,6 +13064,35 @@ mod tests {
             assert!(!workspace.showcase_mode);
             assert!(workspace.showcase_cue.is_none());
         });
+    }
+
+    #[gpui::test]
+    fn showcase_repeated_press_restarts_animation_and_cancels_old_expiry(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, cx) = focused_workspace(cx);
+        cx.simulate_keystrokes(&format!("{MOD}-h"));
+        let old_start = Instant::now() - Duration::from_secs(1);
+        workspace.update(cx, |workspace, _| {
+            workspace.showcase_cue.as_mut().unwrap().started_at = Some(old_start);
+        });
+        cx.executor().advance_clock(Duration::from_millis(1000));
+        cx.simulate_keystrokes(&format!("{MOD}-h"));
+        workspace.update(cx, |workspace, _| {
+            let cue = workspace.showcase_cue.as_ref().unwrap();
+            assert_eq!(cue.action, "Focus left");
+            assert!(cue.started_at.unwrap() > old_start);
+        });
+        cx.executor().advance_clock(Duration::from_millis(850));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| assert!(workspace.showcase_cue.is_some()));
+        // The fade wakeup must leave the cue mounted, not dismiss it early.
+        cx.executor().advance_clock(Duration::from_millis(670));
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| assert!(workspace.showcase_cue.is_some()));
+        cx.executor().advance_clock(notifications::SHOWCASE_FADE);
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, _| assert!(workspace.showcase_cue.is_none()));
     }
 
     #[gpui::test]
@@ -13080,29 +13258,26 @@ mod tests {
         if workspace.read_with(cx, |w, _| {
             w.layout_mode == crate::config::LayoutMode::FolderTabs
         }) {
-            let trigger = cx.debug_bounds("sidebar-section-trigger").unwrap();
-            cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+            let header = cx.debug_bounds("sidebar-navigation-tabs").unwrap();
+            cx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
             cx.run_until_parked();
-            let menu = cx.debug_bounds("sidebar-section-menu").unwrap();
-            assert!(menu.top() >= trigger.bottom());
-            let expanded = Box::leak(format!("{selector}-expanded").into_boxed_str());
-            let option = cx
+            let expanded: &'static str = Box::leak(format!("{selector}-expanded").into_boxed_str());
+            let choice = cx
                 .debug_bounds(expanded)
-                .expect("menu option must be reachable");
-            assert!(option.left() >= menu.left() && option.right() <= menu.right());
+                .unwrap_or_else(|| panic!("missing sidebar choice {expanded}"));
+            let trigger = cx.debug_bounds("sidebar-section-trigger").unwrap();
             assert!(
-                f32::from(option.center().x) < SIDEBAR_WIDTH,
-                "action stays inside the sidebar"
+                choice.top() >= trigger.bottom(),
+                "menu opens below the title"
             );
-            assert!(option.top() >= menu.top() && option.bottom() <= menu.bottom());
-            cx.simulate_click(option.center(), gpui::Modifiers::default());
+            cx.simulate_click(choice.center(), gpui::Modifiers::default());
             cx.run_until_parked();
-            // Page selection keeps the menu open until the pointer leaves it.
-            // Move into the canvas so subsequent clicks reach the sidebar body.
-            let canvas = cx.debug_bounds("workspace-canvas").unwrap();
-            cx.update(|window, cx| window.simulate_mouse_move(canvas.center(), cx));
+            // Leave the header and its menu before using the page.
+            cx.update(|window, cx| {
+                window.simulate_mouse_move(gpui::point(px(130.0), px(400.0)), cx);
+            });
             cx.run_until_parked();
-            assert!(cx.debug_bounds("sidebar-section-menu").is_none());
+            assert!(cx.debug_bounds(expanded).is_none());
             return;
         }
 
@@ -13217,7 +13392,9 @@ mod accounts_panel_tests {
     use super::*;
 
     #[gpui::test]
-    fn accounts_panel_preview_and_pending_sources_never_contact_runtime(cx: &mut gpui::TestAppContext) {
+    fn accounts_panel_preview_and_pending_sources_never_contact_runtime(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -13236,11 +13413,16 @@ mod accounts_panel_tests {
         let accounts = workspace.read_with(vcx, |w, cx| {
             let accounts = w.slots[w.active].panel.clone();
             assert!(accounts.read(cx).is_accounts_panel());
-            assert_eq!(accounts.read(cx).preview_state, source.read(cx).preview_state);
+            assert_eq!(
+                accounts.read(cx).preview_state,
+                source.read(cx).preview_state
+            );
             assert!(!source.read(cx).can_refresh_account_runtime());
             accounts
         });
-        let provider = vcx.debug_bounds("login-provider-openai-api").expect("offline provider");
+        let provider = vcx
+            .debug_bounds("login-provider-openai-api")
+            .expect("offline provider");
         vcx.simulate_click(provider.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         vcx.simulate_input("offline-only-not-a-credential");
@@ -13250,7 +13432,10 @@ mod accounts_panel_tests {
         assert!(vcx.debug_bounds("login-error").is_some());
         accounts.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelChooseModel));
         vcx.run_until_parked();
-        assert!(commands.try_recv().is_err(), "preview auth and closing must remain offline");
+        assert!(
+            commands.try_recv().is_err(),
+            "preview auth and closing must remain offline"
+        );
         assert!(source.read_with(vcx, |panel, _| panel.items.is_empty()));
         source.update(vcx, |panel, _| {
             panel.preview_state = None;
@@ -13264,7 +13449,10 @@ mod accounts_panel_tests {
         let accounts = workspace.read_with(vcx, |w, _| w.slots[w.active].panel.clone());
         accounts.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelClosed));
         vcx.run_until_parked();
-        assert!(commands.try_recv().is_err(), "pending drafts have no runtime to refresh");
+        assert!(
+            commands.try_recv().is_err(),
+            "pending drafts have no runtime to refresh"
+        );
     }
 
     #[test]
@@ -13366,7 +13554,10 @@ mod accounts_panel_tests {
             assert_eq!(w.active, 1);
             assert_eq!(w.active_row, 0);
             assert_eq!(w.slots[1].row, 0);
-            assert!(w.slots[0].width_fraction < 1.0, "source demotes to show adjacent accounts");
+            assert!(
+                w.slots[0].width_fraction < 1.0,
+                "source demotes to show adjacent accounts"
+            );
             w.slots[1].panel.clone()
         });
         workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
@@ -13377,7 +13568,11 @@ mod accounts_panel_tests {
         });
         second.update(vcx, |_, cx| cx.emit(crate::panel::AccountsPanelChooseModel));
         vcx.run_until_parked();
-        vcx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(1200.), px(800.)), |_, _| div());
+        vcx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(800.)),
+            |_, _| div(),
+        );
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots[w.active].panel, source);
             assert!(
@@ -13397,7 +13592,8 @@ mod accounts_panel_tests {
             w.open_accounts(&request, window, cx);
             // The test executor does not advance wall-clock row animation.
             // Settle it before clicking, or Close is still above the viewport.
-            w.row_progress.sample(Instant::now() + Duration::from_secs(1));
+            w.row_progress
+                .sample(Instant::now() + Duration::from_secs(1));
             cx.notify();
         });
         vcx.run_until_parked();
@@ -13406,11 +13602,15 @@ mod accounts_panel_tests {
             gpui::size(px(1200.), px(800.)),
             |_, _| div(),
         );
-        let close = vcx.debug_bounds("login-close").expect("dedicated Close button paints");
+        let close = vcx
+            .debug_bounds("login-close")
+            .expect("dedicated Close button paints");
         vcx.simulate_click(close.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, _| assert_eq!(w.slots[w.active].panel, source));
-        assert!(matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "source"));
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "source")
+        );
         assert!(commands.try_recv().is_err());
     }
 }

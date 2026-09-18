@@ -91,10 +91,16 @@ impl ReloadManager {
     }
 
     /// Attach a replacement platform surface to the already-running host.
+    /// Keep the suspended state and previous attachment until activation succeeds,
+    /// so the caller can discard a failed replacement and safely retry.
     pub fn resume(&mut self, window: AnyWindowHandle, cx: &mut App) -> Result<()> {
-        self.window = Some(window);
-        let snapshot = self.suspended.take();
-        self.activate_generation(self.active, snapshot.as_ref(), cx)
+        let previous_window = self.window.replace(window);
+        if let Err(error) = self.activate_generation(self.active, self.suspended.as_ref(), cx) {
+            self.window = previous_window;
+            return Err(error);
+        }
+        self.suspended = None;
+        Ok(())
     }
 
     pub fn reload(&mut self, cx: &mut App) -> Result<()> {
@@ -387,6 +393,99 @@ mod tests {
         _: *const HostApi,
     ) -> i32 {
         ACTIVATE_FAILED
+    }
+
+    unsafe extern "C-unwind" fn activate_expected_snapshot(
+        window: *mut c_void,
+        app: *mut c_void,
+        host: *const HostApi,
+        snapshot: *const u8,
+        snapshot_len: usize,
+        snapshot_schema: u32,
+    ) -> i32 {
+        if snapshot_schema != STATE_SCHEMA_VERSION
+            || snapshot_len != b"workspace".len()
+            || unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) } != b"workspace"
+        {
+            return ACTIVATE_FAILED;
+        }
+        unsafe { stable_activate(window, app, host, snapshot, snapshot_len, snapshot_schema) }
+    }
+
+    #[gpui::test]
+    fn successful_resume_consumes_snapshot_and_attaches_replacement(cx: &mut TestAppContext) {
+        let replacement = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| FailedRoot))
+                .unwrap()
+        });
+        let mut manager = ReloadManager::new(
+            PluginApi::new(activate_expected_snapshot, no_snapshot),
+            None,
+            replacement.into(),
+            Rc::new(HostState::default()),
+        )
+        .unwrap();
+        manager.window = None;
+        manager.suspended = Some((STATE_SCHEMA_VERSION, b"workspace".to_vec()));
+
+        cx.update(|cx| manager.resume(replacement.into(), cx))
+            .unwrap();
+
+        assert!(manager.suspended.is_none());
+        assert_eq!(manager.window.unwrap().window_id(), replacement.window_id());
+        manager
+            .window
+            .unwrap()
+            .update(cx, |_, window, _| {
+                assert!(matches!(window.root::<StableRoot>(), Some(Some(_))));
+            })
+            .expect("replacement must contain the resumed root");
+    }
+
+    #[gpui::test]
+    fn failed_resume_preserves_snapshot_and_previous_attachment_for_retry(cx: &mut TestAppContext) {
+        for previously_attached in [false, true] {
+            let previous = cx.update(|cx| {
+                cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| StableRoot))
+                    .unwrap()
+            });
+            let replacement = cx.update(|cx| {
+                cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| FailedRoot))
+                    .unwrap()
+            });
+            let mut manager = ReloadManager::new(
+                PluginApi::new(failed_after_replacing_root, no_snapshot),
+                None,
+                previous.into(),
+                Rc::new(HostState::default()),
+            )
+            .unwrap();
+            manager.window = previously_attached.then_some(previous.into());
+            let previous_window = manager.window;
+            let snapshot = (STATE_SCHEMA_VERSION, b"workspace".to_vec());
+            manager.suspended = Some(snapshot.clone());
+
+            let error = cx
+                .update(|cx| manager.resume(replacement.into(), cx))
+                .unwrap_err();
+
+            assert!(error.to_string().contains("UI activation failed"));
+            assert_eq!(manager.suspended.as_ref(), Some(&snapshot));
+            assert_eq!(
+                manager.window.map(|window| window.window_id()),
+                previous_window.map(|window| window.window_id())
+            );
+            previous
+                .update(cx, |_: &mut StableRoot, _, _| {})
+                .expect("failed resume must not replace the prior window's root");
+
+            manager.generations[manager.active].api =
+                PluginApi::new(activate_expected_snapshot, no_snapshot);
+            cx.update(|cx| manager.resume(replacement.into(), cx))
+                .unwrap();
+            assert!(manager.suspended.is_none());
+            assert_eq!(manager.window.unwrap().window_id(), replacement.window_id());
+        }
     }
 
     #[test]

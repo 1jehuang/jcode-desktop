@@ -30,6 +30,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: jcode-desktop
+          # Embed version/date-grouped update history, not just the checkout commit.
+          fetch-depth: 0
       - name: Check out Jcode runtime
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

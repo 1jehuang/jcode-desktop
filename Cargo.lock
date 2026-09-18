@@ -4393,6 +4393,7 @@ dependencies = [
  "jcode-provider-openai",
  "jcode-provider-openrouter",
  "jcode-render-core",
+ "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
  "jcode-storage",
@@ -4471,6 +4472,8 @@ name = "jcode-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
+ "global-hotkey",
  "gpui",
  "gpui_platform",
  "handterm-common",
@@ -4798,6 +4801,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -7596,6 +7600,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

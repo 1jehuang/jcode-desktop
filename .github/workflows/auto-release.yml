@@ -1,0 +1,48 @@
+name: Automatic desktop release
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Catch changes deferred by the quiet period, cooldown, or an active build.
+    # No sleeping runners, and no build at all if the inputs are unchanged.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only report the decision, without tagging or building
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: desktop-auto-release-coordinator
+  # Never interrupt the small tag-reservation/dispatch transaction. Pending
+  # invocations coalesce, and each checks the newest main, not its event SHA.
+  cancel-in-progress: false
+
+jobs:
+  coordinate:
+    if: github.ref == 'refs/heads/main' && vars.DESKTOP_AUTO_RELEASE_ENABLED != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release policy and publication contracts
+        run: python3 -m unittest discover -s tests -v
+      - name: Coalesce commits and dispatch eligible release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          INTERVAL_HOURS: ${{ vars.DESKTOP_RELEASE_INTERVAL_HOURS || '6' }}
+        run: |
+          args=(--interval-hours "$INTERVAL_HOURS")
+          if [[ "$DRY_RUN" != true ]]; then args+=(--apply); fi
+          python3 scripts/auto-release.py "${args[@]}"

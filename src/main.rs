@@ -1,6 +1,8 @@
 //! Stable native GPUI host for Jcode Desktop.
 
 mod host {
+    #[cfg(any(target_os = "macos", test))]
+    pub mod global_shortcut;
     pub mod instance;
     pub mod reload;
     pub mod reload_config;
@@ -10,6 +12,8 @@ mod host {
 mod diagnostics;
 #[cfg(test)]
 mod window_controls_tests;
+#[cfg(test)]
+mod window_lifecycle_tests;
 
 use std::{
     cell::{Cell, RefCell},
@@ -157,7 +161,7 @@ fn titlebar_options() -> TitlebarOptions {
 /// If a window still exists (visible or minimized), activate it. If the red
 /// close button destroyed it, open a replacement and resume the suspended
 /// workspace into it. Shared by the single-instance `Show` command and the
-/// macOS Dock reopen event so both paths behave identically.
+/// macOS Dock reopen event and global shortcut so all paths behave identically.
 fn restore_window(
     manager: &Rc<RefCell<ReloadManager>>,
     current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
@@ -194,7 +198,14 @@ fn restore_window(
         }
     })?;
     let replacement = gpui::AnyWindowHandle::from(replacement);
-    manager.borrow_mut().resume(replacement, cx)?;
+    if let Err(error) = manager.borrow_mut().resume(replacement, cx) {
+        // A failed activation may leave HostFallback (or a partial UI) behind.
+        // It cannot snapshot, so its normal close callback would veto every X.
+        // Remove only this failed surface, retaining the suspended workspace
+        // for another Dock/global-shortcut restore attempt.
+        let _ = replacement.update(cx, |_, window, _| window.remove_window());
+        return Err(error);
+    }
     *current_window.borrow_mut() = Some(replacement);
     cx.activate(true);
     Ok(())
@@ -218,6 +229,27 @@ fn install_close_handler(
         *current_window.borrow_mut() = None;
         true
     });
+}
+
+fn observe_closed_window(cx: &App, current_window: Rc<RefCell<Option<gpui::AnyWindowHandle>>>) {
+    cx.on_window_closed(move |_, closed_id| {
+        let mut current = current_window.borrow_mut();
+        if current.is_some_and(|window| window.window_id() == closed_id) {
+            *current = None;
+        }
+    })
+    .detach();
+}
+
+fn quit_mode(screenshot: bool, macos_lifecycle_fixture: bool) -> gpui::QuitMode {
+    if cfg!(target_os = "macos") || (screenshot && macos_lifecycle_fixture) {
+        // macOS keeps the app (and global shortcut) alive after red-close.
+        // Offline native tests can exercise that policy on private Linux Xvfb
+        // without changing normal Linux last-window-closed behavior.
+        gpui::QuitMode::Explicit
+    } else {
+        gpui::QuitMode::Default
+    }
 }
 
 fn main() {
@@ -247,7 +279,10 @@ fn main() {
             Instance::Secondary => return,
         };
     let plugin_path = host::reload_config::plugin_path();
-    let app = application();
+    let app = application().with_quit_mode(quit_mode(
+        env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1"),
+        env::var("JCODE_DESKTOP_SCREENSHOT_MACOS_LIFECYCLE").as_deref() == Ok("1"),
+    ));
     // Clicking the Dock icon after the red button closed the last window must
     // bring the workspace back, exactly like a second `jcode-desktop` launch
     // does through the instance socket. GPUI only fires this when no window is
@@ -303,6 +338,18 @@ fn main() {
         host::window_controls::install(cx, manager.clone(), current_window.clone());
         let rebuild_state = Rc::new(RebuildState::default());
         *reopen_state.borrow_mut() = Some((manager.clone(), current_window.clone()));
+        // Only the main desktop owns the global shortcut. Auxiliary workspace
+        // instances must not steal it or report a spurious registration conflict.
+        #[cfg(target_os = "macos")]
+        if instance_name.is_none() {
+            if let Err(error) = host::global_shortcut::install(cx, {
+                let manager = manager.clone();
+                let current_window = current_window.clone();
+                move |cx| restore_window(&manager, &current_window, cx)
+            }) {
+                eprintln!("could not register global Control+Command+I shortcut: {error:#}");
+            }
+        }
         window
             .update(cx, {
                 let manager = manager.clone();
@@ -312,13 +359,7 @@ fn main() {
                 }
             })
             .expect("install persistent host close handler");
-        cx.on_window_closed({
-            let current_window = current_window.clone();
-            move |_, _| {
-                *current_window.borrow_mut() = None;
-            }
-        })
-        .detach();
+        observe_closed_window(cx, current_window.clone());
 
         cx.spawn({
             let manager = manager.clone();
@@ -436,5 +477,19 @@ mod tests {
         assert!(!state.try_start());
         state.finish();
         assert!(state.try_start());
+    }
+
+    #[test]
+    fn macos_lifecycle_override_requires_an_offline_fixture() {
+        use gpui::QuitMode;
+        assert!(matches!(super::quit_mode(true, true), QuitMode::Explicit));
+        for (screenshot, lifecycle) in [(false, false), (false, true), (true, false)] {
+            let mode = super::quit_mode(screenshot, lifecycle);
+            if cfg!(target_os = "macos") {
+                assert!(matches!(mode, QuitMode::Explicit));
+            } else {
+                assert!(matches!(mode, QuitMode::Default));
+            }
+        }
     }
 }
