@@ -51,6 +51,8 @@ pub enum LayoutMode {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
+    /// The optional Jcode account welcome screen was completed or skipped.
+    pub account_sign_in_handled: bool,
     /// Selected once from session history, then fixed for Super+Enter / Super+;.
     pub pinned_working_dir: Option<String>,
     /// Default SSH target. Missing or empty means local sessions.
@@ -98,6 +100,7 @@ impl Default for AppearanceConfig {
 impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
+            account_sign_in_handled: false,
             pinned_working_dir: None,
             default_remote_host: None,
             remote_hosts: Vec::new(),
@@ -149,6 +152,27 @@ static CONFIG: OnceLock<DesktopConfig> = OnceLock::new();
 
 pub fn get() -> &'static DesktopConfig {
     CONFIG.get_or_init(load)
+}
+
+/// Read the latest choice, including changes made by another window.
+pub fn account_sign_in_handled() -> bool {
+    load().workspace.account_sign_in_handled
+}
+
+#[cfg(not(test))]
+pub fn persist_account_sign_in_handled() -> std::io::Result<()> {
+    persist_value_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        "workspace",
+        "account_sign_in_handled",
+        "true",
+    )
+}
+
+#[cfg(test)]
+pub fn persist_account_sign_in_handled() -> std::io::Result<()> {
+    Ok(())
 }
 
 pub fn path() -> PathBuf {
@@ -457,6 +481,36 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_sign_in_choice_survives_restart_without_changing_other_settings() {
+        assert!(!DesktopConfig::default().workspace.account_sign_in_handled);
+        for standalone in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let original = "# keep shared configuration\nmodel = 'keep-me'\n";
+            fs::write(&path, original).unwrap();
+            for _ in 0..2 {
+                persist_value_at(
+                    &path,
+                    standalone,
+                    "workspace",
+                    "account_sign_in_handled",
+                    "true",
+                )
+                .unwrap();
+                let text = fs::read_to_string(&path).unwrap();
+                assert!(text.starts_with(original));
+                assert!(
+                    parse(&text, standalone)
+                        .unwrap()
+                        .workspace
+                        .account_sign_in_handled
+                );
+                assert_eq!(text.matches("account_sign_in_handled =").count(), 1);
+            }
+        }
+    }
 
     #[test]
     fn sounds_default_off_and_persist_without_rewriting_other_preferences() {

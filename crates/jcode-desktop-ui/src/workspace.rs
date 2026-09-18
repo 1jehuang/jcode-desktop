@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "workspace_account_sign_in.rs"]
+mod account_sign_in;
+
 #[path = "workspace_preview.rs"]
 mod preview;
 
@@ -540,6 +543,7 @@ pub struct Workspace {
     show_sidebar: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     show_beta_notice: bool,
+    account_sign_in: account_sign_in::State,
     compact_sidebar_open: bool,
     last_canvas_width: Option<f32>,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
@@ -766,6 +770,7 @@ impl Workspace {
             bridge,
             host,
             show_beta_notice: snapshot.is_none(),
+            account_sign_in: account_sign_in::State::startup(),
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
             folder_frame: Default::default(),
@@ -1010,6 +1015,7 @@ impl Workspace {
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             show_beta_notice: false,
+            account_sign_in: account_sign_in::State::default(),
             show_sidebar: true,
             show_minimap: false,
             layout_mode: crate::config::LayoutMode::FolderTabs,
@@ -1371,7 +1377,7 @@ impl Workspace {
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.show_beta_notice || self.onboarding_simulator.is_some() {
+        if self.account_sign_in.visible || self.show_beta_notice || self.onboarding_simulator.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -3233,7 +3239,7 @@ impl Workspace {
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates may restore focus while the rehearsal hides panels.
-        if self.show_beta_notice || self.onboarding_simulator.is_some() {
+        if self.account_sign_in.visible || self.show_beta_notice || self.onboarding_simulator.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -5800,6 +5806,7 @@ impl Workspace {
                 ),
         );
         settings
+            .child(self.render_account_settings(cx))
             .child(self.render_sound_settings(cx))
             .child(
                 div()
@@ -6655,6 +6662,10 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.account_sign_in.visible {
+            self.dump_state(window, cx);
+            return self.render_account_sign_in(cx);
+        }
         if self.onboarding_simulator.is_some() {
             return self.render_onboarding_simulator(cx);
         }

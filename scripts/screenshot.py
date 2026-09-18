@@ -36,6 +36,10 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--account-sign-in", action="store_true",
+                        help="show optional first-launch account sign-in without network access")
+    parser.add_argument("--account-sign-in-interact", action="store_true",
+                        help="verify account welcome, waiting, skip and Settings re-entry offline")
     parser.add_argument("--beta-notice", action="store_true",
                         help="capture the initial beta overlay instead of dismissing it")
     parser.add_argument("--beta-notice-interact", action="store_true",
@@ -109,6 +113,13 @@ def main():
             value for key, value in vars(args).items()
             if key.endswith("_interact") and key != "beta_notice_interact"):
         parser.error("beta-notice modes cannot be combined with other interactions")
+    if args.account_sign_in or args.account_sign_in_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "account_sign_in_interact")
+        if others or args.panels != 1 or args.learn_stage is not None or args.preview_state or args.beta_notice:
+            parser.error("account-sign-in requires one panel and no other interaction or overlay modes")
+        if args.account_sign_in_interact and (args.size != "1440x1000" or not shutil.which("tesseract")):
+            parser.error("account-sign-in-interact requires the default size and tesseract")
     if args.onboarding_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "onboarding_interact")
@@ -311,6 +322,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.account_sign_in or args.account_sign_in_interact:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.preview_state is not None:
             env["JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE"] = args.preview_state
         if args.preview_interact:
@@ -375,7 +388,7 @@ def main():
                 # Allow opening animation and font rasterization to settle.
                 time.sleep(2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
-                if not (args.beta_notice or args.beta_notice_interact):
+                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)
@@ -429,6 +442,9 @@ def main():
                     raise RuntimeError("App exited before capture")
                 if args.sounds_interact:
                     from sounds_acceptance import verify
+                    verify(output, env, root)
+                if args.account_sign_in_interact:
+                    from account_sign_in_acceptance import verify
                     verify(output, env, root)
                 if args.onboarding_interact:
                     from onboarding_acceptance import verify
