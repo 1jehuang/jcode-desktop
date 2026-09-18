@@ -159,3 +159,53 @@ fn panel_ime_commit_and_replay_drain_do_not_accumulate_protocol_events(
         });
     });
 }
+
+#[gpui::test]
+fn native_mouse_selection_copy_and_wheel_scroll(cx: &mut gpui::TestAppContext) {
+    cx.update(bind_keys);
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+    vcx.update(|_, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.status.clear();
+            panel.process_output(b"hello world", false);
+            cx.notify();
+        })
+    });
+    vcx.run_until_parked();
+    let (start, end) = panel.read_with(vcx, |panel, _| {
+        let start = panel.bounds.origin + gpui::point(panel.cell_width * 0.5, px(9.));
+        (start, start + gpui::point(panel.cell_width * 4., px(0.)))
+    });
+    vcx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+    vcx.simulate_mouse_move(end, MouseButton::Left, Default::default());
+    vcx.simulate_mouse_up(end, MouseButton::Left, Default::default());
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(panel.terminal.grid.get_selection_text(), "hello")
+    });
+    vcx.simulate_keystrokes("ctrl-shift-c");
+    vcx.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("hello")
+        )
+    });
+    vcx.update(|_, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.process_output("\r\nscrollback line".repeat(150).as_bytes(), false);
+            cx.notify();
+        })
+    });
+    vcx.run_until_parked();
+    vcx.simulate_event(ScrollWheelEvent {
+        position: start,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
+        ..Default::default()
+    });
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(panel.terminal.grid.scroll_offset, 3);
+        assert!(panel.terminal.grid.selection.is_none());
+    });
+}
