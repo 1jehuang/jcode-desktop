@@ -11,6 +11,12 @@ class LoginAcceptanceTests(unittest.TestCase):
         words = visible_words(tsv, (280, 60, 1428, 1000))
         self.assertEqual(phrase_bounds(words, "Connect account"), (300, 960, 385, 970))
 
+    def test_provider_brand_ocr_normalization_is_narrow(self):
+        tsv = "text\tleft\ttop\twidth\theight\nOpenAl\t0\t0\t90\t30\nAPI\t100\t0\t45\t30\nopal\t0\t60\t40\t30\n"
+        words = visible_words(tsv, (0, 0, 500, 500))
+        self.assertEqual([word["text"] for word in words], ["OpenAI", "API", "opal"])
+        self.assertEqual(phrase_bounds(words, "OpenAI API"), (0, 0, 145 / 3, 10))
+
     def test_mask_requires_separate_dot_sized_glyphs(self):
         image = Image.new("RGB", (160, 30), (30, 30, 30))
         draw = ImageDraw.Draw(image)

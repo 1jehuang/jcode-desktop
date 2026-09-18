@@ -11,6 +11,10 @@ pub(super) struct State {
     error: Option<String>,
     keyboard_choice: Option<usize>,
     task: Option<gpui::Task<()>>,
+    link_copied: bool,
+    remaining: Option<Duration>,
+    #[cfg(test)]
+    test_api_base: Option<String>,
 }
 
 #[derive(Default)]
@@ -48,7 +52,7 @@ impl State {
         match self.stage {
             Stage::Welcome if self.error.is_some() => "Try again",
             Stage::Welcome => "Sign in with email",
-            Stage::Starting => "Opening secure sign-in…",
+            Stage::Starting => "Connecting securely…",
             Stage::Waiting { .. } => "Open browser again",
             Stage::Complete { .. } => "Continue to workspace",
         }
@@ -97,7 +101,17 @@ impl Workspace {
         self.account_sign_in.stage = Stage::Welcome;
         self.account_sign_in.error = None;
         self.account_sign_in.keyboard_choice = None;
+        self.account_sign_in.link_copied = false;
+        self.account_sign_in.remaining = None;
         cx.notify();
+    }
+
+    fn copy_account_sign_in_link(&mut self, cx: &mut Context<Self>) {
+        if let Stage::Waiting { url } = &self.account_sign_in.stage {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+            self.account_sign_in.link_copied = true;
+            cx.notify();
+        }
     }
 
     fn account_sign_in_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -123,7 +137,13 @@ impl Workspace {
     fn start_account_sign_in(&mut self, cx: &mut Context<Self>) {
         self.account_sign_in.error = None;
         self.account_sign_in.keyboard_choice = None;
-        if harness::screenshot_mode() || cfg!(test) {
+        self.account_sign_in.link_copied = false;
+        self.account_sign_in.remaining = None;
+        #[cfg(test)]
+        let offline = self.account_sign_in.test_api_base.is_none();
+        #[cfg(not(test))]
+        let offline = false;
+        if harness::screenshot_mode() || offline {
             // Explicit offline fixture, never send email or read/write credentials.
             self.account_sign_in.stage = Stage::Waiting {
                 url: "https://jcode.sh/account".into(),
@@ -132,9 +152,20 @@ impl Workspace {
             return;
         }
         self.account_sign_in.stage = Stage::Starting;
-        let request = cx.background_executor().spawn(async {
-            network(async { auth::start(&reqwest::Client::new()).await })?
-                .map_err(|error| error.to_string())
+        #[cfg(test)]
+        let api_base = self
+            .account_sign_in
+            .test_api_base
+            .clone()
+            .expect("explicit test endpoint");
+        let request = cx.background_executor().spawn(async move {
+            #[cfg(test)]
+            let result = network(async {
+                auth::start_with_api_base(&reqwest::Client::new(), &api_base).await
+            });
+            #[cfg(not(test))]
+            let result = network(async { auth::start(&reqwest::Client::new()).await });
+            result?.map_err(|error| error.to_string())
         });
         self.account_sign_in.task = Some(cx.spawn(async move |this, cx| {
             let flow = match request.await {
@@ -147,13 +178,18 @@ impl Workspace {
             let url = flow.auth_url().to_owned();
             if this.update(cx, |this, cx| {
                 this.account_sign_in.stage = Stage::Waiting { url: url.clone() };
-                cx.open_url(&url);
+                this.account_sign_in.remaining = Some(flow.expires_in());
+                if !cfg!(test) { cx.open_url(&url); }
                 cx.notify();
             }).is_err() { return; }
             let mut interval = flow.interval();
             let expires_at = Instant::now() + flow.expires_in();
             loop {
                 cx.background_executor().timer(interval.min(expires_at.saturating_duration_since(Instant::now()))).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.account_sign_in.remaining = Some(expires_at.saturating_duration_since(Instant::now()));
+                    cx.notify();
+                });
                 if flow.is_expired() {
                     let _ = this.update(cx, |this, cx| this.account_sign_in_failed(
                         "This sign-in expired. Try again for a new link, or skip for now.".into(), cx));
@@ -171,6 +207,10 @@ impl Workspace {
                     },
                     Ok(Ok(LoginPoll::SlowDown { retry_after })) => {
                         interval = retry_after.max(interval);
+                        let _ = this.update(cx, |this, cx| {
+                            this.account_sign_in.error = Some(format!("The service is busy. Checking again in {} seconds.", interval.as_secs()));
+                            cx.notify();
+                        });
                     },
                     Ok(Err(error)) if error.is_temporary() => {
                         interval = (interval + Duration::from_secs(2)).min(Duration::from_secs(30)).max(interval);
@@ -182,7 +222,12 @@ impl Workspace {
                     Ok(Ok(LoginPoll::Approved(approved))) => {
                         let _ = this.update(cx, |this, cx| {
                             // Only the still-live UI operation may commit credentials.
-                            match auth::save(&approved) {
+                            // Integrated tests exercise real HTTP but never touch a user credential.
+                            #[cfg(test)]
+                            let saved: Result<(), auth::AccountLoginError> = Ok(());
+                            #[cfg(not(test))]
+                            let saved = auth::save(&approved);
+                            match saved {
                                 Ok(()) => {
                                     this.account_sign_in.connected = true;
                                     this.account_sign_in.stage = Stage::Complete { email: approved.email };
@@ -258,11 +303,11 @@ impl Workspace {
         let (title, description) = match &state.stage {
             Stage::Welcome | Stage::Starting => (
                 "Welcome to Jcode Desktop",
-                "Sign in to your Jcode account with a magic link. No password to remember.",
+                "Sign in with an email magic link. No password needed.",
             ),
             Stage::Waiting { .. } => (
                 "Finish signing in",
-                "Enter your email in the browser, then open the magic link in that same browser and approve this device. Desktop will connect automatically.",
+                "Enter your email in the browser, open the magic link in that same browser, then approve this device.",
             ),
             Stage::Complete { .. } => (
                 "You're signed in",
@@ -273,37 +318,78 @@ impl Workspace {
             .id("account-sign-in-card")
             .debug_selector(|| "account-sign-in-card".into())
             .w_full()
-            .max_w(px(520.0))
+            .max_w(px(440.0))
             .max_h_full()
             .overflow_y_scroll()
-            .p_8()
+            .p_5()
             .rounded_xl()
             .bg(Theme::global().PANEL_BG)
             .border_1()
             .border_color(Theme::global().PANEL_BORDER)
             .flex()
             .flex_col()
-            .gap_5()
+            .gap_3()
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("JCODE  /  DESKTOP"),
+                    .debug_selector(|| "account-sign-in-brand".into())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        gpui::svg()
+                            .data(accounts::logo("jcode").expect("vendored Jcode logo"))
+                            .size(px(28.0))
+                            .text_color(Theme::global().TEXT),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child("Jcode Desktop"),
+                    ),
             )
             .child(
                 div()
-                    .text_size(px(30.0))
+                    .text_size(px(24.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(title),
             )
-            .child(div().text_size(px(15.0)).child(description));
+            .child(div().text_size(px(14.0)).child(description));
         if let Stage::Complete { email } = &state.stage {
             card = card.child(div().text_size(px(14.0)).child(email.clone()));
-        } else {
-            card = card.child(div().p_4().rounded_lg().bg(Theme::global().HEADER_BG)
-                .text_size(px(13.0)).text_color(Theme::global().TEXT_DIM)
-                .child(if waiting { "Waiting for approval · You can leave this screen at any time." }
-                    else { "Use your own AI providers with or without a Jcode account. Signing in does not start a paid plan." }));
+        } else if waiting {
+            let progress = state
+                .remaining
+                .map(|remaining| {
+                    let seconds = remaining.as_secs();
+                    format!(
+                        "Waiting for approval · Link expires in {}:{:02}",
+                        seconds / 60,
+                        seconds % 60
+                    )
+                })
+                .unwrap_or_else(|| "Waiting for approval".into());
+            card = card.child(
+                div()
+                    .p_3()
+                    .rounded_lg()
+                    .bg(Theme::global().HEADER_BG)
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_size(px(12.0))
+                    .child(
+                        div()
+                            .debug_selector(|| "account-sign-in-progress".into())
+                            .child(progress),
+                    )
+                    .child(div().text_color(Theme::global().TEXT_DIM).child(
+                        "Desktop connects automatically. Copy the link if your browser did not open.",
+                    )),
+            );
+        } else if !complete {
+            card = card.child(div().text_size(px(12.0)).text_color(Theme::global().TEXT_DIM)
+                .child("Optional. Use your own AI providers without an account. No paid plan starts when you sign in."));
         }
         if let Some(error) = &state.error {
             card = card.child(
@@ -314,39 +400,60 @@ impl Workspace {
                     .child(error.clone()),
             );
         }
-        card = card.child(
-            account_button(
-                "account-sign-in-primary",
-                state.primary_label(),
-                true,
-                state.keyboard_choice == Some(0),
-            )
-            .when(matches!(state.stage, Stage::Starting), |el| el.opacity(0.6))
-            .on_click(cx.listener(|this, _, window, cx| this.account_sign_in_primary(window, cx))),
-        );
-        if !complete {
+        let primary = account_button(
+            "account-sign-in-primary",
+            state.primary_label(),
+            true,
+            state.keyboard_choice == Some(0),
+        )
+        .flex_1()
+        .when(matches!(state.stage, Stage::Starting), |el| el.opacity(0.6))
+        .on_click(cx.listener(|this, _, window, cx| this.account_sign_in_primary(window, cx)));
+        if waiting {
             card = card.child(
+                div().flex().gap_2().child(primary).child(
+                    account_button(
+                        "account-sign-in-copy",
+                        if state.link_copied {
+                            "Link copied"
+                        } else {
+                            "Copy link"
+                        },
+                        false,
+                        state.keyboard_choice == Some(1),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_account_sign_in_link(cx))),
+                ),
+            );
+        } else {
+            card = card.child(primary);
+        }
+        if !complete {
+            let mut secondary = div().flex().gap_2().child(
                 account_button(
                     "account-sign-in-skip",
                     "Skip for now",
                     false,
-                    state.keyboard_choice == Some(1),
+                    state.keyboard_choice == Some(if waiting { 2 } else { 1 }),
                 )
+                .flex_1()
                 .on_click(
                     cx.listener(|this, _, window, cx| this.finish_account_sign_in(window, cx)),
                 ),
             );
-        }
-        if waiting {
-            card = card.child(
-                account_button(
-                    "account-sign-in-back",
-                    "Cancel and go back",
-                    false,
-                    state.keyboard_choice == Some(2),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.reset_account_sign_in(cx))),
-            );
+            if waiting {
+                secondary = secondary.child(
+                    account_button(
+                        "account-sign-in-back",
+                        "Start over",
+                        false,
+                        state.keyboard_choice == Some(3),
+                    )
+                    .flex_1()
+                    .on_click(cx.listener(|this, _, _, cx| this.reset_account_sign_in(cx))),
+                );
+            }
+            card = card.child(secondary);
         }
         card = card.child(
             div()
@@ -380,14 +487,17 @@ impl Workspace {
                 match event.keystroke.key.as_str() {
                     "escape" => this.finish_account_sign_in(window, cx),
                     "enter" | "space" => match this.account_sign_in.keyboard_choice.unwrap_or(0) {
-                        1 => this.finish_account_sign_in(window, cx),
-                        2 => this.reset_account_sign_in(cx),
+                        1 if matches!(this.account_sign_in.stage, Stage::Waiting { .. }) => {
+                            this.copy_account_sign_in_link(cx)
+                        }
+                        1 | 2 => this.finish_account_sign_in(window, cx),
+                        3 => this.reset_account_sign_in(cx),
                         _ => this.account_sign_in_primary(window, cx),
                     },
                     "tab" => {
                         let count = match this.account_sign_in.stage {
                             Stage::Complete { .. } => 1,
-                            Stage::Waiting { .. } => 3,
+                            Stage::Waiting { .. } => 4,
                             _ => 2,
                         };
                         this.account_sign_in.keyboard_choice =
@@ -429,8 +539,9 @@ fn account_button(
     div()
         .id(id)
         .debug_selector(move || id.into())
+        .min_w_0()
         .px_4()
-        .py_3()
+        .py_2()
         .rounded_md()
         .border_1()
         .border_color(if focused {

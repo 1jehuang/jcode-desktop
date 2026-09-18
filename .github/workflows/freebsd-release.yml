@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 93f9f4b7b4ca79448090876d12a7947b30cd45b0 # Match the other desktop release targets
+          ref: 7dd973912a7acb8792c7d6caf9254270b0dd1b02 # Account login and cancellable desktop OAuth callbacks
           path: jcode
           submodules: recursive
       # Match the adjacent CLI's native FreeBSD VM. A Linux cross-build cannot

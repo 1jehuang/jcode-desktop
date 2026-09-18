@@ -17,10 +17,14 @@ pub(super) struct LoginState {
     prompt: Option<AuthPrompt>,
     input: Entity<LoginInput>,
     busy: bool,
+    browser_opened: bool,
+    scroll: ScrollHandle,
     error: Option<String>,
     complete: bool,
     focus_pending: bool,
     task: Option<Task<()>>,
+    callback_task: Option<Task<()>>,
+    callback_waiting: bool,
     statuses: Option<ConnectionStatuses>,
     status_loading: bool,
     status_task: Option<Task<()>>,
@@ -99,10 +103,14 @@ impl Panel {
             prompt: None,
             input: cx.new(|cx| LoginInput::new(cx, "Paste the code or callback URL")),
             busy: false,
+            browser_opened: false,
+            scroll: ScrollHandle::new(),
             error: None,
             complete: false,
             focus_pending: true,
             task: None,
+            callback_task: None,
+            callback_waiting: false,
             statuses: None,
             status_loading: false,
             status_task: None,
@@ -211,11 +219,27 @@ impl Panel {
         if self.login_is_remote() {
             return;
         }
-        // Replacing state cancels precisely the old flow, not saved credentials.
-        self.close_login_picker(cx);
-        self.open_login_picker(cx);
-        let state = self.login.as_mut().unwrap();
-        state.provider = Some(provider.clone());
+        // Keep the client and cached status. Cancel only the previous attempt.
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        state.task = None;
+        state.callback_task = None;
+        state.callback_waiting = false;
+        if let Some(flow) = state.flow.take() {
+            std::thread::spawn(move || {
+                let _ = flow.cancel();
+            });
+        }
+        state.provider = Some(provider);
+        state.prompt = None;
+        state.error = None;
+        state.complete = false;
+        state.busy = false;
+        state.browser_opened = false;
+        state.focus_pending = true;
+        state.scroll.set_offset(point(px(0.), px(0.)));
+        state.input = cx.new(|cx| LoginInput::new(cx, "Paste the code or callback URL"));
         if self.preview_state.is_some() {
             if provider.method == LoginMethod::ApiKey {
                 state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
@@ -256,6 +280,7 @@ impl Panel {
         let state = self.login.as_mut().unwrap();
         state.busy = true;
         state.error = None;
+        let attempt = state.input.entity_id();
         let task = cx.background_executor().spawn(async move {
             if crate::harness::screenshot_mode() {
                 return Err(
@@ -268,22 +293,95 @@ impl Panel {
         state.task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |panel, cx| {
-                let Some(state) = panel.login.as_mut() else { return; };
+                let Some(state) = panel.login.as_mut() else {
+                    return;
+                };
+                if state.input.entity_id() != attempt || state.complete {
+                    return;
+                }
                 state.busy = false;
                 match result {
-                    Ok(LoginUpdate::Prompt(prompt)) => state.prompt = Some(prompt),
+                    Ok(LoginUpdate::Prompt(prompt)) => {
+                        state.focus_pending = true;
+                        state.prompt = Some(prompt);
+                    }
                     Ok(LoginUpdate::Complete { validation_warning }) => {
-                        state.complete = true;
-                        state.flow = None;
-                        if validation_warning {
-                            state.error = Some("Credentials were saved, but the provider could not be verified. Choose an available model below. You do not need to reuse the sign-in code.".into());
-                        }
-                        if !panel.is_accounts_panel() {
-                            panel.bridge.send(Command::RefreshRuntime { session_id: panel.session_id.clone() });
-                        }
-                        crate::accounts::request_refresh();
+                        panel.complete_login(validation_warning, cx);
                     }
                     Err(error) => state.error = Some(error),
+                }
+                // Device authorization finishes automatically. Keep its code and
+                // browser controls visible while the background poll is running.
+                let poll_device = panel.login.as_ref().is_some_and(|state| {
+                    !state.complete
+                        && state.error.is_none()
+                        && state
+                            .prompt
+                            .as_ref()
+                            .is_some_and(|prompt| prompt.input_kind == AuthInputKind::DeviceCode)
+                });
+                if poll_device {
+                    panel.submit_login(cx);
+                } else {
+                    panel.wait_for_login_callback(cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn complete_login(&mut self, validation_warning: bool, cx: &mut Context<Self>) {
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        if state.complete {
+            return;
+        }
+        state.complete = true;
+        state.busy = false;
+        state.callback_waiting = false;
+        state.flow = None;
+        state.prompt = None;
+        state.input.update(cx, |input, cx| input.clear(cx));
+        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. Choose an available model below. You do not need to reuse the sign-in code.".into());
+        if !self.is_accounts_panel() {
+            self.bridge.send(Command::RefreshRuntime {
+                session_id: self.session_id.clone(),
+            });
+        }
+        crate::accounts::request_refresh();
+    }
+
+    fn wait_for_login_callback(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        if state.complete || state.callback_task.is_some() || state.error.is_some() {
+            return;
+        }
+        let Some(flow) = state
+            .flow
+            .as_ref()
+            .filter(|flow| flow.has_callback_listener())
+            .cloned()
+        else {
+            return;
+        };
+        let attempt = state.input.entity_id();
+        state.callback_waiting = true;
+        let task = cx
+            .background_executor()
+            .spawn(async move { flow.wait_for_callback() });
+        state.callback_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |panel, cx| {
+                let Some(state) = panel.login.as_mut() else { return; };
+                if state.input.entity_id() != attempt || state.complete { return; }
+                state.callback_waiting = false;
+                match result {
+                    Ok(result) => panel.complete_login(result.validation_warning, cx),
+                    Err(_) if state.busy => {}, // A manual submission owns completion now.
+                    Err(_) => state.error = Some("Automatic sign-in did not finish. Paste the callback URL below, or start a new sign-in.".into()),
                 }
                 cx.notify();
             });
@@ -301,7 +399,7 @@ impl Panel {
         let Some(state) = self.login.as_mut() else {
             return;
         };
-        if state.busy {
+        if state.busy || state.complete {
             return;
         }
         let Some(provider) = state.provider.clone() else {
@@ -386,8 +484,24 @@ impl Panel {
             {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
+            } else if state
+                .prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
+            {
+                let focus = state.input.read(cx).focus_handle.clone();
+                focus.focus(window, cx);
             } else {
                 self.focus_handle.focus(window, cx);
+            }
+        }
+        if let Some(state) = self.login.as_mut()
+            && !state.browser_opened
+            && let Some(prompt) = &state.prompt
+        {
+            state.browser_opened = true;
+            if !cfg!(test) && self.preview_state.is_none() && !crate::harness::screenshot_mode() {
+                cx.open_url(&prompt.auth_url);
             }
         }
         let state = self.login.as_ref()?;
@@ -429,10 +543,27 @@ impl Panel {
         } else if let Some(provider) = &state.provider {
             body = body.child(
                 div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(provider.display_name),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(login_logo(provider))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(provider.display_name),
+                    ),
             );
-            if state.busy {
+            let status =
+                connection::status_for(state.statuses.as_ref(), provider.id, state.status_loading);
+            if matches!(status, ConnectionStatus::Expired | ConnectionStatus::Failed) {
+                body = body.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(status.detail()),
+                );
+            }
+            if state.busy && state.prompt.is_none() {
                 body = body.child(
                     div()
                         .debug_selector(|| "login-busy".into())
@@ -455,33 +586,58 @@ impl Panel {
                     );
             } else if let Some(prompt) = &state.prompt {
                 let url = prompt.auth_url.clone();
-                let preview = self.preview_state.is_some();
+                let preview = self.preview_state.is_some() || crate::harness::screenshot_mode();
+                let copy_url = url.clone();
                 body = body
                     .child(
                         div().child(
-                            "Continue in your browser, then return here to finish connecting.",
+                            if prompt.input_kind == AuthInputKind::DeviceCode || state.callback_waiting {
+                                "Approve access in your browser. This window will connect automatically."
+                            } else {
+                                "Continue in your browser, then paste the returned code or callback URL."
+                            },
                         ),
                     )
                     .child(
-                        login_button("login-open-browser", "Open sign-in page").on_click(
-                            move |_, _, cx| {
-                                if !preview {
-                                    cx.open_url(&url);
-                                }
-                            },
-                        ),
+                        div().flex().gap_2().flex_wrap()
+                            .child(login_button("login-open-browser", "Open sign-in page").on_click(
+                                move |_, _, cx| { if !preview { cx.open_url(&url); } },
+                            ))
+                            .child(login_button("login-copy-link", "Copy link").on_click(
+                                move |_, _, cx| { cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_url.clone())); },
+                            )),
                     );
                 if let Some(code) = &prompt.user_code {
+                    let code = code.clone();
                     body = body.child(
                         div()
-                            .font_family(theme.FONT_MONO)
-                            .child(format!("Device code: {code}")),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_family(theme.FONT_MONO)
+                                    .child(format!("Device code: {code}")),
+                            )
+                            .child(login_button("login-copy-code", "Copy code").on_click(
+                                move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        code.clone(),
+                                    ));
+                                },
+                            )),
                     );
                 }
                 if prompt.input_kind != AuthInputKind::DeviceCode {
                     body = body
                         .child(div().text_color(theme.TEXT_DIM).child(
-                            "Paste the returned code or full callback URL below. It stays private.",
+                            if state.callback_waiting {
+                                "Waiting for your browser. If it does not return, paste the full callback URL here and press Enter."
+                            } else if prompt.input_kind == AuthInputKind::CallbackUrl {
+                                "If the browser cannot open localhost, copy its full address here. The callback stays private."
+                            } else {
+                                "Paste the returned code or full callback URL below. It stays private."
+                            },
                         ))
                         .child(state.input.clone())
                         .child(
@@ -490,10 +646,29 @@ impl Panel {
                             ),
                         );
                 }
-                body = body.child(
-                    login_button("login-submit", "Finish sign-in")
-                        .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                );
+                if state.busy {
+                    body = body.child(
+                        div()
+                            .debug_selector(|| "login-busy".into())
+                            .text_color(theme.TEXT_DIM)
+                            .child(if prompt.input_kind == AuthInputKind::DeviceCode {
+                                "Waiting for browser approval…"
+                            } else {
+                                "Connecting securely…"
+                            }),
+                    );
+                } else {
+                    body = body.child(
+                        login_button("login-submit", "Finish sign-in")
+                            .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
+                    );
+                }
+                if state.error.is_some() {
+                    let provider = *provider;
+                    body = body.child(login_button("login-retry", "Start a new sign-in").on_click(
+                        cx.listener(move |this, _, _, cx| this.select_login_provider(provider, cx)),
+                    ));
+                }
             } else {
                 let provider = provider.clone();
                 body = body.child(
@@ -516,13 +691,52 @@ impl Panel {
                     "Choose an account to connect or reconnect. Status is for this computer.",
                 ));
             body = body.child(
-                div().flex().items_center().gap_2().flex_wrap()
-                    .child(div().flex_1().min_w_0().whitespace_normal().text_size(px(12.)).text_color(theme.TEXT_DIM)
-                        .child("Green: working · Amber: unverified · Red: needs attention · Gray: not connected. Uses saved checks, not a live test."))
-                    .child(login_button("login-refresh-status", if state.status_loading { "Checking…" } else { "Refresh status" })
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh_login_status(cx)))),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_size(px(12.))
+                            .text_color(theme.TEXT_DIM)
+                            .child("Saved account status · This computer"),
+                    )
+                    .child(
+                        login_button(
+                            "login-refresh-status",
+                            if state.status_loading {
+                                "Checking…"
+                            } else {
+                                "Refresh status"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_login_status(cx))),
+                    ),
             );
-            for provider in &state.providers {
+            let mut providers = state.providers.clone();
+            providers.sort_by_key(|provider| provider.method == LoginMethod::ApiKey);
+            let mut previous_method = None;
+            for provider in &providers {
+                let api_key = provider.method == LoginMethod::ApiKey;
+                if previous_method != Some(api_key) {
+                    previous_method = Some(api_key);
+                    body = body.child(
+                        div()
+                            .pt_2()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.TEXT_DIM)
+                            .child(if api_key {
+                                "API keys"
+                            } else {
+                                "Subscriptions & browser sign-in"
+                            }),
+                    );
+                }
                 let provider = provider.clone();
                 let id = format!("login-provider-{}", provider.id);
                 let status = connection::status_for(
@@ -532,15 +746,7 @@ impl Panel {
                 );
                 let color = status.color();
                 let status_id = format!("login-status-{}", provider.id);
-                let label = format!(
-                    "{} · {}",
-                    provider.display_name,
-                    match provider.method {
-                        LoginMethod::OAuth => "Browser sign-in",
-                        LoginMethod::DeviceCode => "Device sign-in",
-                        LoginMethod::ApiKey => "API key",
-                    }
-                );
+                let label = provider.display_name;
                 body = body.child(
                     div()
                         .id(SharedString::from(id.clone()))
@@ -549,8 +755,8 @@ impl Panel {
                         .py_2()
                         .rounded_md()
                         .border_1()
-                        .border_color(color.opacity(0.35))
-                        .bg(color.opacity(0.045))
+                        .border_color(theme.PANEL_BORDER)
+                        .bg(theme.HEADER_BG)
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -565,6 +771,7 @@ impl Panel {
                                 .items_center()
                                 .gap_2()
                                 .flex_wrap()
+                                .child(login_logo(&provider))
                                 .child(div().flex_1().min_w_0().child(label))
                                 .child(
                                     div()
@@ -582,12 +789,6 @@ impl Panel {
                                         .child(div().size(px(6.)).rounded_full().bg(color))
                                         .child(status.label()),
                                 ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(theme.TEXT_DIM)
-                                .child(status.detail()),
                         ),
                 );
             }
@@ -601,6 +802,12 @@ impl Panel {
                 .size_full()
                 .bg(theme.PANEL_BG)
                 .occlude()
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "enter" && !event.is_held {
+                        this.submit_login(cx);
+                        cx.stop_propagation();
+                    }
+                }))
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .flex()
@@ -640,6 +847,7 @@ impl Panel {
                 .child(
                     div()
                         .id("login-body")
+                        .track_scroll(&state.scroll)
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
@@ -654,6 +862,28 @@ impl Panel {
             state.input.update(cx, |input, cx| input.paste(window, cx));
         }
     }
+}
+
+fn login_logo(provider: &LoginProvider) -> gpui::AnyElement {
+    let id = format!("login-logo-{}", provider.id);
+    div()
+        .debug_selector(move || id.clone())
+        .size(px(22.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(match crate::accounts::logo(provider.id) {
+            Some(bytes) => gpui::svg()
+                .data(bytes)
+                .size(px(20.))
+                .text_color(Theme::global().TEXT)
+                .into_any_element(),
+            None => div()
+                .child(crate::accounts::lettermark(provider.display_name))
+                .into_any_element(),
+        })
+        .into_any_element()
 }
 
 fn login_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
@@ -735,12 +965,33 @@ mod tests {
         assert!(vcx.debug_bounds("panel-login").is_some());
         // Workspace tests exercise the footer opening a separate adjacent panel.
         panel.update(vcx, |panel, cx| panel.open_login_picker(cx));
+        vcx.run_until_parked();
         assert!(vcx.debug_bounds("login-dialog").is_some());
+        for _ in 0..20 {
+            let dialog = vcx.debug_bounds("login-dialog").unwrap();
+            let provider = vcx.debug_bounds("login-provider-openai-api").unwrap();
+            if provider.bottom() < dialog.bottom() - px(20.) {
+                break;
+            }
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: dialog.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-100.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+        }
         let button = vcx
             .debug_bounds("login-provider-openai-api")
             .expect("API key choice");
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
-        assert!(vcx.debug_bounds("login-submit").is_some());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("login-submit").is_some(),
+            "provider={:?}, dialog={:?}, choice={button:?}",
+            panel.read_with(vcx, |p, _| p.login.as_ref().unwrap().provider.map(|p| p.id)),
+            vcx.debug_bounds("login-dialog")
+        );
         vcx.simulate_input("typed-private-value");
         panel.read_with(vcx, |panel, cx| {
             assert!(!panel.login.as_ref().unwrap().input.read(cx).content_empty());
@@ -873,3 +1124,7 @@ mod tests {
 #[cfg(test)]
 #[path = "panel_preview_login_tests.rs"]
 mod preview_tests;
+
+#[cfg(all(test, unix))]
+#[path = "panel_login_flow_tests.rs"]
+mod flow_tests;

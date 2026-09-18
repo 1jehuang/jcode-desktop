@@ -27,7 +27,13 @@ Gtk.main()
 
 def visible_words(tsv, bounds):
     # Standalone carets/punctuation must not inflate the next button bounds.
-    return [word for word in parse_words(tsv, bounds) if normalized(word["text"])]
+    words = [word for word in parse_words(tsv, bounds) if normalized(word["text"])]
+    # Tesseract reads the final capital I in the branded OpenAI row as lowercase l.
+    # Normalize only this exact provider token. Geometry and native clicks remain real.
+    for word in words:
+        if normalized(word["text"]) == "openal":
+            word["text"] = "OpenAI"
+    return words
 
 
 def masked_glyphs(image, bounds, expected):

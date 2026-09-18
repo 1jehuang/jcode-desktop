@@ -19,6 +19,10 @@ def verify(output, env, root):
         def check(image):
             current = ui.words(image, (0, 0, 264 if sidebar else image.width, image.height),
                                label, psm=11)
+            # The UI font's lowercase l can be recognized as the two glyphs 1l.
+            for word in current:
+                if word["text"] == "1link":
+                    word["text"] = "link"
             if phrase:
                 phrase_bounds(current, phrase)
             return current
@@ -32,7 +36,9 @@ def verify(output, env, root):
     phrase_bounds(current, "Waiting for approval")
     ui.click(phrase_bounds(current, "Open browser again"))
     current = words("account-reopen-browser", "Finish signing")
-    ui.click(phrase_bounds(current, "Cancel and go back"))
+    ui.click(phrase_bounds(current, "Copy link"))
+    current = words("account-copy-link", "Link copied")
+    ui.click(phrase_bounds(current, "Start over"))
     current = words("account-back", "Welcome to Jcode Desktop")
     assert tomllib.loads(config.read_text()) == original
     # Keyboard-only choice is as accessible as the visible Skip button.
@@ -41,14 +47,26 @@ def verify(output, env, root):
     ui.native("key", "--clearmodifiers", "Tab")
     ui.capture("account-keyboard-skip")
     ui.native("key", "--clearmodifiers", "Return")
-    words("account-skipped", "Jcode Desktop is in beta testing")
+    # The beta notice is independently optional (for example after restoring a
+    # snapshot). Prove Skip persisted and reached the workspace, not that a
+    # second onboarding screen happened to appear.
+    def skipped(image):
+        current = ui.words(image, (0, 0, image.width, image.height), "account-skipped", psm=11)
+        try:
+            phrase_bounds(current, "Jcode Desktop is in beta testing")
+            return True
+        except AssertionError:
+            phrase_bounds(current, "chat")
+            return False
+    beta_visible = ui.wait_frame("account-skipped", skipped)
     saved = tomllib.loads(config.read_text())
     assert saved["workspace"]["account_sign_in_handled"] is True
     saved["workspace"].pop("account_sign_in_handled")
     if not saved["workspace"] and "workspace" not in original:
         saved.pop("workspace")
     assert saved == original, (saved, original)
-    ui.native("key", "Escape")
+    if beta_visible:
+        ui.native("key", "Escape")
     current = words("account-workspace", "chat", sidebar=True)
     chat = phrase_bounds(current, "chat")
     nav_y = round((chat[1] + chat[3]) / 2)
@@ -77,6 +95,7 @@ def verify(output, env, root):
     ui.artifact("account-result.json").write_text(json.dumps({
         "welcome_and_magic_link_copy": True,
         "native_sign_in_waiting_reopen_and_cancel": True,
+        "copy_link_feedback": True,
         "keyboard_skip_persisted": True,
         "other_configuration_unchanged": True,
         "settings_reentry_and_escape": True,
