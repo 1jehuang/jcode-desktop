@@ -48,6 +48,24 @@ pub(super) fn user_prompt_label(items: &[Item], index: usize) -> String {
     format!("you, {number}")
 }
 
+pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
+    let Item::User(text) = item else {
+        return false;
+    };
+    let text = text.trim();
+    // Background notifications can arrive in restored history as user-role
+    // markdown. Keep them in the transcript, never in the pinned reminder.
+    !text.is_empty()
+        && ![
+            "**Background task** `",
+            "**Background task started** `",
+            "**Background task progress** `",
+            "**Background task stalled** `",
+        ]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+}
+
 impl Panel {
     /// Keep the reminder out of flex layout. Inserting it above the list moves
     /// every visible row by its height at the pin boundary, and also changes
@@ -59,6 +77,9 @@ impl Panel {
     ) -> Option<gpui::AnyElement> {
         let index = self.offscreen_prompt?;
         let item = self.items.get(index)?.clone();
+        if !is_pinnable_prompt(&item) {
+            return None;
+        }
         Some(
             div()
                 .id("pinned-latest-prompt")
@@ -125,6 +146,78 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BACKGROUND_NOTICES: [&str; 4] = [
+        "**Background task started** `task-42` · `Workspace tests`",
+        "**Background task progress** `task-42` · `Workspace tests` (`bash`)\n\n35% · Running tests",
+        "**Background task** `task-42` · `Workspace tests` (`bash`) · ✓ completed · 8.2s · exit 0",
+        "**Background task stalled** `task-42` · `Workspace tests` (`bash`) · no output or progress for 30s (running 60s total)",
+    ];
+
+    #[test]
+    fn background_notifications_are_never_pinnable_prompts() {
+        for notice in BACKGROUND_NOTICES {
+            assert!(!is_pinnable_prompt(&Item::User(format!("\n{notice}\n"))));
+        }
+        assert!(!is_pinnable_prompt(&Item::User("  ".into())));
+        assert!(is_pinnable_prompt(&Item::User(
+            "Explain background tasks".into()
+        )));
+        assert!(!is_pinnable_prompt(&Item::BackgroundTask {
+            task_id: "task-42".into(),
+            label: "Workspace tests".into(),
+            summary: "Running tests".into(),
+            percent: Some(35.),
+            done: false,
+        }));
+    }
+
+    #[gpui::test]
+    fn background_notifications_stay_in_the_scroller(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "background-no-pin".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(400.)));
+        for notice in BACKGROUND_NOTICES {
+            for real_prompt in [false, true] {
+                panel.update(vcx, |panel, cx| {
+                    panel.items.clear();
+                    if real_prompt {
+                        panel.items.push(Item::User("Run the tests".into()));
+                    }
+                    panel.items.push(Item::User(notice.into()));
+                    for i in 0..40 {
+                        panel
+                            .items
+                            .push(Item::Assistant(format!("Response paragraph {i}")));
+                    }
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                panel.read_with(vcx, |panel, _| {
+                    assert_eq!(panel.offscreen_prompt, real_prompt.then_some(0));
+                    assert!(
+                        panel.transcript_render_rows().iter().any(|row| {
+                            matches!(row.source, TranscriptRowSource::Settled(index)
+                            if matches!(&panel.items[index], Item::User(text) if text == notice))
+                        }),
+                        "background output remains in transcript history"
+                    );
+                });
+                assert_eq!(
+                    vcx.debug_bounds("pinned-latest-prompt").is_some(),
+                    real_prompt
+                );
+            }
+        }
+    }
 
     #[test]
     fn viewport_prompt_never_comes_from_a_future_turn() {

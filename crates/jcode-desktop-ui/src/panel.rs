@@ -3835,7 +3835,7 @@ impl Render for Panel {
         let prompt_rows: Vec<(usize, usize)> = rows.iter().enumerate().filter_map(|(row, entry)| {
             match entry.source {
                 TranscriptRowSource::Settled(index)
-                    if matches!(&self.items[index], Item::User(text) if !text.trim().is_empty()) => Some((row, index)),
+                    if prompt::is_pinnable_prompt(&self.items[index]) => Some((row, index)),
                 _ => None,
             }
         }).collect();
