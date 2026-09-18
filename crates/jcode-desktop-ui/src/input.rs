@@ -790,6 +790,34 @@ impl PromptInput {
         }
     }
 
+    /// Append asynchronous dictation without replacing newer edits or attachments.
+    pub(crate) fn append_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.undo.push(self.content.to_string());
+        self.redo.clear();
+        let mut draft = self.content.to_string();
+        if !draft.is_empty() && !draft.ends_with(char::is_whitespace) {
+            draft.push(' ');
+        }
+        draft.push_str(text);
+        self.marked_range = None;
+        self.history_index = None;
+        self.set_content(draft, cx);
+        // Dictation completes inside a parent Panel update. Run its callback
+        // after that lease ends, just as a later native edit would.
+        let input = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = input.update(cx, |input, cx| {
+                if let Some(on_change) = &input.on_change {
+                    on_change(&input.content, cx);
+                }
+            });
+        });
+    }
+
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content.into();
         self.command_selection = 0;

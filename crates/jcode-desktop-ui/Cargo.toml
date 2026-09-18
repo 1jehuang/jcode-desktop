@@ -42,12 +42,12 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 handterm-common = { git = "https://github.com/1jehuang/handterm", rev = "ead926b6f13a1f30d58836c4fd8fb325660bae96" }
 
 [target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
-jcode-base = { path = "../../../jcode/crates/jcode-base" }
+jcode-base = { path = "../../../jcode/crates/jcode-base", features = ["voice-capture"] }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 # Match the bundled CLI's ARM64 build. The desktop only uses foundation
 # helpers, not in-process embedding inference or provider implementations.
-jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false }
+jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false, features = ["voice-capture"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }

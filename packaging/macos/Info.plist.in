@@ -19,6 +19,7 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Solo Systems</string>
+  <key>NSMicrophoneUsageDescription</key><string>Record voice dictation when you choose Voice. Audio is sent to Groq through your Jcode subscription for transcription.</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>

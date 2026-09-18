@@ -60,6 +60,8 @@ mod tab_emoji;
 mod tool_streaming;
 #[path = "panel_response_stats.rs"]
 mod response_stats;
+#[path = "panel_voice.rs"]
+mod voice;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
 
@@ -233,6 +235,7 @@ pub struct Panel {
     tab_emoji: Entity<tab_emoji::TabEmoji>,
     sidebar_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
+    voice: voice::VoiceState,
     image_preview: Option<TranscriptImage>,
     diff_review: Option<diff_review::DiffReview>,
     image_preview_zoom: f32,
@@ -722,6 +725,7 @@ impl Panel {
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
             sidebar_spinner: cx.new(activity::Spinner::new),
             input,
+            voice: voice::VoiceState::default(),
             image_preview: None,
             diff_review: None,
             image_preview_zoom: 1.0,
@@ -4072,7 +4076,6 @@ impl Render for Panel {
         };
 
         let status_line = self.status_line();
-        let active = self.activity_active();
         let theme = Theme::global();
         let usage_meters = self.render_usage_meters(cx);
         let account_label =
@@ -4387,29 +4390,17 @@ impl Render for Panel {
                         div()
                             .debug_selector(|| "panel-status".into())
                             .flex_1()
-                            .min_w(px(40.))
+                            .min_w(px(54.))
                             .flex()
                             .justify_end()
                             .items_center()
                             .gap_2()
                             .overflow_hidden()
                             .children(usage_meters)
-                            .when(!active, |el| {
-                                el.child(
-                                    div()
-                                        .debug_selector(|| "panel-status-badge".into())
-                                        .flex()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .min_w(px(32.))
-                                        .px_2()
-                                        .h(px(22.0))
-                                        .rounded_md()
-                                        .child(div().min_w_0().truncate().child(status_line)),
-                                )
-                            }),
+                            .child(self.render_voice_controls(status_line, cx)),
                     ),
             )
+            .children(self.render_voice_status(cx))
             .children(self.render_preview_badge(cx))
             // Input
             .when(!fresh_session && self.startup_layout.is_none(), |el| {
