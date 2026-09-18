@@ -16,3 +16,7 @@ cargo run -p jcode-desktop
 ```
 
 Press **Ctrl+R** to rebuild and hot-reload UI changes.
+
+Agent sessions opened in this checkout automatically use
+[Desktop self-development mode](docs/desktop-selfdev.md), with a Desktop-specific
+system prompt and `desktop_selfdev` tool, separate from CLI/TUI selfdev.

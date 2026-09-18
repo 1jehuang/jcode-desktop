@@ -4297,6 +4297,7 @@ dependencies = [
  "jcode-provider-openai",
  "jcode-provider-openrouter",
  "jcode-render-core",
+ "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-side-panel-types",
  "jcode-storage",
@@ -4701,6 +4702,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]
