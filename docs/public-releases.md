@@ -22,6 +22,13 @@ same version tag as the private build. The `desktop-latest` release holds the
 current manifest and appcast. Website routes can later move to an owned server
 without changing the URLs embedded in apps.
 
+The website serves installer bytes, checksums, and the appcast directly through
+Cloudflare Pages Functions, rather than redirecting download clients to GitHub.
+GitHub remains the backend storage origin. This is not yet a separate R2 copy:
+an origin-storage migration requires additional Cloudflare storage permissions.
+Versioned assets stream without buffering, support HEAD and range requests, and
+use immutable caching. The mutable manifest/appcast and failures remain uncached.
+
 `.github/workflows/publish-public-release.yml` runs after a successful tagged
 cross-platform build. `JCODE_PUBLIC_RELEASE_TOKEN` is an encrypted Actions secret
 in the private repository, used only in the publication step. It needs release
