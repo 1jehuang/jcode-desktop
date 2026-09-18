@@ -47,7 +47,7 @@ gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
 
 [dev-dependencies]
-handterm-common = { git = "https://github.com/1jehuang/handterm", rev = "559a6132b2fc24f1425efa2abb8d716c5730a4d0" }
+handterm-common = { git = "https://github.com/1jehuang/handterm", rev = "8971e3dd91af2be526b2eea0adf887bf8213cd2a" }
 gpui = { workspace = true, features = ["test-support"] }
 
 [profile.dev]

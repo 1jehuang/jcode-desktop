@@ -3,6 +3,29 @@ use gpui::{AppContext, Keystroke};
 use handterm_common::grid::{ATTR_BOLD, COLOR_FLAG_RGB};
 
 #[test]
+fn color_queries_follow_desktop_theme_and_changes() {
+    let mut terminal = Terminal::new(80, 24);
+    let mut theme = Theme::global().clone();
+    for (foreground, background) in [(0x292724, 0xeeeae4), (0xe4ddd3, 0x1c1a18)] {
+        theme.TEXT = gpui::rgb(foreground);
+        theme.BG = gpui::rgb(background);
+        sync_terminal_colors(&mut terminal, &theme);
+        // Queries can cross PTY read boundaries, with either terminator.
+        terminal.process(b"\x1b]10;?");
+        terminal.process(b"\x07\x1b]11;?\x1b");
+        terminal.process(b"\\");
+        let expected = [(10, theme.TEXT), (11, theme.BG)]
+            .into_iter()
+            .map(|(command, color)| {
+                let [r, g, b] = color_channels(color);
+                format!("\x1b]{command};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\")
+            })
+            .collect::<String>();
+        assert_eq!(terminal.drain_responses().unwrap(), expected.as_bytes());
+    }
+}
+
+#[test]
 fn keys_follow_engine_modes_and_preserve_workspace_shortcuts() {
     let mut terminal = Terminal::new(80, 24);
     let up = Keystroke::parse("up").unwrap();
@@ -105,6 +128,25 @@ fn engine_cells_keep_styles_wide_unicode_and_image_data() {
     assert_eq!(terminal.kitty_placements().len(), 1);
     terminal.process(b"\x1b_Ga=d,d=I,i=7\x1b\\");
     assert!(terminal.kitty_image(7).is_none());
+}
+
+#[gpui::test]
+fn panel_replay_sets_theme_colors_without_sending_historical_replies(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(|cx| {
+        let panel = cx.new(|cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+        panel.update(cx, |panel, _| {
+            panel.process_output(b"\x1b]11;?\x07", false);
+            assert!(panel.terminal.drain_responses().is_none());
+            panel.terminal.process(b"\x1b]11;?\x07");
+            let [r, g, b] = color_channels(Theme::global().BG);
+            assert_eq!(
+                panel.terminal.drain_responses().unwrap(),
+                format!("\x1b]11;rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\").as_bytes()
+            );
+        });
+    });
 }
 
 #[gpui::test]

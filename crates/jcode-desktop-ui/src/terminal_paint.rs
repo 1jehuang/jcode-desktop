@@ -42,9 +42,8 @@ impl Scene {
 }
 
 fn packed(color: gpui::Rgba) -> u32 {
-    ((color.r * 255.).round() as u32) << 16
-        | ((color.g * 255.).round() as u32) << 8
-        | (color.b * 255.).round() as u32
+    let [r, g, b] = color_channels(color);
+    u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
 }
 
 pub(super) fn bgra_image(

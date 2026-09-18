@@ -17,6 +17,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shlex
 import shutil
@@ -54,10 +55,30 @@ def fixture_worker(root):
     original = termios.tcgetattr(0)
     try:
         tty.setraw(0)
+        # Query through the real shell PTY, not a mocked engine. Clients use
+        # these responses to decide whether to render light or dark text.
+        emit(b"\x1b]10;?\x07\x1b]11;?\x1b\\")
+        replies = b""
+        deadline = time.monotonic() + 3
+        colors = {}
+        while len(colors) < 2 and time.monotonic() < deadline:
+            if not select.select([0], [], [], .1)[0]:
+                continue
+            replies += os.read(0, 4096)
+            for match in re.finditer(rb"\x1b\](10|11);rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)(?:\x07|\x1b\\)", replies):
+                colors[match[1].decode()] = [
+                    round(int(channel, 16) * 255 / (16 ** len(channel) - 1))
+                    for channel in match.groups()[1:]
+                ]
+        if len(colors) != 2:
+            raise RuntimeError(f"Missing terminal color replies: {replies!r}")
+        proof["colors"] = colors
+        accent = (b"\x1b[38;2;20;90;30m" if sum(colors["11"]) > 384
+                  else b"\x1b[38;2;255;210;40m")
         # Absolute cursor addressing, truecolor, erase-in-line, and overwrite.
         emit(b"\x1b[?25l\x1b[2J\x1b[H"
              b"TERMINAL ACCEPTANCE\r\n"
-             b"\x1b[38;2;255;210;40mANSI COLOR\x1b[0m\r\n"
+             + accent + b"ANSI COLOR\x1b[0m\r\n"
              b"\x1b[4;1HCURSOR POSITION OK"
              b"\x1b[5;1HERASE WRONG CONTENT\x1b[5;1H\x1b[2KERASE OK"
              b"\x1b[6;1HPTY REAL\x1b[8;1HINPUT READY\x1b[19;1H")
@@ -199,6 +220,15 @@ def verify(harness, kitty, require_debug_state=False):
     proof = h.wait(lambda: h.proof(), "Shell failed to launch the PTY fixture")
     if not proof["stdin_tty"] or not proof["stdout_tty"] or proof["rows"] < 20 or proof["cols"] < 40:
         raise AssertionError(f"Not a usable real terminal PTY: {proof}")
+    base = h.capture("background-query")
+    from PIL import Image
+    background = tuple(proof["colors"]["11"])
+    with Image.open(base) as image:
+        histogram = image.convert("RGB").getcolors(image.width * image.height)
+    matching = sum(count for count, pixel in histogram if pixel == background)
+    if matching < 10000:
+        raise AssertionError(f"OSC 11 reports {background}, but only {matching} pixels match")
+    h.report["checks"]["background_query"] = {"rgb": background, "painted_pixels": matching}
     base = h.expect_text("ansi", ["TERMINAL ACCEPTANCE", "ANSI COLOR", "CURSOR POSITION OK",
                                 "ERASE OK", "PTY REAL", "INPUT READY"], ["WRONG CONTENT"])
     h.key("k")
@@ -257,6 +287,7 @@ def main():
     parser.add_argument("output", type=Path, help="new directory for persistent artifacts")
     parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug/jcode-desktop")
     parser.add_argument("--no-kitty", action="store_true", help="explicitly skip image acceptance for the old engine")
+    parser.add_argument("--theme", choices=("warm-neutral", "neutral-light"), default="warm-neutral")
     parser.add_argument("--require-debug-state", action="store_true",
                         help="require the Handterm terminal snapshot in opt-in navigation diagnostics")
     args = parser.parse_args()
@@ -279,7 +310,7 @@ def main():
     env.update({"VK_DRIVER_FILES": str(drivers[0]), "SHELL": "/bin/bash",
                 "JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "empty"})
     config = root / "desktop.toml"
-    config.write_text('[appearance]\ntheme = "warm-neutral"\nlayout_mode = "folder_tabs"\n')
+    config.write_text(f'[appearance]\ntheme = "{args.theme}"\nlayout_mode = "folder_tabs"\n')
     env["JCODE_DESKTOP_CONFIG"] = str(config)
     shutil.copyfile(__file__, root / "terminal_acceptance.py")
     shutil.copyfile(Path(__file__).with_name("screenshot.py"), root / "screenshot.py")

@@ -30,6 +30,17 @@ const PADDING: f32 = 10.0;
 // Keep one busy PTY from starving the UI thread. A later tick drains the rest.
 const POLL_BUDGET: usize = 256 * 1024;
 
+fn color_channels(color: gpui::Rgba) -> [u8; 3] {
+    [color.r, color.g, color.b].map(|channel| (channel * 255.).round() as u8)
+}
+
+fn sync_terminal_colors(terminal: &mut Terminal, theme: &Theme) {
+    // OSC 10/11 must describe the colors we actually paint, not Handterm's
+    // standalone white-on-black defaults. Apps such as Jcode query these to
+    // choose a readable palette.
+    terminal.set_default_colors(color_channels(theme.TEXT), color_channels(theme.BG));
+}
+
 actions!(terminal, [Copy, Paste]);
 
 pub fn bind_keys(cx: &mut gpui::App) {
@@ -193,6 +204,9 @@ impl TerminalPanel {
     }
 
     fn process_output(&mut self, output: &[u8], reply: bool) {
+        // Sync before parsing queries, including the first output after creation,
+        // replay/reset, and a Desktop theme change.
+        sync_terminal_colors(&mut self.terminal, Theme::global());
         self.terminal.process(output);
         if let Some(responses) = self.terminal.drain_responses() {
             if reply {

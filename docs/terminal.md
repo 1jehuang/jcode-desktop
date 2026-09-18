@@ -29,6 +29,11 @@ GPUI canvas <- styled cells and image placements <- Handterm <- host output
 ## Input and protocols
 
 - Styled ANSI text, indexed/true colors, wide characters and grapheme cells.
+- OSC 10/11 foreground/background queries report Desktop's actual `TEXT`/`BG`
+  colors, synchronized before parsing output, including after replay/reset and
+  theme changes. Jcode uses the background reply at startup to select its light
+  or dark palette. Already-running Jcode clients retain their startup choice and
+  must be relaunched after switching Desktop between light and dark themes.
 - Application-cursor keys and Handterm's shared legacy/Kitty keyboard encoder.
   GPUI does not expose all physical/keypad distinctions available to standalone
   Handterm, so those mappings are not claimed to be identical.
@@ -69,6 +74,9 @@ on an older host filters only replies to probes that host already answers, so
 existing shells need not be killed for this migration. New hosts set
 `TERM_PROGRAM=jcode-desktop`, `COLORTERM=truecolor`, and leave protocol replies to
 Handterm. Loading a pre-Handterm UI into a new host is not supported.
+An older host still answers OSC 11 with its hardcoded black background. A UI
+hot reload cannot replace that host-side responder. Restart Desktop onto the
+new host to enable accurate color queries, after saving any terminal work.
 
 ## Verification
 
@@ -77,6 +85,7 @@ cargo test -p jcode-desktop-ui --lib terminal:: -- --test-threads=1
 cargo test -p jcode-desktop --bin jcode-desktop host::resources::tests -- --test-threads=1
 cargo build -p jcode-desktop
 python3 scripts/terminal_acceptance.py target/terminal-handterm --require-debug-state
+python3 scripts/terminal_acceptance.py target/terminal-light --theme neutral-light --require-debug-state
 python3 scripts/screenshot.py target/ui-review.png --no-build
 ```
 
