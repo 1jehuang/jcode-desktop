@@ -4,6 +4,9 @@
 
 - Always commit and push completed changes. Do this every time unless the user explicitly asks you not to.
 - Commit only the changes you made. Do not include unrelated or pre-existing modifications.
+- Use the user's configured Git identity. Never override it with `Jcode`, an invented agent email, `git -c user.*`, or `GIT_AUTHOR_*` / `GIT_COMMITTER_*` values. If identity is missing, resolve the user's established identity rather than inventing one.
+- Before committing, verify `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`. On this checkout the established identity is Jeremy Huang <94247773+1jehuang@users.noreply.github.com>.
+- Enable this repository's identity guard with `git config --local core.hooksPath .githooks`. Do not bypass these hooks. They reject agent identities both at commit time and before pushing, including commits created through plumbing commands.
 
 ## Jcode Repository Ownership
 
