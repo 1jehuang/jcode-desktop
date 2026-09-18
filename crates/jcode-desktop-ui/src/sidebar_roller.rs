@@ -432,7 +432,19 @@ mod tests {
                 assert_eq!(w.active_row, 0);
             });
             assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
-            assert_eq!(vcx.debug_bounds("sidebar-tab-body").unwrap(), body);
+            let current_body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+            assert_eq!(current_body.bottom(), body.bottom());
+            assert_eq!(current_body.size.width, body.size.width);
+            if expected == SidebarView::Sessions {
+                assert_eq!(current_body, body);
+                assert!(vcx.debug_bounds("sidebar-workflow-switch").is_some());
+            } else {
+                assert!(
+                    current_body.top() < body.top(),
+                    "non-chat sections reclaim the workflow switch space"
+                );
+                assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
+            }
             assert!(
                 commands.try_recv().is_err(),
                 "wheel must never dispatch an action"

@@ -48,6 +48,7 @@ def main():
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
                         help="verify sound opt-in, preview, and saved mute on the private display")
+    parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--fresh-interact", action="store_true",
@@ -320,6 +321,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.worktrees:
+            env["JCODE_DESKTOP_SCREENSHOT_WORKTREES"] = "1"
         if args.swarm:
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         config = root / "desktop.toml"

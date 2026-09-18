@@ -27,6 +27,8 @@ mod sidebar_selection;
 mod sidebar_swarm;
 #[path = "sidebar_edits.rs"]
 mod sidebar_edits;
+#[path = "sidebar_worktrees.rs"]
+mod sidebar_worktrees;
 #[path = "sidebar_workspaces.rs"]
 mod sidebar_workspaces;
 
@@ -481,6 +483,8 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     sidebar_view: SidebarView,
     #[serde(default)]
+    worktree_mode: bool,
+    #[serde(default)]
     tutorial_page: usize,
     #[serde(default)]
     onboarding_simulator: Option<onboarding_simulator::Simulation>,
@@ -553,6 +557,8 @@ pub struct Workspace {
     layout_mode: crate::config::LayoutMode,
     folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
+    worktree_mode: bool,
+    worktrees: sidebar_worktrees::State,
     tutorial_page: usize,
     onboarding_simulator: Option<onboarding_simulator::Simulation>,
     expanded_directories: HashSet<PathBuf>,
@@ -783,6 +789,8 @@ impl Workspace {
             compact_sidebar_open: false,
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
+            worktree_mode: false,
+            worktrees: sidebar_worktrees::State::default(),
             tutorial_page: 0,
             onboarding_simulator: None,
             expanded_directories: HashSet::new(),
@@ -885,6 +893,7 @@ impl Workspace {
             workspace.connected = true;
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
+            workspace.init_worktree_fixture();
             if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
                 for (index, (label, status)) in [
                     ("API reviewer", "working"),
@@ -1025,6 +1034,8 @@ impl Workspace {
             compact_sidebar_open: false,
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
+            worktree_mode: false,
+            worktrees: sidebar_worktrees::State::default(),
             tutorial_page: 0,
             onboarding_simulator: None,
             expanded_directories: HashSet::new(),
@@ -1158,6 +1169,7 @@ impl Workspace {
             layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
+            worktree_mode: self.worktree_mode,
             tutorial_page: self.tutorial_page,
             onboarding_simulator: self.onboarding_simulator.clone(),
             slots: slots
@@ -1193,6 +1205,7 @@ impl Workspace {
         self.layout_mode = snapshot.layout_mode;
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_view = snapshot.sidebar_view;
+        self.worktree_mode = snapshot.worktree_mode;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.onboarding_simulator = snapshot.onboarding_simulator;
         self.slots.clear();
@@ -5215,6 +5228,9 @@ impl Workspace {
             })
             .child(self.render_default_directory_button(cx))
             .child(self.render_machine_switcher(cx))
+            .when(self.sidebar_view == SidebarView::Sessions, |el| {
+                el.child(self.render_workflow_switch(cx))
+            })
             .child(
                 div()
                     .flex_1()
@@ -5227,6 +5243,7 @@ impl Workspace {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
                     .child(match self.sidebar_view {
+                        SidebarView::Sessions if self.worktree_mode => self.render_worktrees(cx),
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Learn => self.render_tutorial_guides(cx),
                         SidebarView::Files => self.render_files_sidebar(cx),
@@ -5246,7 +5263,7 @@ impl Workspace {
                         matches!(
                             self.sidebar_view,
                             SidebarView::Sessions | SidebarView::Files
-                        ),
+                        ) && !(self.sidebar_view == SidebarView::Sessions && self.worktree_mode),
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
@@ -7998,6 +8015,7 @@ mod tests {
             layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
+            worktree_mode: false,
             tutorial_page: 0,
             onboarding_simulator: None,
             slots: vec![SlotSnapshot {
@@ -8197,6 +8215,7 @@ mod tests {
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
+                    worktree_mode: false,
                     tutorial_page: 0,
                     onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
@@ -8860,10 +8879,16 @@ mod tests {
                 let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 assert!(gutter.top() >= directory.bottom());
-                assert_eq!(
-                    gutter.top(), machines.bottom(),
-                    "scrollbar starts below both fixed rows"
-                );
+                assert!(gutter.top() >= machines.bottom());
+                if view == SidebarView::Sessions {
+                    let workflow = vcx.debug_bounds("sidebar-workflow-switch").unwrap();
+                    assert!(
+                        gutter.top() >= workflow.bottom(),
+                        "workflow switch stays above scrolling content"
+                    );
+                } else {
+                    assert_eq!(gutter.top(), machines.bottom());
+                }
                 assert_eq!(gutter.top(), body.top());
                 assert_eq!(gutter.bottom(), body.bottom());
                 let tabs_before =
@@ -9327,9 +9352,13 @@ mod tests {
             vcx.run_until_parked();
             for target in [30, 50, 20, 60] {
                 workspace.update(vcx, |workspace, cx| {
-                    workspace
-                        .sidebar_sessions_list
-                        .scroll_to_reveal_item(target);
+                    // Place the target at the top. Bottom-edge reveal relies on
+                    // estimated heights for rows not measured yet, which changes
+                    // with the fixed workflow switch and sidebar viewport size.
+                    workspace.sidebar_sessions_list.scroll_to(gpui::ListOffset {
+                        item_ix: target,
+                        offset_in_item: px(0.0),
+                    });
                     cx.notify();
                 });
                 vcx.run_until_parked();
@@ -9393,7 +9422,14 @@ mod tests {
             assert!(selected.left() >= trigger.left() && selected.right() <= trigger.right());
             assert_eq!(selected.center().x, trigger.center().x);
             assert_eq!(vcx.debug_bounds("sidebar-section-trigger").unwrap(), trigger);
-            assert_eq!(vcx.debug_bounds("sidebar-tab-body").unwrap(), body);
+            let current_body = vcx.debug_bounds("sidebar-tab-body").unwrap();
+            assert_eq!(current_body.bottom(), body.bottom());
+            assert_eq!(current_body.size.width, body.size.width);
+            if view == SidebarView::Sessions {
+                assert_eq!(current_body, body);
+            } else {
+                assert!(current_body.top() < body.top());
+            }
             assert_eq!(vcx.debug_bounds("workspace-canvas").unwrap(), canvas);
             assert!(vcx.debug_bounds("sidebar-roller-next").is_none());
             assert!(vcx.debug_bounds("sidebar-roller-previous").is_none());
