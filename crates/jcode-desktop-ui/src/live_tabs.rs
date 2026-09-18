@@ -306,6 +306,7 @@ impl Workspace {
         } else {
             0.0
         };
+        let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
             // Closing surfaces stay mounted for their fade, but their tabs
@@ -433,10 +434,95 @@ impl Workspace {
                             .truncate()
                             .child(title.clone()),
                     )
+                    .when(focused && can_rename && visible >= 88.0, |el| {
+                        el.child(
+                            div()
+                                .id("rename-session-button")
+                                .debug_selector(|| "rename-session-button".into())
+                                .flex_none()
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .text_size(px(14.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .opacity(0.0)
+                                .group_hover("live-session-tab", |style| style.opacity(1.0))
+                                .hover(|style| {
+                                    style
+                                        .bg(Theme::global().PANEL_BG)
+                                        .text_color(Theme::global().TEXT)
+                                })
+                                .cursor_pointer()
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| TabTooltip("Rename session (F2)".into())).into()
+                                })
+                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.rename_session(&RenameSession, window, cx);
+                                }))
+                                .child(
+                                    gpui::svg()
+                                        .data(include_bytes!("../../../assets/icons/pencil.svg"))
+                                        .size(px(12.0))
+                                        .text_color(Theme::global().TEXT_DIM),
+                                ),
+                        )
+                    })
+                    .when(index.is_some() && visible >= 88.0, |el| {
+                        let index = index.unwrap();
+                        el.child(
+                            div()
+                                .id(("close-session-button", index))
+                                .debug_selector(move || format!("close-session-button-{index}"))
+                                .flex_none()
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .text_size(px(16.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .opacity(0.0)
+                                .group_hover("live-session-tab", |style| style.opacity(1.0))
+                                .hover(|style| {
+                                    style
+                                        .bg(Theme::global().ERROR_BG)
+                                        .text_color(Theme::global().ERROR)
+                                })
+                                .cursor_pointer()
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        TabTooltip(if cfg!(target_os = "macos") {
+                                            "Close tab (⌘Q)".into()
+                                        } else {
+                                            "Close tab (Super+Q)".into()
+                                        })
+                                    })
+                                    .into()
+                                })
+                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.set_active(index, cx);
+                                    this.close_panel(&ClosePanel, window, cx);
+                                }))
+                                .child("×"),
+                        )
+                    })
                 });
             tabs = tabs.child(
                 div()
                     .id(("workspace-session", index.unwrap_or(usize::MAX)))
+                    .group("live-session-tab")
                     .debug_selector(move || match index {
                         Some(index) => format!("live-session-tab-{index}"),
                         None => "live-session-empty-tab".into(),
@@ -610,7 +696,16 @@ impl Workspace {
                         el.bg(Theme::global().PANEL_BG)
                             .text_color(Theme::global().TEXT)
                     })
-                    .tooltip(|_, cx| cx.new(|_| TabTooltip("New session".into())).into())
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            TabTooltip(if cfg!(target_os = "macos") {
+                                "New session (⌘N)".into()
+                            } else {
+                                "New session (Super+N)".into()
+                            })
+                        })
+                        .into()
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -661,6 +756,10 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "live_tab_actions_tests.rs"]
+mod action_tests;
 
 #[cfg(test)]
 mod tests {

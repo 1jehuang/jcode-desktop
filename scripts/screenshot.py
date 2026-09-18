@@ -44,6 +44,8 @@ def main():
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
                         help="verify sound opt-in, preview, and saved mute on the private display")
+    parser.add_argument("--tab-actions-interact", action="store_true",
+                        help="verify hover-only tab actions and shortcut tooltips")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--fresh-interact", action="store_true",
@@ -109,6 +111,17 @@ def main():
             value for key, value in vars(args).items()
             if key.endswith("_interact") and key != "beta_notice_interact"):
         parser.error("beta-notice modes cannot be combined with other interactions")
+    if args.tab_actions_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "tab_actions_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript != "empty" or args.focus_panel is not None
+                or args.learn_stage is not None or args.preview_state is not None
+                or args.notification or args.swarm):
+            parser.error("tab-actions-interact requires --transcript empty and the default single-tab fixture")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("tab-actions-interact requires xdotool and tesseract")
     if args.onboarding_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "onboarding_interact")
@@ -437,6 +450,9 @@ def main():
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.beta_notice_interact:
                     from beta_notice_acceptance import verify
+                    verify(output, env, root)
+                if args.tab_actions_interact:
+                    from tab_actions_acceptance import verify
                     verify(output, env, root)
                 if args.slash_interact:
                     from slash_menu_acceptance import verify
