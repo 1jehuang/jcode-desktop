@@ -11,6 +11,14 @@
 - When desktop work requires an SDK, protocol, TUI, or shared-runtime change, make the correct change in the Jcode repository directly rather than adding a desktop-only workaround or asking the user to coordinate it.
 - Keep cross-repository behavior aligned and commit and push the changes in each affected repository.
 
+## Handterm Repository Ownership
+
+- This project also owns and maintains Handterm at <https://github.com/1jehuang/handterm>, including its reusable `handterm-common` terminal engine.
+- Reuse `handterm-common` for terminal emulation rather than copying its code or creating a separate desktop-only engine.
+- Fix shared terminal-engine bugs, protocol support, image handling, and core performance issues in the Handterm repository directly. Do not add desktop-only workarounds for shared engine problems or ask the user to coordinate upstream changes.
+- Keep GPUI rendering, desktop input and clipboard integration, shortcuts, panel behavior, and hot-reload host integration in Jcode Desktop.
+- Pin the Handterm dependency to a specific revision. Test and commit and push Handterm changes before updating Desktop to that revision, then verify the integration and commit and push the Desktop changes separately.
+
 ## Visual Design
 
 - Never use decorative left-hand vertical lines, accent bars, or tree rails to mark or group content, including sidebar swarm agents. Use indentation, spacing, typography, or subtle background fills instead.
