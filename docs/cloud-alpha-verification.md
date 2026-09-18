@@ -24,9 +24,12 @@ subscription control plane or public customer service.
   not proof of the current AWS state.
 - A private-Xvfb render of the current app succeeded. The old native Machines
   acceptance script's click changed the workspace to `settings://machines`,
-  but its captured image still showed the prior transcript. This visual
-  acceptance mismatch is under investigation. Unit routing tests are not
-  claimed as complete native-input/paint acceptance.
+  but its captured image still showed the prior transcript until a private
+  window resize forced presentation. After that expose, the native cloud row,
+  its cutoff explanation, Connect and Set default controls were visually
+  inspected in `target/cloud-native-expose/picker.png`. The original unmodified
+  native acceptance script still failed. Unit routing tests and this forced
+  expose are not claimed as complete native-input/paint acceptance.
 - All 103 offline alpha tests passed, including 17 new filtered-export and
   recovery tests. The export was exercised through its real script-over-stdin
   interface against local synthetic fixture homes and recovered into a fresh
