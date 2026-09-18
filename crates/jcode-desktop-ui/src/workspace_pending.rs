@@ -19,10 +19,13 @@ pub(super) fn next_draft_id() -> String {
 
 impl Workspace {
     pub(super) fn open_default_draft(&mut self, directory: Option<String>, cx: &mut Context<Self>) {
-        if self.remotes.default_host.is_some() {
-            // Remote targets keep their existing connection/status semantics.
-            // In particular, never forward a pinned local path to SSH.
-            self.create_default_session(directory, None);
+        if let Some(host) = self.remotes.default_host.clone() {
+            // A remote wake can fail before a session exists (for example,
+            // expired cloud credentials). Mount its progress and recovery
+            // controls immediately rather than making New Panel look inert.
+            // Never forward a pinned local path or silently fall back locally.
+            self.show_machines(cx);
+            self.connect_machine(Some(host), cx);
         } else {
             self.open_local_draft(directory, cx);
         }

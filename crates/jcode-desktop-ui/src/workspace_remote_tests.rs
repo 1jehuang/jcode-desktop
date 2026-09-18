@@ -74,8 +74,12 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     });
     // All generic and pinned new-panel shortcuts honor the remote preference,
     // without accidentally forwarding this computer's pinned directory.
-    for key in ["super-n", "ctrl-alt-enter"] {
-        vcx.simulate_keystrokes(key);
+    for key in ["super-n", "ctrl-alt-enter", "pointer"] {
+        if key == "pointer" {
+            click(vcx, "tab-new-session");
+        } else {
+            vcx.simulate_keystrokes(key);
+        }
         assert!(
             matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {host, working_dir: None, ..}) if host == "desktop")
         );
@@ -94,6 +98,112 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
         commands.try_recv(),
         Ok(Command::CreateSession { .. })
     ));
+}
+
+#[gpui::test]
+fn remote_new_panel_exposes_progress_failure_retry_and_explicit_local_choice(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::bind_workspace_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("desktop".into());
+        w.remotes.hosts = vec!["desktop".into()];
+        w.pinned_working_dir = Some("/local-only".into());
+        for index in 0..29 {
+            w.push_test_panel(&format!("existing-{index}"), cx);
+        }
+        w.restore_focus(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+
+    for key in ["super-n", "ctrl-alt-enter", "pointer"] {
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.set_active(0, cx);
+                w.focus_active(window, cx);
+                cx.notify();
+            });
+        });
+        vcx.run_until_parked();
+        if key == "pointer" {
+            click(vcx, "tab-new-session");
+        } else {
+            vcx.simulate_keystrokes(key);
+        }
+        vcx.run_until_parked();
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {
+            host, working_dir: None, request_id: None,
+        }) if host == "desktop")
+        );
+        assert!(vcx.debug_bounds("machine-connection-status").is_some());
+        assert!(vcx.debug_bounds("machine-connect-0").is_some());
+        vcx.update(|window, cx| {
+            assert!(
+                workspace
+                    .read(cx)
+                    .remotes
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus_handle
+                    .is_focused(window)
+            );
+        });
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots.len(),
+                30,
+                "repeated attempts reuse connection controls"
+            );
+            assert!(w.slots[w.active].panel.read(cx).is_machines());
+            assert_eq!(w.remotes.status.as_deref(), Some("Connecting to desktop…"));
+            assert!(!w.remotes.failed, "retry clears the previous error state");
+        });
+        workspace.update(vcx, |w, cx| {
+            w.apply(
+                Update::RemoteStatus {
+                    host: "desktop".into(),
+                    message: "Your session has expired. Please reauthenticate.".into(),
+                    request_id: None,
+                    failed: true,
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.remotes.failed);
+            assert!(w.remotes.status.as_deref().unwrap().contains("expired"));
+            assert!(w.slots[w.active].panel.read(cx).is_machines());
+        });
+        assert!(vcx.debug_bounds("machine-connection-status").is_some());
+        assert!(
+            commands.try_recv().is_err(),
+            "failure must never fall back locally"
+        );
+    }
+
+    click(vcx, "machine-connect-0");
+    assert!(matches!(commands.try_recv(), Ok(Command::CreateSession {
+        request_id: Some(id), ..
+    }) if Panel::is_pending_session_id(&id)));
+    vcx.simulate_input("local draft survives cloud failure");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"));
+        let panel = w.slots[w.active].panel.read(cx);
+        assert!(Panel::is_pending_session_id(&panel.session_id));
+        assert_eq!(
+            panel.input.read(cx).content.as_ref(),
+            "local draft survives cloud failure"
+        );
+    });
 }
 
 #[gpui::test]

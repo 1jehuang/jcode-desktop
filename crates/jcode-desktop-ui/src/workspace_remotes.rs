@@ -144,6 +144,11 @@ impl Workspace {
     }
 
     pub(super) fn open_machines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_machines(cx);
+        self.focus_active(window, cx);
+    }
+
+    pub(super) fn show_machines(&mut self, cx: &mut Context<Self>) {
         self.start_cloud_monitor(cx);
         if let Some(index) = self.machines_panel_index(cx) {
             self.set_active(index, cx);
@@ -196,7 +201,6 @@ impl Workspace {
         self.overview = false;
         self.overview_progress.set(0.0, Instant::now());
         self.focus_pending = true;
-        self.focus_active(window, cx);
         #[cfg(not(test))]
         if !harness::screenshot_mode() {
             self.remotes.discovery = Some(cx.spawn(async move |this, cx| {
@@ -295,6 +299,7 @@ impl Workspace {
             None => None,
         };
         if let Some(host) = host {
+            self.remotes.failed = false;
             if !self.remotes.hosts.contains(&host) {
                 self.remotes.hosts.push(host.clone());
             }
@@ -315,10 +320,7 @@ impl Workspace {
             }
         } else {
             self.remotes.notice = None;
-            self.bridge.send(Command::CreateSession {
-                working_dir: default_working_dir(),
-                request_id: None,
-            });
+            self.open_local_draft(default_working_dir(), cx);
         }
         cx.notify();
     }
@@ -408,7 +410,8 @@ impl Workspace {
             .child(div().text_color(theme.TEXT_DIM)
                 .child("Connect opens a new panel. Default applies to new session panels, including after restart."))
             .child(div().debug_selector(|| "machine-connection-status".into())
-                .text_color(theme.ACCENT).child(self.remotes.status.clone().unwrap_or_default()))
+                .text_color(if self.remotes.failed { theme.ERROR } else { theme.ACCENT })
+                .child(self.remotes.status.clone().unwrap_or_default()))
             .children((self.remotes.startup_failed && self.slots.iter().any(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())).then(|| {
                 div().id("machine-retry-startup").debug_selector(|| "machine-retry-startup".into())
                     .px_2().py_2().cursor_pointer().bg(theme.ACCENT_DIM)
@@ -542,7 +545,9 @@ impl Workspace {
                             .hover(|el| el.bg(Theme::global().TOOL_BG))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
                                     this.connect_machine(host.clone(), cx);
                                 }),
                             )
