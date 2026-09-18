@@ -256,7 +256,7 @@ the offline fixture internally. Prefer the script, which also supplies isolation
 
 ## Updating on Linux
 
-Type `/update` in Desktop to check and update a managed x86_64 archive install
+Type `/update` in Desktop to check and update a managed x86_64 or ARM64 archive install
 under `~/.local/opt/jcode-desktop`, including its bundled runtime. Downloads are
 SHA-256 checked and installed into a new version directory. The launcher changes
 atomically, old versions are retained, and the app asks you to quit and reopen
@@ -327,9 +327,10 @@ unchanged.
 
 ## Desktop releases
 
-`desktop-v*` tags build Linux x86_64, Windows x86_64, and the existing secure
-universal macOS release. Linux ships versioned `.tar.gz` and `.deb` artifacts;
-Windows ships a versioned ZIP. Every package bundles the desktop executable,
+`desktop-v*` tags build Linux and Windows for x86_64 and ARM64, FreeBSD x86_64,
+and the existing secure universal macOS release. This matches the CLI's seven
+OS/architecture targets. Linux ships versioned `.tar.gz` and `.deb` artifacts;
+Windows ships a versioned ZIP and FreeBSD a `.tar.gz`. Every package bundles the desktop executable,
 Jcode CLI, harness bridge, and application artwork. The Linux package also
 installs a freedesktop launcher. The Windows ZIP includes an external execution
 manifest with DPI, long-path, and supported-OS metadata; executable icon resource
@@ -339,9 +340,17 @@ The supported release matrix is intentionally explicit:
 
 | Platform | Architectures | Window system / minimum version | Release validation |
 | --- | --- | --- | --- |
-| Linux | x86-64 | Wayland and X11 | Package contract, bundled CLI, and packaged-app launch on headless Weston and Xvfb |
-| Windows | x86-64 | Windows 10 and 11 | Package contract, bundled CLI, and packaged-app launch |
+| Linux | x86-64 and ARM64 | Wayland and X11 | Native runners, binary architecture checks, package contract, bundled CLI, and packaged-app launch on headless Weston and Xvfb |
+| Windows | x86-64 and ARM64 | Windows 10/11 x64, Windows 11 ARM64 | Native runners, binary architecture checks, package contract, bundled CLI, and packaged-app launch |
 | macOS | Apple silicon and Intel | macOS 13 or newer | Workspace/package checks, universal binaries, signing, notarization, DMG install, bundled CLI, and installed-app launch |
+| FreeBSD | x86-64 | X11 | Native FreeBSD VM, binary architecture checks, package contract, bundled CLI, and packaged-app launch on Xvfb |
+
+New releases starting at `0.1.0-beta.29` require every target before public
+promotion. Historical releases through beta.28 keep their original immutable
+asset sets. ARM64 archives use `aarch64` in filenames and Linux Debian packages
+use `arm64`. Checksums and CI artifacts have distinct architecture names so
+parallel builds cannot overwrite one another. Native build and launch checks
+must pass before a newly added platform is considered validated.
 
 Other architectures, older operating systems, and alternative Linux package
 formats are not advertised as supported until their release artifacts and smoke
@@ -353,7 +362,9 @@ performs signing and notarization, and creates the GitHub prerelease. The Linux
 and Windows workflow waits for that prerelease before uploading, avoiding parallel
 release creation races.
 
-Local packaging requires a sibling Jcode checkout (or `JCODE_REPO`):
+Local packaging requires a sibling Jcode checkout (or `JCODE_REPO`). Linux and
+Windows packaging detect the native Rust host, or accept an explicit `TARGET`
+triple. All three bundled executables are checked against that target:
 
 ```sh
 VERSION=0.1.0-beta.1 ./scripts/package-linux.sh

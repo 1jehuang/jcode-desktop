@@ -6,7 +6,7 @@ on:
       version:
         description: Package version used for validation artifacts
         required: true
-        default: 0.1.0-beta.28
+        default: 0.1.0-beta.29
   push:
     tags: ["desktop-v*"]
 
@@ -25,8 +25,24 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            checksums: SHA256SUMS-linux
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            checksums: SHA256SUMS-linux-aarch64
           - os: windows-2025
             platform: windows
+            arch: x86_64
+            target: x86_64-pc-windows-msvc
+            checksums: SHA256SUMS-windows
+          - os: windows-11-arm
+            platform: windows
+            arch: aarch64
+            target: aarch64-pc-windows-msvc
+            checksums: SHA256SUMS-windows-aarch64
     runs-on: ${{ matrix.os }}
     # Cold Windows builds plus the multi-GB post-job cache save exceeded 120m
     # in beta27 after packaging, smoke tests, and artifact upload had passed.
@@ -41,13 +57,18 @@ jobs:
           ref: 93f9f4b7b4ca79448090876d12a7947b30cd45b0 # Durable per-session edit statistics and SDK enrichment
           path: jcode
           submodules: recursive
+      - name: Validate release target and publication contracts
+        run: python -m unittest discover -s jcode-desktop/tests -p test_release_targets.py -v
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: |
             jcode-desktop
             jcode
           cache-on-failure: true
+          key: ${{ matrix.target }}
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
         run: |
@@ -62,26 +83,27 @@ jobs:
         env:
           VERSION: ${{ inputs.version || github.ref_name }}
           JCODE_REPO: ${{ github.workspace }}/jcode
+          TARGET: ${{ matrix.target }}
         run: jcode-desktop/scripts/package-linux.sh
       - name: Verify Linux package
         if: matrix.platform == 'linux'
         run: |
-          python3 jcode-desktop/scripts/verify-release-package.py jcode-desktop/dist/linux/*.tar.gz
+          python3 jcode-desktop/scripts/verify-release-package.py jcode-desktop/dist/linux/*.tar.gz --target '${{ matrix.target }}'
           dpkg-deb --info jcode-desktop/dist/linux/*.deb
           dpkg-deb --contents jcode-desktop/dist/linux/*.deb | grep -E 'jcode-desktop|jcode-harness-api-bridge|jcode.desktop|jcode.png'
-          (cd jcode-desktop/dist/linux && sha256sum -c SHA256SUMS-linux)
+          (cd jcode-desktop/dist/linux && sha256sum -c '${{ matrix.checksums }}')
       # Keep the hour-long Linux build recoverable if smoke infrastructure
       # fails. The publish job remains gated on this entire matrix job.
       - name: Preserve packaged Linux artifacts before smoke
         if: matrix.platform == 'linux'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: desktop-linux-x86_64
+          name: desktop-linux-${{ matrix.arch }}
           if-no-files-found: error
           path: |
             jcode-desktop/dist/linux/Jcode-*.tar.gz
             jcode-desktop/dist/linux/Jcode-*.deb
-            jcode-desktop/dist/linux/SHA256SUMS-linux
+            jcode-desktop/dist/linux/${{ matrix.checksums }}
       - name: Smoke-test Linux package on X11
         if: matrix.platform == 'linux'
         shell: bash
@@ -187,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           # The publish job downloads desktop-* as release assets.
-          name: linux-smoke-diagnostics
+          name: linux-smoke-diagnostics-${{ matrix.arch }}
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 7
@@ -198,20 +220,22 @@ jobs:
         env:
           VERSION: ${{ inputs.version || github.ref_name }}
           JCODE_REPO: ${{ github.workspace }}/jcode
+          TARGET: ${{ matrix.target }}
         run: ./jcode-desktop/scripts/package-windows.ps1
       - name: Verify Windows package
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          python jcode-desktop/scripts/verify-release-package.py (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName
-          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-x86_64' | Select-Object -First 1
+          python jcode-desktop/scripts/verify-release-package.py (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName --target '${{ matrix.target }}'
+          if ($LASTEXITCODE) { throw 'Windows package verification failed' }
+          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-${{ matrix.arch }}' | Select-Object -First 1
           & "$($stage.FullName)/jcode.exe" --version
           if ($LASTEXITCODE) { throw 'Bundled Jcode CLI did not start' }
       - name: Smoke-test Windows package
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-x86_64' | Select-Object -First 1
+          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-${{ matrix.arch }}' | Select-Object -First 1
           $log = Join-Path $env:RUNNER_TEMP 'jcode-desktop-windows.log'
           $process = Start-Process -FilePath "$($stage.FullName)/jcode-desktop.exe" -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
           Start-Sleep -Seconds 8
@@ -224,7 +248,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.platform == 'windows'
         with:
-          name: desktop-${{ matrix.platform }}-x86_64
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           path: |
             jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.tar.gz
@@ -232,9 +256,14 @@ jobs:
             jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.zip
             jcode-desktop/dist/${{ matrix.platform }}/SHA256SUMS-*
 
+  build-freebsd:
+    uses: ./.github/workflows/freebsd-release.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+
   publish:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: build
+    needs: [build, build-freebsd]
     runs-on: ubuntu-24.04
     timeout-minutes: 190
     steps:

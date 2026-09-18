@@ -1,0 +1,176 @@
+name: FreeBSD desktop release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Desktop package version or desktop-v tag
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version used for validation artifacts
+        required: true
+        type: string
+        default: 0.1.0-beta.29
+
+permissions:
+  contents: read
+
+jobs:
+  build-freebsd:
+    name: Build and smoke-test FreeBSD x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: jcode-desktop
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: 93f9f4b7b4ca79448090876d12a7947b30cd45b0 # Match the other desktop release targets
+          path: jcode
+          submodules: recursive
+      # Match the adjacent CLI's native FreeBSD VM. A Linux cross-build cannot
+      # establish that the FreeBSD graphics/PTY/IPC dependencies work together.
+      - name: Build, package, and smoke-test inside FreeBSD
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1
+        env:
+          VERSION: ${{ inputs.version }}
+        with:
+          release: "15.1"
+          arch: x86_64
+          mem: 6144
+          cpu: 4
+          usesh: true
+          envs: VERSION
+          prepare: |
+            pkg install -y rust cmake gmake pkgconf bash git python311 python3 \
+              fontconfig freetype2 libxkbcommon libX11 libxcb \
+              mesa-dri vulkan-loader vulkan-tools \
+              xorg-vfbserver xprop xwininfo openbox dejavu dbus
+          run: |
+            set -eu
+            export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+            export CARGO_TERM_COLOR=always CARGO_BUILD_JOBS=3
+            export JCODE_CI_BUILD=1 JCODE_RELEASE_BUILD=1
+            export JCODE_REPO="$PWD/jcode"
+            uname -a
+            cargo --version
+            rustc --version
+            bash jcode-desktop/scripts/package-freebsd.sh
+            cd jcode-desktop
+            python3 scripts/verify-release-package.py --target x86_64-unknown-freebsd dist/freebsd/Jcode-*.tar.gz
+            mkdir -p dist/freebsd/smoke/package
+            python3 - <<'PY'
+            import hashlib
+            import pathlib
+            import subprocess
+            import tarfile
+            import time
+            import os
+
+            root = pathlib.Path("dist/freebsd").resolve()
+            digest, name = (root / "SHA256SUMS-freebsd-x86_64").read_text().strip().split("  ", 1)
+            with (root / name).open("rb") as stream:
+                assert hashlib.file_digest(stream, "sha256").hexdigest() == digest, "checksum mismatch"
+            smoke = root / "smoke"
+            with tarfile.open(root / name) as archive:
+                archive.extractall(smoke / "package", filter="data")
+            package = next((smoke / "package").glob("Jcode-*"))
+            subprocess.run([str(package / "jcode"), "--version"], check=True, timeout=30)
+            for binary in ("jcode-desktop", "jcode", "jcode-harness-api-bridge"):
+                subprocess.run(["ldd", str(package / binary)], check=True)
+
+            env = os.environ.copy()
+            for key in ("WAYLAND_DISPLAY", "ZED_HEADLESS", "DBUS_SESSION_BUS_ADDRESS"):
+                env.pop(key, None)
+            for key, directory in {
+                "HOME": "home", "XDG_RUNTIME_DIR": "runtime", "XDG_CONFIG_HOME": "config",
+                "XDG_CACHE_HOME": "cache", "XDG_DATA_HOME": "data", "XDG_STATE_HOME": "state",
+                "JCODE_HOME": "jcode", "JCODE_DESKTOP_STATE": "desktop-state",
+            }.items():
+                path = smoke / directory
+                path.mkdir(mode=0o700, exist_ok=True)
+                env[key] = str(path)
+            env.update(DISPLAY=":99", LIBGL_ALWAYS_SOFTWARE="1", WGPU_BACKEND="vulkan",
+                       JCODE_DESKTOP_SCREENSHOT="1")
+            # Offline fixture exercises the real native window and renderer,
+            # without network calls or reliance on configured provider accounts.
+            processes = []
+            logs = []
+            def launch(name, command):
+                log = (smoke / (name + ".log")).open("w")
+                logs.append(log)
+                process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+                processes.append(process)
+                return process
+            try:
+                xvfb = launch("xvfb", ["Xvfb", ":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"])
+                for _ in range(100):
+                    if subprocess.run(["xprop", "-root"], env=env, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL).returncode == 0:
+                        break
+                    assert xvfb.poll() is None, "Xvfb exited before becoming ready"
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("Xvfb did not become ready")
+                wm = launch("openbox", ["openbox"])
+                for _ in range(100):
+                    prop = subprocess.check_output(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"],
+                                                   env=env, text=True)
+                    if "window id #" in prop:
+                        break
+                    assert wm.poll() is None, "Openbox exited before becoming ready"
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("Openbox did not become ready")
+                app = launch("app", [str(package / "jcode-desktop")])
+                mapped = False
+                for _ in range(100):
+                    assert app.poll() is None, "FreeBSD desktop exited before creating its window"
+                    tree = subprocess.check_output(["xwininfo", "-root", "-tree"], env=env, text=True)
+                    (smoke / "windows.log").write_text(tree)
+                    if '"Jcode' in tree:
+                        mapped = True
+                        break
+                    time.sleep(0.2)
+                assert mapped, "FreeBSD desktop did not create a Jcode X11 window"
+                time.sleep(8)
+                assert app.poll() is None, "FreeBSD desktop exited during graphical smoke"
+                print("FreeBSD native X11 window smoke passed")
+            finally:
+                for process in reversed(processes):
+                    if process.poll() is None:
+                        process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                for log in logs:
+                    log.close()
+                for log in smoke.rglob("*.log"):
+                    print(f"===== {log} =====")
+                    print(log.read_text(errors="replace"))
+            PY
+      # Never make an artifact available for publication unless native package
+      # verification, CLI launch, and graphical smoke all passed in the VM.
+      - name: Upload verified FreeBSD package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-freebsd-x86_64
+          if-no-files-found: error
+          path: |
+            jcode-desktop/dist/freebsd/Jcode-*.tar.gz
+            jcode-desktop/dist/freebsd/SHA256SUMS-freebsd-x86_64
+      - name: Upload FreeBSD smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: freebsd-smoke-diagnostics-x86_64
+          if-no-files-found: ignore
+          path: jcode-desktop/dist/freebsd/smoke/**/*.log

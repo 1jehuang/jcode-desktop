@@ -33,13 +33,13 @@ class PublisherTests(unittest.TestCase):
         PUBLISH.publish(self.directory, TAG)
         calls = [call.args for call in gh.call_args_list]
         version_upload = next(c for c in calls if c[:3] == ("release", "upload", TAG))
-        self.assertEqual(len([p for p in version_upload if str(self.directory) in p]), 10)
+        self.assertEqual(len([p for p in version_upload if str(self.directory) in p]), 17)
         self.assertFalse(any("private-source" in str(c) for c in calls))
         self.assertTrue(all(PUBLISH.PUBLIC_REPOSITORY in c for c in calls))
         create = next(c for c in calls if c[:3] == ("release", "create", TAG))
         self.assertIn("main", create)
         self.assertNotIn("1jehuang/jcode-desktop", create)
-        self.assertEqual(verify.call_count, 9)
+        self.assertEqual(verify.call_count, 16)
 
     @patch.object(PUBLISH, "verify_download", side_effect=ValueError("bad public bytes"))
     @patch.object(PUBLISH, "gh")

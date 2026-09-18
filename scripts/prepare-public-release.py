@@ -25,7 +25,7 @@ def expected_assets(tag: str) -> dict[str, list[str]]:
     if not match:
         raise ValueError("invalid desktop release tag")
     version = match[1]
-    return {
+    checksums = {
         "SHA256SUMS": [
             "Jcode-macOS-universal.dmg",
             f"Jcode-{version}-macOS-universal.zip",
@@ -36,6 +36,20 @@ def expected_assets(tag: str) -> dict[str, list[str]]:
         ],
         "SHA256SUMS-windows": [f"Jcode-{version}-windows-x86_64.zip"],
     }
+    # Already-published beta.1 through beta.28 are immutable x86-only releases
+    # outside macOS. Never let that historical exception admit incomplete new
+    # releases. Public publication runs this validator from main, even on retry.
+    historical = re.fullmatch(r"0\.1\.0-beta\.(\d+)", version)
+    if not historical or int(historical[1]) > 28:
+        checksums.update({
+            "SHA256SUMS-linux-aarch64": [
+                f"Jcode-{version}-linux-aarch64.tar.gz",
+                f"Jcode-{version}-linux-arm64.deb",
+            ],
+            "SHA256SUMS-windows-aarch64": [f"Jcode-{version}-windows-aarch64.zip"],
+            "SHA256SUMS-freebsd-x86_64": [f"Jcode-{version}-freebsd-x86_64.tar.gz"],
+        })
+    return checksums
 
 
 def digest(path: Path) -> str:

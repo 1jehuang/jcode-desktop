@@ -75,7 +75,7 @@ def publish(directory, tag):
         if not current:
             gh("release", "create", tag, "--repo", PUBLIC_REPOSITORY,
                "--target", "main", "--draft", "--prerelease", "--title", manifest["name"],
-               "--notes", "Download at https://jcode.sh/desktop. Includes macOS (signed and notarized), Linux x86_64, and Windows x86_64 packages. Older Mac betas using the private update URL need a one-time DMG reinstall. Application source is not published here.")
+               "--notes", "Download at https://jcode.sh/desktop. See the attached macOS, Linux, Windows, and FreeBSD packages for available architectures. macOS packages are signed and notarized. Older Mac betas using the private update URL need a one-time DMG reinstall. Application source is not published here.")
         gh("release", "upload", tag, "--repo", PUBLIC_REPOSITORY, "--clobber", *map(str, files))
         gh("release", "edit", tag, "--repo", PUBLIC_REPOSITORY, "--draft=false")
 

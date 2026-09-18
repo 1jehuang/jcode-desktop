@@ -41,6 +41,11 @@ tempfile = "3"
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 
+[target.'cfg(target_os = "freebsd")'.dependencies]
+# GPUI supports FreeBSD through gpui_linux, whose backend defaults are disabled.
+# Start with X11, with native graphical smoke required by the release job.
+gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 vt100 = "0.16"

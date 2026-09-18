@@ -30,6 +30,33 @@ const FILES: [&str; 5] = [
 const MAX_ARCHIVE: u64 = 1024 * 1024 * 1024;
 const MAX_EXTRACTED: u64 = 2 * MAX_ARCHIVE;
 
+struct ReleaseTarget {
+    architecture: &'static str,
+    checksum_manifest: &'static str,
+}
+
+impl ReleaseTarget {
+    fn for_architecture(architecture: &str) -> Result<Self> {
+        let (architecture, checksum_manifest) = match architecture {
+            "x86_64" => ("x86_64", "SHA256SUMS-linux"),
+            "aarch64" => ("aarch64", "SHA256SUMS-linux-aarch64"),
+            _ => bail!(
+                "Managed archive updates support Linux x86_64 and aarch64 only (unsupported architecture: {architecture})"
+            ),
+        };
+        Ok(Self {
+            architecture,
+            checksum_manifest,
+        })
+    }
+
+    fn archive_names(&self, version: &Version) -> (String, String) {
+        let root = format!("Jcode-{version}-linux-{}", self.architecture);
+        let asset = format!("{root}.tar.gz");
+        (root, asset)
+    }
+}
+
 struct ManagedInstall {
     root: PathBuf,
     launcher: PathBuf,
@@ -346,10 +373,7 @@ fn activate_with(
 /// Download and activate a newer managed Linux archive. The running process and
 /// old version remain untouched; the next normal launch uses the new version.
 pub fn update() -> Result<String> {
-    ensure!(
-        std::env::consts::ARCH == "x86_64",
-        "Managed archive updates currently support Linux x86_64 only"
-    );
+    let target = ReleaseTarget::for_architecture(std::env::consts::ARCH)?;
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     let install = detect(Path::new(&home), &std::env::current_exe()?)?;
     let _lock = lock(&install)?;
@@ -396,13 +420,12 @@ pub fn update() -> Result<String> {
     super::set(super::UpdateState::Available {
         version: version.to_string(),
     });
-    let archive_root = format!("Jcode-{version}-linux-x86_64");
-    let asset = format!("{archive_root}.tar.gz");
+    let (archive_root, asset) = target.archive_names(&version);
     let base = format!("{PUBLIC_RELEASES}/{tag}");
     let mut sums = Vec::new();
     download(
         &client,
-        &format!("{base}/SHA256SUMS-linux"),
+        &format!("{base}/{}", target.checksum_manifest),
         &mut sums,
         64 * 1024,
     )?;
@@ -434,6 +457,39 @@ pub fn update() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_names_match_linux_architecture() {
+        let version = Version::parse("0.1.0-beta.10").unwrap();
+        for (architecture, root, asset, manifest) in [
+            (
+                "x86_64",
+                "Jcode-0.1.0-beta.10-linux-x86_64",
+                "Jcode-0.1.0-beta.10-linux-x86_64.tar.gz",
+                "SHA256SUMS-linux",
+            ),
+            (
+                "aarch64",
+                "Jcode-0.1.0-beta.10-linux-aarch64",
+                "Jcode-0.1.0-beta.10-linux-aarch64.tar.gz",
+                "SHA256SUMS-linux-aarch64",
+            ),
+        ] {
+            let target = ReleaseTarget::for_architecture(architecture).unwrap();
+            assert_eq!(target.archive_names(&version), (root.into(), asset.into()));
+            assert_eq!(target.checksum_manifest, manifest);
+        }
+    }
+
+    #[test]
+    fn release_target_rejects_unsupported_architectures() {
+        for architecture in ["", "x86", "arm", "arm64", "riscv64", "../aarch64"] {
+            let error = ReleaseTarget::for_architecture(architecture)
+                .err()
+                .expect("unsupported architecture must be rejected");
+            assert!(error.to_string().contains("unsupported architecture"));
+        }
+    }
 
     fn managed() -> (tempfile::TempDir, ManagedInstall) {
         let home = tempfile::tempdir().unwrap();
