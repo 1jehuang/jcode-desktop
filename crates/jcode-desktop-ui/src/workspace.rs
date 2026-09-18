@@ -3440,9 +3440,6 @@ impl Workspace {
     fn animation_active(&self) -> bool {
         self.row_progress.is_animating()
             || self.live_tabs.is_animating()
-            || (self.show_sidebar
-                && self.layout_mode == crate::config::LayoutMode::FolderTabs
-                && self.sidebar_roller.is_animating())
             || self.overview_progress.is_animating()
             || self.hints_progress.is_animating()
             || self.coach_progress.is_animating()
