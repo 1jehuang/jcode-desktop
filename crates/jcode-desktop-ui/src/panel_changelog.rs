@@ -6,19 +6,67 @@ fn update_entries(entries: Vec<String>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap_2()
         .children(entries.into_iter().map(|entry| {
             div()
+                .rounded_md()
+                .px_4()
+                .py_3()
+                .bg(Theme::global().HEADER_BG)
+                .child(entry)
+        }))
+}
+
+fn running_build() -> gpui::Div {
+    let theme = Theme::global();
+    div()
+        .debug_selector(|| "update-running-build".into())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(theme.TEXT_DIM)
+                .child("RUNNING VERSION"),
+        )
+        .child(
+            div()
+                .debug_selector(|| "update-version".into())
+                .text_size(px(26.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(crate::build_info::version()),
+        )
+        .child(
+            div()
                 .flex()
-                .gap_3()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
                 .child(
                     div()
-                        .flex_shrink_0()
-                        .text_color(Theme::global().TEXT_FAINT)
-                        .child("•"),
+                        .rounded_md()
+                        .px_2()
+                        .py_1()
+                        .bg(theme.HEADER_BG)
+                        .text_size(px(11.))
+                        .child(if crate::build_info::development() {
+                            "Development"
+                        } else {
+                            "Release"
+                        }),
                 )
-                .child(div().flex_1().min_w_0().child(entry))
-        }))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(format!(
+                            "{} · {}",
+                            crate::build_info::revision(),
+                            crate::build_info::age()
+                        )),
+                ),
+        )
 }
 
 impl Panel {
@@ -65,7 +113,7 @@ impl Panel {
             .id(content_id)
             .debug_selector(move || content_id.into())
             .w_full()
-            .max_w(px(760.))
+            .max_w(px(680.))
             .mx_auto()
             .flex()
             .flex_col()
@@ -74,8 +122,9 @@ impl Panel {
             View::Latest => {
                 let summary = update_notes::summary();
                 content = content
+                    .child(running_build())
                     .child(div().flex().flex_col().gap_2()
-                        .child(div().text_size(px(20.)).font_weight(gpui::FontWeight::SEMIBOLD).child(summary.heading))
+                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child(summary.heading))
                         .child(div().text_color(Theme::global().TEXT_DIM).child(summary.description)))
                     .child(update_entries(summary.entries.clone()))
                     .when(summary.entries.is_empty(), |el| el
@@ -92,26 +141,56 @@ impl Panel {
                             cx.notify();
                         }))
                         .child(if summary.remaining > 0 {
-                            format!("{} more in release history →", summary.remaining)
+                            format!("View history · {} more changes →", summary.remaining)
                         } else {
                             "View release history →".into()
                         }));
             }
             View::History => {
                 let groups = update_notes::history();
-                content = content
-                    .child(div().text_color(Theme::global().TEXT_DIM).child("Included commit history, newest first. Grouped by release, just like the TUI."))
-                    .when(groups.is_empty(), |el| el.child(markdown::render(update_notes::fallback(), 0, &self.transcript_selection, window, cx)))
-                    .children(groups.into_iter().map(|group| {
-                        div().flex().flex_col().gap_4().pb_4()
-                            .child(div().flex().flex_col().gap_1()
-                                .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child(group.version))
-                                .child(div().text_size(px(12.)).text_color(Theme::global().TEXT_DIM).child(group.date)))
-                            .child(update_entries(group.entries))
-                    }));
+                content =
+                    content
+                        .child(div().text_color(Theme::global().TEXT_DIM).child(
+                            "Changes included in this build, grouped by release. Newest first.",
+                        ))
+                        .when(groups.is_empty(), |el| {
+                            el.child(markdown::render(
+                                update_notes::fallback(),
+                                0,
+                                &self.transcript_selection,
+                                window,
+                                cx,
+                            ))
+                        })
+                        .children(groups.into_iter().map(|group| {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_3()
+                                .pb_4()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(17.))
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .child(group.version),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .child(group.date),
+                                        ),
+                                )
+                                .child(update_entries(group.entries))
+                        }));
             }
             View::Build => {
-                content = content.child(markdown::render(
+                content = content.child(running_build()).child(markdown::render(
                     &update_notes::build_details(),
                     0,
                     &self.transcript_selection,
@@ -167,6 +246,9 @@ impl Panel {
                     .flex_shrink_0()
                     .child(
                         div()
+                            .w_full()
+                            .max_w(px(680.))
+                            .mx_auto()
                             .flex()
                             .justify_between()
                             .items_start()
@@ -185,15 +267,9 @@ impl Panel {
                                         div()
                                             .text_size(px(12.))
                                             .text_color(Theme::global().TEXT_DIM)
-                                            .child(format!(
-                                                "v{} · {}",
-                                                env!("JCODE_DESKTOP_VERSION"),
-                                                if update_notes::development() {
-                                                    "Development build"
-                                                } else {
-                                                    "Installed version"
-                                                }
-                                            )),
+                                            .child(
+                                                "Included in your current Desktop build",
+                                            ),
                                     ),
                             )
                             .child(
@@ -221,6 +297,9 @@ impl Panel {
                     )
                     .child(
                         div()
+                            .w_full()
+                            .max_w(px(680.))
+                            .mx_auto()
                             .flex()
                             .flex_wrap()
                             .gap_1()
@@ -263,13 +342,15 @@ impl Panel {
                     .child(content),
             )
             .child(
-                div()
-                    .px_5()
-                    .py_3()
-                    .flex_shrink_0()
-                    .text_size(px(11.))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("←/→ switch views · Esc to close · /changelog to reopen"),
+                div().px_5().py_3().flex_shrink_0().child(
+                    div()
+                        .w_full()
+                        .max_w(px(680.))
+                        .mx_auto()
+                        .text_size(px(11.))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("←/→ switch views · Esc to close"),
+                ),
             )
             .into_any_element()
     }
@@ -290,6 +371,8 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("update-summary").is_some());
+        assert!(vcx.debug_bounds("update-version").is_some());
+        assert!(vcx.debug_bounds("update-running-build").is_some());
         assert!(vcx.debug_bounds("update-history").is_none());
         assert!(vcx.debug_bounds("update-build").is_none());
         for (control, target, view) in [

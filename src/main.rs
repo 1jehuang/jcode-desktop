@@ -253,6 +253,10 @@ fn quit_mode(screenshot: bool, macos_lifecycle_fixture: bool) -> gpui::QuitMode 
 }
 
 fn main() {
+    if env::args_os().any(|argument| argument == "--version" || argument == "-V") {
+        println!("Jcode Desktop {}", jcode_desktop_ui::build_version());
+        return;
+    }
     let diagnostics_path = diagnostics::install().unwrap_or_else(|error| {
         eprintln!("failed to initialize desktop diagnostics: {error}");
         PathBuf::new()

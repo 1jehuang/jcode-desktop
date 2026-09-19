@@ -291,7 +291,7 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
 
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     JcodeClient::connect(ConnectOptions {
-        client_name: format!("jcode-desktop-{client_name}/{}", env!("CARGO_PKG_VERSION")),
+        client_name: format!("jcode-desktop-{client_name}/{}", crate::build_info::VERSION),
         ensure_runtime: false,
         ..Default::default()
     })
@@ -299,7 +299,7 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
 
 fn connect_remote(host: &str, client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
-        client_name: format!("jcode-desktop-{client_name}/{}", env!("CARGO_PKG_VERSION")),
+        client_name: format!("jcode-desktop-{client_name}/{}", crate::build_info::VERSION),
         connect_timeout: Duration::from_secs(20),
         request_timeout: Some(Duration::from_secs(30)),
         ..jcode_sdk::SshConnectOptions::new(host)

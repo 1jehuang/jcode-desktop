@@ -48,6 +48,11 @@ use gpui::{App, KeyBinding, Window};
 
 pub const APP_ID: &str = "jcode-desktop";
 
+/// The linked Desktop build, available without initializing GPUI or a window.
+pub fn build_version() -> String {
+    format!("{} ({})", build_info::version(), build_info::revision())
+}
+
 use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
     FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,

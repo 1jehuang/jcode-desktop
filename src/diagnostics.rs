@@ -20,7 +20,7 @@ pub fn install() -> io::Result<PathBuf> {
         "{} jcode-desktop started pid={} version={}",
         timestamp(),
         std::process::id(),
-        env!("CARGO_PKG_VERSION")
+        jcode_desktop_ui::build_version()
     );
     spawn_cpu_monitor();
     Ok(path)

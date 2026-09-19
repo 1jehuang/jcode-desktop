@@ -17,7 +17,7 @@ const MARKER: &str = "changelog-last-seen-build";
 
 pub(crate) fn development() -> bool {
     include_development_snapshot(
-        cfg!(debug_assertions),
+        crate::build_info::development(),
         env::args_os().any(|arg| arg == "--hot-reload"),
         env::var_os("JCODE_DESKTOP_UI").is_some(),
     )

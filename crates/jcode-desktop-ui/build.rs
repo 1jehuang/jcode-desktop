@@ -1,18 +1,26 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs, path::Path, process::Command};
 
+mod build_version;
+
 fn main() {
     // The footer is also the hot-reload generation indicator. Re-run this
     // script for every UI source change so a rebuilt cdylib carries a fresh
     // timestamp instead of inheriting the first build's metadata.
     println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=build_version.rs");
     println!("cargo:rerun-if-env-changed=JCODE_DESKTOP_VERSION");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     println!("cargo:rerun-if-env-changed=JCODE_DESKTOP_BUILD_EPOCH");
 
-    let version = env::var("JCODE_DESKTOP_VERSION").unwrap_or_else(|_| {
+    let manifest = env::var_os("CARGO_MANIFEST_DIR").expect("missing manifest directory");
+    let root = Path::new(&manifest).join("../..");
+    let base = build_version::root_package_version(&root).unwrap_or_else(|| {
         env::var("CARGO_PKG_VERSION").expect("Cargo package version is missing")
     });
+    let explicit = env::var("JCODE_DESKTOP_VERSION").ok();
+    let metadata = build_version::resolve(&root, &base, explicit.as_deref());
+    let version = &metadata.version;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock is before the Unix epoch");
@@ -31,6 +39,22 @@ fn main() {
         .expect("SOURCE_DATE_EPOCH must be a non-negative Unix timestamp");
 
     println!("cargo:rustc-env=JCODE_DESKTOP_VERSION={version}");
+    println!(
+        "cargo:rustc-env=JCODE_DESKTOP_DISPLAY_VERSION={}",
+        metadata.display_version
+    );
+    println!(
+        "cargo:rustc-env=JCODE_DESKTOP_GIT_HASH={}",
+        metadata.git_hash
+    );
+    println!(
+        "cargo:rustc-env=JCODE_DESKTOP_GIT_DIRTY={}",
+        metadata.git_dirty
+    );
+    println!(
+        "cargo:rustc-env=JCODE_DESKTOP_DEVELOPMENT={}",
+        metadata.development
+    );
     println!("cargo:rustc-env=JCODE_DESKTOP_BUILT_AT={built_at}");
     // Include sub-second precision so two quick hot reloads still have visibly
     // different identities. Reproducible builds retain a stable identifier.
@@ -40,7 +64,7 @@ fn main() {
             .unwrap_or_else(|| now.as_millis().to_string())
     });
     println!("cargo:rustc-env=JCODE_DESKTOP_BUILD_ID={build_id}");
-    generate_changelog(&version, &build_id);
+    generate_changelog(version, &build_id);
 }
 
 // Git is consulted only by Cargo, never by the running desktop application.

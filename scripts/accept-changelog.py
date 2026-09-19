@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import select
 import shutil
@@ -80,6 +81,11 @@ def main():
         parser.error("desktop binary does not exist: " + str(source_binary))
     if args.hot_reload and not source_plugin.is_file():
         parser.error("prebuilt plugin does not exist: " + str(source_plugin))
+    build_version = subprocess.check_output(
+        [str(source_binary), "--version"], text=True, timeout=15).strip()
+    version_match = re.fullmatch(r"Jcode Desktop (v\d+\.\d+\.\d+-dev) \([^)]+\)", build_version)
+    if not version_match:
+        parser.error("changelog development acceptance requires a numbered dev binary: " + build_version)
     root = args.output.resolve()
     if len(str(root / "runtime/jcode-desktop.sock").encode()) >= 104:
         parser.error("output path is too long for private Unix sockets")
@@ -110,6 +116,7 @@ def main():
     processes, logs = [], []
     app = None
     report = {"checks": [], "hot_reload": args.hot_reload,
+              "build_version": build_version,
               "scope": "offline native UI and real identity policy with a seeded older marker, not backend acknowledgement"}
     runtime_before = runtime_files(root / "jcode")
 
@@ -148,7 +155,7 @@ def main():
     def type_text(text):
         ui.native("type", "--clearmodifiers", "--delay", "15", text)
 
-    def capture(label, changelog=True):
+    def capture(label, changelog=True, expected=()):
         def inspect(image):
             words = ui.words(image, (0, 0, image.width, image.height), label)
             if changelog:
@@ -157,6 +164,8 @@ def main():
                 assert state_with(1), "expected one focused changelog panel"
                 phrase_bounds(words, "What's new in Jcode Desktop")
                 phrase_bounds(words, "Close")
+            for phrase in expected:
+                phrase_bounds(words, phrase)
             return words
         words = ui.wait_frame(label, inspect)
         report["checks"].append(label)
@@ -193,8 +202,12 @@ def main():
         nonlocal app
         state_path.unlink(missing_ok=True)
         app = launch(label, [str(binary)] + (["--hot-reload", str(plugin)] if args.hot_reload else ["--no-hot-reload"]))
-        wait(label + " activation", lambda: state_with(expected_count))
+        wait(label + " initial frame", lambda: navigation(state_path))
         ui.native("search", "--sync", "--onlyvisible", "--class", "^jcode-desktop$", "windowactivate", "--sync")
+        # Every fresh process starts with the beta notice owning keyboard focus.
+        # Dismiss it through native input before asserting changelog focus.
+        key("Escape")
+        wait(label + " activation", lambda: state_with(expected_count))
 
     def quit_app():
         nonlocal app
@@ -218,20 +231,22 @@ def main():
         assert xvfb.poll() is None and wm.poll() is None
         ui = NativeUI(root / "changelog.png", env, root)
         start("first-launch", 1)
-        words = capture("initial")
+        words = capture("initial", expected=("RUNNING VERSION", version_match.group(1)))
+        phrase_bounds(words, "RUNNING VERSION")
+        phrase_bounds(words, version_match.group(1))
         phrase_bounds(words, "Latest updates")
         initial_text = normalized(" ".join(w["text"] for w in words))
         assert normalized("Uncommitted files") not in initial_text, "development details leaked into the summary"
         ui.click(phrase_bounds(words, "Release history"))
-        words = capture("versioned-history")
+        words = capture("versioned-history", expected=("UTC", "Unreleased"))
         phrase_bounds(words, "UTC")
         phrase_bounds(words, "Unreleased")
         # Plain arrow keys switch views without leaving the read-only panel.
         key("Right")
-        words = capture("build-details")
+        words = capture("build-details", expected=("Development build snapshot",))
         phrase_bounds(words, "Development build snapshot")
         key("Right")
-        words = capture("summary-keyboard-return")
+        words = capture("summary-keyboard-return", expected=("RUNNING VERSION", "View history"))
         phrase_bounds(words, "Latest updates")
         marker = root / "changelog-last-seen-build"
         identity = wait("first launch acknowledges build", lambda: marker.read_text() if marker.exists() else None)
@@ -250,8 +265,7 @@ def main():
             key("Escape")
             wait("startup reload summary closes", lambda: state_with(0))
         slash_open()
-        words = capture("same-build-manual-summary")
-        phrase_bounds(words, "You're up to date")
+        words = capture("same-build-manual-summary", expected=("No new changes in this build",))
         key("Escape")
         wait("manual summary closes", lambda: state_with(0))
         quit_app()

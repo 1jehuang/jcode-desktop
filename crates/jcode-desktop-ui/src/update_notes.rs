@@ -137,7 +137,7 @@ fn group(entries: &[Entry], current_version: &str) -> Vec<Group> {
 }
 
 pub(crate) fn history() -> Vec<Group> {
-    group(entries(), env!("JCODE_DESKTOP_VERSION"))
+    group(entries(), crate::build_info::VERSION)
 }
 
 pub(crate) struct Summary {
@@ -150,17 +150,17 @@ pub(crate) struct Summary {
 fn summarize(entries: &[Entry], seen: Seen) -> Summary {
     let (heading, description, count) = match seen {
         Seen::New(0) => (
-            "You’re up to date".into(),
-            "No new commits since your last visit. Here are the latest changes.",
+            "No new changes in this build".into(),
+            "You’ve already seen these commits. Recent changes are listed below.",
             entries.len(),
         ),
         Seen::New(count) => (
             format!(
                 "{} new {}",
                 count,
-                if count == 1 { "update" } else { "updates" }
+                if count == 1 { "change" } else { "changes" }
             ),
-            "Since you last opened this update panel.",
+            "Included in this build since your last visit.",
             count,
         ),
         Seen::FirstVisit => (
@@ -196,7 +196,9 @@ pub(crate) fn development() -> bool {
 
 pub(crate) fn build_details() -> String {
     format!(
-        "Version `{}`\n\nBuild `{}`\n\n{}",
+        "Version `{}`\n\nCommit `{}`\n\nUpdate base `{}`\n\nBuild `{}`\n\n{}",
+        crate::build_info::VERSION,
+        crate::build_info::revision(),
         env!("JCODE_DESKTOP_VERSION"),
         env!("JCODE_DESKTOP_BUILD_ID"),
         include_str!(concat!(env!("OUT_DIR"), "/changelog-debug.md"))
@@ -258,10 +260,10 @@ mod tests {
             summarize(&entries, Seen::New(1)).entries,
             ["New: keep punctuation"]
         );
-        assert_eq!(summarize(&entries, Seen::New(1)).heading, "1 new update");
+        assert_eq!(summarize(&entries, Seen::New(1)).heading, "1 new change");
         assert_eq!(
             summarize(&entries, Seen::New(0)).heading,
-            "You’re up to date"
+            "No new changes in this build"
         );
     }
 

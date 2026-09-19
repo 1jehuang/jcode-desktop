@@ -3,9 +3,33 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::theme::Theme;
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px};
 
-const VERSION: &str = env!("JCODE_DESKTOP_VERSION");
+pub(crate) const VERSION: &str = env!("JCODE_DESKTOP_DISPLAY_VERSION");
 const BUILT_AT: &str = env!("JCODE_DESKTOP_BUILT_AT");
 const BUILD_ID: &str = env!("JCODE_DESKTOP_BUILD_ID");
+
+pub(crate) fn version() -> String {
+    format!("v{VERSION}")
+}
+
+pub(crate) fn revision() -> String {
+    let hash = env!("JCODE_DESKTOP_GIT_HASH");
+    if env!("JCODE_DESKTOP_GIT_DIRTY") == "true" {
+        format!("{hash}, dirty")
+    } else {
+        hash.to_owned()
+    }
+}
+
+pub(crate) fn age() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    BUILT_AT
+        .parse::<u64>()
+        .map(|built| format!("Built {}", format_age(now.saturating_sub(built))))
+        .unwrap_or_else(|_| "Build time unavailable".into())
+}
 
 pub fn label() -> String {
     let now = SystemTime::now()
@@ -15,10 +39,8 @@ pub fn label() -> String {
     footer_label(VERSION, development(), BUILT_AT.parse().ok(), now)
 }
 
-fn development() -> bool {
-    cfg!(debug_assertions)
-        || std::env::args_os().any(|arg| arg == "--hot-reload")
-        || std::env::var_os("JCODE_DESKTOP_UI").is_some()
+pub(crate) fn development() -> bool {
+    env!("JCODE_DESKTOP_DEVELOPMENT") == "true"
 }
 
 /// Format presentation only. Release tags, update ordering and build identities
@@ -32,6 +54,9 @@ fn version_label(raw: &str) -> String {
         return base;
     }
     let pre = version.pre.as_str();
+    if pre == "dev" {
+        return format!("{base}-dev");
+    }
     let (channel, suffix) = pre.split_once('.').unwrap_or((pre, ""));
     let channel = match channel {
         "alpha" => "Alpha",
@@ -96,6 +121,7 @@ impl Render for BuildTooltip {
                 }
             ))
             .child(format!("Version: {VERSION}"))
+            .child(format!("Commit: {}", revision()))
             .child(format!("Build ID: {BUILD_ID}"))
     }
 }
@@ -140,6 +166,7 @@ mod tests {
         for (raw, expected) in [
             ("0.1.0", "0.1.0"),
             ("v1.2.3", "1.2.3"),
+            ("0.1.432-dev", "0.1.432-dev"),
             ("0.1.0-beta.15", "0.1.0 · Beta 15"),
             ("1.0.0-rc.2", "1.0.0 · RC 2"),
             ("1.0.0-alpha", "1.0.0 · Alpha"),
@@ -173,7 +200,7 @@ mod tests {
         );
         assert_eq!(
             footer_label("0.1.0-dev", true, Some(300), 220),
-            "Desktop 0.1.0 · Dev · built just now"
+            "Desktop 0.1.0-dev · built just now"
         );
     }
 
@@ -186,5 +213,14 @@ mod tests {
         assert_eq!(format_age(3_600), "1h ago");
         assert_eq!(format_age(86_399), "23h ago");
         assert_eq!(format_age(86_400), "1d ago");
+    }
+
+    #[test]
+    fn surfaces_share_the_numbered_build_version() {
+        let version = semver::Version::parse(VERSION).expect("valid display version");
+        assert_eq!(version.pre.as_str() == "dev", development());
+        assert!(crate::build_version().starts_with(&format!("v{VERSION} (")));
+        assert!(label().contains(&version_label(VERSION)));
+        assert!(crate::update_notes::build_details().contains(VERSION));
     }
 }
