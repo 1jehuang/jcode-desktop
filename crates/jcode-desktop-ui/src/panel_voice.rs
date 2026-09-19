@@ -1,6 +1,7 @@
 //! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
 use jcode_base::voice::{self, NariEvent, NariRecording, VoiceError};
+use jcode_base::voice_intent::{self, SessionCandidate, VoiceIntent};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 gpui::actions!(panel_voice, [ToggleVoice]);
@@ -22,6 +23,7 @@ enum Phase {
     Checking,
     Recording,
     Transcribing,
+    Routing,
 }
 
 #[derive(Default)]
@@ -34,7 +36,12 @@ pub(super) struct VoiceState {
     error: Option<String>,
     task: Option<Task<()>>,
     timer: Option<Task<()>>,
+    sessions: Option<Vec<jcode_sdk::SessionInfo>>,
+    navigation: Option<gpui::Subscription>,
 }
+
+pub(crate) struct VoiceSessionRequested(pub jcode_sdk::SessionInfo);
+impl gpui::EventEmitter<VoiceSessionRequested> for Panel {}
 
 impl Drop for VoiceState {
     fn drop(&mut self) {
@@ -51,11 +58,33 @@ impl Render for VoiceTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().max_w(px(300.)).p_2().rounded_md().bg(Theme::global().HEADER_BG)
             .text_size(px(12.)).text_color(Theme::global().TEXT)
-            .child(format!("{} · {VOICE_SHORTCUT} starts/stops voice dictation (or cancels a pending request). Ctrl+Shift+V also works in the composer. Audio streams to Nari while recording. Review the final draft before sending.", self.0))
+            .child(format!("{} · {VOICE_SHORTCUT} starts/stops voice (or cancels a pending request). Ctrl+Shift+V also works in the composer. Audio streams to Nari. Jev checks the transcript against your last 20 sessions to recognize requests to open one. Other speech becomes a draft, never sent automatically.", self.0))
     }
 }
 
 impl Panel {
+    #[cfg(test)]
+    pub(crate) fn resolve_voice_for_test(
+        &mut self,
+        text: &str,
+        result: anyhow::Result<VoiceIntent>,
+        cx: &mut Context<Self>,
+    ) {
+        self.voice.phase = Phase::Routing;
+        self.voice.live_transcript = text.into();
+        let attempt = self.voice.canceled.clone();
+        self.finish_voice_routing(&attempt, result, cx);
+    }
+
+    pub(crate) fn configure_voice_navigation(
+        &mut self,
+        sessions: Vec<jcode_sdk::SessionInfo>,
+        subscription: gpui::Subscription,
+    ) {
+        self.voice.sessions = Some(sessions);
+        self.voice.navigation = Some(subscription);
+    }
+
     #[cfg(test)]
     pub(crate) fn set_voice_checking_for_test(&mut self) {
         self.voice = VoiceState::default();
@@ -85,7 +114,7 @@ impl Panel {
         match self.voice.phase {
             Phase::Idle => self.start_voice(cx),
             Phase::Recording => self.stop_voice(cx),
-            Phase::Checking | Phase::Transcribing => self.cancel_voice(cx),
+            Phase::Checking | Phase::Transcribing | Phase::Routing => self.cancel_voice(cx),
         }
     }
 
@@ -156,7 +185,7 @@ impl Panel {
                                 .and_then(NariRecording::try_event);
                             let Some(event) = event else { break };
                             panel.apply_voice_event(event, cx);
-                            if !panel.voice_active() {
+                            if !panel.voice_active() || panel.voice.phase == Phase::Routing {
                                 return false;
                             }
                         }
@@ -175,7 +204,7 @@ impl Panel {
                                 .and_then(NariRecording::try_event)
                             {
                                 panel.apply_voice_event(event, cx);
-                                if !panel.voice_active() {
+                                if !panel.voice_active() || panel.voice.phase == Phase::Routing {
                                     return false;
                                 }
                             }
@@ -222,6 +251,10 @@ impl Panel {
         self.voice.live_transcript.clear();
         match result {
             Ok(text) if !text.trim().is_empty() => {
+                if self.voice.sessions.is_some() {
+                    self.route_voice(text, cx);
+                    return;
+                }
                 self.input.update(cx, |input, cx| {
                     input.append_dictation(&text, cx);
                 });
@@ -229,6 +262,76 @@ impl Panel {
             }
             Ok(_) => self.voice.error = Some("No speech was detected. Try recording again.".into()),
             Err(error) => self.voice.error = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn route_voice(&mut self, text: String, cx: &mut Context<Self>) {
+        self.voice.phase = Phase::Routing;
+        self.voice.live_transcript = text.clone();
+        self.voice.error = None;
+        let attempt = self.voice.canceled.clone();
+        let candidates = self
+            .voice
+            .sessions
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| SessionCandidate {
+                id: s.session_id.clone(),
+                title: match jcode_core::id::extract_session_name(&s.session_id) {
+                    Some(name) => format!("{name}: {}", s.title.as_deref().unwrap_or_default()),
+                    None => s.title.clone().unwrap_or_default(),
+                },
+                working_dir: s.working_dir.clone(),
+            })
+            .collect::<Vec<_>>();
+        let work = cx.background_executor().spawn(async move {
+            tokio::runtime::Runtime::new()
+                .map_err(anyhow::Error::from)?
+                .block_on(voice_intent::classify(&text, &candidates))
+        });
+        self.voice.task = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.finish_voice_routing(&attempt, result, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn finish_voice_routing(
+        &mut self,
+        attempt: &Arc<AtomicBool>,
+        result: anyhow::Result<VoiceIntent>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Arc::ptr_eq(attempt, &self.voice.canceled)
+            || attempt.load(Ordering::SeqCst)
+            || self.voice.phase != Phase::Routing
+        {
+            return;
+        }
+        self.voice.phase = Phase::Idle;
+        let mut target = None;
+        let error = match result {
+            Ok(VoiceIntent::Dictation) => None,
+            Ok(VoiceIntent::OpenSession(id)) => {
+                target = self.voice.sessions.as_ref()
+                    .and_then(|sessions| sessions.iter().find(|s| s.session_id == id)).cloned();
+                target.is_none().then(|| "Jev could not match a session in your last 20. Transcript kept in the draft.".to_string())
+            }
+            Ok(VoiceIntent::Uncertain) => Some("Jev couldn't confidently match a session in your last 20. Try its title or project name. Transcript kept in the draft.".into()),
+            Err(error) => Some(format!("Jev session lookup unavailable: {error}. Transcript kept in the draft.")),
+        };
+        let text = std::mem::take(&mut self.voice.live_transcript);
+        self.voice.error = error;
+        if let Some(session) = target {
+            // Emit only an exact member of the bounded snapshot, never a model-supplied path.
+            cx.emit(VoiceSessionRequested(session));
+        } else {
+            self.input
+                .update(cx, |input, cx| input.append_dictation(&text, cx));
         }
         cx.notify();
     }
@@ -252,8 +355,9 @@ impl Panel {
                     ))
                 }
                 Phase::Transcribing => Some(
-                    "Finishing Nari transcript. The result goes into this draft, not sent.".into(),
+                    "Finishing Nari transcript. Nothing is sent to the conversation.".into(),
                 ),
+                Phase::Routing => Some("Jev is checking your request against your last 20 sessions… Copilot to cancel.".into()),
             })?;
         Some(
             div()
@@ -321,7 +425,7 @@ impl Panel {
             Phase::Idle => "Voice",
             Phase::Checking => "Cancel",
             Phase::Recording => "Stop",
-            Phase::Transcribing => "Cancel",
+            Phase::Transcribing | Phase::Routing => "Cancel",
         };
         let active = self.activity_active();
         let tooltip_status = status.clone();
@@ -394,6 +498,78 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn voice_routing_non_navigation_retains_draft_and_never_sends(cx: &mut gpui::TestAppContext) {
+        for result in [
+            Ok(VoiceIntent::Dictation),
+            Ok(VoiceIntent::Uncertain),
+            Ok(VoiceIntent::OpenSession("not-offered".into())),
+            Err(anyhow::anyhow!("offline")),
+        ] {
+            let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+            panel.update(cx, |panel, cx| {
+                panel
+                    .input
+                    .update(cx, |input, cx| input.set_content("typed".into(), cx));
+                panel.voice.sessions = Some(Vec::new());
+                let before = panel.items.len();
+                panel.resolve_voice_for_test("spoken words", result, cx);
+                assert_eq!(panel.input.read(cx).content.as_ref(), "typed spoken words");
+                assert_eq!(panel.items.len(), before);
+                assert!(!panel.voice_active());
+                assert!(panel.voice.live_transcript.is_empty());
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn canceled_and_superseded_jev_results_cannot_edit_the_draft(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.voice.phase = Phase::Routing;
+            panel.voice.live_transcript = "discard".into();
+            let attempt = panel.voice.canceled.clone();
+            panel.cancel_voice(cx);
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::Dictation), cx);
+            assert!(panel.input.read(cx).content.is_empty());
+            panel.voice.phase = Phase::Routing;
+            panel.voice.live_transcript = "new recording".into();
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::Dictation), cx);
+            assert!(panel.input.read(cx).content.is_empty());
+            assert_eq!(panel.voice.live_transcript, "new recording");
+            assert!(
+                !serde_json::to_string(&panel.snapshot(cx))
+                    .unwrap()
+                    .contains("new recording")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn jev_navigation_preserves_composer_draft(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("keep my code request".into(), cx)
+            });
+            let session = serde_json::from_value(serde_json::json!({
+                "session_id": "target", "status": "idle", "title": "PDF renderer"
+            }))
+            .unwrap();
+            panel.voice.sessions = Some(vec![session]);
+            panel.resolve_voice_for_test(
+                "open PDF renderer",
+                Ok(VoiceIntent::OpenSession("target".into())),
+                cx,
+            );
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "keep my code request"
+            );
+            assert!(panel.voice.error.is_none());
+        });
+    }
 
     #[gpui::test]
     fn voice_streaming_revisions_preserve_typed_draft_and_stay_out_of_snapshots(

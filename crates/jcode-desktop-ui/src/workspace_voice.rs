@@ -1,6 +1,25 @@
 //! Copilot is a physical key, not a repeatable editing command.
 use super::*;
 
+/// Voice searches recency, not the sidebar's saved-first order. Bound the
+/// candidate set before any metadata is sent to Jev. Never fetch older history.
+fn recent_voice_sessions(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
+    let mut sessions = sessions
+        .iter()
+        .filter(|s| !s.archived && !Panel::is_pending_session_id(&s.session_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    sessions.sort_by(|a, b| {
+        sidebar_session_recency_ms(b)
+            .cmp(&sidebar_session_recency_ms(a))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    let mut seen = HashSet::new();
+    sessions.retain(|s| seen.insert(s.session_id.clone()));
+    sessions.truncate(20);
+    sessions
+}
+
 #[derive(Default)]
 pub(super) struct CopilotLatch {
     down: bool,
@@ -109,8 +128,42 @@ impl Workspace {
             self.overview_progress.set(0.0, Instant::now());
         }
         self.focus_active(window, cx);
+        let starting = !panel.read(cx).voice_active();
         panel.update(cx, |panel, cx| panel.toggle_voice(cx));
+        if starting && panel.read(cx).voice_active() {
+            self.configure_voice_navigation(&panel, window, cx);
+        }
         cx.notify();
+    }
+
+    fn configure_voice_navigation(
+        &mut self,
+        panel: &Entity<Panel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sessions = recent_voice_sessions(&self.sessions);
+        let subscription = cx.subscribe_in(
+            panel,
+            window,
+            |workspace,
+             source,
+             request: &crate::panel::voice::VoiceSessionRequested,
+             window,
+             cx| {
+                // A closed recording owner must not navigate the workspace later.
+                if workspace
+                    .slots
+                    .iter()
+                    .any(|slot| !slot.closing && slot.panel == *source)
+                {
+                    workspace.activate_session(request.0.clone(), window, cx);
+                }
+            },
+        );
+        panel.update(cx, |panel, _| {
+            panel.configure_voice_navigation(sessions, subscription)
+        });
     }
 
     pub(super) fn toggle_panel_voice(
@@ -151,6 +204,106 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_candidates_are_last_twenty_unique_sessions_not_saved_first() {
+        let mut sessions = (0..25)
+            .map(|i| {
+                let mut session =
+                    super::super::tests::session_info(&format!("session_{i}"), Some("test"));
+                session.updated_at_ms = Some(i);
+                session.saved = i < 5;
+                session
+            })
+            .collect::<Vec<_>>();
+        sessions.push(sessions[24].clone());
+        let selected = recent_voice_sessions(&sessions);
+        assert_eq!(selected.len(), 20);
+        assert_eq!(selected[0].session_id, "session_24");
+        assert_eq!(selected[19].session_id, "session_5");
+        assert!(selected.iter().all(|s| !s.saved));
+        sessions[24].archived = true;
+        sessions.pop();
+        let mut pending = super::super::tests::session_info(Panel::STARTUP_SESSION_ID, None);
+        pending.updated_at_ms = Some(100);
+        sessions.push(pending);
+        assert_eq!(recent_voice_sessions(&sessions)[0].session_id, "session_23");
+        assert!(recent_voice_sessions(&[]).is_empty());
+    }
+
+    #[gpui::test]
+    fn voice_session_match_activates_existing_panel_without_duplicates(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("voice-owner", cx);
+            workspace.push_test_panel("voice-target", cx);
+            workspace.sessions = vec![super::super::tests::session_info(
+                "voice-target",
+                Some("PDF renderer"),
+            )];
+            workspace
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_active(0, cx);
+                let owner = workspace.slots[0].panel.clone();
+                workspace.configure_voice_navigation(&owner, window, cx);
+                owner.update(cx, |panel, cx| {
+                    panel.resolve_voice_for_test(
+                        "open the PDF renderer session",
+                        Ok(jcode_base::voice_intent::VoiceIntent::OpenSession(
+                            "voice-target".into(),
+                        )),
+                        cx,
+                    );
+                });
+            });
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(workspace.active, 1);
+            assert_eq!(workspace.slots[1].panel.read(cx).session_id, "voice-target");
+        });
+    }
+
+    #[gpui::test]
+    fn voice_session_match_opens_history_panel(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("voice-owner", cx);
+            workspace.sessions = vec![super::super::tests::session_info(
+                "history-target",
+                Some("PDF renderer"),
+            )];
+            workspace
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let owner = workspace.slots[0].panel.clone();
+                workspace.configure_voice_navigation(&owner, window, cx);
+                owner.update(cx, |panel, cx| {
+                    panel.resolve_voice_for_test(
+                        "open PDF renderer",
+                        Ok(jcode_base::voice_intent::VoiceIntent::OpenSession(
+                            "history-target".into(),
+                        )),
+                        cx,
+                    );
+                });
+            });
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(workspace.slots.len(), 2);
+            assert_eq!(
+                workspace.slots[workspace.active].panel.read(cx).session_id,
+                "history-target"
+            );
+        });
+    }
 
     fn disable_test_microphones(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         for slot in &mut workspace.slots {
