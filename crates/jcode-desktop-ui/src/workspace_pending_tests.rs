@@ -192,10 +192,9 @@ fn local_draft_is_immediately_editable_and_attaches_without_replacing_editor(
     assert_eq!(before.content, "first second");
     assert_eq!(before.attachments.len(), 1);
     assert_ne!(before.selection_start, before.selection_end);
-    vcx.simulate_keystrokes("enter");
     assert!(
         commands.try_recv().is_err(),
-        "submission stays disabled while initializing"
+        "typing must not send while initializing"
     );
     // More than the measured 1.8s backend delay passes with the editor mounted.
     vcx.executor().advance_clock(Duration::from_secs(2));
@@ -321,16 +320,13 @@ fn pending_failure_is_visible_and_keeps_draft_unsent(cx: &mut gpui::TestAppConte
     vcx.simulate_input(" still editable");
     vcx.simulate_keystrokes("enter");
     workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[w.active].panel.read(cx);
+        assert!(panel.input.read(cx).content.is_empty());
+        let queue = serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap();
         assert_eq!(
-            w.slots[w.active]
-                .panel
-                .read(cx)
-                .input
-                .read(cx)
-                .content
-                .as_ref(),
+            queue["prompts"][0]["content"],
             "do not lose me still editable"
-        )
+        );
     });
     assert!(commands.try_recv().is_err());
     vcx.simulate_keystrokes("escape");

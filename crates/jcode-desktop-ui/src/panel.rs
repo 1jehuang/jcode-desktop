@@ -668,8 +668,11 @@ impl Panel {
             .into();
         self.working_dir = session.working_dir;
         self.status = "idle".into();
-        self.input
-            .update(cx, |input, cx| input.set_submission_enabled(true, cx));
+        self.input.update(cx, |input, cx| {
+            input.set_submission_enabled(true, cx);
+            input.set_pending_session(!self.history_loaded, cx);
+        });
+        self.send_queued_prompts(cx);
         cx.notify();
     }
 
@@ -2111,6 +2114,18 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
+                        // A draft has no runtime identity yet. The editor
+                        // retains slash commands while ordinary prompts queue.
+                        if let Some(panel) = weak.upgrade()
+                            && (panel.read(app).is_pending_session()
+                                || (panel.read(app).prompt_queue.waiting_for_connection
+                                    && !panel.read(app).history_loaded))
+                        {
+                            panel.update(app, |this, cx| {
+                                this.submit_or_queue(content, images, queued, cx);
+                            });
+                            return;
+                        }
                         if images.is_empty()
                             && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
                         {
@@ -2262,7 +2277,7 @@ impl Panel {
             if this.is_pending_session() {
                 this.status = "Starting session · you can type now".into();
                 this.input
-                    .update(cx, |input, cx| input.set_submission_enabled(false, cx));
+                    .update(cx, |input, cx| input.set_pending_session(true, cx));
             }
         });
     }
@@ -2538,6 +2553,10 @@ impl Panel {
             return;
         }
         self.history_loaded = true;
+        if !self.is_pending_session() {
+            self.input
+                .update(cx, |input, cx| input.set_pending_session(false, cx));
+        }
         // An established session can paint an empty placeholder before its
         // history arrives. That must not adopt a new conversation's layout.
         if !messages.is_empty()
@@ -2639,6 +2658,7 @@ impl Panel {
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
+        self.send_queued_prompts(cx);
         cx.notify();
     }
 

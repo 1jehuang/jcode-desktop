@@ -25,6 +25,8 @@ mod paste_preview;
 use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
 
+const PENDING_COMMAND_NOTICE: &str = "Commands are available once connected. Your command is still in the editor.";
+
 actions!(
     prompt_input,
     [
@@ -161,6 +163,7 @@ pub struct PromptInput {
     editor_scroll: gpui::ScrollHandle,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
     submission_enabled: bool,
+    pending_session: bool,
     spacious: bool,
 }
 
@@ -403,6 +406,7 @@ impl PromptInput {
             editor_scroll: gpui::ScrollHandle::new(),
             revealed_caret: None,
             submission_enabled: true,
+            pending_session: false,
             spacious: false,
         }
     }
@@ -425,10 +429,18 @@ impl PromptInput {
         self
     }
 
-    /// Connection readiness gates sending, never editing or focus. In
-    /// particular, Enter must not consume a draft while startup is pending.
+    /// Explicitly disable submission without disabling editing or focus.
+    /// Startup panels instead queue prompts and separately gate slash commands.
     pub fn set_submission_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.submission_enabled = enabled;
+        cx.notify();
+    }
+
+    pub(crate) fn set_pending_session(&mut self, pending: bool, cx: &mut Context<Self>) {
+        self.pending_session = pending;
+        if !pending && self.attachment_notice.as_deref() == Some(PENDING_COMMAND_NOTICE) {
+            self.attachment_notice = None;
+        }
         cx.notify();
     }
 
@@ -545,6 +557,14 @@ impl PromptInput {
 
     fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.submission_enabled {
+            return;
+        }
+        if self.pending_session
+            && self.command_completion
+            && self.content.trim_start().starts_with('/')
+        {
+            self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
+            cx.notify();
             return;
         }
         let raw_content = self.content.to_string();
@@ -2274,3 +2294,44 @@ mod tests {
 #[cfg(test)]
 #[path = "input_responsive_tests.rs"]
 mod responsive_tests;
+
+#[cfg(test)]
+mod pending_session_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn pending_commands_preserve_editor_and_explain_readiness(cx: &mut gpui::TestAppContext) {
+        cx.update(bind_keys);
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            let mut input = PromptInput::new(cx, "test", |_, _, _, _| {
+                panic!("pending commands must not invoke submit callbacks");
+            });
+            input.set_pending_session(true, cx);
+            input
+        });
+        vcx.update(|window, cx| {
+            window.focus(&input.read(cx).focus_handle.clone(), cx);
+        });
+        for command in ["/clear", "/login", "/changelog", "/onboarding-sim"] {
+            input.update(vcx, |input, cx| {
+                input.content = command.into();
+                input.selected_range = command.len()..command.len();
+                cx.notify();
+            });
+            vcx.simulate_keystrokes("enter");
+            vcx.simulate_keystrokes("ctrl-enter");
+            input.read_with(vcx, |input, _| {
+                assert_eq!(input.content.as_ref(), command);
+                assert_eq!(
+                    input.attachment_notice.as_deref(),
+                    Some(PENDING_COMMAND_NOTICE)
+                );
+            });
+        }
+        input.update(vcx, |input, cx| {
+            input.set_pending_session(false, cx);
+            assert!(input.attachment_notice.is_none());
+            assert_eq!(input.content.as_ref(), "/onboarding-sim");
+        });
+    }
+}

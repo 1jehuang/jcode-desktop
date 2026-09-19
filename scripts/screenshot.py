@@ -46,6 +46,8 @@ def main():
                         help="verify startup beta overlay dismissal and native typing")
     parser.add_argument("--queue-interact", action="store_true",
                         help="verify Ctrl+Enter queues prompts on the private display")
+    parser.add_argument("--pending-interact", action="store_true",
+                        help="verify Enter, retry and local fallback for an offline pending startup")
     parser.add_argument("--onboarding-interact", action="store_true",
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
@@ -123,6 +125,18 @@ def main():
             value for key, value in vars(args).items()
             if key.endswith("_interact") and key != "beta_notice_interact"):
         parser.error("beta-notice modes cannot be combined with other interactions")
+    if args.pending_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "pending_interact")
+        if (others or args.transcript != "empty" or args.panels != 1
+                or args.size != "1440x1000" or args.theme != "warm-neutral"
+                or args.layout_mode != "folder_tabs" or args.focus_panel is not None
+                or args.learn_stage is not None or args.preview_state is not None
+                or args.changelog or args.notification or args.swarm or args.worktrees
+                or args.account_sign_in):
+            parser.error("pending-interact requires --transcript empty and the default single-panel fixture without overlays")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("pending-interact requires xdotool and tesseract")
     if args.queue_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "queue_interact")
@@ -370,6 +384,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.pending_interact:
+            env["JCODE_DESKTOP_SCREENSHOT_PENDING"] = "1"
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.preview_state is not None:
@@ -519,6 +535,9 @@ def main():
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.beta_notice_interact:
                     from beta_notice_acceptance import verify
+                    verify(output, env, root)
+                if args.pending_interact:
+                    from pending_submission_acceptance import verify
                     verify(output, env, root)
                 if args.tab_actions_interact:
                     from tab_actions_acceptance import verify

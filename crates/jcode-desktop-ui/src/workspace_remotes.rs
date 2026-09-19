@@ -37,6 +37,171 @@ impl Machines {
 }
 
 impl Workspace {
+    /// Connection progress belongs beside the draft, not only in Machines.
+    /// A stale remote result must not change a draft explicitly moved locally.
+    pub(super) fn update_startup_status(
+        &mut self,
+        message: &str,
+        failed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.remotes.startup_failed = failed;
+        for slot in &self.slots {
+            if !slot.closing && slot.panel.read(cx).is_startup_draft() {
+                slot.panel.update(cx, |panel, cx| {
+                    panel.status = message.to_owned();
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    fn retry_pending_session(&mut self, index: usize, local: bool, cx: &mut Context<Self>) {
+        let Some(panel) = self
+            .slots
+            .get(index)
+            .filter(|slot| !slot.closing)
+            .map(|slot| slot.panel.clone())
+        else {
+            return;
+        };
+        if !panel.read(cx).is_pending_session() {
+            return;
+        }
+        if panel.read(cx).is_startup_draft() && !local {
+            self.update_startup_status("Retrying connection to the default machine…", false, cx);
+            self.create_default_session(
+                default_working_dir(),
+                Some(Panel::STARTUP_SESSION_ID.into()),
+            );
+        } else {
+            // Keep the editor, attachments and queued prompts. A fresh request
+            // ID rejects a late remote/create reply rather than changing target.
+            let directory = if panel.read(cx).is_startup_draft() {
+                default_working_dir()
+            } else {
+                panel.read(cx).working_dir.clone()
+            };
+            let mut request_id = pending::next_draft_id();
+            if panel
+                .read(cx)
+                .session_id
+                .starts_with("startup://draft/help/")
+            {
+                request_id = request_id.replacen("startup://draft/", "startup://draft/help/", 1);
+            }
+            panel.update(cx, |panel, cx| {
+                panel.session_id = request_id.clone();
+                panel.working_dir = directory.clone();
+                panel.title = "New local session".into();
+                panel.status = "Connecting to this computer…".into();
+                cx.notify();
+            });
+            self.bridge.send(Command::CreateSession {
+                working_dir: directory,
+                request_id: Some(request_id),
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn render_pending_session(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let panel = self.slots[index].panel.clone();
+        let startup = panel.read(cx).is_startup_draft();
+        let remote = startup && self.remotes.default_host.is_some();
+        let failed = if startup {
+            self.remotes.startup_failed
+        } else {
+            panel.read(cx).status.starts_with("Session creation failed")
+        };
+        let theme = Theme::global();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("pending-session-status")
+                    .debug_selector(|| "pending-session-status".into())
+                    .flex_none()
+                    .mx_3()
+                    .mt_2()
+                    .p_2()
+                    .rounded_md()
+                    .bg(theme.TOOL_BG)
+                    .text_size(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(if failed { theme.ERROR } else { theme.TEXT_DIM })
+                            .child(panel.read(cx).status.clone()),
+                    )
+                    .child(div().text_color(theme.TEXT_DIM).child(if failed {
+                        "Not sent. Your draft and queued prompts are preserved."
+                    } else {
+                        "Enter queues your prompt until the connection is ready."
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .when(failed, |el| {
+                                el.child(
+                                    div()
+                                        .id("pending-session-retry")
+                                        .debug_selector(|| "pending-session-retry".into())
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme.ACCENT_DIM)
+                                        .cursor_pointer()
+                                        .child("Retry connection")
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.retry_pending_session(index, false, cx);
+                                                this.set_active(index, cx);
+                                                this.focus_active(window, cx);
+                                            }),
+                                        ),
+                                )
+                            })
+                            .when(remote, |el| {
+                                el.child(
+                                    div()
+                                        .id("pending-session-local")
+                                        .debug_selector(|| "pending-session-local".into())
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme.ACCENT_DIM)
+                                        .cursor_pointer()
+                                        .child("Use this computer")
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.retry_pending_session(index, true, cx);
+                                                this.set_active(index, cx);
+                                                this.focus_active(window, cx);
+                                            }),
+                                        ),
+                                )
+                            }),
+                    ),
+            )
+            .child(div().flex_1().min_h_0().child(panel))
+            .into_any_element()
+    }
+
     pub(super) fn restore_hidden_machine_focus(
         &mut self,
         window: &mut Window,
@@ -118,11 +283,11 @@ impl Workspace {
                         let updates = this.remotes.cloud.take_updates();
                         let changed = !updates.is_empty();
                         for (message, failed, startup) in updates {
+                            if startup {
+                                this.update_startup_status(&message, failed, cx);
+                            }
                             this.remotes.status = Some(message);
                             this.remotes.failed = failed;
-                            if startup {
-                                this.remotes.startup_failed = failed;
-                            }
                         }
                         let summary = if configured {
                             this.remotes.cloud.summary()
@@ -416,10 +581,9 @@ impl Workspace {
                 div().id("machine-retry-startup").debug_selector(|| "machine-retry-startup".into())
                     .px_2().py_2().cursor_pointer().bg(theme.ACCENT_DIM)
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        this.remotes.startup_failed = false;
-                        this.create_default_session(default_working_dir(), Some(Panel::STARTUP_SESSION_ID.into()));
-                        this.remotes.status = Some("Retrying startup on the default machine…".into());
-                        cx.notify();
+                        if let Some(index) = this.slots.iter().position(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft()) {
+                            this.retry_pending_session(index, false, cx);
+                        }
                     })).child("Retry startup on default machine")
             }))
             .child(self.render_machine_row(None, 0, cx));

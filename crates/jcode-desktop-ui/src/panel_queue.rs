@@ -6,6 +6,8 @@ pub struct PromptQueue {
     prompts: Vec<QueuedPrompt>,
     #[serde(default)]
     pub(super) paused: bool,
+    #[serde(default)]
+    pub(super) waiting_for_connection: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -22,11 +24,16 @@ impl Panel {
         queued: bool,
         cx: &mut Context<Self>,
     ) {
-        if queued && (self.activity_active() || !self.pending_users.is_empty()) {
+        if self.is_pending_session()
+            || self.prompt_queue.waiting_for_connection
+            || (queued && (self.activity_active() || !self.pending_users.is_empty()))
+        {
+            self.prompt_queue.waiting_for_connection |= self.is_pending_session();
             self.prompt_queue
                 .prompts
                 .push(QueuedPrompt { content, images });
             self.prompt_queue.paused = false;
+            self.send_queued_prompts(cx);
         } else {
             self.send_composer_prompt(content, images, cx);
         }
@@ -90,10 +97,16 @@ impl Panel {
         }
     }
 
-    fn send_queued_prompts(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn send_queued_prompts(&mut self, cx: &mut Context<Self>) {
+        if self.prompt_queue.prompts.is_empty() {
+            if !self.is_pending_session() && self.history_loaded {
+                self.prompt_queue.waiting_for_connection = false;
+            }
+            return;
+        }
         if self.prompt_queue.paused
-            || self.prompt_queue.prompts.is_empty()
-            || self.status != "idle"
+            || !(self.status == "idle"
+                || (self.prompt_queue.waiting_for_connection && self.status == "connected"))
             || self.activity_active()
             || !self.pending_users.is_empty()
             || self.is_pending_session()
@@ -105,6 +118,7 @@ impl Panel {
         // order, retaining every attachment. Draining atomically also makes a
         // TurnDone followed by idle incapable of sending the same queue twice.
         let prompts = std::mem::take(&mut self.prompt_queue.prompts);
+        self.prompt_queue.waiting_for_connection = false;
         let content = prompts
             .iter()
             .map(|p| p.content.as_str())
@@ -135,6 +149,10 @@ impl Panel {
                         .text_color(theme.TEXT_DIM)
                         .child(if self.prompt_queue.paused {
                             "Queue paused · waiting prompts are preserved"
+                        } else if self.is_pending_session()
+                            || self.prompt_queue.waiting_for_connection
+                        {
+                            "Queued · sends when connected"
                         } else {
                             "Queued · sends after this response"
                         }),

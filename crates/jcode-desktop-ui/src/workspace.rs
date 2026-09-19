@@ -951,6 +951,17 @@ impl Workspace {
             {
                 workspace.open_preview_unchecked(state, cx);
             }
+        } else if harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_PENDING").as_deref() == Ok("1")
+        {
+            workspace.remotes.default_host = Some("offline-remote".into());
+            workspace.open_startup_draft(cx);
+            workspace.start_default_startup(cx);
+            workspace.update_startup_status(
+                "offline-remote: connection failed (offline fixture)",
+                true,
+                cx,
+            );
         } else if harness::screenshot_mode() {
             let session = jcode_sdk::SessionInfo {
                 session_id: "screenshot-fixture".into(),
@@ -1640,7 +1651,7 @@ impl Workspace {
                 failed,
             } => {
                 if request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID) {
-                    self.remotes.startup_failed = failed;
+                    self.update_startup_status(&format!("{host}: {message}"), failed, cx);
                 }
                 self.remotes.failed = failed;
                 self.remotes.status = Some(format!("{host}: {message}"));
@@ -1838,6 +1849,9 @@ impl Workspace {
             }
             Update::MessageSubmitted { .. } => {}
             Update::CommandFailed { session_id, reason } => {
+                if session_id == Panel::STARTUP_SESSION_ID {
+                    self.remotes.startup_failed = true;
+                }
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
@@ -3797,6 +3811,8 @@ impl Workspace {
                     self.render_folder_picker(cx)
                 } else if slot.panel.read(cx).is_machines() {
                     self.render_machines(cx)
+                } else if slot.panel.read(cx).is_pending_session() {
+                    self.render_pending_session(index, cx)
                 } else {
                     // Unrelated workspace chrome updates must not rebuild every
                     // visible transcript. GPUI invalidates this definite-size

@@ -649,3 +649,167 @@ fn legacy_machines_sidebar_restores_sessions() {
         SidebarView::Sessions
     );
 }
+
+#[gpui::test]
+fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fallback(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("offline-remote".into());
+        w.open_startup_draft(cx);
+        w.start_default_startup(cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::CreateRemoteSession { .. })
+    ));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-session-status").is_some());
+    vcx.simulate_input("send after connection");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("prompt-queue").is_some());
+    assert!(
+        commands.try_recv().is_err(),
+        "never send a placeholder session ID"
+    );
+    let (panel_id, input_id) = workspace.read_with(vcx, |w, cx| {
+        let panel = &w.slots[0].panel;
+        assert!(panel.read(cx).input.read(cx).content.is_empty());
+        (panel.entity_id(), panel.read(cx).input.entity_id())
+    });
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::RemoteStatus {
+                host: "offline-remote".into(),
+                message: "credentials expired".into(),
+                failed: true,
+                request_id: Some(Panel::STARTUP_SESSION_ID.into()),
+            },
+            cx,
+        );
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-session-retry").is_some());
+    assert!(
+        vcx.debug_bounds("machines-picker").is_none(),
+        "recovery is beside the prompt"
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "failure must not silently fall back locally"
+    );
+    click(vcx, "pending-session-retry");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, request_id: Some(id), .. })
+        if host == "offline-remote" && id == Panel::STARTUP_SESSION_ID)
+    );
+    assert!(vcx.debug_bounds("pending-session-retry").is_none());
+    // Even while retrying, an explicit target choice is available. Preserve
+    // unsent editor text as well as the already submitted waiting prompt.
+    vcx.simulate_input("next draft");
+    click(vcx, "pending-session-local");
+    let request_id = match commands.try_recv().unwrap() {
+        Command::CreateSession {
+            request_id: Some(id),
+            ..
+        } => id,
+        _ => panic!("explicit local recovery must create a correlated local session"),
+    };
+    assert_ne!(request_id, Panel::STARTUP_SESSION_ID);
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots[0].panel.entity_id(), panel_id);
+        let panel = w.slots[0].panel.read(cx);
+        assert_eq!(panel.input.entity_id(), input_id);
+        assert_eq!(panel.input.read(cx).content.as_ref(), "next draft");
+        assert_eq!(w.remotes.default_host.as_deref(), Some("offline-remote"));
+        assert_eq!(
+            serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap()["prompts"][0]["content"],
+            "send after connection"
+        );
+    });
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: session("ssh://offline-remote/late"),
+                request_id: Some(Panel::STARTUP_SESSION_ID.into()),
+            },
+            cx,
+        );
+        // Late cloud status must not overwrite the local draft's status.
+        w.update_startup_status("late remote failure", true, cx);
+        assert_eq!(
+            w.slots[0].panel.read(cx).status,
+            "Connecting to this computer…"
+        );
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Unwatch { session_id }) if session_id == "ssh://offline-remote/late")
+    );
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: session("ready-local"),
+                request_id: Some(request_id),
+            },
+            cx,
+        );
+        w.apply(
+            Update::History {
+                session_id: "ready-local".into(),
+                messages: vec![],
+                images: vec![],
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. })
+        if session_id == "ready-local" && content == "send after connection")
+    );
+    assert!(commands.try_recv().is_err());
+    assert!(vcx.debug_bounds("pending-session-status").is_none());
+    vcx.simulate_keystrokes("enter");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. })
+        if session_id == "ready-local" && content == "next draft")
+    );
+}
+
+#[gpui::test]
+fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.remotes.default_host = Some("jcode-cloud-alpha".into());
+        w.open_startup_draft(cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+    vcx.simulate_input("preserve my draft");
+    workspace.update(vcx, |w, cx| {
+        // This is the same path used by the cloud lifecycle monitor.
+        w.update_startup_status("Cloud wake failed: expired credentials", true, cx);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-session-status").is_some());
+    assert!(vcx.debug_bounds("pending-session-retry").is_some());
+    assert!(vcx.debug_bounds("pending-session-local").is_some());
+    assert!(vcx.debug_bounds("machines-picker").is_none());
+    workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[0].panel.read(cx);
+        assert!(panel.status.contains("expired credentials"));
+        assert_eq!(panel.input.read(cx).content.as_ref(), "preserve my draft");
+    });
+}

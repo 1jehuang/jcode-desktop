@@ -51,11 +51,11 @@ fn startup_draft_accepts_typing_before_connection_and_promotes_in_place(
     vcx.simulate_keystrokes("enter");
     assert_eq!(
         input.read_with(vcx, |input, _| input.content.to_string()),
-        "typed before the runtime started"
+        ""
     );
     assert!(
         commands.try_recv().is_err(),
-        "Enter retains the unsubmitted draft"
+        "Enter queues without sending to the placeholder"
     );
     workspace.update(vcx, |workspace, cx| {
         workspace.apply(
@@ -81,11 +81,47 @@ fn startup_draft_accepts_typing_before_connection_and_promotes_in_place(
         assert_eq!(workspace.slots[0].panel.entity_id(), panel.entity_id());
         assert_eq!(panel.read(cx).input.entity_id(), input.entity_id());
     });
-    vcx.simulate_input(" and after");
-    vcx.simulate_keystrokes("enter");
+    assert!(
+        commands.try_recv().is_err(),
+        "attachment still needs history"
+    );
+    workspace.update(vcx, |workspace, cx| {
+        workspace.apply(
+            Update::SessionConnected {
+                session_id: "session-ready".into(),
+            },
+            cx,
+        );
+        workspace.apply(
+            Update::History {
+                session_id: "session-ready".into(),
+                messages: vec![],
+                images: vec![],
+            },
+            cx,
+        );
+        workspace.apply(
+            Update::History {
+                session_id: "session-ready".into(),
+                messages: vec![],
+                images: vec![],
+            },
+            cx,
+        );
+    });
     assert!(
         matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. })
-        if session_id == "session-ready" && content == "typed before the runtime started and after")
+        if session_id == "session-ready" && content == "typed before the runtime started")
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "history does not replay the queue"
+    );
+    vcx.simulate_input("after connection");
+    vcx.simulate_keystrokes("enter");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Send { content, .. })
+        if content == "after connection")
     );
 }
 
@@ -123,6 +159,11 @@ fn startup_draft_survives_reload_without_watching_placeholder(cx: &mut gpui::Tes
                 .read(cx)
                 .content
                 .as_ref(),
+            ""
+        );
+        let saved = serde_json::to_value(workspace.slots[0].panel.read(cx).snapshot(cx)).unwrap();
+        assert_eq!(
+            saved["prompt_queue"]["prompts"][0]["content"],
             "keep this across reload too"
         );
     });
