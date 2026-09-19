@@ -68,21 +68,33 @@ def check_guard(config):
     if not state:
         raise RuntimeError("Independent guard has not initialized. Refusing wake.")
     checked = datetime.fromisoformat(state["checked_at"]["S"])
-    if not 0 <= (datetime.now(timezone.utc) - checked).total_seconds() <= 180:
+    if checked.tzinfo is None or not 0 <= (datetime.now(timezone.utc) - checked).total_seconds() <= 180:
         raise RuntimeError("Independent guard heartbeat is stale. Refusing wake.")
+    return checked
 
 
-def wake(config):
-    print("Checking cloud runtime guard and allowance...", file=sys.stderr, flush=True)
-    # Account identity has already been checked by main. Overlap only reads,
-    # never start/connect until every safety check has completed successfully.
-    with ThreadPoolExecutor(max_workers=3) as pool:
+def wake(config, *, verify_identity=False, progress_only=False):
+    if verify_identity:
+        print("Checking AWS sign-in and cloud safety...", file=sys.stderr, flush=True)
+    else:
+        print("Checking cloud runtime guard and allowance...", file=sys.stderr, flush=True)
+    # Direct callers retain the existing prevalidated-identity API. CLI callers
+    # overlap identity with reads, never start/connect until all checks pass.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        identity_read = pool.submit(identity, config) if verify_identity else None
         guard_read = pool.submit(check_guard, config)
         ledger_read = pool.submit(ledger, config)
         host_read = pool.submit(instance, config)
-        guard_read.result()
+        if identity_read is not None:
+            identity_read.result()
+            print("Checking cloud runtime guard and allowance...", file=sys.stderr, flush=True)
+        checked = guard_read.result()
         consumed, budget, depleted = ledger_read.result()
         host = host_read.result()
+    # Other reads may take tens of seconds after the guard check completes.
+    # Refresh the age calculation before any start or SSH side effect.
+    if not 0 <= (datetime.now(timezone.utc) - checked).total_seconds() < 180:
+        raise RuntimeError("Independent guard heartbeat is stale. Refusing wake.")
     if depleted or consumed >= budget:
         raise RuntimeError("Cloud runtime allowance exhausted. No automatic overage is enabled.")
     state = host["State"]["Name"]
@@ -97,14 +109,19 @@ def wake(config):
         print("Shared cloud VM is already running. Checking connection...", file=sys.stderr, flush=True)
     else:
         print("Shared cloud VM is starting...", file=sys.stderr, flush=True)
-    print("Waiting for cloud host and private SSM connection...", file=sys.stderr, flush=True)
+    cold = state in ("stopped", "pending")
+    if cold:
+        print("Waiting for shared cloud VM to become reachable...", file=sys.stderr, flush=True)
+    else:
+        print("Waiting for cloud host and private SSM connection...", file=sys.stderr, flush=True)
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
         # The proxy already checks identity, ownership and current EC2 state.
         # Actual SSH + bootstrap readiness is stronger than SSM's delayed (or
         # stale-from-the-previous-boot) Online flag. Do not gate it on two more
         # CLI processes and control-plane round trips on every attempt.
-        print("Verifying SSH connection and cloud bootstrap readiness...", file=sys.stderr, flush=True)
+        if not cold:
+            print("Verifying SSH connection and cloud bootstrap readiness...", file=sys.stderr, flush=True)
         try:
             ready = subprocess.run(
                 ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
@@ -113,11 +130,69 @@ def wake(config):
         except subprocess.TimeoutExpired:
             ready = False
         if ready:
-            print("Ready. Desktop → Machines → jcode-cloud-alpha → Connect.")
-            print("The alpha stops after a maximum two-hour continuous lease, including active work.")
+            if cold:
+                print("Shared cloud VM is running. SSH bootstrap ready.", file=sys.stderr, flush=True)
+            output = sys.stderr if progress_only else sys.stdout
+            print("Ready. Desktop → Machines → jcode-cloud-alpha → Connect.", file=output, flush=True)
+            print("The alpha stops after a maximum two-hour continuous lease, including active work.",
+                  file=output, flush=True)
             return
         time.sleep(4)
     raise RuntimeError("Host did not become SSM-ready within four minutes. Check bootstrap via SSM.")
+
+
+def check_ready(config, now=None):
+    """Read-only safety receipt, not proof of SSH/bootstrap readiness.
+
+    A consumer may reuse an established transport only for this exact instance
+    and launch time, for at most valid_for_seconds from observed_at (Unix
+    seconds). launch_time retains the AWS string. This does not renew the
+    lease or authorize a future wake.
+    """
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        identity_read = pool.submit(identity, config)
+        guard_read = pool.submit(check_guard, config)
+        ledger_read = pool.submit(ledger, config)
+        host_read = pool.submit(instance, config)
+        identity_read.result()
+        checked = guard_read.result()
+        consumed, budget, depleted = ledger_read.result()
+        host = host_read.result()
+    if depleted or consumed >= budget:
+        raise RuntimeError("Cloud runtime allowance exhausted. No automatic overage is enabled.")
+    state = host["State"]["Name"]
+    if state != "running":
+        raise RuntimeError(f"Cloud host is not running (state {state}). Readiness check cannot wake it.")
+    now = now or datetime.now(timezone.utc)
+    launch = datetime.fromisoformat(host["LaunchTime"])
+    if launch.tzinfo is None or now.tzinfo is None or launch > now:
+        raise RuntimeError("Invalid cloud launch time. Refusing readiness receipt.")
+    launch = launch.astimezone(timezone.utc)
+    deadline = launch + timedelta(hours=2)
+    remaining = int((deadline - now).total_seconds())
+    if remaining <= 0:
+        raise RuntimeError("Cloud two-hour lease expired. Refusing readiness receipt.")
+    # Re-evaluate freshness after every read completes, not just when the
+    # heartbeat arrived. No receipt may outlive its guard, lease or allowance.
+    guard_age = (now - checked).total_seconds()
+    if not 0 <= guard_age < 180:
+        raise RuntimeError("Independent guard heartbeat is stale. Refusing readiness receipt.")
+    valid_for = int(min(30, remaining, 180 - guard_age, (budget - consumed) * 60))
+    if valid_for <= 0:
+        raise RuntimeError("Safety proof expires too soon. Refusing readiness receipt.")
+    return {"instance_id": config["instance_id"], "state": state,
+            "valid_for_seconds": valid_for,
+            "launch_time": host["LaunchTime"], "lease_deadline": int(deadline.timestamp()),
+            "lease_remaining_seconds": remaining,
+            "allowance_remaining_minutes": budget - consumed,
+            "observed_at": int(now.timestamp())}
+
+
+def wake_ready(config):
+    """Explicit wake plus a fresh full safety proof after bootstrap succeeds."""
+    wake(config, verify_identity=True, progress_only=True)
+    print("Confirming cloud safety checks...", file=sys.stderr, flush=True)
+    return check_ready(config)
 
 
 def status(config, now=None):
@@ -147,25 +222,31 @@ def status(config, now=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["status", "wake", "stop", "ssh", "proxy"])
+    parser.add_argument("action", choices=["status", "wake", "stop", "ssh", "proxy", "check-ready", "wake-ready"])
     args = parser.parse_args()
     config = json.loads(CONFIG.read_text())
     # Ensure the AWS CLI can find the user-installed Session Manager plugin.
     os.environ["PATH"] = str(Path.home() / ".local/bin") + os.pathsep + os.environ.get("PATH", "")
-    if args.action in ("wake", "ssh"):
+    if args.action in ("wake", "ssh", "wake-ready"):
         print("Checking AWS sign-in...", file=sys.stderr, flush=True)
+    if args.action == "check-ready":
+        print(json.dumps(check_ready(config), indent=2))
+        return
+    if args.action == "wake-ready":
+        print(json.dumps(wake_ready(config), indent=2))
+        return
+    if args.action in ("wake", "ssh"):
+        wake(config, verify_identity=True)
+        if args.action == "ssh":
+            os.execvp("ssh", ["ssh", "jcode-cloud-alpha"])
+        return
     identity(config)
-    if args.action == "wake":
-        wake(config)
-    elif args.action == "stop":
+    if args.action == "stop":
         instance(config)
         aws(config, "ec2", "stop-instances", "--instance-ids", config["instance_id"])
         print("Stop requested. Saved files remain. Running processes will end.")
     elif args.action == "status":
         print(json.dumps(status(config), indent=2))
-    elif args.action == "ssh":
-        wake(config)
-        os.execvp("ssh", ["ssh", "jcode-cloud-alpha"])
     elif args.action == "proxy":
         # SSH's stdout is its wire. Never print diagnostics or status there.
         if instance(config)["State"]["Name"] != "running":

@@ -1945,6 +1945,7 @@ impl Workspace {
                 self.status = format!("disconnected: {reason} (retrying)");
             }
             Update::SessionLost { session_id, reason } => {
+                self.set_cloud_transport_connected(&session_id, false);
                 if let Some(host) = harness::remote_host(&session_id) {
                     self.invalidate_cloud_connection(&host);
                 }
@@ -1959,6 +1960,7 @@ impl Workspace {
                 }
             }
             Update::SessionConnected { session_id } => {
+                self.set_cloud_transport_connected(&session_id, true);
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
