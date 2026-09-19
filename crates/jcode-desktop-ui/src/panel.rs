@@ -7088,7 +7088,9 @@ mod tests {
                     "edit-preview-footer-0",
                     "tool-error",
                 ] {
-                    if selector == "tool-error" && error.is_none() {
+                    if matches!(selector, "tool-error" | "edit-preview-footer-0") && error.is_none()
+                    {
+                        assert!(vcx.debug_bounds(selector).is_none());
                         continue;
                     }
                     let content = vcx.debug_bounds(selector).expect("card content paints");

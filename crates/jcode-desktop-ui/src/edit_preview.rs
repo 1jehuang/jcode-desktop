@@ -220,19 +220,21 @@ impl Render for TimedPreview {
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(self.render_header())
-            .child(
-                div().h(px(2.)).w_full().bg(theme.CODE_HEADER_BG).child(
-                    div()
-                        .debug_selector(|| "edit-countdown-bar".into())
-                        .h_full()
-                        .w(relative(if countdown {
-                            self.timer.remaining_fraction()
-                        } else {
-                            0.
-                        }))
-                        .bg(theme.ACCENT),
-                ),
-            );
+            .when(open, |el| {
+                el.child(
+                    div().h(px(2.)).w_full().bg(theme.CODE_HEADER_BG).child(
+                        div()
+                            .debug_selector(|| "edit-countdown-bar".into())
+                            .h_full()
+                            .w(relative(if countdown {
+                                self.timer.remaining_fraction()
+                            } else {
+                                0.
+                            }))
+                            .bg(theme.ACCENT),
+                    ),
+                )
+            });
         if open && !self.rows.is_empty() {
             let height = (self.rows.len() as f32 * LINE_HEIGHT).min(MAX_HEIGHT);
             body = body.child(
@@ -266,7 +268,12 @@ impl Render for TimedPreview {
                     .child("No changed lines to preview."),
             );
         }
-        body
+        // GPUI clips overflow to a rectangle. Only an expanded diff needs
+        // clearance below its rectangular line fills for the rounded corners.
+        // A collapsed card ends at the metadata row itself, with no footer.
+        body.when(open && !self.header.review.failed, |el| {
+            el.child(div().h(px(8.)).rounded_b_lg().bg(theme.CODE_BG))
+        })
     }
 }
 
@@ -400,6 +407,15 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("edit-expanded-body").is_none());
+        let preview = vcx.debug_bounds("edit-timed-preview").unwrap();
+        let metadata = vcx.debug_bounds("edit-preview-metadata-0").unwrap();
+        assert_eq!(
+            preview.bottom(),
+            metadata.bottom(),
+            "no third row below a collapsed edit"
+        );
+        assert_eq!(preview.size.height, px(52.));
+        assert!(vcx.debug_bounds("edit-countdown-bar").is_none());
         host.update(vcx, |host, cx| {
             host.visible = false;
             cx.notify();

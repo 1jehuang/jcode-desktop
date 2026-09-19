@@ -275,39 +275,38 @@ impl Panel {
                     .overflow_hidden()
                     .bg(Theme::global().CODE_BG)
                     .child(preview)
-                    // GPUI clips overflow to a rectangle, not the rounded
-                    // outline. Keep diff fills above a self-rounded footer.
-                    .child(
-                        div()
-                            .id(("edit-preview-footer", index))
-                            .debug_selector(move || format!("edit-preview-footer-{index}").into())
-                            .cursor_pointer()
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(move |_, _, cx| {
-                                footer_preview.update(cx, |view, cx| view.toggle_inline(cx));
-                                cx.stop_propagation();
-                            })
-                            .rounded_b_lg()
-                            .bg(Theme::global().CODE_BG)
-                            .px_3()
-                            // Reserve the full 8px corner radius below any
-                            // rectangular metadata, progress, or diff fill.
-                            .h(px(8.))
-                            .when(error.is_some(), |el| el.h_auto().py_1())
-                            .text_size(px(10.))
-                            .when_some(error, |el, message| {
-                                el.child(
+                    .when_some(error, |el, message| {
+                        el.child(
+                            div()
+                                .id(("edit-preview-footer", index))
+                                .debug_selector(move || {
+                                    format!("edit-preview-footer-{index}").into()
+                                })
+                                .cursor_pointer()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_click(move |_, _, cx| {
+                                    footer_preview.update(cx, |view, cx| view.toggle_inline(cx));
+                                    cx.stop_propagation();
+                                })
+                                .rounded_b_lg()
+                                .bg(Theme::global().CODE_BG)
+                                .px_3()
+                                .py_1()
+                                .text_size(px(10.))
+                                .child(
                                     div()
                                         .debug_selector(|| "tool-error".into())
                                         .pt_1()
                                         .text_color(Theme::global().ERROR)
                                         .child(message.to_owned()),
-                                )
-                            }),
-                    ),
+                                ),
+                        )
+                    }),
             );
         }
         Some(card.into_any_element())

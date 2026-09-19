@@ -58,6 +58,10 @@ impl TimedPreview {
             .h(px(24.))
             .px_3()
             .bg(theme.CODE_BG)
+            .when(
+                self.timer.expansion_fraction() == 0. && !self.header.review.failed,
+                |el| el.rounded_b_lg(),
+            )
             .min_w_0()
             .text_size(px(11.))
             .line_height(px(16.))
@@ -167,6 +171,9 @@ mod tests {
                 assert!(counts.origin.y >= intent_row.origin.y);
                 assert!(counts.bottom() <= intent_row.bottom());
                 assert_eq!(metadata.size.height, px(24.));
+                if state == 2 {
+                    assert!(vcx.debug_bounds("edit-countdown-bar").is_none());
+                }
                 for selector in ["edit-review", "edit-toggle", "edit-keep-open"] {
                     assert!(
                         vcx.debug_bounds(selector).is_none(),
