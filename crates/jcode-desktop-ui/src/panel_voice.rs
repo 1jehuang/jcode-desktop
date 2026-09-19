@@ -1,6 +1,6 @@
-//! Explicit, subscription-backed microphone dictation. Audio is never snapshotted.
+//! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
-use jcode_base::voice::{self, MicrophoneRecording, VoiceError};
+use jcode_base::voice::{self, NariEvent, NariRecording, VoiceError};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 gpui::actions!(panel_voice, [ToggleVoice]);
@@ -13,7 +13,7 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
     )]);
 }
 
-const VOICE_SHORTCUT: &str = "Ctrl+Shift+V";
+const VOICE_SHORTCUT: &str = "Copilot";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -27,7 +27,8 @@ enum Phase {
 #[derive(Default)]
 pub(super) struct VoiceState {
     phase: Phase,
-    recording: Option<MicrophoneRecording>,
+    recording: Option<NariRecording>,
+    live_transcript: String,
     canceled: Arc<AtomicBool>,
     started: Option<Instant>,
     error: Option<String>,
@@ -39,8 +40,8 @@ impl Drop for VoiceState {
     fn drop(&mut self) {
         self.canceled.store(true, Ordering::SeqCst);
         if let Some(recording) = self.recording.take() {
-            // Native stream teardown must not block the UI or hot reload.
-            std::thread::spawn(move || recording.cancel());
+            // NariRecording signals cancellation without joining the native worker.
+            drop(recording);
         }
     }
 }
@@ -50,18 +51,37 @@ impl Render for VoiceTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().max_w(px(300.)).p_2().rounded_md().bg(Theme::global().HEADER_BG)
             .text_size(px(12.)).text_color(Theme::global().TEXT)
-            .child(format!("{} · {VOICE_SHORTCUT} starts/stops voice dictation (or cancels a pending request). Voice dictation is included with an active Jcode subscription. Audio is sent to Groq when you stop. Review the transcript before sending.", self.0))
-    }
-}
-
-async fn canceled(token: &AtomicBool) {
-    while !token.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+            .child(format!("{} · {VOICE_SHORTCUT} starts/stops voice dictation (or cancels a pending request). Ctrl+Shift+V also works in the composer. Audio streams to Nari while recording. Review the final draft before sending.", self.0))
     }
 }
 
 impl Panel {
-    pub(super) fn toggle_voice(&mut self, cx: &mut Context<Self>) {
+    #[cfg(test)]
+    pub(crate) fn set_voice_checking_for_test(&mut self) {
+        self.voice = VoiceState::default();
+        self.voice.phase = Phase::Checking;
+    }
+
+    pub(crate) fn supports_voice(&self) -> bool {
+        (!self.session_id.contains("://")
+            || self.is_pending_session()
+            || self.session_id.starts_with("preview://"))
+            && self.terminal.is_none()
+            && self.code_file.is_none()
+            && !self.is_side_document()
+            && self.gmail_inbox.is_none()
+            && self.gmail_message.is_none()
+            && self.todoist.is_none()
+    }
+
+    pub(crate) fn voice_active(&self) -> bool {
+        self.voice.phase != Phase::Idle
+    }
+
+    pub(crate) fn toggle_voice(&mut self, cx: &mut Context<Self>) {
+        if !self.supports_voice() {
+            return;
+        }
         match self.voice.phase {
             Phase::Idle => self.start_voice(cx),
             Phase::Recording => self.stop_voice(cx),
@@ -88,17 +108,8 @@ impl Panel {
         let token = self.voice.canceled.clone();
         let attempt = token.clone();
         let work = cx.background_executor().spawn(async move {
-            let runtime = tokio::runtime::Runtime::new().map_err(|_| VoiceError::Unavailable)?;
-            let available = runtime.block_on(async {
-                tokio::select! {
-                    available = voice::subscription_voice_available() => available,
-                    _ = canceled(&token) => false,
-                }
-            });
-            if !available || token.load(Ordering::SeqCst) {
-                return Err(VoiceError::Unavailable);
-            }
-            MicrophoneRecording::start_cancellable(token)
+            let key = voice::nari_api_key().ok_or(VoiceError::NariNotConfigured)?;
+            NariRecording::start_cancellable(token, &key)
         });
         self.voice.task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
@@ -115,9 +126,7 @@ impl Panel {
                     }
                     Err(error) => {
                         panel.voice.phase = Phase::Idle;
-                        panel.voice.error = Some(if error == VoiceError::Unavailable {
-                            "Voice needs an active Jcode subscription and an available transcription service. Sign in through Accounts, then try again.".into()
-                        } else { error.to_string() });
+                        panel.voice.error = Some(error.to_string());
                     }
                 }
                 cx.notify();
@@ -127,23 +136,50 @@ impl Panel {
     }
 
     fn tick_voice(&mut self, cx: &mut Context<Self>) {
+        let attempt = self.voice.canceled.clone();
         self.voice.timer = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(250))
+                    .timer(Duration::from_millis(50))
                     .await;
                 let keep_ticking = this
                     .update(cx, |panel, cx| {
-                        if panel.voice.phase != Phase::Recording {
+                        if !Arc::ptr_eq(&attempt, &panel.voice.canceled) || !panel.voice_active() {
                             return false;
+                        }
+                        // Drain a bounded batch so a fast provider cannot monopolize the UI.
+                        for _ in 0..64 {
+                            let event = panel
+                                .voice
+                                .recording
+                                .as_ref()
+                                .and_then(NariRecording::try_event);
+                            let Some(event) = event else { break };
+                            panel.apply_voice_event(event, cx);
+                            if !panel.voice_active() {
+                                return false;
+                            }
                         }
                         if panel
                             .voice
                             .recording
                             .as_ref()
-                            .is_some_and(MicrophoneRecording::is_finished)
+                            .is_some_and(NariRecording::is_finished)
                         {
-                            panel.stop_voice(cx);
+                            // Re-check after observing worker completion so a final event
+                            // published just after the first drain is not lost.
+                            while let Some(event) = panel
+                                .voice
+                                .recording
+                                .as_ref()
+                                .and_then(NariRecording::try_event)
+                            {
+                                panel.apply_voice_event(event, cx);
+                                if !panel.voice_active() {
+                                    return false;
+                                }
+                            }
+                            panel.finish_voice(Err(VoiceError::CaptureFailed), cx);
                             return false;
                         }
                         cx.notify();
@@ -157,41 +193,33 @@ impl Panel {
         }));
     }
 
+    fn apply_voice_event(&mut self, event: NariEvent, cx: &mut Context<Self>) {
+        match event {
+            NariEvent::Started => {}
+            NariEvent::Transcript(text) => {
+                // This separate preview can be revised without replacing anything the
+                // user types. Only Finished inserts one undoable edit into the draft.
+                self.voice.live_transcript = text;
+                cx.notify();
+            }
+            NariEvent::Finished(result) => self.finish_voice(result, cx),
+        }
+    }
+
     fn stop_voice(&mut self, cx: &mut Context<Self>) {
-        let Some(recording) = self.voice.recording.take() else {
+        let Some(recording) = self.voice.recording.as_ref() else {
             return;
         };
+        recording.stop();
         self.voice.phase = Phase::Transcribing;
-        let token = self.voice.canceled.clone();
-        let attempt = token.clone();
-        let work = cx.background_executor().spawn(async move {
-            let wav = recording.stop()?;
-            if token.load(Ordering::SeqCst) {
-                return Err(VoiceError::Unavailable);
-            }
-            let runtime = tokio::runtime::Runtime::new().map_err(|_| VoiceError::Unavailable)?;
-            runtime.block_on(async {
-                tokio::select! {
-                    result = voice::transcribe_wav(wav, None) => result,
-                    _ = canceled(&token) => Err(VoiceError::Unavailable),
-                }
-            })
-        });
-        self.voice.task = Some(cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |panel, cx| {
-                if !Arc::ptr_eq(&attempt, &panel.voice.canceled) {
-                    return;
-                }
-                panel.finish_voice(result, cx);
-            });
-        }));
         cx.notify();
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
         self.voice.phase = Phase::Idle;
         self.voice.started = None;
+        self.voice.recording = None;
+        self.voice.live_transcript.clear();
         match result {
             Ok(text) if !text.trim().is_empty() => {
                 self.input.update(cx, |input, cx| {
@@ -206,15 +234,27 @@ impl Panel {
     }
 
     pub(super) fn render_voice_status(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let detail = self.voice.error.clone().or_else(|| match self.voice.phase {
-            Phase::Idle => None,
-            Phase::Checking => Some("Checking subscription and microphone access…".into()),
-            Phase::Recording => {
-                let secs = self.voice.started.map_or(0, |t| t.elapsed().as_secs());
-                Some(format!("Recording {}:{:02} · Stop sends audio to Groq for transcription · 5 min / 10 MiB maximum", secs / 60, secs % 60))
-            }
-            Phase::Transcribing => Some("Transcribing with Groq. The result will be added to this draft, not sent.".into()),
-        })?;
+        let detail = self
+            .voice
+            .error
+            .clone()
+            .or_else(|| match self.voice.phase {
+                Phase::Idle => None,
+                Phase::Checking => {
+                    Some("Connecting to Nari and checking microphone access…".into())
+                }
+                Phase::Recording => {
+                    let secs = self.voice.started.map_or(0, |t| t.elapsed().as_secs());
+                    Some(format!(
+                        "Streaming to Nari {}:{:02} · Copilot to stop · 5 min maximum",
+                        secs / 60,
+                        secs % 60
+                    ))
+                }
+                Phase::Transcribing => Some(
+                    "Finishing Nari transcript. The result goes into this draft, not sent.".into(),
+                ),
+            })?;
         Some(
             div()
                 .debug_selector(|| "voice-status".into())
@@ -226,7 +266,26 @@ impl Panel {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().min_w_0().flex_1().child(detail))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(detail)
+                        .when(!self.voice.live_transcript.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .id("voice-live-transcript")
+                                    .debug_selector(|| "voice-live-transcript".into())
+                                    .max_h(px(100.))
+                                    .overflow_y_scroll()
+                                    .text_color(Theme::global().TEXT)
+                                    .child(self.voice.live_transcript.clone()),
+                            )
+                        }),
+                )
                 .child(
                     div()
                         .id("voice-cancel")
@@ -333,6 +392,90 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn voice_streaming_revisions_preserve_typed_draft_and_stay_out_of_snapshots(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("typed draft".into(), cx));
+            panel.apply_voice_event(NariEvent::Transcript("hello wor".into()), cx);
+            panel.apply_voice_event(NariEvent::Transcript("Hello world.".into()), cx);
+            assert_eq!(panel.voice.live_transcript, "Hello world.");
+            assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
+            let snapshot = serde_json::to_string(&panel.snapshot(cx)).unwrap();
+            assert!(!snapshot.contains("Hello world"));
+            assert!(!snapshot.contains("live_transcript"));
+            let before = panel.items.len();
+            panel.apply_voice_event(NariEvent::Finished(Ok("Hello world.".into())), cx);
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "typed draft Hello world."
+            );
+            assert_eq!(panel.items.len(), before, "never auto-submit");
+            assert!(panel.voice.live_transcript.is_empty());
+            assert!(!panel.voice_active());
+        });
+    }
+
+    #[gpui::test]
+    fn voice_cancel_discards_partial_without_changing_draft(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("keep".into(), cx));
+            panel.apply_voice_event(NariEvent::Transcript("discard me".into()), cx);
+            let token = panel.voice.canceled.clone();
+            panel.cancel_voice(cx);
+            assert!(token.load(Ordering::SeqCst));
+            assert!(panel.voice.live_transcript.is_empty());
+            assert_eq!(panel.input.read(cx).content.as_ref(), "keep");
+        });
+    }
+
+    #[gpui::test]
+    fn voice_only_targets_chat_composers(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            for id in ["session_chat", "startup://draft", "startup://draft/next"] {
+                panel.session_id = id.into();
+                assert!(panel.supports_voice(), "{id}");
+            }
+            for id in [
+                "terminal://1",
+                "gmail://inbox",
+                "settings://machines",
+                "desktop://changelog",
+                "file:///note.md",
+            ] {
+                panel.session_id = id.into();
+                assert!(!panel.supports_voice(), "{id}");
+                panel.toggle_voice(cx);
+                assert!(!panel.voice_active());
+                assert!(panel.voice.error.is_none());
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn voice_live_preview_renders_without_replacing_composer(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Recording;
+            panel.apply_voice_event(NariEvent::Transcript("Streaming Nari words".into()), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-live-transcript").is_some());
+        panel.read_with(vcx, |panel, cx| {
+            assert!(panel.input.read(cx).content.is_empty())
+        });
+    }
+
+    #[gpui::test]
     fn voice_shortcut_toggles_focused_composer_without_sending(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             crate::input::bind_keys(cx);
@@ -409,7 +552,7 @@ mod tests {
                 assert!(button.top() >= footer.top() && button.bottom() <= footer.bottom());
                 assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
                 assert!(
-                    shortcut.size.width > px(60.),
+                    shortcut.size.width > px(30.),
                     "shortcut must not be clipped"
                 );
                 assert!(
