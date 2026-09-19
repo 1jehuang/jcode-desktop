@@ -48,6 +48,8 @@ def main():
                         help="verify Ctrl+Enter queues prompts on the private display")
     parser.add_argument("--pending-interact", action="store_true",
                         help="verify Enter, retry and local fallback for an offline pending startup")
+    parser.add_argument("--cloud-startup", choices=("connecting", "failed"),
+                        help="render the Jcode Cloud VM startup identity without cloud operations")
     parser.add_argument("--onboarding-interact", action="store_true",
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",
@@ -119,6 +121,10 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.cloud_startup and (args.transcript != "empty" or args.panels != 1
+            or args.preview_state or args.changelog or args.account_sign_in
+            or any(value for key, value in vars(args).items() if key.endswith("_interact"))):
+        parser.error("cloud-startup requires --transcript empty, one panel, and no other interactive fixture")
     if args.beta_notice_interact and not shutil.which("tesseract"):
         parser.error("beta-notice-interact requires tesseract")
     if (args.beta_notice or args.beta_notice_interact) and any(
@@ -386,6 +392,8 @@ def main():
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
         if args.pending_interact:
             env["JCODE_DESKTOP_SCREENSHOT_PENDING"] = "1"
+        if args.cloud_startup:
+            env["JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP"] = args.cloud_startup
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.preview_state is not None:

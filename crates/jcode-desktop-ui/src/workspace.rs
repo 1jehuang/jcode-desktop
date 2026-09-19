@@ -952,6 +952,23 @@ impl Workspace {
                 workspace.open_preview_unchecked(state, cx);
             }
         } else if harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP").is_ok()
+        {
+            workspace.remotes.default_host = Some("jcode-cloud-alpha".into());
+            workspace.open_startup_draft(cx);
+            workspace.start_default_startup(cx);
+            let failed =
+                std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP").as_deref() == Ok("failed");
+            workspace.update_startup_status(
+                if failed {
+                    "Cloud VM could not start. Check your cloud connection and retry."
+                } else {
+                    "Starting your cloud virtual machine…"
+                },
+                failed,
+                cx,
+            );
+        } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PENDING").as_deref() == Ok("1")
         {
             workspace.remotes.default_host = Some("offline-remote".into());

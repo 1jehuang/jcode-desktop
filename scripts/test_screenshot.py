@@ -61,6 +61,15 @@ class ScreenshotArgumentTests(unittest.TestCase):
     def test_unknown_transcript_is_rejected_before_launch(self):
         self.assert_rejected(["--transcript", "unknown"], "invalid choice")
 
+    def test_cloud_startup_requires_an_exclusive_empty_panel(self):
+        self.assert_rejected(["--cloud-startup", "connecting"], "cloud-startup requires")
+        for extra in (["--panels", "2"], ["--fresh-interact"], ["--changelog"]):
+            with self.subTest(extra=extra):
+                self.assert_rejected(
+                    ["--cloud-startup", "failed", "--transcript", "empty", *extra],
+                    "cloud-startup requires",
+                )
+
     def test_preview_state_rejects_unknown_states_and_conflicting_fixtures(self):
         self.assert_rejected(["--preview-state", "unknown"], "invalid choice")
         self.assert_rejected(["--preview-interact"], "preview-interact requires")

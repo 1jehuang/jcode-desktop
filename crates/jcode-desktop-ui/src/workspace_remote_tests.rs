@@ -796,6 +796,8 @@ fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
         w
     });
     vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-cloud-label").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_some());
     vcx.simulate_input("preserve my draft");
     workspace.update(vcx, |w, cx| {
         // This is the same path used by the cloud lifecycle monitor.
@@ -807,9 +809,49 @@ fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
     assert!(vcx.debug_bounds("pending-session-retry").is_some());
     assert!(vcx.debug_bounds("pending-session-local").is_some());
     assert!(vcx.debug_bounds("machines-picker").is_none());
+    assert!(vcx.debug_bounds("pending-cloud-label").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_some());
     workspace.read_with(vcx, |w, cx| {
         let panel = w.slots[0].panel.read(cx);
         assert!(panel.status.contains("expired credentials"));
         assert_eq!(panel.input.read(cx).content.as_ref(), "preserve my draft");
     });
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[0].panel.read(cx);
+        assert!(panel.input.read(cx).content.is_empty());
+        assert_eq!(
+            serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap()["prompts"][0]["content"],
+            "preserve my draft"
+        );
+    });
+    click(vcx, "pending-session-local");
+    assert!(vcx.debug_bounds("pending-cloud-label").is_none());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_none());
+    vcx.simulate_input("local draft");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 1);
+        let panel = w.slots[0].panel.read(cx);
+        assert_eq!(panel.input.read(cx).content.as_ref(), "local draft");
+        assert_eq!(
+            serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap()["prompts"][0]["content"],
+            "preserve my draft"
+        );
+    });
+}
+
+#[gpui::test]
+fn ssh_startup_does_not_claim_to_be_a_cloud_vm(cx: &mut gpui::TestAppContext) {
+    let (_, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.remotes.default_host = Some("my-ssh-machine".into());
+        w.open_startup_draft(cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-session-status").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-label").is_none());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_none());
 }

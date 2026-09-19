@@ -113,6 +113,7 @@ impl Workspace {
         let panel = self.slots[index].panel.clone();
         let startup = panel.read(cx).is_startup_draft();
         let remote = startup && self.remotes.default_host.is_some();
+        let cloud = startup && self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST);
         let failed = if startup {
             self.remotes.startup_failed
         } else {
@@ -137,6 +138,26 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .when(cloud, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "pending-cloud-label".into())
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_size(px(14.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(theme.TEXT)
+                                .child(
+                                    gpui::svg()
+                                        .data(include_bytes!("../../../assets/icons/cloud.svg"))
+                                        .w(px(22.))
+                                        .h(px(16.))
+                                        .text_color(theme.TEXT_DIM),
+                                )
+                                .child("Jcode Cloud VM"),
+                        )
+                    })
                     .child(
                         div()
                             .text_color(if failed { theme.ERROR } else { theme.TEXT_DIM })
@@ -198,7 +219,35 @@ impl Workspace {
                             }),
                     ),
             )
-            .child(div().flex_1().min_h_0().child(panel))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .overflow_hidden()
+                    .when(cloud, |el| {
+                        el.child(
+                            // This is a background watermark, never a hit-test overlay
+                            // or a loading spinner that competes with the editable draft.
+                            div()
+                                .debug_selector(|| "pending-cloud-background".into())
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .justify_center()
+                                .pt(px(32.))
+                                .child(
+                                    gpui::svg()
+                                        .data(include_bytes!("../../../assets/icons/cloud.svg"))
+                                        .w(px(300.))
+                                        .h(px(188.))
+                                        .text_color(theme.TEXT)
+                                        .opacity(0.07),
+                                ),
+                        )
+                    })
+                    .child(panel),
+            )
             .into_any_element()
     }
 
