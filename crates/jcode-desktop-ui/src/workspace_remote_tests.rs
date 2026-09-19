@@ -207,6 +207,69 @@ fn remote_new_panel_exposes_progress_failure_retry_and_explicit_local_choice(
 }
 
 #[gpui::test]
+fn local_connect_keeps_new_panel_selected_after_mouse_release(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("desktop".into());
+        w.push_test_panel("existing", cx);
+        w.open_machines(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+    let position = vcx.debug_bounds("machine-connect-0").unwrap().center();
+    vcx.simulate_mouse_down(position, gpui::MouseButton::Left, Default::default());
+    // Native input can redraw and attach the session while the button is held.
+    // A same-frame simulate_click misses the new ancestor mouse-up listener.
+    vcx.run_until_parked();
+    let draft = workspace.read_with(vcx, |w, cx| {
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
+    assert!(Panel::is_pending_session_id(&draft));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::CreateSession { .. })
+    ));
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: session("session_local"),
+                request_id: Some(draft.clone()),
+            },
+            cx,
+        );
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let release = vcx.debug_bounds("machine-connect-0").unwrap().center();
+    vcx.simulate_mouse_up(release, gpui::MouseButton::Left, Default::default());
+    vcx.run_until_parked();
+    vcx.simulate_input("local panel remains selected");
+    workspace.read_with(vcx, |w, cx| {
+        let panel = w.slots[w.active].panel.read(cx);
+        assert_eq!(panel.session_id, "session_local");
+        assert_eq!(
+            panel.input.read(cx).content.as_ref(),
+            "local panel remains selected"
+        );
+        assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"));
+    });
+    vcx.update(|window, cx| {
+        let w = workspace.read(cx);
+        assert!(
+            w.slots[w.active]
+                .panel
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
+        );
+    });
+}
+
+#[gpui::test]
 fn cloud_new_panel_shows_wake_progress_before_any_session_exists(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = harness::spawn_recording();

@@ -551,6 +551,12 @@ impl Workspace {
                                     this.connect_machine(host.clone(), cx);
                                 }),
                             )
+                            // A real runtime can attach the new local panel
+                            // between press and release. Do not let the old
+                            // Machines surface reclaim selection on mouse-up.
+                            .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
                             .child("Connect"),
                     )
                     .child(
