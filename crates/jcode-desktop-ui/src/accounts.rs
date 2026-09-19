@@ -1,9 +1,8 @@
 //! Connected accounts: which OAuth logins and API keys the runtime can use,
 //! fetched from `jcode auth status --json` and shown with provider logos.
 //!
-//! The desktop shows only configured credentials (available or expired), not
-//! the full catalog of possible providers: the question this surface answers
-//! is "what am I logged into", not "what could I log into".
+//! Keep the full runtime catalog so users can see both connected accounts and
+//! supported providers they have not configured yet.
 
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
@@ -19,13 +18,13 @@ pub fn request_refresh() {
     }
 }
 
-/// One configured credential, as reported by the CLI's canonical auth report.
+/// One supported provider, as reported by the CLI's canonical auth report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Account {
     /// Stable provider id (`claude`, `openai-api`, ...): keys the logo lookup.
     pub id: String,
     pub display_name: String,
-    /// `available` or `expired`. Unconfigured providers are filtered out.
+    /// `available`, `expired`, or `not_configured`.
     pub status: String,
     /// `OAuth`, `API key`, `CLI`, `device code`, ...
     pub auth_kind: String,
@@ -87,8 +86,23 @@ impl Account {
         self.status == "available"
     }
 
+    pub fn status_label(&self) -> &'static str {
+        match self.status.as_str() {
+            "available" if matches!(self.auth_kind.as_str(), "OAuth" | "device code") => {
+                "Signed in"
+            }
+            "available" => "Connected",
+            "expired" => "Expired · sign in again",
+            "not_configured" if matches!(self.auth_kind.as_str(), "OAuth" | "device code") => {
+                "Not signed in"
+            }
+            "not_configured" => "Not configured",
+            _ => "Status unknown",
+        }
+    }
+
     pub fn shows_oauth_history(&self) -> bool {
-        self.id == "openai"
+        self.id == "openai" && self.status != "not_configured"
     }
 }
 
@@ -122,7 +136,7 @@ pub fn ordered<'a>(
 ) -> Vec<&'a Account> {
     let mut rows: Vec<_> = accounts.iter().collect();
     rows.sort_by_key(|account| {
-        if active == Some(account.id.as_str()) {
+        let priority = if active == Some(account.id.as_str()) {
             0
         } else if let Some(index) = recent.iter().position(|id| id == &account.id) {
             index + 1
@@ -130,7 +144,8 @@ pub fn ordered<'a>(
             4
         } else {
             5
-        }
+        };
+        (!account.available(), priority)
     });
     rows
 }
@@ -159,19 +174,19 @@ pub fn spawn() -> Feed {
     let (tx, rx) = channel();
     if crate::harness::screenshot_mode() {
         let accounts = [
-            ("openai", "OpenAI"),
-            ("claude", "Claude"),
-            ("jcode", "Jcode"),
-            ("gemini", "Gemini"),
-            ("openrouter", "OpenRouter"),
-            ("copilot", "Copilot"),
+            ("openai", "OpenAI", "available", "OAuth"),
+            ("claude", "Claude", "available", "OAuth"),
+            ("jcode", "Jcode", "available", "API key"),
+            ("gemini", "Gemini", "not_configured", "OAuth"),
+            ("openrouter", "OpenRouter", "not_configured", "API key"),
+            ("copilot", "Copilot", "expired", "device code"),
         ]
         .into_iter()
-        .map(|(id, name)| Account {
+        .map(|(id, name, status, auth_kind)| Account {
             id: id.into(),
             display_name: name.into(),
-            status: "available".into(),
-            auth_kind: "OAuth".into(),
+            status: status.into(),
+            auth_kind: auth_kind.into(),
             method: "Offline fixture".into(),
             usage_reports: if id == "openai" {
                 vec![UsageReport {
@@ -186,11 +201,11 @@ pub fn spawn() -> Feed {
             } else {
                 Vec::new()
             },
-            limits: vec![UsageLimit {
+            limits: if status == "available" { vec![UsageLimit {
                 name: "5 hour".into(),
                 usage_percent: 25.0,
                 reset_in: Some("2h".into()),
-            }],
+            }] } else { Vec::new() },
         })
         .collect();
         let _ = tx.send(accounts);
@@ -240,7 +255,7 @@ fn fetch() -> Option<Vec<Account>> {
     Some(accounts)
 }
 
-/// Parse the CLI report, keeping only configured credentials, available first.
+/// Parse the complete CLI catalog, with connected providers first.
 pub fn parse(json: &str) -> Option<Vec<Account>> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let providers = value.get("providers")?.as_array()?;
@@ -263,7 +278,7 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
                 usage_reports: Vec::new(),
                 limits: Vec::new(),
             };
-            matches!(account.status.as_str(), "available" | "expired").then_some(account)
+            (!account.id.is_empty()).then_some(account)
         })
         .collect();
     accounts.sort_by_key(|account| !account.available());
@@ -486,15 +501,15 @@ mod tests {
     }"#;
 
     #[test]
-    fn parse_keeps_configured_credentials_and_puts_available_first() {
+    fn parse_keeps_all_providers_and_puts_available_first() {
         let accounts = parse(SAMPLE).expect("sample parses");
         assert_eq!(
             accounts
                 .iter()
                 .map(|account| account.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["anthropic-api", "openai", "claude"],
-            "unconfigured providers are dropped, expired ones sink"
+            vec!["anthropic-api", "openai", "claude", "openrouter"],
+            "unconfigured and expired providers remain visible after connected ones"
         );
         assert!(accounts[0].available());
         assert_eq!(accounts[2].status, "expired");
@@ -505,6 +520,52 @@ mod tests {
     fn parse_rejects_garbage() {
         assert!(parse("not json").is_none());
         assert!(parse("{}").is_none());
+    }
+
+    #[test]
+    fn signed_out_active_and_recent_accounts_do_not_split_connection_groups() {
+        let accounts = parse(SAMPLE).unwrap();
+        let rows = ordered(&accounts, Some("openrouter"), &["claude".into()]);
+        assert_eq!(
+            rows.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["anthropic-api", "openai", "openrouter", "claude"]
+        );
+    }
+
+    #[test]
+    fn labels_distinguish_login_key_expiry_and_unknown_status() {
+        let mut account = parse(SAMPLE).unwrap().remove(0);
+        for (status, kind, label) in [
+            ("available", "OAuth", "Signed in"),
+            ("available", "device code", "Signed in"),
+            ("available", "API key", "Connected"),
+            ("available", "local endpoint", "Connected"),
+            ("expired", "OAuth", "Expired · sign in again"),
+            ("not_configured", "OAuth", "Not signed in"),
+            ("not_configured", "device code", "Not signed in"),
+            ("not_configured", "API key", "Not configured"),
+            ("not_configured", "local endpoint", "Not configured"),
+            ("new-status", "OAuth", "Status unknown"),
+        ] {
+            account.status = status.into();
+            account.auth_kind = kind.into();
+            assert_eq!(account.status_label(), label);
+        }
+    }
+
+    #[test]
+    fn completely_unconfigured_catalog_is_not_an_empty_account_list() {
+        let accounts = parse(
+            r#"{"providers":[
+            {"id":"openai","status":"not_configured","auth_kind":"OAuth"},
+            {"id":"ollama","status":"not_configured","auth_kind":"local endpoint"},
+            {"id":"future-provider","status":"unknown"}, {}
+        ]}"#,
+        )
+        .unwrap();
+        assert_eq!(accounts.len(), 3);
+        assert!(accounts.iter().all(|a| !a.available()));
+        assert!(!accounts[0].shows_oauth_history());
     }
 
     #[test]
@@ -703,14 +764,17 @@ mod tests {
     /// `cargo test -- --ignored live_cli`.
     #[test]
     #[ignore = "requires the jcode CLI and user credentials"]
-    fn live_cli_report_parses_and_lists_configured_accounts() {
+    fn live_cli_report_parses_and_lists_all_accounts() {
         let accounts = fetch().expect("jcode auth status --json should run and parse");
         assert!(
             !accounts.is_empty(),
-            "this machine has configured credentials, so the list must not be empty"
+            "the runtime provider catalog must not be empty even without credentials"
         );
         for account in &accounts {
-            assert!(matches!(account.status.as_str(), "available" | "expired"));
+            assert!(matches!(
+                account.status.as_str(),
+                "available" | "expired" | "not_configured"
+            ));
             assert!(!account.display_name.is_empty());
             assert!(!account.auth_kind.is_empty());
         }

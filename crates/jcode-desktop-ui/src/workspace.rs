@@ -273,7 +273,7 @@ const SIDEBAR_WIDTH: f32 = 264.0;
 // Center the 4px thumb in the gap between the session tabs and main sheet.
 // The normal layout has no connector gap, so its gutter stays inside the sidebar.
 const SIDEBAR_SCROLLBAR_OUTSET: f32 = 8.0;
-const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
+const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
@@ -5637,16 +5637,41 @@ impl Workspace {
             )
             .flex()
             .flex_col();
+        let mut previous_availability = None;
         for (index, account) in
             accounts::ordered(&self.accounts, active.as_deref(), &self.recent_accounts)
                 .into_iter()
                 .enumerate()
         {
             let available = account.available();
+            if previous_availability != Some(available) {
+                list = list.child(
+                    div()
+                        .debug_selector(move || {
+                            if available {
+                                "accounts-connected-heading".into()
+                            } else {
+                                "accounts-disconnected-heading".into()
+                            }
+                        })
+                        .flex_none()
+                        .px_4()
+                        .pt_2()
+                        .pb_1()
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(if available {
+                            "Connected"
+                        } else {
+                            "Not connected"
+                        }),
+                );
+                previous_availability = Some(available);
+            }
             let ink = if available {
                 Theme::global().TEXT
             } else {
-                Theme::global().TEXT_FAINT
+                Theme::global().TEXT_DIM
             };
 
             let logo: gpui::AnyElement = match accounts::logo(&account.id) {
@@ -5670,36 +5695,49 @@ impl Workspace {
                     .into_any_element(),
             };
 
-            let mut details = div().flex().flex_col().flex_1().min_w_0().child(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(16.0))
-                    .line_height(px(16.0))
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_size(px(11.0))
-                            .text_color(ink)
-                            .child(account.display_name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(9.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(if available {
-                                account.auth_kind.clone()
-                            } else {
-                                format!("{} · expired", account.auth_kind)
-                            }),
-                    ),
-            );
+            let mut details = div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(16.0))
+                        .line_height(px(16.0))
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(ink)
+                                .child(account.display_name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(9.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child(account.auth_kind.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| format!("account-{}-status", account.id))
+                        .text_size(px(9.0))
+                        .line_height(px(13.0))
+                        .text_color(if account.status == "expired" {
+                            Theme::global().WARN
+                        } else {
+                            Theme::global().TEXT_DIM
+                        })
+                        .child(account.status_label()),
+                );
 
-            if !account.limits.is_empty() {
+            if available && !account.limits.is_empty() {
                 // A single two-column quota row retains the useful summary
                 // without letting one account grow into a card.
                 let limit_count = if account.id == "antigravity" {
@@ -5857,6 +5895,8 @@ impl Workspace {
                             .rounded_full()
                             .bg(if available {
                                 Theme::global().OK
+                            } else if account.status == "expired" {
+                                Theme::global().WARN
                             } else {
                                 Theme::global().TEXT_FAINT
                             }),
@@ -9822,6 +9862,50 @@ mod tests {
         assert!(frame.selected_tab.is_some());
         assert!(frame.active_panel.is_some());
         assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 0);
+    }
+
+    #[gpui::test]
+    fn accounts_sidebar_groups_all_supported_states_and_refreshes(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            w.accounts = accounts::parse(r#"{"providers":[
+                {"id":"openai","display_name":"OpenAI","status":"not_configured","auth_kind":"OAuth"},
+                {"id":"claude","display_name":"Claude","status":"expired","auth_kind":"OAuth"},
+                {"id":"openrouter","display_name":"OpenRouter","status":"available","auth_kind":"API key"}
+            ]}"#).unwrap();
+            w.recent_accounts = vec!["openai".into()];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let connected = vcx.debug_bounds("accounts-connected-heading").unwrap();
+        let disconnected = vcx.debug_bounds("accounts-disconnected-heading").unwrap();
+        let ready = vcx.debug_bounds("account-openrouter").unwrap();
+        let signed_out = vcx.debug_bounds("account-openai").unwrap();
+        assert!(connected.bottom() <= ready.top());
+        assert!(ready.bottom() <= disconnected.top());
+        assert!(disconnected.bottom() <= signed_out.top());
+        assert!(vcx.debug_bounds("account-openai-history").is_none());
+        for id in ["openai", "claude", "openrouter"] {
+            let row = vcx
+                .debug_bounds(Box::leak(format!("account-{id}").into_boxed_str()))
+                .unwrap();
+            let status = vcx
+                .debug_bounds(Box::leak(format!("account-{id}-status").into_boxed_str()))
+                .unwrap();
+            assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
+        }
+        workspace.update(vcx, |w, cx| {
+            for account in &mut w.accounts {
+                account.status = "not_configured".into();
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("accounts-connected-heading").is_none());
+        assert!(vcx.debug_bounds("accounts-disconnected-heading").is_some());
+        assert!(vcx.debug_bounds("account-openrouter-status").is_some());
     }
 
     #[gpui::test]

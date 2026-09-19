@@ -78,6 +78,8 @@ def main():
                         help="verify compact navigation, sidebar drawer, panel focus and native resizing")
     parser.add_argument("--roller-interact", action="store_true",
                         help="verify native sidebar hover popout, scroll selection, dismissal, and preserved focus")
+    parser.add_argument("--accounts-sidebar-interact", action="store_true",
+                        help="verify connected, signed-out, unconfigured and expired sidebar accounts offline")
     parser.add_argument("--sidebar-interact", action="store_true",
                         help="verify hover-only close and native safe left-drag dismissal across workspaces")
     parser.add_argument("--history-interact", action="store_true",
@@ -123,6 +125,15 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.accounts_sidebar_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "accounts_sidebar_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.layout_mode != "folder_tabs" or args.preview_state
+                or args.account_sign_in or args.beta_notice):
+            parser.error("accounts-sidebar-interact requires one panel, default size, folder tabs, and no other interactions or overlays")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("accounts-sidebar-interact requires xdotool and tesseract")
     if args.image_pane_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "image_pane_interact")
@@ -577,6 +588,9 @@ def main():
                     verify(output, env, root)
                 if args.roller_interact:
                     from sidebar_roller_acceptance import verify
+                    verify(output, env, root)
+                if args.accounts_sidebar_interact:
+                    from accounts_sidebar_acceptance import verify
                     verify(output, env, root)
                 if args.sidebar_interact:
                     from sidebar_gesture_acceptance import verify
