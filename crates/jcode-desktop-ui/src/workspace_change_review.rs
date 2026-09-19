@@ -7,6 +7,7 @@ pub(crate) struct OpenChangeReview {
     pub source: gpui::EntityId,
     pub name: String,
     pub input: String,
+    pub output: String,
     pub selected: usize,
     pub done: bool,
     pub failed: bool,
@@ -241,6 +242,7 @@ mod tests {
         });
         let request = OpenChangeReview {
             source: source.entity_id(),
+            output: String::new(),
             name: "write".into(),
             input: serde_json::json!({"file_path":"/remote/project/empty.rs","content":""})
                 .to_string(),
@@ -298,6 +300,7 @@ mod tests {
         let source = workspace.read_with(vcx, |workspace, _| workspace.slots[0].panel.entity_id());
         let mut request = OpenChangeReview {
             source,
+            output: String::new(),
             name: "write".into(),
             input: "{}".into(),
             selected: 0,

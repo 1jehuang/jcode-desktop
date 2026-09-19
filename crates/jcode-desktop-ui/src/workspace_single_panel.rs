@@ -300,6 +300,7 @@ mod tests {
         });
         let request = change_review::OpenChangeReview {
             source: source.entity_id(),
+            output: String::new(),
             name: "write".into(),
             input: serde_json::json!({"file_path":"example.rs","content":"hello\n"}).to_string(),
             selected: 0,

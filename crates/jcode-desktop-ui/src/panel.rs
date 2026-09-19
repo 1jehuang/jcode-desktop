@@ -3481,7 +3481,7 @@ impl Panel {
                         .into_any_element();
                 }
                 if let Some(preview) =
-                    self.render_edit_metadata(call_id, name, input, *done, error.as_deref(), cx)
+                    self.render_edit_metadata(call_id, name, input, output, *done, error.as_deref(), cx)
                 {
                     return div()
                         .id(("tool", index))

@@ -9,6 +9,13 @@ use std::ops::Range;
 
 use serde_json::Value;
 
+#[path = "diff_tool_result.rs"]
+mod tool_result;
+
+pub(crate) fn from_tool_result(name: &str, input: &str, output: &str) -> Option<DiffPreview> {
+    tool_result::from_result(name, input, output)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiffPreview {
     pub(crate) files: Vec<DiffFile>,

@@ -133,6 +133,7 @@ mod tests {
                 intent: Some("A long intent should stay on one compact line instead of enlarging the header".into()),
                 review: OpenChangeReview {
                     source: cx.entity_id(), name: "edit".into(), input: "{}".into(),
+                    output: String::new(),
                     selected: 0, done: true, failed: false,
                 },
                 focus: cx.focus_handle(),
