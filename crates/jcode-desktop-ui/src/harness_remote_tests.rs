@@ -411,6 +411,11 @@ fn remote_create_preserves_request_id_and_sends_working_dir_only_as_json() {
         _ => panic!("wrong create handoff"),
     }
     wait_update(&updates, |update| {
+        matches!(update, Update::RemoteStatus { message, request_id, failed, .. }
+        if message == "SSH connected. Creating Jcode session..."
+            && request_id.as_deref() == Some("draft-id") && !failed)
+    });
+    wait_update(&updates, |update| {
         matches!(update, Update::RemoteStatus { host, message, .. }
         if host == "user@desktop" && message.starts_with("Connected"))
     });

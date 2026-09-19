@@ -4,6 +4,9 @@ use super::*;
 #[path = "workspace_cloud_alpha.rs"]
 mod cloud_alpha;
 
+#[path = "workspace_cloud_progress.rs"]
+mod cloud_progress;
+
 #[derive(Default)]
 pub(super) struct Machines {
     pub default_host: Option<String>,
@@ -16,6 +19,7 @@ pub(super) struct Machines {
     notice: Option<String>,
     discovery: Option<gpui::Task<()>>,
     cloud: cloud_alpha::Lifecycle,
+    cloud_progress: std::collections::HashMap<String, cloud_progress::Progress>,
     cloud_monitor: Option<gpui::Task<()>>,
 }
 
@@ -37,6 +41,12 @@ impl Machines {
 }
 
 impl Workspace {
+    pub(super) fn invalidate_cloud_connection(&self, host: &str) {
+        if host == cloud_alpha::HOST {
+            self.remotes.cloud.invalidate_ready();
+        }
+    }
+
     /// Connection progress belongs beside the draft, not only in Machines.
     /// A stale remote result must not change a draft explicitly moved locally.
     pub(super) fn update_startup_status(
@@ -63,6 +73,31 @@ impl Workspace {
         failed: bool,
         cx: &mut Context<Self>,
     ) {
+        // Keep only live pending requests. Completed, closed, retried and local
+        // replacement panels must never inherit another request's checklist.
+        self.remotes.cloud_progress.retain(|id, _| {
+            self.slots.iter().any(|slot| {
+                !slot.closing
+                    && slot.panel.read(cx).is_pending_session()
+                    && slot.panel.read(cx).session_id == *id
+            })
+        });
+        if let Some(id) = request_id {
+            let cloud = pending::remote_draft_host(id) == Some(cloud_alpha::HOST)
+                || (id == Panel::STARTUP_SESSION_ID
+                    && self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST));
+            let live = self
+                .slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == id);
+            if cloud && live {
+                self.remotes
+                    .cloud_progress
+                    .entry(id.to_owned())
+                    .or_default()
+                    .observe(message, failed);
+            }
+        }
         if request_id == Some(Panel::STARTUP_SESSION_ID) {
             self.update_startup_status(message, failed, cx);
         } else if let Some(request_id) = request_id {
@@ -112,6 +147,9 @@ impl Workspace {
             });
             self.create_remote_draft_session(host.clone(), request_id, cx);
         } else if panel.read(cx).is_startup_draft() && !local {
+            self.remotes
+                .cloud_progress
+                .remove(Panel::STARTUP_SESSION_ID);
             self.update_startup_status("Retrying connection to the default machine…", false, cx);
             self.create_default_session(
                 default_working_dir(),
@@ -168,6 +206,14 @@ impl Workspace {
             panel.read(cx).status.starts_with("Session creation failed")
         };
         let theme = Theme::global();
+        let mut progress = self
+            .remotes
+            .cloud_progress
+            .get(&panel.read(cx).session_id)
+            .cloned()
+            .unwrap_or_default();
+        // Snapshot restoration and offline previews can start between phases.
+        progress.observe(&panel.read(cx).status, failed);
         div()
             .size_full()
             .flex()
@@ -211,6 +257,7 @@ impl Workspace {
                             .text_color(if failed { theme.ERROR } else { theme.TEXT_DIM })
                             .child(panel.read(cx).status.clone()),
                     )
+                    .when(cloud, |el| el.child(progress.render()))
                     .child(div().text_color(theme.TEXT_DIM).child(if failed {
                         "Not sent. Your draft and queued prompts are preserved."
                     } else {
