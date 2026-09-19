@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime, timedelta, timezone
 import gzip
+import threading
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -94,17 +95,22 @@ class ControlTests(unittest.TestCase):
                 control.instance(self.config)
 
     def test_exhaustion_never_calls_start(self):
-        with patch.object(control, 'check_guard'), patch.object(control, 'ledger', return_value=(3000, 3000, True)), patch.object(control, 'aws') as api:
+        with patch.object(control, 'check_guard'), patch.object(control, 'ledger', return_value=(3000, 3000, True)), patch.object(control, 'instance', return_value={'State': {'Name': 'stopped'}}), patch.object(control, 'aws') as api:
             with self.assertRaisesRegex(RuntimeError, 'exhausted'):
                 control.wake(self.config)
             api.assert_not_called()
 
     def test_disabled_or_stale_guard_refuses_wake(self):
-        with patch.object(control, 'aws', side_effect=[{'State': 'DISABLED'}, {'State': 'Active'}]):
+        def responses(rule, checked):
+            return lambda config, service, action, *args: {
+                'events': {'State': rule}, 'lambda': {'State': 'Active'},
+                'dynamodb': {'Item': {'checked_at': {'S': checked}}},
+            }[service]
+        with patch.object(control, 'aws', side_effect=responses('DISABLED', datetime.now(timezone.utc).isoformat())):
             with self.assertRaisesRegex(RuntimeError, 'unavailable'):
                 control.check_guard(self.config)
         old = (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat()
-        with patch.object(control, 'aws', side_effect=[{'State': 'ENABLED'}, {'State': 'Active'}, {'Item': {'checked_at': {'S': old}}}]):
+        with patch.object(control, 'aws', side_effect=responses('ENABLED', old)):
             with self.assertRaisesRegex(RuntimeError, 'stale'):
                 control.check_guard(self.config)
 
@@ -119,6 +125,59 @@ class ControlTests(unittest.TestCase):
             control.wake(self.config)
             self.assertEqual(ssh.call_count, 2)
             wait.assert_called_once_with(4)
+
+    def test_preflight_overlaps_all_five_reads_but_starts_only_after_checks(self):
+        # Barriers prove concurrency without flaky wall-clock thresholds. A
+        # serial implementation times out rather than silently passing.
+        barrier = threading.Barrier(5, timeout=3)
+        completed = set()
+        lock = threading.Lock()
+        def api(config, service, action, *args):
+            if action == 'start-instances':
+                self.assertEqual(len(completed), 5)
+                return {}
+            name = (service, action)
+            if service == 'dynamodb':
+                key = control.json.loads(args[args.index('--key') + 1])
+                name = (service, key['sk']['S'])
+                result = {'Item': {'checked_at': {'S': datetime.now(timezone.utc).isoformat()}}} if name[1] == 'STATE' else {
+                    'Item': {'consumed_minutes': {'N': '10'}, 'budget_minutes': {'N': '3000'}, 'depleted': {'BOOL': False}}}
+            elif service == 'events':
+                result = {'State': 'ENABLED'}
+            elif service == 'lambda':
+                result = {'State': 'Active'}
+            elif service == 'ec2':
+                result = {'Reservations': [{'Instances': [{
+                    'InstanceId': 'i-test', 'Tags': [{'Key': 'Project', 'Value': 'jcode-cloud-alpha'}],
+                    'State': {'Name': 'stopped'},
+                }]}]}
+            else:
+                self.fail(f'unexpected preflight call: {service}/{action}')
+            barrier.wait()
+            with lock:
+                completed.add(name)
+            return result
+        with patch.object(control, 'aws', side_effect=api), patch.object(control.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), patch('builtins.print'):
+            control.wake(self.config)
+
+    def test_any_preflight_failure_prevents_start_and_ssh(self):
+        for failed in ('check_guard', 'ledger', 'instance'):
+            with self.subTest(failed=failed), patch.object(control, 'check_guard') as guard, patch.object(control, 'ledger', return_value=(10, 3000, False)) as ledger, patch.object(control, 'instance', return_value={'State': {'Name': 'stopped'}}) as host, patch.object(control, 'aws') as api, patch.object(control.subprocess, 'run') as ssh:
+                {'check_guard': guard, 'ledger': ledger, 'instance': host}[failed].side_effect = RuntimeError('read failed')
+                with self.assertRaisesRegex(RuntimeError, 'read failed'):
+                    control.wake(self.config)
+                api.assert_not_called()
+                ssh.assert_not_called()
+
+    def test_cold_wake_retries_actual_ssh_without_waiting_for_ssm_inventory(self):
+        with patch.object(control, 'check_guard'), patch.object(control, 'ledger', return_value=(10, 3000, False)), patch.object(control, 'instance', return_value={'State': {'Name': 'stopped'}}), patch.object(control, 'aws') as api, patch.object(control.subprocess, 'run', side_effect=[control.subprocess.TimeoutExpired('ssh', 20), SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]) as ssh, patch.object(control.time, 'sleep') as wait, patch('builtins.print'):
+            control.wake(self.config)
+            api.assert_called_once_with(self.config, 'ec2', 'start-instances', '--instance-ids', 'i-test')
+            self.assertEqual(ssh.call_count, 3)
+            self.assertEqual(wait.call_count, 2)
+            for call in ssh.call_args_list:
+                self.assertEqual(call.args[0][-1], 'test -f /opt/jcode-alpha/ready')
+                self.assertLessEqual(call.kwargs['timeout'], 20)
 
     def test_status_reports_original_launch_deadline_and_remaining_allowance(self):
         now = datetime(2026, 9, 18, 23, 0, tzinfo=timezone.utc)
