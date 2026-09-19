@@ -1,17 +1,21 @@
 //! Native read-only documents owned by a conversation, never runtime sessions.
 use super::*;
+use crate::pdf_viewer::{PdfViewState, PdfViewer};
 use jcode_sdk::SidePanelPage;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SideDocumentSnapshot {
     pub owner_session_id: String,
     pub page: SidePanelPage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pdf_view: Option<PdfViewState>,
 }
 
 pub(super) struct SideDocument {
     pub snapshot: SideDocumentSnapshot,
     pub scroll: ScrollHandle,
     selection: Entity<TextSelection>,
+    pdf: Option<Entity<PdfViewer>>,
 }
 
 impl Panel {
@@ -39,9 +43,16 @@ impl Panel {
             snapshot: SideDocumentSnapshot {
                 owner_session_id: owner_session_id.into(),
                 page: page.clone(),
+                pdf_view: None,
             },
             scroll: ScrollHandle::new(),
             selection: Self::new_document_selection(cx),
+            pdf: Self::new_document_pdf(
+                page,
+                PdfViewState::default(),
+                panel.focus_handle.clone(),
+                cx,
+            ),
         });
         panel
     }
@@ -50,6 +61,57 @@ impl Panel {
         let selection = cx.new(TextSelection::new);
         cx.observe(&selection, |_, _, cx| cx.notify()).detach();
         selection
+    }
+
+    fn new_document_pdf(
+        page: &SidePanelPage,
+        state: PdfViewState,
+        focus: FocusHandle,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<PdfViewer>> {
+        if page.format != jcode_sdk::SidePanelPageFormat::Pdf {
+            return None;
+        }
+        let viewer = cx.new(|cx| PdfViewer::new(page.pdf_data.clone(), state, focus, cx));
+        cx.observe(&viewer, |_, _, cx| cx.notify()).detach();
+        Some(viewer)
+    }
+
+    pub(super) fn document_snapshot(&self, cx: &App) -> Option<SideDocumentSnapshot> {
+        let document = self.side_document.as_ref()?;
+        let mut snapshot = document.snapshot.clone();
+        snapshot.pdf_view = document.pdf.as_ref().map(|viewer| viewer.read(cx).state());
+        Some(snapshot)
+    }
+
+    pub(super) fn document_scroll(&self, cx: &App) -> Option<ScrollHandle> {
+        let document = self.side_document.as_ref()?;
+        Some(
+            document
+                .pdf
+                .as_ref()
+                .map(|viewer| viewer.read(cx).scroll.clone())
+                .unwrap_or_else(|| document.scroll.clone()),
+        )
+    }
+
+    pub(super) fn document_scroll_offset(&self, cx: &App) -> Option<gpui::Point<gpui::Pixels>> {
+        let document = self.side_document.as_ref()?;
+        Some(
+            document
+                .pdf
+                .as_ref()
+                .map(|viewer| viewer.read(cx).scroll_offset())
+                .unwrap_or_else(|| document.scroll.offset()),
+        )
+    }
+
+    pub(super) fn document_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
+        self.side_document
+            .as_ref()?
+            .pdf
+            .as_ref()
+            .map(|viewer| viewer.read(cx).focus_handle())
     }
 
     pub(crate) fn update_side_document(&mut self, page: &SidePanelPage, cx: &mut Context<Self>) {
@@ -62,6 +124,17 @@ impl Panel {
         if document.snapshot.page.content != page.content {
             // Old selection ranges and clipboard text must not survive edits.
             document.selection = Self::new_document_selection(cx);
+        }
+        if document.snapshot.page.format != page.format
+            || document.snapshot.page.pdf_data != page.pdf_data
+        {
+            // Replacing the entity drops obsolete tasks and prevents stale pixels after an update.
+            let state = document
+                .pdf
+                .as_ref()
+                .map(|viewer| viewer.read(cx).state())
+                .unwrap_or_default();
+            document.pdf = Self::new_document_pdf(page, state, self.focus_handle.clone(), cx);
         }
         document.snapshot.page = page.clone();
         self.title = page.title.clone().into();
@@ -110,11 +183,21 @@ impl Panel {
             return false;
         }
         self.update_side_document(&saved.page, cx);
-        self.side_document
+        if let Some(state) = &saved.pdf_view {
+            self.side_document.as_mut().unwrap().pdf =
+                Self::new_document_pdf(&saved.page, state.clone(), self.focus_handle.clone(), cx);
+        }
+        if let Some(pdf) = self
+            .side_document
             .as_ref()
-            .unwrap()
-            .scroll
-            .set_offset(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
+            .and_then(|document| document.pdf.as_ref())
+        {
+            pdf.update(cx, |viewer, _| {
+                viewer.restore_scroll(point(px(snapshot.scroll_x), px(snapshot.scroll_y)))
+            });
+        } else if let Some(scroll) = self.document_scroll(cx) {
+            scroll.set_offset(point(px(snapshot.scroll_x), px(snapshot.scroll_y)));
+        }
         true
     }
 
@@ -139,7 +222,9 @@ impl Panel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .track_focus(&self.focus_handle)
+            .when(document.pdf.is_none(), |view| {
+                view.track_focus(&self.focus_handle)
+            })
             .text_size(px(13.5))
             .text_color(Theme::global().TEXT)
             .child(
@@ -169,7 +254,13 @@ impl Panel {
                             .child(source),
                     ),
             )
-            .child(
+            .child(if let Some(pdf) = &document.pdf {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(pdf.clone())
+                    .into_any_element()
+            } else {
                 div()
                     .relative()
                     .flex_1()
@@ -210,8 +301,9 @@ impl Panel {
                     .child(crate::scrollbar::vertical(
                         &document.scroll,
                         "side-document-scrollbar",
-                    )),
-            )
+                    ))
+                    .into_any_element()
+            })
             .into_any_element()
     }
 }
@@ -219,6 +311,164 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn pdf_document_renders_pages_navigates_by_keyboard_and_restores_scroll(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use base64::Engine as _;
+        if std::process::Command::new("pdfinfo")
+            .arg("-v")
+            .output()
+            .is_err()
+            || std::process::Command::new("pdftoppm")
+                .arg("-v")
+                .output()
+                .is_err()
+        {
+            eprintln!(
+                "PDF visual regression requires Poppler; skipped because utilities are unavailable"
+            );
+            return;
+        }
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut pdf = page();
+            pdf.format = jcode_sdk::SidePanelPageFormat::Pdf;
+            pdf.pdf_data = Some(
+                base64::engine::general_purpose::STANDARD
+                    .encode(include_bytes!("../../../assets/previews/pdf-preview.pdf")),
+            );
+            Panel::new_side_document("owner", &pdf, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("pdf-page-image").is_some(),
+            "actual PDF image must be laid out"
+        );
+        panel.update(vcx, |panel, cx| {
+            let mut saved = panel.snapshot(cx);
+            saved.side_document.as_mut().unwrap().pdf_view =
+                Some(PdfViewState { page: 1, zoom: 2. });
+            saved.scroll_x = -40.;
+            saved.scroll_y = -120.;
+            panel.restore_snapshot(saved, cx);
+        });
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            let saved = panel.snapshot(cx);
+            assert_eq!(saved.scroll_x, -40.);
+            assert_eq!(saved.scroll_y, -120.);
+        });
+        vcx.update(|window, cx| panel.read(cx).input_focus_handle(cx).focus(window, cx));
+        vcx.simulate_keystrokes("pagedown");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(
+                panel.document_snapshot(cx).unwrap().pdf_view,
+                Some(PdfViewState { page: 2, zoom: 2. })
+            );
+            assert_eq!(panel.snapshot(cx).scroll_y, 0.);
+        });
+        let image = vcx
+            .debug_bounds("pdf-page-image")
+            .expect("second PDF page renders");
+        assert!(
+            image.size.width > image.size.height,
+            "landscape page keeps its aspect ratio"
+        );
+        vcx.simulate_keystrokes("pageup");
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel
+                .document_snapshot(cx)
+                .unwrap()
+                .pdf_view
+                .unwrap()
+                .page),
+            1
+        );
+        panel.update(vcx, |panel, cx| {
+            let mut updated = panel.document_snapshot(cx).unwrap().page;
+            let mut bytes = include_bytes!("../../../assets/previews/pdf-preview.pdf").to_vec();
+            bytes.extend_from_slice(b"\n% updated panel\n");
+            updated.pdf_data = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+            panel.update_side_document(&updated, cx);
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("pagedown");
+        vcx.run_until_parked();
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel
+                .document_snapshot(cx)
+                .unwrap()
+                .pdf_view
+                .unwrap()
+                .page),
+            2,
+            "replacing PDF pixels must not drop keyboard focus"
+        );
+    }
+
+    #[gpui::test]
+    fn pdf_document_restores_view_state_and_can_be_replaced_with_markdown(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut pdf = page();
+            pdf.format = jcode_sdk::SidePanelPageFormat::Pdf;
+            pdf.file_path = "/remote/document.pdf".into();
+            // Missing data must show an error, not try to open the remote path locally.
+            Panel::new_side_document("owner", &pdf, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pdf-viewer").is_some());
+        assert!(vcx.debug_bounds("pdf-retry").is_some());
+        assert!(vcx.debug_bounds("side-document-contents").is_none());
+        panel.update(vcx, |panel, cx| {
+            let mut saved = panel.snapshot(cx);
+            saved.side_document.as_mut().unwrap().pdf_view =
+                Some(PdfViewState { page: 2, zoom: 1.5 });
+            let json = serde_json::to_string(&saved).unwrap();
+            let saved: PanelSnapshot = serde_json::from_str(&json).unwrap();
+            let restored = cx.new(|cx| {
+                Panel::side_document_from_snapshot(&saved, crate::harness::spawn_inert(), cx)
+                    .unwrap()
+            });
+            assert_eq!(
+                restored.read(cx).document_snapshot(cx).unwrap().pdf_view,
+                Some(PdfViewState { page: 2, zoom: 1.5 })
+            );
+            let old_pdf = panel
+                .side_document
+                .as_ref()
+                .unwrap()
+                .pdf
+                .as_ref()
+                .unwrap()
+                .entity_id();
+            let mut changed = panel.side_document.as_ref().unwrap().snapshot.page.clone();
+            changed.title = "Title only".into();
+            panel.update_side_document(&changed, cx);
+            assert_eq!(
+                panel
+                    .side_document
+                    .as_ref()
+                    .unwrap()
+                    .pdf
+                    .as_ref()
+                    .unwrap()
+                    .entity_id(),
+                old_pdf,
+                "title updates must preserve PDF page and zoom"
+            );
+            panel.update_side_document(&page(), cx);
+            assert!(panel.side_document.as_ref().unwrap().pdf.is_none());
+            assert!(panel.document_snapshot(cx).unwrap().pdf_view.is_none());
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pdf-viewer").is_none());
+        assert!(vcx.debug_bounds("side-document-contents").is_some());
+    }
 
     fn page() -> SidePanelPage {
         SidePanelPage {

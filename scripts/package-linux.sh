@@ -42,7 +42,7 @@ Package: jcode-desktop
 Version: ${VERSION//-/.}
 Architecture: $DEB_ARCH
 Maintainer: Jcode <support@jcode.sh>
-Depends: libxkbcommon0, libfontconfig1
+Depends: libxkbcommon0, libfontconfig1, poppler-utils
 Description: Native desktop client for Jcode
  Includes the Jcode CLI and harness bridge.
 EOF

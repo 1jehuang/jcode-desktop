@@ -2076,15 +2076,10 @@ impl Panel {
 
     pub fn snapshot(&self, cx: &App) -> PanelSnapshot {
         let offset = self
-            .side_document
-            .as_ref()
-            .map(|document| document.scroll.offset())
+            .document_scroll_offset(cx)
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
-            side_document: self
-                .side_document
-                .as_ref()
-                .map(|document| document.snapshot.clone()),
+            side_document: self.document_snapshot(cx),
             prompt_queue: self.prompt_queue.clone(),
             session_id: self.session_id.clone(),
             title: self.title.to_string(),
@@ -3654,6 +3649,9 @@ impl Panel {
 
     pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
         if let Some(handle) = self.login_input_focus_handle(cx) {
+            return handle;
+        }
+        if let Some(handle) = self.document_focus_handle(cx) {
             return handle;
         }
         if self.image_preview.is_some() || self.diff_review.is_some() || self.is_accounts_panel() {

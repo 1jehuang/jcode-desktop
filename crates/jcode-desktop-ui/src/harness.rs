@@ -2309,9 +2309,14 @@ mod side_panel_routing_tests {
     fn side_panel_events_keep_remote_session_namespace_and_content() {
         let address = remote::SessionAddress::parse("ssh://example/session_one").unwrap();
         let snapshot = jcode_sdk::SidePanelSnapshot {
+            focus_revision: 7,
             focused_page_id: Some("notes".into()),
             pages: vec![jcode_sdk::SidePanelPage {
-                id: "notes".into(), content: "# Remote Markdown".into(), ..Default::default()
+                id: "notes".into(), content: "# Remote PDF".into(),
+                format: jcode_sdk::SidePanelPageFormat::Pdf,
+                pdf_data: Some("JVBERi0xLjcK".into()),
+                file_path: "/remote-only/report.pdf".into(),
+                ..Default::default()
             }],
         };
         let event = namespace_event(ApiEvent::SidePanelState {

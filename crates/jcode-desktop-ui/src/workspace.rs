@@ -545,6 +545,8 @@ enum FocusSnapshot {
 pub struct WorkspaceSnapshot {
     format_version: u32,
     #[serde(default)]
+    side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
+    #[serde(default)]
     layout_mode: crate::config::LayoutMode,
     #[serde(default)]
     recent_accounts: Vec<String>,
@@ -611,7 +613,7 @@ impl WorkspaceSnapshot {
 pub struct Workspace {
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
-    side_panel_snapshots: HashMap<String, jcode_sdk::SidePanelSnapshot>,
+    side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -1292,6 +1294,7 @@ impl Workspace {
             .map(|search| search.read(cx).snapshot());
         Ok(WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            side_panel_snapshots: self.side_panel_snapshots.clone(),
             layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
@@ -1328,6 +1331,7 @@ impl Workspace {
     }
 
     fn apply_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
+        self.side_panel_snapshots = snapshot.side_panel_snapshots;
         self.layout_mode = snapshot.layout_mode;
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_view = snapshot.sidebar_view;
@@ -8198,6 +8202,7 @@ mod tests {
         };
         let snapshot = WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            side_panel_snapshots: HashMap::new(),
             layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
@@ -8400,6 +8405,7 @@ mod tests {
             workspace.apply_snapshot(
                 WorkspaceSnapshot {
                     format_version: SNAPSHOT_FORMAT_VERSION,
+                    side_panel_snapshots: HashMap::new(),
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,

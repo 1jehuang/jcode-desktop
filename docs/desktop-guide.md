@@ -39,18 +39,40 @@ The local directory behavior below applies when **This computer** is the default
 - **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
   is its non-Super alias. Ctrl+W remains word deletion in the composer.
 
-## Markdown document panels
+## Agent-created document panels
 
-Ask your agent to show a Markdown document using the `side_panel` tool. Desktop
-opens a read-only panel beside that conversation, with its own workspace tab.
-Headings, tables, code blocks, links, math, and Mermaid use the native Markdown
-renderer. You can select and copy text, scroll, resize, move, or close the panel
-without starting another agent session.
+Ask your agent to open a document with the `panel` tool. `action: "spawn"` (the
+default) creates a new native panel beside its conversation, with its own workspace
+tab. Supply `content` for Markdown or `file_path` for a Markdown or PDF file. Every
+spawn returns a unique `panel_id`, even when two documents have the same title.
+These are read-only documents, not new agent sessions.
 
-Tool writes and appends update the existing page in place. The tool's `focus`
-action brings the page forward, and `delete` removes its document panel without
-closing the conversation. Pages are scoped to their originating session,
-including remote sessions, and open documents survive Desktop hot reloads.
+Use `action: "update"` with that `panel_id` to replace a document in place. Updates
+do not steal focus unless `focus: true` is requested. `focus` brings a panel
+forward, `close` removes it without closing the conversation, and `list` shows
+that conversation's panels. IDs are scoped to the originating session, including
+remote sessions. The legacy `side_panel` tool remains compatible.
+
+Markdown headings, tables, code blocks, links, math, and Mermaid use the native
+renderer with selectable text. PDFs display their original page layout, including
+figures and tables. Use **Previous / Next** (or Page Up / Page Down in the focused
+panel), **Fit width**, and **− / +** to navigate and zoom. Scroll to pan a
+zoomed page. PDF page and zoom state survive Desktop hot reloads. PDF text
+selection, search, annotations, and password-protected documents are not yet
+supported.
+
+PDF rendering uses local **Poppler** utilities (`pdfinfo` and `pdftoppm`), without
+opening a browser or sending documents to an external service. Debian packages
+depend on `poppler-utils`. For other installations, install `poppler-utils` on
+Debian/Ubuntu, `poppler` on Arch/Fedora, or `brew install poppler` on macOS.
+Windows users need both utilities on PATH. Missing utilities and unreadable PDFs
+show an error with a retry control, rather than a blank panel. Only the requested
+page is rasterized, off the UI thread, with bounded resolution and process time.
+
+PDF bytes travel with the panel snapshot, so remote documents do not require
+matching local file paths. Limits are 20 MiB per PDF and 32 MiB of PDF data per
+conversation. Closing a document with the tool releases its session payload. Open
+documents are retained across reloads like other workspace panels.
 
 ## Remote machines
 

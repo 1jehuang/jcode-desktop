@@ -25,6 +25,8 @@ mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;
 mod panel;
+mod pdf_render;
+mod pdf_viewer;
 mod performance;
 mod platform;
 mod preview_control;

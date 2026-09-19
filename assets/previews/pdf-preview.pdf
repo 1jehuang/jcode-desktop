@@ -1,0 +1,96 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 800 600] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Length 1058 >>
+stream
+0.96 0.97 1 rg 0 0 600 800 re f
+0.12 0.20 0.40 rg 0 650 600 150 re f
+1 1 1 rg
+BT /F1 32 Tf 40 730 Td (PDF panel acceptance) Tj ET
+BT /F1 16 Tf 40 690 Td (Page 1 / 2 - portrait overview) Tj ET
+0.1 0.65 0.65 rg 40 545 140 65 re f
+0.96 0.58 0.19 rg 205 545 140 65 re f
+0.55 0.35 0.85 rg 370 545 140 65 re f
+0.12 0.20 0.40 rg
+BT /F1 20 Tf 40 495 Td (Preview verification table) Tj ET
+0.86 0.9 0.96 rg 40 433 520 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 445 Td (Item) Tj ET
+BT /F1 14 Tf 190 445 Td (Expected result) Tj ET
+1 1 1 rg 40 393 520 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 405 Td (Text) Tj ET
+BT /F1 14 Tf 190 405 Td (Crisp headings and readable labels) Tj ET
+0.86 0.9 0.96 rg 40 353 520 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 365 Td (Colors) Tj ET
+BT /F1 14 Tf 190 365 Td (Teal, orange, and violet shapes) Tj ET
+1 1 1 rg 40 313 520 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 325 Td (Navigation) Tj ET
+BT /F1 14 Tf 190 325 Td (Two distinct pages) Tj ET
+BT /F1 12 Tf 40 35 Td (Jcode Desktop | supplied PDF payload | offline acceptance fixture) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Length 1052 >>
+stream
+0.96 0.97 1 rg 0 0 800 600 re f
+0.12 0.20 0.40 rg 0 450 800 150 re f
+1 1 1 rg
+BT /F1 32 Tf 40 530 Td (Second PDF page) Tj ET
+BT /F1 16 Tf 40 490 Td (Page 2 / 2 - landscape detail) Tj ET
+0.1 0.65 0.65 rg 40 345 140 65 re f
+0.96 0.58 0.19 rg 205 345 140 65 re f
+0.55 0.35 0.85 rg 370 345 140 65 re f
+0.12 0.20 0.40 rg
+BT /F1 20 Tf 40 295 Td (Preview verification table) Tj ET
+0.86 0.9 0.96 rg 40 233 720 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 245 Td (Item) Tj ET
+BT /F1 14 Tf 190 245 Td (Expected result) Tj ET
+1 1 1 rg 40 193 720 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 205 Td (Text) Tj ET
+BT /F1 14 Tf 190 205 Td (Crisp headings and readable labels) Tj ET
+0.86 0.9 0.96 rg 40 153 720 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 165 Td (Colors) Tj ET
+BT /F1 14 Tf 190 165 Td (Teal, orange, and violet shapes) Tj ET
+1 1 1 rg 40 113 720 38 re f
+0.12 0.20 0.40 rg
+BT /F1 14 Tf 50 125 Td (Navigation) Tj ET
+BT /F1 14 Tf 190 125 Td (Two distinct pages) Tj ET
+BT /F1 12 Tf 40 35 Td (Jcode Desktop | supplied PDF payload | offline acceptance fixture) Tj ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000253 00000 n 
+0000000379 00000 n 
+0000000449 00000 n 
+0000001558 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+2661
+%%EOF
