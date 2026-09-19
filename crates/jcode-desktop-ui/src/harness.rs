@@ -1493,6 +1493,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::ToolExec { session_id, .. }
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
+        | ApiEvent::SidePanelState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
@@ -1529,6 +1530,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::ToolExec { session_id, .. }
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
+        | ApiEvent::SidePanelState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
@@ -2295,6 +2297,30 @@ mod tests {
                 &mut active,
             );
             assert!(!active);
+        }
+    }
+}
+
+#[cfg(test)]
+mod side_panel_routing_tests {
+    use super::*;
+
+    #[test]
+    fn side_panel_events_keep_remote_session_namespace_and_content() {
+        let address = remote::SessionAddress::parse("ssh://example/session_one").unwrap();
+        let snapshot = jcode_sdk::SidePanelSnapshot {
+            focused_page_id: Some("notes".into()),
+            pages: vec![jcode_sdk::SidePanelPage {
+                id: "notes".into(), content: "# Remote Markdown".into(), ..Default::default()
+            }],
+        };
+        let event = namespace_event(ApiEvent::SidePanelState {
+            session_id: "session_one".into(), snapshot: snapshot.clone(),
+        }, &address);
+        assert_eq!(event_session_id(&event), Some("ssh://example/session_one"));
+        match event {
+            ApiEvent::SidePanelState { snapshot: actual, .. } => assert_eq!(actual, snapshot),
+            _ => panic!("wrong event"),
         }
     }
 }

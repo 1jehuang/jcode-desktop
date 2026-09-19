@@ -39,6 +39,19 @@ The local directory behavior below applies when **This computer** is the default
 - **Super+Q** closes the focused panel, not the application. **Ctrl+Shift+W**
   is its non-Super alias. Ctrl+W remains word deletion in the composer.
 
+## Markdown document panels
+
+Ask your agent to show a Markdown document using the `side_panel` tool. Desktop
+opens a read-only panel beside that conversation, with its own workspace tab.
+Headings, tables, code blocks, links, math, and Mermaid use the native Markdown
+renderer. You can select and copy text, scroll, resize, move, or close the panel
+without starting another agent session.
+
+Tool writes and appends update the existing page in place. The tool's `focus`
+action brings the page forward, and `delete` removes its document panel without
+closing the conversation. Pages are scoped to their originating session,
+including remote sessions, and open documents survive Desktop hot reloads.
+
 ## Remote machines
 
 Click **Machines** beneath the sidebar tabs, or open **Settings → Machines and

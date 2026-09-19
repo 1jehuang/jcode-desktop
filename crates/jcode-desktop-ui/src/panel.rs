@@ -66,6 +66,9 @@ mod tool_streaming;
 pub(crate) mod usage;
 #[path = "panel_voice.rs"]
 mod voice;
+#[path = "panel_side_document.rs"]
+mod side_document;
+pub use side_document::SideDocumentSnapshot;
 
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
@@ -204,6 +207,8 @@ impl TranscriptImage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_document: Option<SideDocumentSnapshot>,
     #[serde(default)]
     pub prompt_queue: queue::PromptQueue,
     pub session_id: String,
@@ -295,6 +300,7 @@ pub struct Panel {
     unfinished_session_opener: Option<SessionOpener>,
     /// A read-only source file opened from the workspace file browser.
     code_file: Option<CodeFile>,
+    side_document: Option<side_document::SideDocument>,
     /// A native, read-only view of the locally connected Gmail inbox.
     gmail_inbox: Option<GmailInboxState>,
     /// The message currently opened from the Gmail inbox.
@@ -614,6 +620,7 @@ impl Panel {
             || self.is_change_review()
             || self.is_accounts_panel()
             || self.code_file.is_some()
+            || self.is_side_document()
             || self.gmail_inbox.is_some()
             || self.gmail_message.is_some()
             || self.todoist.is_some()
@@ -795,6 +802,7 @@ impl Panel {
             unfinished_work: None,
             unfinished_session_opener: None,
             code_file: None,
+            side_document: None,
             gmail_inbox: None,
             gmail_message: None,
             gmail_scroll: ScrollHandle::new(),
@@ -978,6 +986,9 @@ impl Panel {
     }
 
     pub(crate) fn choose_account_model(&mut self, cx: &mut Context<Self>) {
+        if self.is_side_document() {
+            return;
+        }
         self.open_recovery_models(cx);
     }
 
@@ -2029,6 +2040,7 @@ impl Panel {
             && !self.is_changelog()
             && self.terminal.is_none()
             && self.code_file.is_none()
+            && !self.is_side_document()
             && self.session_id != "unfinished-work"
             && !self.is_pending_session()
     }
@@ -2063,8 +2075,16 @@ impl Panel {
     }
 
     pub fn snapshot(&self, cx: &App) -> PanelSnapshot {
-        let offset = self.transcript_list.scroll_px_offset_for_scrollbar();
+        let offset = self
+            .side_document
+            .as_ref()
+            .map(|document| document.scroll.offset())
+            .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
+            side_document: self
+                .side_document
+                .as_ref()
+                .map(|document| document.snapshot.clone()),
             prompt_queue: self.prompt_queue.clone(),
             session_id: self.session_id.clone(),
             title: self.title.to_string(),
@@ -2089,6 +2109,9 @@ impl Panel {
     }
 
     pub fn restore_snapshot(&mut self, snapshot: PanelSnapshot, cx: &mut Context<Self>) {
+        if self.restore_side_document_snapshot(&snapshot, cx) {
+            return;
+        }
         self.prompt_queue = snapshot.prompt_queue;
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
@@ -2105,6 +2128,9 @@ impl Panel {
     /// Wire the input's submit to also echo locally. Called once after
     /// creation, when we have the panel entity.
     pub fn connect_input(panel: &Entity<Panel>, cx: &mut App) {
+        if panel.read(cx).is_side_document() {
+            return;
+        }
         let weak = panel.downgrade();
         panel.update(cx, |this, cx| {
             let cancel_weak = weak.clone();
@@ -2283,6 +2309,9 @@ impl Panel {
     }
 
     fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        if self.is_side_document() {
+            return true;
+        }
         self.transcript_measurements.dirty = true;
         if self.preview_state.is_some() {
             return self.handle_preview_command(content, cx);
@@ -2467,6 +2496,9 @@ impl Panel {
     }
 
     fn open_model_picker(&mut self, cx: &mut Context<Self>) {
+        if self.is_side_document() {
+            return;
+        }
         if self.available_models.is_empty() {
             self.open_recovery_models(cx);
             return;
@@ -2486,7 +2518,7 @@ impl Panel {
     }
 
     fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
-        if self.preview_state.is_some() {
+        if self.is_side_document() || self.preview_state.is_some() {
             return;
         }
         self.bridge.send(Command::SessionOperation {
@@ -2497,7 +2529,7 @@ impl Panel {
     }
 
     fn submit_command_prompt(&mut self, prompt: &str, cx: &mut Context<Self>) {
-        if self.preview_state.is_some() {
+        if self.is_side_document() || self.preview_state.is_some() {
             return;
         }
         self.bridge.send(Command::Send {
@@ -2521,6 +2553,9 @@ impl Panel {
         images: Vec<jcode_sdk::RenderedImage>,
         cx: &mut Context<Self>,
     ) {
+        if self.is_side_document() {
+            return;
+        }
         self.transcript_measurements.dirty = true;
         if self.history_loaded {
             // Reattaching a session fetches history again. The runtime may have
@@ -2692,6 +2727,9 @@ impl Panel {
 
     /// Apply a streaming event addressed to this session.
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        if self.is_side_document() {
+            return;
+        }
         // Streaming appends only affect the live suffix. Keep a conservative
         // full invalidation for tools, status transitions, images and errors.
         // Metadata-only events still repaint chrome without discarding heights.
@@ -3625,6 +3663,7 @@ impl Panel {
         } else if self.unfinished_work.is_some()
             || self.is_changelog()
             || self.code_file.is_some()
+            || self.is_side_document()
             || self.gmail_inbox.is_some()
         {
             // Read-only panels do not render their prompt input. Focusing that
@@ -3688,6 +3727,9 @@ impl Render for Panel {
         self.schedule_transcript_wheel_frame(window, cx);
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
+        if self.is_side_document() {
+            return self.render_side_document(window, cx);
+        }
         if self.is_changelog() {
             return self.render_changelog(window, cx);
         }

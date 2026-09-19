@@ -7,6 +7,9 @@
 #[path = "workspace_account_sign_in.rs"]
 mod account_sign_in;
 
+#[path = "workspace_side_panel.rs"]
+mod side_panel;
+
 #[path = "workspace_preview.rs"]
 mod preview;
 
@@ -608,6 +611,7 @@ impl WorkspaceSnapshot {
 pub struct Workspace {
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
+    side_panel_snapshots: HashMap<String, jcode_sdk::SidePanelSnapshot>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -847,6 +851,7 @@ impl Workspace {
         let mut workspace = Self {
             preview_control: None,
             preview_task: None,
+            side_panel_snapshots: HashMap::new(),
             bridge,
             host,
             show_beta_notice: snapshot.is_none(),
@@ -1135,6 +1140,7 @@ impl Workspace {
         Self {
             preview_control: None,
             preview_task: None,
+            side_panel_snapshots: HashMap::new(),
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             show_beta_notice: false,
@@ -1387,6 +1393,11 @@ impl Workspace {
                         replay_until,
                         cx,
                     )
+                })
+            } else if panel_state.side_document.is_some() {
+                cx.new(|cx| {
+                    Panel::side_document_from_snapshot(&panel_state, self.bridge.clone(), cx)
+                        .expect("checked side document snapshot")
                 })
             } else if let Some(path) = panel_state.session_id.strip_prefix("file://") {
                 let path = PathBuf::from(path);
@@ -1800,6 +1811,9 @@ impl Workspace {
                 }
             }
             Update::Event { session_id, event } => {
+                if let jcode_sdk::ApiEvent::SidePanelState { snapshot, .. } = &event {
+                    return self.apply_side_panel(&session_id, snapshot, cx);
+                }
                 if sidebar_edits::refresh_after(&event) {
                     self.bridge.send(Command::RefreshSessions);
                 }
@@ -3148,6 +3162,7 @@ impl Workspace {
         let session_id = self.slots[closed].panel.read(cx).session_id.clone();
         if session_id != "terminal"
             && !Panel::is_pending_session_id(&session_id)
+            && !self.slots[closed].panel.read(cx).is_side_document()
             && !self.slots[closed].panel.read(cx).is_change_review()
             && !self.slots[closed].panel.read(cx).is_accounts_panel()
             && !self.slots[closed].panel.read(cx).is_changelog()
@@ -8191,6 +8206,7 @@ mod tests {
             onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    side_document: None,
                     prompt_queue: Default::default(),
                     session_id: "terminal".into(),
                     title: "build shell".into(),
@@ -8392,6 +8408,7 @@ mod tests {
                     onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            side_document: None,
                             prompt_queue: Default::default(),
                             session_id: "session_fox_1234567890000_deadbeef".into(),
                             title: "Still running".into(),
