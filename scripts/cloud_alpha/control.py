@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Operate one configured personal alpha. Never creates infrastructure or exports credentials."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -53,13 +54,17 @@ def ledger(config):
 
 
 def check_guard(config):
-    rule = aws(config, "events", "describe-rule", "--name", config["guard_rule"])
-    fn = aws(config, "lambda", "get-function-configuration", "--function-name", config["guard_function"])
+    key = {"pk": {"S": "INSTANCE#" + config["instance_id"]}, "sk": {"S": "STATE"}}
+    # These are independent, read-only checks. Every result must pass before a
+    # wake is permitted. Do not cache the heartbeat or renew the boot lease.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        rule_read = pool.submit(aws, config, "events", "describe-rule", "--name", config["guard_rule"])
+        fn_read = pool.submit(aws, config, "lambda", "get-function-configuration", "--function-name", config["guard_function"])
+        state_read = pool.submit(aws, config, "dynamodb", "get-item", "--table-name", config["ledger_table"],
+                                 "--consistent-read", "--key", json.dumps(key))
+        rule, fn, state = rule_read.result(), fn_read.result(), state_read.result().get("Item")
     if rule["State"] != "ENABLED" or fn.get("State") != "Active":
         raise RuntimeError("Independent runtime guard is unavailable. Refusing wake.")
-    key = {"pk": {"S": "INSTANCE#" + config["instance_id"]}, "sk": {"S": "STATE"}}
-    state = aws(config, "dynamodb", "get-item", "--table-name", config["ledger_table"],
-                "--consistent-read", "--key", json.dumps(key)).get("Item")
     if not state:
         raise RuntimeError("Independent guard has not initialized. Refusing wake.")
     checked = datetime.fromisoformat(state["checked_at"]["S"])
@@ -69,11 +74,17 @@ def check_guard(config):
 
 def wake(config):
     print("Checking cloud runtime guard and allowance...", file=sys.stderr, flush=True)
-    check_guard(config)
-    consumed, budget, depleted = ledger(config)
+    # Account identity has already been checked by main. Overlap only reads,
+    # never start/connect until every safety check has completed successfully.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        guard_read = pool.submit(check_guard, config)
+        ledger_read = pool.submit(ledger, config)
+        host_read = pool.submit(instance, config)
+        guard_read.result()
+        consumed, budget, depleted = ledger_read.result()
+        host = host_read.result()
     if depleted or consumed >= budget:
         raise RuntimeError("Cloud runtime allowance exhausted. No automatic overage is enabled.")
-    host = instance(config)
     state = host["State"]["Name"]
     if state == "stopping":
         raise RuntimeError("Host is still stopping. Retry once stopped.")
@@ -89,32 +100,33 @@ def wake(config):
     print("Waiting for cloud host and private SSM connection...", file=sys.stderr, flush=True)
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
-        info = aws(config, "ssm", "describe-instance-information", "--filters",
-                   f"Key=InstanceIds,Values={config['instance_id']}")
-        if (any(i["PingStatus"] == "Online" for i in info["InstanceInformationList"])
-                and instance(config)["State"]["Name"] == "running"):
-            # SSM can briefly report the previous boot as Online. Verify the real
-            # SSH path and bootstrap marker before advertising readiness.
-            print("Verifying SSH connection and cloud bootstrap readiness...", file=sys.stderr, flush=True)
-            try:
-                ready = subprocess.run(
-                    ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-                     "jcode-cloud-alpha", "test -f /opt/jcode-alpha/ready"],
-                    capture_output=True, timeout=20).returncode == 0
-            except subprocess.TimeoutExpired:
-                ready = False
-            if ready:
-                print("Ready. Desktop → Machines → jcode-cloud-alpha → Connect.")
-                print("The alpha stops after a maximum two-hour continuous lease, including active work.")
-                return
+        # The proxy already checks identity, ownership and current EC2 state.
+        # Actual SSH + bootstrap readiness is stronger than SSM's delayed (or
+        # stale-from-the-previous-boot) Online flag. Do not gate it on two more
+        # CLI processes and control-plane round trips on every attempt.
+        print("Verifying SSH connection and cloud bootstrap readiness...", file=sys.stderr, flush=True)
+        try:
+            ready = subprocess.run(
+                ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 "jcode-cloud-alpha", "test -f /opt/jcode-alpha/ready"],
+                capture_output=True, timeout=min(20, max(0.1, deadline - time.monotonic()))).returncode == 0
+        except subprocess.TimeoutExpired:
+            ready = False
+        if ready:
+            print("Ready. Desktop → Machines → jcode-cloud-alpha → Connect.")
+            print("The alpha stops after a maximum two-hour continuous lease, including active work.")
+            return
         time.sleep(4)
     raise RuntimeError("Host did not become SSM-ready within four minutes. Check bootstrap via SSM.")
 
 
 def status(config, now=None):
     """Read-only status. Countdown is advisory, never permission to extend a lease."""
-    host = instance(config)
-    used, budget, depleted = ledger(config)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        host_read = pool.submit(instance, config)
+        ledger_read = pool.submit(ledger, config)
+        host = host_read.result()
+        used, budget, depleted = ledger_read.result()
     now = now or datetime.now(timezone.utc)
     state = host["State"]["Name"]
     deadline, remaining = None, None
