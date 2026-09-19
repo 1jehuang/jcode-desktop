@@ -430,17 +430,18 @@ def verify(output, env, root):
             ui.native("key", "--clearmodifiers", "super+f")
 
         def draft_path(image):
-            words = ui.words(image, (276, 48, image.width - 12, 80), "draft-path", psm=7)
-            # Panel headers compact the isolated HOME to ~/. Require the path
-            # prefix so the adjacent "Custom Directory" title cannot pass.
+            words = ui.words(image, (276, image.height - 120, image.width - 12,
+                                     image.height - 60), "draft-path", psm=6)
+            # The composer status row shows the draft's working directory.
+            # Require the path prefix so the session title cannot pass.
             starts = [index for index, word in enumerate(words) if word["text"].startswith("~/")]
-            assert len(starts) == 1, "Draft header has no unambiguous home-relative path"
+            assert len(starts) == 1, "Draft status has no unambiguous home-relative path"
             phrase_bounds(words[starts[0]:], "~/Custom Directory")
         ui.wait_frame("draft-created", draft_path)
         assert pinned() == str(custom), "Draft creation changed the preference"
         report["checks"][stage] = {"panel": added[0], "path": str(custom),
                                   "rendered_path": "~/Custom Directory", "isolated_home": env["HOME"],
-                                  "path_evidence": "rendered header OCR with explicit ~/ prefix"}
+                                  "path_evidence": "rendered composer status OCR with explicit ~/ prefix"}
         stage = "all-native-checks"
         assert not report["failures"], json.dumps(report["failures"])
         report["passed"] = True

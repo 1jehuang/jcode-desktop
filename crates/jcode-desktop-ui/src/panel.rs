@@ -35,6 +35,11 @@ mod diff_review;
 mod flicker;
 #[path = "panel_image_preview.rs"]
 mod image_preview;
+#[path = "panel_image_pane.rs"]
+mod image_pane;
+#[cfg(test)]
+#[path = "panel_image_pane_tests.rs"]
+mod image_pane_tests;
 #[path = "panel_latest.rs"]
 mod latest;
 #[path = "panel_login.rs"]
@@ -207,6 +212,8 @@ impl TranscriptImage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default)]
+    pub image_pane_open: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_document: Option<SideDocumentSnapshot>,
     #[serde(default)]
@@ -260,6 +267,10 @@ pub struct Panel {
     sidebar_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
     voice: voice::VoiceState,
+    image_pane_open: bool,
+    image_pane_selected: Option<usize>,
+    image_pane_scroll: ScrollHandle,
+    image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
     diff_review: Option<diff_review::DiffReview>,
     edit_previews: diff_review::EditPreviews,
@@ -768,6 +779,10 @@ impl Panel {
             sidebar_spinner: cx.new(activity::Spinner::new),
             input,
             voice: voice::VoiceState::default(),
+            image_pane_open: false,
+            image_pane_selected: None,
+            image_pane_scroll: ScrollHandle::new(),
+            image_pane_stacked: false,
             image_preview: None,
             diff_review: None,
             edit_previews: diff_review::EditPreviews::default(),
@@ -2079,6 +2094,7 @@ impl Panel {
             .document_scroll_offset(cx)
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
+            image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
             prompt_queue: self.prompt_queue.clone(),
             session_id: self.session_id.clone(),
@@ -2107,6 +2123,8 @@ impl Panel {
         if self.restore_side_document_snapshot(&snapshot, cx) {
             return;
         }
+        self.image_pane_open = snapshot.image_pane_open;
+        self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
@@ -2379,6 +2397,7 @@ impl Panel {
                 }
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
+                    self.image_pane_selected = None;
                     self.items.clear();
                     self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
@@ -2684,6 +2703,7 @@ impl Panel {
             .map(|(index, at)| (index + history_len, at))
             .collect();
         items.append(&mut existing);
+        self.image_pane_selected = None;
         self.items = items;
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
@@ -3015,6 +3035,11 @@ impl Panel {
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
+        if let Some(selected) = &mut self.image_pane_selected {
+            if *selected >= insertion {
+                *selected += 1;
+            }
+        }
         self.items.insert(
             insertion,
             Item::Image(TranscriptImage::from_rendered(image)),
@@ -3280,6 +3305,9 @@ impl Panel {
                 role_caption(prompt::user_prompt_label(&self.items, index), card)
             }
             Item::Image(image) => {
+                if self.image_pane_open {
+                    return self.render_image_pane_link(index, image, cx);
+                }
                 let preview_image = image.clone();
                 let label = image
                     .label
@@ -4257,10 +4285,14 @@ impl Render for Panel {
 
         let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
 
-        div()
+        let chat = div()
             .flex()
             .flex_col()
             .size_full()
+            .when(self.image_pane_open, |el| {
+                el.flex_1().min_w_0().min_h_0()
+                    .when(self.image_pane_stacked, |el| el.h_auto())
+            })
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
@@ -4558,6 +4590,7 @@ impl Render for Panel {
                             .gap_2()
                             .overflow_hidden()
                             .children(usage_meters)
+                            .child(self.render_image_pane_toggle(cx))
                             .child(self.render_voice_controls(status_line, cx)),
                     ),
             )
@@ -4599,6 +4632,21 @@ impl Render for Panel {
             .children(self.render_image_preview(window, cx))
             .children(self.render_diff_review(cx))
             .children(self.render_login_picker(window, cx))
+            .into_any_element();
+
+        // Inline mode retains the existing chat layout and event ancestry.
+        if !self.image_pane_open {
+            return chat;
+        }
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .when(self.image_pane_stacked, |el| el.flex_col())
+            .overflow_hidden()
+            .child(self.image_pane_layout_observer(cx))
+            .child(chat)
+            .children(self.render_image_pane(cx))
             .into_any_element()
     }
 }

@@ -66,6 +66,8 @@ def main():
                         help="measure fresh composer pixels and verify native typing and submission")
     parser.add_argument("--html-interact", action="store_true",
                         help="exercise native input and controls on the HTML fixture")
+    parser.add_argument("--image-pane-interact", action="store_true",
+                        help="verify session image pane, inline toggle, lightbox and draft preservation")
     parser.add_argument("--image-interact", action="store_true",
                         help="click an image, verify enlargement, and dismiss by Escape and click")
     parser.add_argument("--image-cache-interact", action="store_true",
@@ -121,6 +123,17 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.image_pane_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "image_pane_interact")
+        if (others or args.panels != 1 or args.transcript != "image" or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.focus_panel is not None or args.learn_stage is not None
+                or args.preview_state is not None or args.changelog or args.notification
+                or args.account_sign_in or args.beta_notice):
+            parser.error("image-pane-interact requires --transcript image, default size/theme/layout, one panel, and no other interactions or overlays")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("image-pane-interact requires xdotool and tesseract")
     if args.cloud_startup and (args.transcript != "empty" or args.panels != 1
             or args.preview_state or args.changelog or args.account_sign_in
             or any(value for key, value in vars(args).items() if key.endswith("_interact"))):
@@ -582,6 +595,9 @@ def main():
                     verify(output, env, root)
                 if args.fresh_interact:
                     from fresh_session_acceptance import verify
+                    verify(output, env, root)
+                if args.image_pane_interact:
+                    from image_pane_acceptance import verify
                     verify(output, env, root)
                 if args.image_interact:
                     from image_preview_acceptance import verify

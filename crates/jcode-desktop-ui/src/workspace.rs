@@ -8327,6 +8327,7 @@ mod tests {
             onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    image_pane_open: false,
                     side_document: None,
                     prompt_queue: Default::default(),
                     session_id: "terminal".into(),
@@ -8531,6 +8532,7 @@ mod tests {
                     onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            image_pane_open: false,
                             side_document: None,
                             prompt_queue: Default::default(),
                             session_id: "session_fox_1234567890000_deadbeef".into(),
