@@ -14,6 +14,9 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
     )]);
 }
 
+#[path = "panel_voice_overlay.rs"]
+mod overlay;
+
 const VOICE_SHORTCUT: &str = "Copilot";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -31,6 +34,7 @@ pub(super) struct VoiceState {
     phase: Phase,
     recording: Option<NariRecording>,
     live_transcript: String,
+    transcript_scroll: gpui::ScrollHandle,
     canceled: Arc<AtomicBool>,
     started: Option<Instant>,
     error: Option<String>,
@@ -229,6 +233,7 @@ impl Panel {
                 // This separate preview can be revised without replacing anything the
                 // user types. Only Finished inserts one undoable edit into the draft.
                 self.voice.live_transcript = text;
+                self.voice.transcript_scroll.scroll_to_bottom();
                 cx.notify();
             }
             NariEvent::Finished(result) => self.finish_voice(result, cx),
@@ -334,84 +339,6 @@ impl Panel {
                 .update(cx, |input, cx| input.append_dictation(&text, cx));
         }
         cx.notify();
-    }
-
-    pub(super) fn render_voice_status(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let detail = self
-            .voice
-            .error
-            .clone()
-            .or_else(|| match self.voice.phase {
-                Phase::Idle => None,
-                Phase::Checking => {
-                    Some("Connecting to Nari and checking microphone access…".into())
-                }
-                Phase::Recording => {
-                    let secs = self.voice.started.map_or(0, |t| t.elapsed().as_secs());
-                    Some(format!(
-                        "Streaming to Nari {}:{:02} · Copilot to stop · 5 min maximum",
-                        secs / 60,
-                        secs % 60
-                    ))
-                }
-                Phase::Transcribing => Some(
-                    "Finishing Nari transcript. Nothing is sent to the conversation.".into(),
-                ),
-                Phase::Routing => Some("Jev is checking your request against your last 20 sessions… Copilot to cancel.".into()),
-            })?;
-        Some(
-            div()
-                .debug_selector(|| "voice-status".into())
-                .flex_none()
-                .px_3()
-                .py_1()
-                .text_size(px(11.))
-                .text_color(Theme::global().TEXT_DIM)
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(detail)
-                        .when(!self.voice.live_transcript.is_empty(), |el| {
-                            el.child(
-                                div()
-                                    .id("voice-live-transcript")
-                                    .debug_selector(|| "voice-live-transcript".into())
-                                    .max_h(px(100.))
-                                    .overflow_y_scroll()
-                                    .text_color(Theme::global().TEXT)
-                                    .child(self.voice.live_transcript.clone()),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .id("voice-cancel")
-                        .debug_selector(|| "voice-cancel".into())
-                        .flex_none()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                        .on_click(cx.listener(|panel, _, _, cx| {
-                            panel.cancel_voice(cx);
-                            cx.stop_propagation();
-                        }))
-                        .child(if self.voice.phase == Phase::Idle {
-                            "Dismiss"
-                        } else {
-                            "Cancel"
-                        }),
-                )
-                .into_any_element(),
-        )
     }
 
     pub(super) fn render_voice_controls(

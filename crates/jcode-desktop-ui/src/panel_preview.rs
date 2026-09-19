@@ -59,6 +59,9 @@ impl Panel {
         );
         match state {
             PreviewState::Empty => {}
+            PreviewState::VoiceConnecting | PreviewState::VoiceListening => {
+                self.seed_voice_preview(state);
+            }
             PreviewState::Streaming => {
                 self.apply(
                     &ApiEvent::SessionStatus {

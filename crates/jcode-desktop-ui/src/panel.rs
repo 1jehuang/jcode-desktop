@@ -4594,7 +4594,7 @@ impl Render for Panel {
                             .child(self.render_voice_controls(status_line, cx)),
                     ),
             )
-            .children(self.render_voice_status(cx))
+            .children(self.render_voice_overlay(window, cx))
             .children(self.render_preview_badge(cx))
             .children(self.render_prompt_queue(cx))
             // Input
