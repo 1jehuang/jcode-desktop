@@ -67,6 +67,57 @@ pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
 }
 
 impl Panel {
+    /// Share text, selection, and acknowledgement behavior, but keep the pinned
+    /// reminder unhighlighted against the transcript's normal backdrop.
+    pub(super) fn render_user_prompt(
+        &self,
+        index: usize,
+        text: &str,
+        highlighted: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let now = Instant::now();
+        let pending = self.pending_users.contains(&index);
+        let (offset, opacity, animating) = self
+            .accepted_users
+            .get(&index)
+            .map(|at| crate::ack::motion(*at, now))
+            .unwrap_or((
+                0.0,
+                if pending {
+                    crate::ack::PENDING_TONE
+                } else {
+                    1.0
+                },
+                false,
+            ));
+        if animating {
+            window.request_animation_frame();
+        }
+        let card = div()
+            .flex()
+            .flex_col()
+            .ml(px(offset))
+            .opacity(opacity)
+            .when(highlighted, |card| card.bg(Theme::global().USER_BG))
+            .rounded_md()
+            .px_3()
+            .py_2()
+            .text_color(Theme::global().TEXT_USER)
+            .child(markdown::render_interactive(
+                text,
+                index,
+                &self.transcript_selection,
+                window,
+                cx,
+                false,
+                self.media_preview_handler(cx),
+            ))
+            .into_any_element();
+        role_caption(prompt::user_prompt_label(&self.items, index), card)
+    }
+
     /// Keep the reminder out of flex layout. Inserting it above the list moves
     /// every visible row by its height at the pin boundary, and also changes
     /// the viewport used to decide whether the original prompt is visible.
@@ -80,6 +131,9 @@ impl Panel {
         if !is_pinnable_prompt(&item) {
             return None;
         }
+        let Item::User(text) = &item else {
+            return None;
+        };
         Some(
             div()
                 .id("pinned-latest-prompt")
@@ -99,7 +153,7 @@ impl Panel {
                 .pt_2p5()
                 .pb_2()
                 .text_size(px(13.5))
-                .child(self.render_item(index, &item, window, cx))
+                .child(self.render_user_prompt(index, text, false, window, cx))
                 .into_any_element(),
         )
     }
