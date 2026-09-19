@@ -56,6 +56,40 @@ impl Workspace {
         }
     }
 
+    pub(super) fn update_pending_remote_status(
+        &mut self,
+        request_id: Option<&str>,
+        message: &str,
+        failed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if request_id == Some(Panel::STARTUP_SESSION_ID) {
+            self.update_startup_status(message, failed, cx);
+        } else if let Some(request_id) = request_id {
+            for slot in &self.slots {
+                if !slot.closing
+                    && slot.panel.read(cx).session_id == request_id
+                    && slot.panel.read(cx).is_pending_session()
+                {
+                    slot.panel.update(cx, |panel, cx| {
+                        // Helper phases and SSH results use separate channels.
+                        // A buffered wake-success phase must not erase an SSH
+                        // failure. Retry gets a fresh ID and resets the status.
+                        if !failed && panel.status.starts_with("Session creation failed:") {
+                            return;
+                        }
+                        panel.status = if failed {
+                            format!("Session creation failed: {message}")
+                        } else {
+                            message.to_owned()
+                        };
+                        cx.notify();
+                    });
+                }
+            }
+        }
+    }
+
     fn retry_pending_session(&mut self, index: usize, local: bool, cx: &mut Context<Self>) {
         let Some(panel) = self
             .slots
@@ -68,7 +102,16 @@ impl Workspace {
         if !panel.read(cx).is_pending_session() {
             return;
         }
-        if panel.read(cx).is_startup_draft() && !local {
+        let remote_host = pending::remote_draft_host(&panel.read(cx).session_id).map(str::to_owned);
+        if let Some(host) = remote_host.as_ref().filter(|_| !local) {
+            let request_id = pending::next_remote_draft_id(host);
+            panel.update(cx, |panel, cx| {
+                panel.session_id = request_id.clone();
+                panel.status = format!("Retrying connection to {host}…");
+                cx.notify();
+            });
+            self.create_remote_draft_session(host.clone(), request_id, cx);
+        } else if panel.read(cx).is_startup_draft() && !local {
             self.update_startup_status("Retrying connection to the default machine…", false, cx);
             self.create_default_session(
                 default_working_dir(),
@@ -77,7 +120,7 @@ impl Workspace {
         } else {
             // Keep the editor, attachments and queued prompts. A fresh request
             // ID rejects a late remote/create reply rather than changing target.
-            let directory = if panel.read(cx).is_startup_draft() {
+            let directory = if panel.read(cx).is_startup_draft() || remote_host.is_some() {
                 default_working_dir()
             } else {
                 panel.read(cx).working_dir.clone()
@@ -112,8 +155,13 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let panel = self.slots[index].panel.clone();
         let startup = panel.read(cx).is_startup_draft();
-        let remote = startup && self.remotes.default_host.is_some();
-        let cloud = startup && self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST);
+        let host = pending::remote_draft_host(&panel.read(cx).session_id).or_else(|| {
+            startup
+                .then_some(self.remotes.default_host.as_deref())
+                .flatten()
+        });
+        let remote = host.is_some();
+        let cloud = host == Some(cloud_alpha::HOST);
         let failed = if startup {
             self.remotes.startup_failed
         } else {
@@ -166,7 +214,7 @@ impl Workspace {
                     .child(div().text_color(theme.TEXT_DIM).child(if failed {
                         "Not sent. Your draft and queued prompts are preserved."
                     } else {
-                        "Enter queues your prompt until the connection is ready."
+                        if cloud { "This panel shares your cloud VM. Enter queues your prompt until connected." } else { "Enter queues your prompt until the connection is ready." }
                     }))
                     .child(
                         div()
@@ -289,6 +337,26 @@ impl Workspace {
     /// A local favorite must never be passed to a different filesystem. Remote
     /// defaults start in the remote home, while explicit local folder actions
     /// and terminal panels continue to refer to this computer.
+    pub(super) fn create_remote_draft_session(
+        &mut self,
+        host: String,
+        request_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if host == cloud_alpha::HOST {
+            self.start_cloud_monitor(cx);
+            self.remotes
+                .cloud
+                .connect(self.bridge.clone(), Some(request_id));
+        } else {
+            self.bridge.send(Command::CreateRemoteSession {
+                host,
+                working_dir: None,
+                request_id: Some(request_id),
+            });
+        }
+    }
+
     pub(super) fn create_default_session(
         &self,
         local_directory: Option<String>,
@@ -311,7 +379,7 @@ impl Workspace {
         });
     }
 
-    fn start_cloud_monitor(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn start_cloud_monitor(&mut self, cx: &mut Context<Self>) {
         if self.remotes.cloud_monitor.is_some() || harness::screenshot_mode() || cfg!(test) {
             return;
         }
@@ -331,10 +399,13 @@ impl Workspace {
                         }
                         let updates = this.remotes.cloud.take_updates();
                         let changed = !updates.is_empty();
-                        for (message, failed, startup) in updates {
-                            if startup {
-                                this.update_startup_status(&message, failed, cx);
-                            }
+                        for (message, failed, request_id) in updates {
+                            this.update_pending_remote_status(
+                                request_id.as_deref(),
+                                &message,
+                                failed,
+                                cx,
+                            );
                             this.remotes.status = Some(message);
                             this.remotes.failed = failed;
                         }
@@ -352,7 +423,9 @@ impl Workspace {
                 {
                     break;
                 }
-                cx.background_executor().timer(Duration::from_secs(5)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
             }
         }));
     }
@@ -521,17 +594,7 @@ impl Workspace {
                 .err()
                 .map(|error| format!("Could not save machines: {error}"));
             self.remotes.status = Some(format!("Connecting to {host}…"));
-            if host == cloud_alpha::HOST {
-                self.start_cloud_monitor(cx);
-                self.remotes.status = Some("Waking jcode-cloud-alpha before connecting…".into());
-                self.remotes.cloud.connect(self.bridge.clone(), None);
-            } else {
-                self.bridge.send(Command::CreateRemoteSession {
-                    host,
-                    working_dir: None,
-                    request_id: None,
-                });
-            }
+            self.open_remote_draft(host, cx);
         } else {
             self.remotes.notice = None;
             self.open_local_draft(default_working_dir(), cx);
@@ -821,11 +884,7 @@ mod cloud_routing_tests {
                 .create_default_session(Some("/local-only".into()), Some("new-session".into()));
             assert!(commands.try_recv().is_err(), "must not connect before wake");
             let updates = workspace.remotes.cloud.take_updates();
-            assert!(
-                updates
-                    .iter()
-                    .any(|(message, _, _)| message.contains("Waking"))
-            );
+            assert!(updates.iter().any(|(_, _, id)| id.is_some()));
         });
     }
 
@@ -846,7 +905,7 @@ mod cloud_routing_tests {
                     .cloud
                     .take_updates()
                     .iter()
-                    .any(|(message, _, _)| message.contains("Waking"))
+                    .any(|(_, _, id)| id.is_some())
             );
         });
     }

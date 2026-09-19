@@ -1354,20 +1354,30 @@ impl Workspace {
             if panel_state.session_id.starts_with("startup://draft/") {
                 // The previous bridge generation cannot deliver its in-flight
                 // result to this workspace. Restart with a fresh correlation ID
-                // and the original local directory, not today's machine default.
+                // and original destination, not today's machine default.
                 let help = panel_state.session_id.starts_with("startup://draft/help/");
-                panel_state.session_id = pending::next_draft_id();
-                if help {
-                    panel_state.session_id = panel_state.session_id.replacen(
-                        "startup://draft/",
-                        "startup://draft/help/",
-                        1,
-                    );
+                let remote_host =
+                    pending::remote_draft_host(&panel_state.session_id).map(str::to_owned);
+                if let Some(host) = remote_host {
+                    panel_state.session_id = pending::next_remote_draft_id(&host);
+                    self.create_remote_draft_session(host, panel_state.session_id.clone(), cx);
+                } else if !panel_state
+                    .session_id
+                    .starts_with("startup://draft/remote/")
+                {
+                    panel_state.session_id = pending::next_draft_id();
+                    if help {
+                        panel_state.session_id = panel_state.session_id.replacen(
+                            "startup://draft/",
+                            "startup://draft/help/",
+                            1,
+                        );
+                    }
+                    self.bridge.send(Command::CreateSession {
+                        working_dir: panel_state.working_dir.clone(),
+                        request_id: Some(panel_state.session_id.clone()),
+                    });
                 }
-                self.bridge.send(Command::CreateSession {
-                    working_dir: panel_state.working_dir.clone(),
-                    request_id: Some(panel_state.session_id.clone()),
-                });
             }
             let terminal =
                 panel_state.terminal_resource_id.is_some() || panel_state.session_id == "terminal";
@@ -1442,6 +1452,19 @@ impl Workspace {
                 Panel::connect_input(&panel, cx);
             }
             panel.update(cx, |panel, cx| panel.restore_snapshot(panel_state, cx));
+            if panel
+                .read(cx)
+                .session_id
+                .starts_with("startup://draft/remote/")
+            {
+                panel.update(cx, |panel, cx| {
+                    panel.status = match pending::remote_draft_host(&panel.session_id) {
+                        Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
+                        None => "Session creation failed: invalid saved remote destination. No local session was opened.".into(),
+                    };
+                    cx.notify();
+                });
+            }
             self.slots.push(Slot {
                 panel,
                 row: saved.row,
@@ -1685,9 +1708,12 @@ impl Workspace {
                 request_id,
                 failed,
             } => {
-                if request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID) {
-                    self.update_startup_status(&format!("{host}: {message}"), failed, cx);
-                }
+                self.update_pending_remote_status(
+                    request_id.as_deref(),
+                    &format!("{host}: {message}"),
+                    failed,
+                    cx,
+                );
                 self.remotes.failed = failed;
                 self.remotes.status = Some(format!("{host}: {message}"));
             }

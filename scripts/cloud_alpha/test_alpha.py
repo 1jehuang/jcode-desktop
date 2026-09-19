@@ -131,6 +131,30 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(result['lease_deadline'], (launch + timedelta(hours=2)).isoformat())
         self.assertEqual(result['remaining_minutes'], 2880)
 
+    def test_wake_progress_is_flushed_and_distinguishes_running_from_starting(self):
+        for state in ('running', 'stopped'):
+            with self.subTest(state=state), \
+                    patch.object(control, 'check_guard') as guard, \
+                    patch.object(control, 'ledger', return_value=(10, 3000, False)), \
+                    patch.object(control, 'instance', side_effect=[
+                        {'State': {'Name': state}}, {'State': {'Name': 'running'}}]), \
+                    patch.object(control, 'aws', return_value={
+                        'InstanceInformationList': [{'PingStatus': 'Online'}]}) as api, \
+                    patch.object(control.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+                    patch('builtins.print') as output:
+                control.wake(self.config)
+                guard.assert_called_once_with(self.config)
+                phases = [call for call in output.call_args_list
+                          if call.kwargs.get('file') is control.sys.stderr]
+                self.assertTrue(all(call.kwargs.get('flush') is True for call in phases))
+                text = '\n'.join(call.args[0] for call in phases)
+                self.assertIn('guard and allowance', text)
+                self.assertIn('private SSM', text)
+                self.assertIn('Verifying SSH', text)
+                self.assertIn('already running' if state == 'running' else 'Starting the shared', text)
+                starts = [call for call in api.call_args_list if call.args[2] == 'start-instances']
+                self.assertEqual(len(starts), int(state == 'stopped'))
+
     def test_stopped_status_has_no_running_lease(self):
         host = {'State': {'Name': 'stopped'}, 'InstanceType': 'm7i.large'}
         with patch.object(control, 'instance', return_value=host), patch.object(control, 'ledger', return_value=(3010, 3000, True)):

@@ -1,9 +1,10 @@
 //! Personal alpha only. The fixed local helper owns AWS policy and readiness.
-use super::{Command, Panel, harness};
+use super::{Command, harness};
 use serde::Deserialize;
 use std::{
+    io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
@@ -16,7 +17,7 @@ struct State {
     error: Option<String>,
     refreshing: bool,
     last_refresh: Option<Instant>,
-    updates: Vec<(String, bool, bool)>,
+    updates: Vec<(String, bool, Option<String>)>,
 }
 
 #[derive(Clone, Default)]
@@ -48,8 +49,70 @@ fn helper_paths(home: &Path) -> Result<PathBuf, String> {
     Ok(helper)
 }
 
+const OUTPUT_LIMIT: usize = 64 * 1024;
+const PROGRESS_LINE_LIMIT: usize = 512;
+
+// Drain even after reaching the retained-output limit, so a noisy helper cannot
+// block on a full pipe. Progress uses a bounded channel and never blocks reading.
+fn drain_output(
+    mut reader: impl Read,
+    progress: Option<mpsc::SyncSender<String>>,
+) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    let mut line = Vec::new();
+    let mut overflow = false;
+    let mut buffer = [0; 4096];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("Cannot read cloud helper output: {error}")),
+        };
+        let retain = count.min(OUTPUT_LIMIT - output.len());
+        output.extend_from_slice(&buffer[..retain]);
+        overflow |= retain < count;
+        if let Some(progress) = &progress {
+            for byte in &buffer[..count] {
+                if matches!(byte, b'\n' | b'\r') {
+                    send_progress(progress, &mut line);
+                } else if line.len() < PROGRESS_LINE_LIMIT {
+                    line.push(*byte);
+                }
+            }
+        }
+    }
+    if let Some(progress) = &progress {
+        send_progress(progress, &mut line);
+    }
+    // Status JSON must never be silently truncated and treated as complete.
+    if overflow && progress.is_none() {
+        Err("Cloud helper output exceeded the safety limit.".into())
+    } else {
+        Ok(output)
+    }
+}
+
+fn send_progress(sender: &mpsc::SyncSender<String>, line: &mut Vec<u8>) {
+    let text: String = String::from_utf8_lossy(line)
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    if !text.trim().is_empty() {
+        let _ = sender.try_send(text.trim().to_owned());
+    }
+    line.clear();
+}
+
 // No shell, PATH lookup, user-supplied executable, or stop action.
 fn run_helper(action: &'static str) -> Result<String, String> {
+    run_helper_with_progress(action, |_| {})
+}
+
+fn run_helper_with_progress(
+    action: &'static str,
+    mut progress: impl FnMut(String),
+) -> Result<String, String> {
     if harness::screenshot_mode() || cfg!(test) {
         return Err("Cloud operations are disabled in offline tests and screenshots.".into());
     }
@@ -62,10 +125,26 @@ fn run_helper(action: &'static str) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Cannot run cloud helper: {e}"))?;
+    let (progress_tx, progress_rx) = mpsc::sync_channel(16);
+    let (stdout_tx, stdout_rx) = mpsc::sync_channel(1);
+    let (stderr_tx, stderr_rx) = mpsc::sync_channel(1);
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    std::thread::spawn(move || {
+        let _ = stdout_tx.send(drain_output(stdout, None));
+    });
+    std::thread::spawn(move || {
+        let _ = stderr_tx.send(drain_output(stderr, Some(progress_tx)));
+    });
     let deadline = Instant::now() + Duration::from_secs(360);
-    loop {
+    let status = loop {
+        for line in progress_rx.try_iter().take(16) {
+            if action == "wake" {
+                progress(line);
+            }
+        }
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
             result => {
                 let _ = child.kill();
@@ -76,15 +155,26 @@ fn run_helper(action: &'static str) -> Result<String, String> {
                 });
             }
         }
+    };
+    // Also bound the wait for EOF if a helper descendant inherited its pipes.
+    let stdout = stdout_rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|_| "Cloud helper output timed out.".to_owned())?;
+    let stderr = stderr_rx
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|_| "Cloud helper output timed out.".to_owned())??;
+    for line in progress_rx.try_iter().take(16) {
+        if action == "wake" {
+            progress(line);
+        }
     }
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(format!(
             "Cloud {action} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr).trim()
         ));
     }
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    String::from_utf8(stdout?).map_err(|e| e.to_string())
 }
 
 fn wake_then_connect(
@@ -104,15 +194,26 @@ fn wake_then_connect(
 impl Lifecycle {
     pub(super) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
         let lifecycle = self.clone();
-        let startup = request_id.as_deref() == Some(Panel::STARTUP_SESSION_ID);
+        let update_request_id = request_id.clone();
         self.state.lock().unwrap().updates.push((
-            format!("Waking {HOST} before connecting…"),
+            format!("Waiting for shared VM {HOST}…"),
             false,
-            startup,
+            update_request_id.clone(),
         ));
         std::thread::spawn(move || {
             let _serial = lifecycle.wake_lock.lock().unwrap();
-            let result = wake_then_connect(&bridge, request_id, || run_helper("wake").map(|_| ()));
+            let result = wake_then_connect(&bridge, request_id, || {
+                run_helper_with_progress("wake", |message| {
+                    let mut state = lifecycle.state.lock().unwrap();
+                    // Retain only the newest pending phase for this request.
+                    // Never relabel a stale request as a newer panel's update.
+                    state.updates.retain(|(_, _, id)| id != &update_request_id);
+                    state
+                        .updates
+                        .push((message, false, update_request_id.clone()));
+                })
+                .map(|_| ())
+            });
             let mut state = lifecycle.state.lock().unwrap();
             let (message, failed) = match result {
                 Ok(()) => (format!("{HOST} is awake. Connecting…"), false),
@@ -122,12 +223,13 @@ impl Lifecycle {
                 ),
             };
             state.error = failed.then(|| message.clone());
-            state.updates.push((message, failed, startup));
+            state.updates.retain(|(_, _, id)| id != &update_request_id);
+            state.updates.push((message, failed, update_request_id));
             state.last_refresh = None;
         });
     }
 
-    pub(super) fn take_updates(&self) -> Vec<(String, bool, bool)> {
+    pub(super) fn take_updates(&self) -> Vec<(String, bool, Option<String>)> {
         std::mem::take(&mut self.state.lock().unwrap().updates)
     }
 
@@ -226,6 +328,105 @@ impl Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_progress_is_streamed_before_eof() {
+        use std::io::Write;
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (tx, rx) = mpsc::sync_channel(16);
+        let drain = std::thread::spawn(move || drain_output(reader, Some(tx)));
+        writer
+            .write_all(b"Checking budget\nWaiting for VM\n")
+            .unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "Checking budget"
+        );
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "Waiting for VM"
+        );
+        // The writer remains open when both progress messages arrive.
+        drop(writer);
+        assert_eq!(
+            drain.join().unwrap().unwrap(),
+            b"Checking budget\nWaiting for VM\n"
+        );
+    }
+
+    #[test]
+    fn cloud_output_and_progress_are_bounded_without_blocking_drain() {
+        let mut input = vec![b'x'; OUTPUT_LIMIT * 3];
+        input.extend_from_slice(b"\n\0Done\t\rLast phase");
+        let (tx, rx) = mpsc::sync_channel(1);
+        let output = drain_output(input.as_slice(), Some(tx)).unwrap();
+        assert_eq!(output.len(), OUTPUT_LIMIT);
+        let line = rx.recv().unwrap();
+        assert_eq!(line.len(), PROGRESS_LINE_LIMIT);
+        assert!(rx.try_recv().is_err());
+        assert!(
+            drain_output(input.as_slice(), None)
+                .unwrap_err()
+                .contains("safety limit")
+        );
+    }
+
+    #[test]
+    fn cloud_progress_filters_controls_and_flushes_final_line() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        drain_output(&b"\0Checking\t\r\nReady"[..], Some(tx)).unwrap();
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), ["Checking", "Ready"]);
+    }
+
+    #[test]
+    fn cloud_status_output_remains_exact_json() {
+        let json = br#"{"state":"running","used_minutes":1}"#;
+        assert_eq!(drain_output(&json[..], None).unwrap(), json);
+    }
+
+    #[test]
+    fn cloud_test_guard_prevents_helper_and_progress_callback() {
+        assert!(
+            run_helper_with_progress("wake", |_| panic!("must not run"))
+                .unwrap_err()
+                .contains("disabled")
+        );
+        assert!(run_helper("status").unwrap_err().contains("disabled"));
+    }
+
+    #[test]
+    fn cloud_initial_and_failure_updates_preserve_independent_request_ids() {
+        let lifecycle = Lifecycle::default();
+        let (bridge, commands) = harness::spawn_recording();
+        let serial = lifecycle.wake_lock.lock().unwrap();
+        lifecycle.connect(bridge.clone(), Some("panel-old".into()));
+        lifecycle.connect(bridge.clone(), Some("panel-new".into()));
+        let initial = lifecycle.take_updates();
+        assert_eq!(initial.len(), 2);
+        assert!(
+            initial
+                .iter()
+                .all(|(text, failed, _)| text.contains("shared VM") && !failed)
+        );
+        assert_eq!(initial[0].2.as_deref(), Some("panel-old"));
+        assert_eq!(initial[1].2.as_deref(), Some("panel-new"));
+        drop(serial);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut final_updates = Vec::new();
+        while final_updates.len() < 2 && Instant::now() < deadline {
+            final_updates.extend(lifecycle.take_updates());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(final_updates.len(), 2);
+        assert!(final_updates.iter().all(|(_, failed, _)| *failed));
+        let mut ids: Vec<_> = final_updates
+            .into_iter()
+            .map(|(_, _, id)| id.unwrap())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["panel-new", "panel-old"]);
+        assert!(commands.try_recv().is_err());
+    }
 
     #[test]
     fn cloud_wake_failure_never_sends_remote_or_local_command() {

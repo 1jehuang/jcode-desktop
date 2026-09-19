@@ -16,14 +16,22 @@ jcode-cloud-alpha stop
 ```
 
 Use the existing native **Machines** panel. Reopen it if it was already open
-before SSH configuration was installed. **Connect** now runs the fixed local
-`~/.local/bin/jcode-cloud-alpha wake` helper before creating the cloud session.
-Choose **Set default** for `jcode-cloud-alpha` to apply the same wake-and-connect
-path to new session panels. Explicit local-folder actions and existing panels
-are unaffected. A failed wake is reported in Machines and never opens a local
-session instead. The alpha
-uses the existing SSH transport, so its label is SSH, not the future managed
-Cloud label. For a terminal, `jcode-cloud-alpha ssh` wakes and connects.
+before SSH configuration was installed. **Connect** immediately opens an editable
+panel, then runs the fixed local `~/.local/bin/jcode-cloud-alpha wake` helper
+before creating the remote session. Choose **Set default** for `jcode-cloud-alpha`
+to use this path for new session panels. All cloud panels share the one configured
+VM, with a separate Jcode session per panel, not a new VM per panel.
+
+While connecting, the panel shows **Jcode Cloud VM**, a cloud watermark, and live
+sign-in, guard, VM, SSM, and SSH progress. Enter queues a prompt until connection
+and history initialization finish. The same panel/editor is promoted when ready.
+Failures stay beside the preserved draft, with **Retry connection** and an explicit
+**Use this computer** option. Retry and reload retain the draft's original remote
+destination even if the default machine changes. There is no implicit local
+fallback. Explicit local-folder actions and existing panels are unaffected.
+The connected alpha still uses the existing SSH transport and SSH identity label,
+not a managed multi-user provisioning service. For a terminal,
+`jcode-cloud-alpha ssh` wakes and connects.
 Repositories belong under `~/workspaces` on the VM. No local checkout, model
 credential, AWS credential, or SSH private key is copied to the VM.
 

@@ -68,6 +68,7 @@ def check_guard(config):
 
 
 def wake(config):
+    print("Checking cloud runtime guard and allowance...", file=sys.stderr, flush=True)
     check_guard(config)
     consumed, budget, depleted = ledger(config)
     if depleted or consumed >= budget:
@@ -77,10 +78,15 @@ def wake(config):
     if state == "stopping":
         raise RuntimeError("Host is still stopping. Retry once stopped.")
     if state == "stopped":
+        print("Starting the shared cloud VM...", file=sys.stderr, flush=True)
         aws(config, "ec2", "start-instances", "--instance-ids", config["instance_id"])
     elif state not in ("running", "pending"):
         raise RuntimeError(f"Cannot wake host in state {state}")
-    print("Waiting for cloud host and private SSM connection...", file=sys.stderr)
+    elif state == "running":
+        print("Shared cloud VM is already running. Checking connection...", file=sys.stderr, flush=True)
+    else:
+        print("Shared cloud VM is starting...", file=sys.stderr, flush=True)
+    print("Waiting for cloud host and private SSM connection...", file=sys.stderr, flush=True)
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
         info = aws(config, "ssm", "describe-instance-information", "--filters",
@@ -89,6 +95,7 @@ def wake(config):
                 and instance(config)["State"]["Name"] == "running"):
             # SSM can briefly report the previous boot as Online. Verify the real
             # SSH path and bootstrap marker before advertising readiness.
+            print("Verifying SSH connection and cloud bootstrap readiness...", file=sys.stderr, flush=True)
             try:
                 ready = subprocess.run(
                     ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
@@ -133,6 +140,8 @@ def main():
     config = json.loads(CONFIG.read_text())
     # Ensure the AWS CLI can find the user-installed Session Manager plugin.
     os.environ["PATH"] = str(Path.home() / ".local/bin") + os.pathsep + os.environ.get("PATH", "")
+    if args.action in ("wake", "ssh"):
+        print("Checking AWS sign-in...", file=sys.stderr, flush=True)
     identity(config)
     if args.action == "wake":
         wake(config)

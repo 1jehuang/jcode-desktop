@@ -22,6 +22,10 @@ fn session(id: &str) -> jcode_sdk::SessionInfo {
 
 fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
+    // Selector bounds can exist offscreen while Machines slides back into view.
+    // Settle the test clock before exercising the real native click target.
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
     let bounds = cx
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing {selector}"));
@@ -60,9 +64,22 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     assert!(vcx.debug_bounds("machines-picker").is_some());
     click(vcx, "machine-connect-1");
     assert!(
-        matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {host, working_dir: None, request_id: None}) if host == "desktop")
+        matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {host, working_dir: None, request_id: Some(id)}) if host == "desktop" && pending::remote_draft_host(&id) == Some("desktop"))
     );
-    workspace.read_with(vcx, |w, _| assert_eq!(w.remotes.default_host, None));
+    vcx.simulate_input("type immediately after Connect");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.remotes.default_host, None);
+        let panel = w.slots[w.active].panel.read(cx);
+        assert_eq!(
+            pending::remote_draft_host(&panel.session_id),
+            Some("desktop")
+        );
+        assert_eq!(
+            panel.input.read(cx).content.as_ref(),
+            "type immediately after Connect"
+        );
+    });
+    click(vcx, "machines-picker-button");
     click(vcx, "machine-default-1");
     assert!(
         commands.try_recv().is_err(),
@@ -70,7 +87,7 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
     );
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"));
-        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots.len(), 3);
     });
     // All generic and pinned new-panel shortcuts honor the remote preference,
     // without accidentally forwarding this computer's pinned directory.
@@ -84,14 +101,18 @@ fn machines_picker_connect_default_shortcuts_and_local_override(cx: &mut gpui::T
             matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {host, working_dir: None, ..}) if host == "desktop")
         );
     }
+    click(vcx, "machines-picker-button");
     click(vcx, "machine-connect-0");
-    assert!(matches!(
-        commands.try_recv(),
-        Ok(Command::CreateSession { .. })
-    ));
+    match commands.try_recv() {
+        Ok(Command::CreateSession { .. }) => {}
+        Ok(Command::CreateRemoteSession { host, .. }) => panic!("unexpected remote create: {host}"),
+        Ok(_) => panic!("unexpected other command"),
+        Err(error) => panic!("local Connect command missing: {error}"),
+    }
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"))
     });
+    click(vcx, "machines-picker-button");
     click(vcx, "machine-default-0");
     vcx.simulate_keystrokes("super-n");
     assert!(matches!(
@@ -105,12 +126,12 @@ fn remote_new_panel_exposes_progress_failure_retry_and_explicit_local_choice(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(crate::bind_workspace_keys);
+    cx.update(crate::input::bind_keys);
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.bridge = bridge;
         w.remotes.default_host = Some("desktop".into());
-        w.remotes.hosts = vec!["desktop".into()];
         w.pinned_working_dir = Some("/local-only".into());
         for index in 0..29 {
             w.push_test_panel(&format!("existing-{index}"), cx);
@@ -118,9 +139,11 @@ fn remote_new_panel_exposes_progress_failure_retry_and_explicit_local_choice(
         w.restore_focus(window, cx);
         w
     });
-    vcx.run_until_parked();
-
-    for key in ["super-n", "ctrl-alt-enter", "pointer"] {
+    let mut requests = Vec::new();
+    for (index, key) in ["super-n", "ctrl-alt-enter", "pointer"]
+        .into_iter()
+        .enumerate()
+    {
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.set_active(0, cx);
@@ -135,73 +158,68 @@ fn remote_new_panel_exposes_progress_failure_retry_and_explicit_local_choice(
             vcx.simulate_keystrokes(key);
         }
         vcx.run_until_parked();
-        assert!(
-            matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {
-            host, working_dir: None, request_id: None,
-        }) if host == "desktop")
-        );
-        assert!(vcx.debug_bounds("machine-connection-status").is_some());
-        assert!(vcx.debug_bounds("machine-connect-0").is_some());
-        vcx.update(|window, cx| {
-            assert!(
-                workspace
-                    .read(cx)
-                    .remotes
-                    .input
-                    .as_ref()
-                    .unwrap()
-                    .read(cx)
-                    .focus_handle
-                    .is_focused(window)
-            );
-        });
+        let request = match commands.try_recv().unwrap() {
+            Command::CreateRemoteSession {
+                host,
+                working_dir: None,
+                request_id: Some(id),
+            } => {
+                assert_eq!(host, "desktop");
+                assert_eq!(pending::remote_draft_host(&id), Some("desktop"));
+                id
+            }
+            _ => panic!("remote creation must identify its editable draft"),
+        };
+        assert!(!requests.contains(&request));
+        requests.push(request.clone());
+        assert!(vcx.debug_bounds("pending-session-status").is_some());
+        assert!(vcx.debug_bounds("machines-picker").is_none());
+        vcx.simulate_input("draft survives failure");
         workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 30 + index);
+            let panel = w.slots[w.active].panel.read(cx);
+            assert_eq!(panel.session_id, request);
             assert_eq!(
-                w.slots.len(),
-                30,
-                "repeated attempts reuse connection controls"
+                panel.input.read(cx).content.as_ref(),
+                "draft survives failure"
             );
-            assert!(w.slots[w.active].panel.read(cx).is_machines());
-            assert_eq!(w.remotes.status.as_deref(), Some("Connecting to desktop…"));
-            assert!(!w.remotes.failed, "retry clears the previous error state");
         });
         workspace.update(vcx, |w, cx| {
             w.apply(
                 Update::RemoteStatus {
                     host: "desktop".into(),
                     message: "Your session has expired. Please reauthenticate.".into(),
-                    request_id: None,
+                    request_id: Some(request),
                     failed: true,
                 },
                 cx,
             );
-            cx.notify();
+            let panel = w.slots[w.active].panel.read(cx);
+            assert!(panel.status.starts_with("Session creation failed:"));
+            assert!(panel.status.contains("expired"));
         });
         vcx.run_until_parked();
-        workspace.read_with(vcx, |w, cx| {
-            assert!(w.remotes.failed);
-            assert!(w.remotes.status.as_deref().unwrap().contains("expired"));
-            assert!(w.slots[w.active].panel.read(cx).is_machines());
-        });
-        assert!(vcx.debug_bounds("machine-connection-status").is_some());
+        assert!(vcx.debug_bounds("pending-session-retry").is_some());
         assert!(
             commands.try_recv().is_err(),
             "failure must never fall back locally"
         );
     }
-
-    click(vcx, "machine-connect-0");
+    click(vcx, "pending-session-local");
     assert!(matches!(commands.try_recv(), Ok(Command::CreateSession {
         request_id: Some(id), ..
-    }) if Panel::is_pending_session_id(&id)));
-    vcx.simulate_input("local draft survives cloud failure");
+    }) if Panel::is_pending_session_id(&id) && pending::remote_draft_host(&id).is_none()));
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.remotes.default_host.as_deref(), Some("desktop"));
-        let panel = w.slots[w.active].panel.read(cx);
-        assert!(Panel::is_pending_session_id(&panel.session_id));
         assert_eq!(
-            panel.input.read(cx).content.as_ref(),
-            "local draft survives cloud failure"
+            w.slots[w.active]
+                .panel
+                .read(cx)
+                .input
+                .read(cx)
+                .content
+                .as_ref(),
+            "draft survives failure"
         );
     });
 }
@@ -284,19 +302,16 @@ fn cloud_new_panel_shows_wake_progress_before_any_session_exists(cx: &mut gpui::
     vcx.run_until_parked();
     vcx.simulate_keystrokes("ctrl-alt-enter");
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("machine-connection-status").is_some());
-    assert!(vcx.debug_bounds("cloud-alpha-status").is_some());
+    assert!(vcx.debug_bounds("pending-session-status").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-label").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_some());
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
-        assert!(w.slots[w.active].panel.read(cx).is_machines());
-        assert_eq!(w.remotes.default_host.as_deref(), Some("jcode-cloud-alpha"));
-        assert!(
-            w.remotes
-                .status
-                .as_deref()
-                .unwrap()
-                .starts_with("Waking jcode-cloud-alpha")
+        assert_eq!(
+            pending::remote_draft_host(&w.slots[w.active].panel.read(cx).session_id),
+            Some("jcode-cloud-alpha")
         );
+        assert_eq!(w.remotes.default_host.as_deref(), Some("jcode-cloud-alpha"));
     });
     // Test builds refuse the wake, so no remote creation or implicit local
     // fallback may be issued. The explicit recovery controls remain mounted.
@@ -355,11 +370,14 @@ fn machines_input_validates_and_connects_without_changing_default(cx: &mut gpui:
         assert_eq!(w.remotes.hosts, ["user@desktop"]);
         assert!(w.remotes.default_host.is_none());
     });
+    click(vcx, "machines-picker-button");
+    click(vcx, "machine-host-input");
     vcx.simulate_input("button@desktop");
     click(vcx, "machine-connect-input");
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateRemoteSession { host, .. }) if host == "button@desktop")
     );
+    click(vcx, "machines-picker-button");
     workspace.update(vcx, |w, cx| {
         w.connect_machine(Some("-oProxyCommand=bad".into()), cx)
     });
@@ -541,13 +559,13 @@ fn machines_panel_preserves_sidebar_reuses_tabs_and_restores_input(cx: &mut gpui
     vcx.simulate_input("user@reload-host");
     let original = workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.sidebar_view, SidebarView::Files);
-        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots.iter().filter(|slot| !slot.closing).count(), 2);
         assert!(!w.slots[w.active].panel.read(cx).can_fork());
         w.slots[0].panel.entity_id()
     });
     click(vcx, "machines-picker-button");
     workspace.read_with(vcx, |w, cx| {
-        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots.iter().filter(|slot| !slot.closing).count(), 2);
         assert_eq!(w.slots[0].panel.entity_id(), original);
         assert_eq!(
             w.slots[w.active]
@@ -592,6 +610,11 @@ fn machines_panel_preserves_sidebar_reuses_tabs_and_restores_input(cx: &mut gpui
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateRemoteSession {host, ..}) if host == "user@reload-host")
     );
+    vcx.simulate_keystrokes("super-q");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.open_machines(window, cx));
+    });
     vcx.simulate_keystrokes("super-h");
     vcx.run_until_parked();
     vcx.update(|window, cx| {
@@ -623,7 +646,7 @@ fn machines_panel_preserves_sidebar_reuses_tabs_and_restores_input(cx: &mut gpui
             w.open_machines(window, cx);
             w.close_panel(&ClosePanel, window, cx);
             w.open_machines(window, cx);
-            assert_eq!(w.slots.len(), 2);
+            assert_eq!(w.slots.iter().filter(|slot| !slot.closing).count(), 2);
             assert_eq!(
                 w.slots
                     .iter()
@@ -636,7 +659,7 @@ fn machines_panel_preserves_sidebar_reuses_tabs_and_restores_input(cx: &mut gpui
     vcx.run_until_parked();
     click(vcx, "machines-panel-close");
     workspace.read_with(vcx, |w, cx| {
-        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots.iter().filter(|slot| !slot.closing).count(), 1);
         assert!(w.machines_panel_index(cx).is_none());
     });
     assert!(commands.try_recv().is_err());
@@ -854,4 +877,416 @@ fn ssh_startup_does_not_claim_to_be_a_cloud_vm(cx: &mut gpui::TestAppContext) {
     assert!(vcx.debug_bounds("pending-session-status").is_some());
     assert!(vcx.debug_bounds("pending-cloud-label").is_none());
     assert!(vcx.debug_bounds("pending-cloud-background").is_none());
+}
+
+#[test]
+fn remote_draft_ids_keep_validated_destination_and_unique_request() {
+    for host in ["desktop", "user@desktop", "jcode-cloud-alpha"] {
+        let first = pending::next_remote_draft_id(host);
+        let second = pending::next_remote_draft_id(host);
+        assert_ne!(first, second);
+        assert!(Panel::is_pending_session_id(&first));
+        assert_eq!(pending::remote_draft_host(&first), Some(host));
+    }
+    for id in [
+        Panel::STARTUP_SESSION_ID,
+        "startup://draft/local-1",
+        "startup://draft/remote/desktop/",
+        "startup://draft/remote//request",
+        "startup://draft/remote/-oProxyCommand=bad/request",
+        "startup://draft/remote/bad host/request",
+        "ssh://desktop/session",
+    ] {
+        assert_eq!(pending::remote_draft_host(id), None, "{id}");
+    }
+}
+
+#[gpui::test]
+fn concurrent_remote_drafts_queue_immediately_and_promote_out_of_order(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::bind_workspace_keys);
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("desktop".into());
+        w.push_test_panel("existing", cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+    let mut drafts = Vec::new();
+    for text in ["first waiting prompt", "second waiting prompt"] {
+        vcx.simulate_keystrokes("super-n");
+        vcx.run_until_parked();
+        let request = match commands.try_recv().unwrap() {
+            Command::CreateRemoteSession {
+                host,
+                request_id: Some(id),
+                working_dir: None,
+            } => {
+                assert_eq!(host, "desktop");
+                id
+            }
+            _ => panic!("expected correlated remote create"),
+        };
+        vcx.simulate_input(text);
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        vcx.simulate_input("unsent next draft");
+        let identities = workspace.read_with(vcx, |w, cx| {
+            let panel = &w.slots[w.active].panel;
+            assert_eq!(panel.read(cx).session_id, request);
+            assert_eq!(
+                serde_json::to_value(panel.read(cx).snapshot(cx).prompt_queue).unwrap()["prompts"]
+                    [0]["content"],
+                text
+            );
+            (panel.entity_id(), panel.read(cx).input.entity_id())
+        });
+        drafts.push((request, identities, text));
+        assert!(
+            commands.try_recv().is_err(),
+            "pending Enter must not send a placeholder ID"
+        );
+    }
+    assert_ne!(drafts[0].0, drafts[1].0);
+    workspace.update(vcx, |w, cx| {
+        for (index, message, failed) in [
+            (0, "first host denied", true),
+            (1, "second connecting", false),
+        ] {
+            w.apply(
+                Update::RemoteStatus {
+                    host: "desktop".into(),
+                    message: message.into(),
+                    failed,
+                    request_id: Some(drafts[index].0.clone()),
+                },
+                cx,
+            );
+        }
+        // A buffered helper phase may arrive after the terminal failure.
+        // It must not clear recovery controls or overwrite this request's error.
+        w.apply(
+            Update::RemoteStatus {
+                host: "desktop".into(),
+                message: "buffered SSH connection phase".into(),
+                failed: false,
+                request_id: Some(drafts[0].0.clone()),
+            },
+            cx,
+        );
+        for (index, expected) in [
+            (0, "Session creation failed: desktop: first host denied"),
+            (1, "desktop: second connecting"),
+        ] {
+            let panel = w
+                .slots
+                .iter()
+                .find(|slot| slot.panel.entity_id() == drafts[index].1.0)
+                .unwrap()
+                .panel
+                .read(cx);
+            assert_eq!(panel.status, expected);
+        }
+    });
+    for index in [1, 0] {
+        let ready = format!("ssh://desktop/ready-{index}");
+        workspace.update(vcx, |w, cx| {
+            w.apply(
+                Update::SessionCreated {
+                    session: session(&ready),
+                    request_id: Some(drafts[index].0.clone()),
+                },
+                cx,
+            );
+            w.apply(
+                Update::History {
+                    session_id: ready.clone(),
+                    messages: vec![],
+                    images: vec![],
+                },
+                cx,
+            );
+            let panel = w
+                .slots
+                .iter()
+                .find(|slot| slot.panel.entity_id() == drafts[index].1.0)
+                .unwrap()
+                .panel
+                .read(cx);
+            assert_eq!(panel.session_id, ready);
+            assert_eq!(panel.input.entity_id(), drafts[index].1.1);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "unsent next draft");
+            assert_eq!(w.slots.len(), 3);
+        });
+        vcx.run_until_parked();
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Send {session_id, content, ..}) if session_id == ready && content == drafts[index].2)
+        );
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[gpui::test]
+fn remote_retry_and_local_choice_keep_editor_but_replace_request_after_default_changes(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.open_remote_draft("original-host".into(), cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    let first = match commands.try_recv().unwrap() {
+        Command::CreateRemoteSession {
+            request_id: Some(id),
+            ..
+        } => id,
+        _ => panic!("expected remote create"),
+    };
+    vcx.run_until_parked();
+    vcx.simulate_input("queued before retry");
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_input("unsent through retry");
+    let identities = workspace.read_with(vcx, |w, cx| {
+        (
+            w.slots[0].panel.entity_id(),
+            w.slots[0].panel.read(cx).input.entity_id(),
+        )
+    });
+    workspace.update(vcx, |w, cx| {
+        w.set_default_machine(Some("different-host".into()), cx);
+        w.apply(
+            Update::RemoteStatus {
+                host: "original-host".into(),
+                message: "denied".into(),
+                failed: true,
+                request_id: Some(first.clone()),
+            },
+            cx,
+        );
+    });
+    click(vcx, "pending-session-retry");
+    let retry = match commands.try_recv().unwrap() {
+        Command::CreateRemoteSession {
+            host,
+            request_id: Some(id),
+            ..
+        } => {
+            assert_eq!(host, "original-host");
+            assert_eq!(pending::remote_draft_host(&id), Some("original-host"));
+            assert_ne!(id, first);
+            id
+        }
+        _ => panic!("retry must use draft destination, not new default"),
+    };
+    workspace.update(vcx, |w, cx| {
+        let before = w.slots[0].panel.read(cx).status.clone();
+        w.apply(
+            Update::RemoteStatus {
+                host: "original-host".into(),
+                message: "stale failure".into(),
+                failed: true,
+                request_id: Some(first.clone()),
+            },
+            cx,
+        );
+        assert_eq!(w.slots[0].panel.read(cx).status, before);
+        w.set_default_machine(None, cx);
+    });
+    click(vcx, "pending-session-local");
+    let local = match commands.try_recv().unwrap() {
+        Command::CreateSession {
+            request_id: Some(id),
+            ..
+        } => id,
+        _ => panic!("explicit local choice must create locally"),
+    };
+    assert_ne!(local, first);
+    assert_ne!(local, retry);
+    assert_eq!(pending::remote_draft_host(&local), None);
+    workspace.update(vcx, |w, cx| {
+        for request in [&first, &retry] {
+            w.apply(
+                Update::SessionCreated {
+                    session: session(&format!("ssh://original-host/{request}")),
+                    request_id: Some(request.clone()),
+                },
+                cx,
+            );
+        }
+        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots[0].panel.entity_id(), identities.0);
+        let panel = w.slots[0].panel.read(cx);
+        assert_eq!(panel.input.entity_id(), identities.1);
+        assert_eq!(panel.session_id, local);
+        assert_eq!(
+            panel.input.read(cx).content.as_ref(),
+            "unsent through retry"
+        );
+        assert_eq!(
+            serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap()["prompts"][0]["content"],
+            "queued before retry"
+        );
+    });
+    for request in [&first, &retry] {
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Unwatch {session_id}) if session_id == format!("ssh://original-host/{request}"))
+        );
+    }
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn closed_remote_draft_ignores_status_and_unwatches_late_completion(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.push_test_panel("existing", cx);
+        w.open_remote_draft("desktop".into(), cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    let request = match commands.try_recv().unwrap() {
+        Command::CreateRemoteSession {
+            request_id: Some(id),
+            ..
+        } => id,
+        _ => panic!("expected remote create"),
+    };
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("super-q");
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "pending IDs must never be unwatched"
+    );
+    workspace.update(vcx, |w, cx| {
+        let status = w.slots[0].panel.read(cx).status.clone();
+        w.apply(
+            Update::RemoteStatus {
+                host: "desktop".into(),
+                message: "late failure".into(),
+                failed: true,
+                request_id: Some(request.clone()),
+            },
+            cx,
+        );
+        w.apply(
+            Update::SessionCreated {
+                session: session("ssh://desktop/late"),
+                request_id: Some(request),
+            },
+            cx,
+        );
+        assert_eq!(w.slots.iter().filter(|slot| !slot.closing).count(), 1);
+        assert_eq!(w.slots[0].panel.read(cx).session_id, "existing");
+        assert_eq!(w.slots[0].panel.read(cx).status, status);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Unwatch {session_id}) if session_id == "ssh://desktop/late")
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn remote_pending_snapshot_restores_destination_with_fresh_request_and_queued_text(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.open_remote_draft("user@original-host".into(), cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    let original = match commands.try_recv().unwrap() {
+        Command::CreateRemoteSession {
+            request_id: Some(id),
+            ..
+        } => id,
+        _ => panic!("expected remote create"),
+    };
+    vcx.run_until_parked();
+    vcx.simulate_input("queued across reload");
+    vcx.simulate_keystrokes("enter");
+    vcx.simulate_input("draft across reload");
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.set_default_machine(None, cx);
+            let bytes = w.snapshot(window, cx).unwrap().encode().unwrap();
+            w.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
+            w.restore_focus(window, cx);
+            assert_eq!(w.slots.len(), 1);
+            let panel = w.slots[0].panel.read(cx);
+            assert_ne!(panel.session_id, original);
+            assert_eq!(pending::remote_draft_host(&panel.session_id), Some("user@original-host"));
+            assert_eq!(panel.input.read(cx).content.as_ref(), "draft across reload");
+            assert_eq!(serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap()["prompts"][0]["content"], "queued across reload");
+        });
+    });
+    let restored = match commands.try_recv().unwrap() {
+        Command::CreateRemoteSession {
+            host,
+            request_id: Some(id),
+            working_dir: None,
+        } => {
+            assert_eq!(host, "user@original-host");
+            assert_ne!(id, original);
+            id
+        }
+        _ => panic!("restored remote draft must never become local"),
+    };
+    assert!(commands.try_recv().is_err());
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionCreated {
+                session: session("ssh://user%40original-host/stale"),
+                request_id: Some(original),
+            },
+            cx,
+        );
+        assert_eq!(w.slots[0].panel.read(cx).session_id, restored);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Unwatch {session_id}) if session_id == "ssh://user%40original-host/stale")
+    );
+}
+
+#[gpui::test]
+fn cloud_pending_branding_uses_draft_host_instead_of_changed_default(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = cx.add_window_view(|window, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.remotes.default_host = Some("ordinary-ssh".into());
+        w.open_remote_draft("jcode-cloud-alpha".into(), cx);
+        w.restore_focus(window, cx);
+        w
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-cloud-label").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_some());
+    workspace.update(vcx, |w, cx| w.set_default_machine(None, cx));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("pending-cloud-label").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-background").is_some());
+    vcx.simulate_input("cloud remains editable");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(
+            w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+            "cloud remains editable"
+        );
+    });
 }
