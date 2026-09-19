@@ -10,6 +10,7 @@ No daemon or provider is contacted. Per-step PNG/OCR, TOML, navigation, logs, an
 an acceptance JSON report survive the harness's temporary-directory cleanup.
 """
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import time
@@ -178,18 +179,28 @@ def verify(output, env, root):
         assert button[1] > image.height * .8, "Picker footer must be at the workspace bottom"
         return [word for word in words if word["y"] < footer_top] + footer
 
+    def directory_button(image, label):
+        # The launcher is now the destination's path beside the three machine
+        # icons, not a separate "Default directory" label. Inspect only the path
+        # area so an icon or a session heading cannot impersonate the launcher.
+        directory = pinned()
+        title = Path(directory).name.split()[0] if directory else "home"
+        return phrase_bounds(ui.words(image, (112, 52, 252, 92), label, psm=7), title)
+
     def closed(image):
         assert not any(panel["session"] == DEFAULT_DIRECTORY_SESSION
                        for panel in panels(navigation())), "Utility slot stayed open"
         # The launcher remains visible after the utility slot is removed.
-        phrase_bounds(ui.words(image, (0, 48, 264, 110), stage + "-sidebar"), "Default directory")
+        directory_button(image, stage + "-sidebar")
         words = ui.words(image, (276, 48, image.width - 12, image.height - 16), stage + "-closed")
         assert "defaultdirectory" not in normalized(" ".join(w["text"] for w in words)), "Picker stayed rendered"
 
     def open_picker(label):
-        bounds = ui.wait_frame(label + "-button", lambda image: phrase_bounds(
-            ui.words(image, (0, 48, 264, 110), label + "-button"), "Default directory"))
+        # Dismiss the path tooltip before reading or re-clicking the launcher.
+        ui.native("mousemove", 800, 400)
+        bounds = ui.wait_frame(label + "-button", lambda image: directory_button(image, label + "-button"))
         ui.click(bounds)
+        ui.native("mousemove", 800, 400)
         def opened(image):
             state = navigation()
             panel = default_panel(state)
