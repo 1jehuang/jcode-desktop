@@ -61,6 +61,24 @@ Requests waiting on the same successful wake share this short-lived result.
 Each panel still creates its own remote API session. A running VM is not itself
 proof of a working connection, and this optimization does not guarantee instant
 attachment or bypass the independent shutdown guards.
+
+Panel appearance and session readiness are different measurements. A pending
+editor should appear immediately, while a usable session requires an independent
+API attachment and loaded history. The warm-session target is hundreds of
+milliseconds when readiness is already verified and a live transport can be
+reused. It is not a cold-boot guarantee or a promise to skip expired safety checks.
+On Unix, Desktop reuses a private authenticated SSH master while panels use it,
+but opens a separate remote API connection for each panel. The pool is scoped to
+the current Desktop bridge, not a persistent global SSH configuration. Changed
+SSH/cloud identity, transport failure, or a conservative eight-connection shard
+limit causes a future connection to use a new master. Other platforms retain the
+isolated SSH path. Closing the last owning panel releases its master, allowing
+idle shutdown. No user-configured SSH master is adopted or terminated.
+
+This removes repeated SSH/SSM authentication from eligible warm connections. It
+does not eliminate network round trips, expired readiness checks, or cold-boot
+latency, and it does not automatically retry ambiguous session creation.
+
 Repositories belong under `~/workspaces` on the VM. No local checkout, model
 credential, AWS credential, or SSH private key is copied to the VM.
 

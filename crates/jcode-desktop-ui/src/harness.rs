@@ -21,6 +21,29 @@ mod spawn_profile;
 #[path = "remote.rs"]
 mod remote;
 
+#[cfg(unix)]
+#[path = "harness_transport.rs"]
+mod transport;
+
+// Shared OpenSSH control sockets are Unix-only. Other platforms retain the
+// SDK's existing isolated transport behavior and security defaults.
+#[cfg(not(unix))]
+mod transport {
+    #[derive(Clone, Default)]
+    pub(super) struct RemoteTransports;
+
+    impl RemoteTransports {
+        pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
+            jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
+                client_name: format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+                connect_timeout: std::time::Duration::from_secs(20),
+                request_timeout: Some(std::time::Duration::from_secs(30)),
+                ..jcode_sdk::SshConnectOptions::new(host)
+            })
+        }
+    }
+}
+
 #[path = "harness_recovery.rs"]
 mod recovery;
 
@@ -297,15 +320,6 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     })
 }
 
-fn connect_remote(host: &str, client_name: &str) -> jcode_sdk::Result<JcodeClient> {
-    JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
-        client_name: format!("jcode-desktop-{client_name}/{}", crate::build_info::VERSION),
-        connect_timeout: Duration::from_secs(20),
-        request_timeout: Some(Duration::from_secs(30)),
-        ..jcode_sdk::SshConnectOptions::new(host)
-    })
-}
-
 /// Gracefully detach idle attachments, including from older runtimes that use
 /// the ownership flag for crash detection. Current runtimes classify abrupt
 /// disconnects as crashes only when they interrupt an unfinished turn.
@@ -384,6 +398,21 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             move || start_local_runtime(updates)
         })
         .expect("spawn local startup thread");
+    // One pool per bridge run, never a process-global/dylib-lifetime singleton.
+    run_with_transports(
+        updates,
+        commands,
+        internal,
+        transport::RemoteTransports::default(),
+    );
+}
+
+fn run_with_transports(
+    updates: UpdateSender,
+    commands: Receiver<Command>,
+    internal: Sender<Command>,
+    transports: transport::RemoteTransports,
+) {
     let session_refresh_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Per-session workers, keyed by session id.
@@ -452,6 +481,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             } => {
                 let updates = updates.clone();
                 let internal = internal.clone();
+                let transports = transports.clone();
                 std::thread::Builder::new()
                     .name("jcode-bridge-ssh-create".into())
                     .spawn(move || {
@@ -461,7 +491,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                             request_id,
                             updates,
                             internal,
-                            |host| connect_remote(host, "create"),
+                            |host| transports.connect(host),
                         );
                     })
                     .expect("spawn remote create thread");
@@ -481,13 +511,18 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                     session,
                     request_id,
                 });
-                let worker = spawn_attached_session_worker(session_id.clone(), client, &updates);
+                let worker = spawn_attached_session_worker(
+                    session_id.clone(),
+                    client,
+                    &updates,
+                    &transports,
+                );
                 if let Some(old) = workers.insert(session_id, worker) {
                     let _ = old.send(SessionCommand::Stop);
                 }
             }
             Command::Watch { session_id } => {
-                ensure_session_worker(&mut workers, session_id, &updates);
+                ensure_session_worker(&mut workers, session_id, &updates, &transports);
             }
             Command::Unwatch { session_id } => {
                 if let Some(worker) = workers.remove(&session_id) {
@@ -501,7 +536,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             } => {
                 let command = SessionCommand::Send { content, images };
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
-                    spawn_session_worker(session_id, &updates)
+                    spawn_session_worker(session_id, &updates, &transports)
                 });
             }
             Command::Cancel { session_id } => {
@@ -512,7 +547,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             Command::SetModel { session_id, model } => {
                 let command = SessionCommand::SetModel(model);
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
-                    spawn_session_worker(session_id, &updates)
+                    spawn_session_worker(session_id, &updates, &transports)
                 });
             }
             Command::RefreshRuntime { session_id } => {
@@ -520,7 +555,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                     &mut workers,
                     session_id,
                     SessionCommand::RefreshRuntime,
-                    |session_id| spawn_session_worker(session_id, &updates),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
             Command::SessionOperation {
@@ -529,7 +564,7 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
             } => {
                 let command = SessionCommand::Operation(operation);
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
-                    spawn_session_worker(session_id, &updates)
+                    spawn_session_worker(session_id, &updates, &transports)
                 });
             }
             Command::Fork { session_id } => {
@@ -537,10 +572,17 @@ fn run(updates: UpdateSender, commands: Receiver<Command>, internal: Sender<Comm
                     &mut workers,
                     session_id,
                     SessionCommand::Fork,
-                    |session_id| spawn_session_worker(session_id, &updates),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
         }
+    }
+    stop_session_workers(workers);
+}
+
+fn stop_session_workers(workers: HashMap<String, Sender<SessionCommand>>) {
+    for worker in workers.into_values() {
+        let _ = worker.send(SessionCommand::Stop);
     }
 }
 
@@ -1048,21 +1090,27 @@ fn ensure_session_worker(
     workers: &mut HashMap<String, Sender<SessionCommand>>,
     session_id: String,
     updates: &UpdateSender,
+    transports: &transport::RemoteTransports,
 ) -> Sender<SessionCommand> {
     if let Some(worker) = workers.get(&session_id) {
         return worker.clone();
     }
-    let tx = spawn_session_worker(session_id.clone(), updates);
+    let tx = spawn_session_worker(session_id.clone(), updates, transports);
     workers.insert(session_id, tx.clone());
     tx
 }
 
-fn spawn_session_worker(session_id: String, updates: &UpdateSender) -> Sender<SessionCommand> {
+fn spawn_session_worker(
+    session_id: String,
+    updates: &UpdateSender,
+    transports: &transport::RemoteTransports,
+) -> Sender<SessionCommand> {
     let (tx, rx) = channel::<SessionCommand>();
     let updates = updates.clone();
+    let transports = transports.clone();
     std::thread::Builder::new()
         .name(format!("jcode-session-{session_id}"))
-        .spawn(move || session_worker(session_id, rx, updates, None))
+        .spawn(move || session_worker_with_transports(session_id, rx, updates, None, transports))
         .expect("spawn session worker");
     tx
 }
@@ -1071,12 +1119,16 @@ fn spawn_attached_session_worker(
     session_id: String,
     client: JcodeClient,
     updates: &UpdateSender,
+    transports: &transport::RemoteTransports,
 ) -> Sender<SessionCommand> {
     let (tx, rx) = channel::<SessionCommand>();
     let updates = updates.clone();
+    let transports = transports.clone();
     std::thread::Builder::new()
         .name(format!("jcode-session-{session_id}"))
-        .spawn(move || session_worker(session_id, rx, updates, Some(client)))
+        .spawn(move || {
+            session_worker_with_transports(session_id, rx, updates, Some(client), transports)
+        })
         .expect("spawn attached session worker");
     tx
 }
@@ -1122,16 +1174,50 @@ fn next_worker_command(
     }
 }
 
-/// One session's dedicated connection: attach, history, events, commands.
+// Existing socket-pair tests need no live transport pool.
+#[cfg(test)]
 fn session_worker(
     session_id: String,
     commands: Receiver<SessionCommand>,
     updates: UpdateSender,
     initial_client: Option<JcodeClient>,
 ) {
+    session_worker_with_transports(
+        session_id,
+        commands,
+        updates,
+        initial_client,
+        transport::RemoteTransports::default(),
+    );
+}
+
+/// One session's dedicated API connection, including an adopted client's reconnect.
+fn session_worker_with_transports(
+    session_id: String,
+    commands: Receiver<SessionCommand>,
+    updates: UpdateSender,
+    initial_client: Option<JcodeClient>,
+    transports: transport::RemoteTransports,
+) {
+    // Keep the shared master alive across this worker's API reconnect, but
+    // never after the worker stops. Adoption preserves the creator's owner.
+    #[cfg(unix)]
+    let mut transport_lease = initial_client
+        .as_ref()
+        .and_then(JcodeClient::shared_ssh_transport);
     session_worker_with_connector(session_id, commands, updates, initial_client, |address| {
         match &address.host {
-            Some(host) => connect_remote(host, "panel"),
+            Some(host) => {
+                let result = transports.connect(host);
+                #[cfg(unix)]
+                {
+                    transport_lease = result
+                        .as_ref()
+                        .ok()
+                        .and_then(JcodeClient::shared_ssh_transport);
+                }
+                result
+            }
             None => connect("panel"),
         }
     });
@@ -2335,3 +2421,7 @@ mod side_panel_routing_tests {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "harness_transport_integration_tests.rs"]
+mod transport_integration_tests;
