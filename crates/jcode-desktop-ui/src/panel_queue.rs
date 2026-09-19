@@ -1,8 +1,14 @@
 //! Prompts explicitly queued by Ctrl+Enter wait for the current turn to finish.
 use super::*;
 
+#[path = "panel_auto_poke.rs"]
+mod auto_poke;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptQueue {
+    // Never resume automatic work merely by restoring a window.
+    #[serde(skip)]
+    auto_poke: auto_poke::AutoPoke,
     prompts: Vec<QueuedPrompt>,
     #[serde(default)]
     pub(super) paused: bool,
@@ -46,6 +52,17 @@ impl Panel {
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
+        self.prompt_queue.paused = false;
+        self.prompt_queue.auto_poke.start(self.items.len());
+        self.send_prompt(content, images, cx);
+    }
+
+    fn send_prompt(
+        &mut self,
+        content: String,
+        images: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
         self.bridge.send(Command::Send {
             session_id: self.session_id.clone(),
             content: content.clone(),
@@ -74,6 +91,7 @@ impl Panel {
     }
 
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
+        self.prompt_queue.auto_poke.observe(event);
         match event {
             ApiEvent::Error { .. } => self.prompt_queue.paused = true,
             ApiEvent::SessionStatus { status, .. }
@@ -84,7 +102,10 @@ impl Panel {
             ApiEvent::TurnDone { .. } => {
                 let panel = cx.weak_entity();
                 cx.defer(move |cx| {
-                    let _ = panel.update(cx, |this, cx| this.send_queued_prompts(cx));
+                    let _ = panel.update(cx, |this, cx| {
+                        this.send_queued_prompts(cx);
+                        this.send_auto_poke(cx);
+                    });
                 });
             }
             ApiEvent::SessionStatus { status, .. } if status == "idle" => {
