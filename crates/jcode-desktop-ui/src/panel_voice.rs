@@ -371,8 +371,12 @@ impl Panel {
                     })
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                    .on_click(cx.listener(|panel, _, _, cx| {
-                        panel.toggle_voice(cx);
+                    .on_click(cx.listener(|panel, _, window, cx| {
+                        // All controls use the same action path. Workspace captures
+                        // this before the panel fallback to stop the existing owner,
+                        // even if this button belongs to another conversation.
+                        panel.focus_input(window, cx);
+                        window.dispatch_action(Box::new(ToggleVoice), cx);
                         cx.stop_propagation();
                     }))
                     .child(label)
