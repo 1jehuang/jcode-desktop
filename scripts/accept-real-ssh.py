@@ -44,6 +44,7 @@ def main():
             env.update(JCODE_RUNTIME_DIR=env["XDG_RUNTIME_DIR"], JCODE_SOCKET=str(base / "runtime/jcode.sock"), JCODE_NO_TELEMETRY="1", JCODE_DEFERRED_AUTH_BOOTSTRAP="1", JCODE_WAKE_MODE="external")
             envs[name] = env
         env = envs["local"]
+        env["JCODE_API_SOCKET"] = str(root / "local/runtime/api.sock")
         bindir = root / "bin"
         bindir.mkdir()
         (bindir / "jcode").symlink_to(cli)
@@ -228,6 +229,10 @@ def main():
             for name, environment in envs.items():
                 daemon = launch(name+"-daemon", [str(cli), "--no-update", "serve"], environment)
                 wait(name+" daemon", lambda e=environment, d=daemon: alive_socket(e["JCODE_SOCKET"], d))
+            # Do not let the SDK autostart a detached bridge that outlives the
+            # temporary HOME. Keep its process group in the same cleanup list.
+            api_bridge = launch("local-api-bridge", [str(cli), "--no-update", "api-bridge"], env)
+            wait("local API bridge", lambda: alive_socket(env["JCODE_API_SOCKET"], api_bridge))
             for key in ("host_key", "client_key"):
                 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root/key)], check=True, timeout=20)
             user = subprocess.check_output(["id", "-un"], text=True).strip()

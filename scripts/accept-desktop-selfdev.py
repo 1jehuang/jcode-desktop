@@ -236,7 +236,7 @@ def main():
         report["checks"]["real_reload"] = {"ack": ack, "generation_before": before,
                                              "generation_after": generation(), "preserved_pid": host.pid,
                                              "preserved_windows": window_after, "preserved_sessions": sessions(nav_after)}
-        screenshot_path = target / "desktop-selfdev/ui-review.png"
+        screenshot_path = root / "ui-review.png"
         screenshot = tool("screenshot", output=str(screenshot_path.relative_to(target)), timeout_seconds=600)
         assert screenshot["success"], screenshot
         assert screenshot_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
