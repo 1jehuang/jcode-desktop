@@ -8640,6 +8640,7 @@ mod tests {
                 Update::Event {
                     session_id: "session_fox_1234567890000_deadbeef".into(),
                     event: jcode_sdk::ApiEvent::TextDelta {
+                        message_id: None,
                         session_id: "session_fox_1234567890000_deadbeef".into(),
                         text: "working".into(),
                     },
@@ -8730,6 +8731,7 @@ mod tests {
                 text: "Thinking".into(),
             },
             jcode_sdk::ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "sidebar-activity".into(),
                 text: "Responding".into(),
             },

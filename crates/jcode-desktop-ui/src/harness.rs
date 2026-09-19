@@ -2272,6 +2272,7 @@ mod tests {
         let mut active = false;
         update_turn_activity(
             &ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "s1".into(),
                 text: "observed".into(),
             },

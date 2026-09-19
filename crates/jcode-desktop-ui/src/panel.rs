@@ -6767,6 +6767,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: "more streamed text".into(),
                 },
@@ -7729,6 +7730,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: "hello back".into(),
                 },
@@ -7807,6 +7809,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: crash_shaped.into(),
                 },
@@ -7842,6 +7845,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: "```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```".into(),
                 },

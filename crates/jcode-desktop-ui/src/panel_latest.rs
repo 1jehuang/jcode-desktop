@@ -78,6 +78,7 @@ mod tests {
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "latest-resize".into(),
                     text: "Streaming reply".into(),
                 },

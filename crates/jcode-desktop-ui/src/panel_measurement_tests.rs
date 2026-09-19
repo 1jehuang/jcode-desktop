@@ -92,6 +92,7 @@ fn live_text_growth_remeasures_only_suffix_and_updates_real_geometry(
     panel.update(vcx, |panel, cx| {
         panel.apply(
             &ApiEvent::TextDelta {
+                message_id: None,
                 session_id: panel.session_id.clone(),
                 text: "Initial reply.".into(),
             },
@@ -113,6 +114,7 @@ fn live_text_growth_remeasures_only_suffix_and_updates_real_geometry(
     panel.update(vcx, |panel, cx| {
         panel.apply(
             &ApiEvent::TextDelta {
+                message_id: None,
                 session_id: panel.session_id.clone(),
                 text: "\n\nAdditional paragraph.".repeat(5),
             },

@@ -290,6 +290,7 @@ mod socket_tests {
             // A fence confirms the event loop handled the rejection without
             // forwarding it to the transcript or issuing another normal send.
             worker.event(ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "s1".into(),
                 text: "continued".into(),
             });
@@ -350,6 +351,7 @@ mod socket_tests {
         );
         assert_steering(worker.request(), "new followup", images());
         worker.event(ApiEvent::TextDelta {
+            message_id: None,
             session_id: "s1".into(),
             text: "continued".into(),
         });

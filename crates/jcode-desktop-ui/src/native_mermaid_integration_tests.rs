@@ -53,6 +53,7 @@ fn stream_and_resize(
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-mermaid-sizing".into(),
                     text: text.into(),
                 },

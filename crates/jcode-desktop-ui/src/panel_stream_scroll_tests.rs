@@ -19,6 +19,7 @@ fn streaming_chunks_preserve_touchpad_reading_position(cx: &mut gpui::TestAppCon
             .collect();
         panel.apply(
             &ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "scroll-stream".into(),
                 text: "A streaming paragraph.\n\n".repeat(80),
             },
@@ -46,6 +47,7 @@ fn streaming_chunks_preserve_touchpad_reading_position(cx: &mut gpui::TestAppCon
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "scroll-stream".into(),
                     text: format!("Chunk {n}.\n\n"),
                 },
@@ -148,6 +150,7 @@ fn upward_touchpad_between_chunk_and_paint_moves_from_visible_position(
         panel.items = vec![Item::Assistant("History paragraph.\n\n".repeat(80))];
         panel.apply(
             &ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "scroll-race".into(),
                 text: "Live reply".into(),
             },
@@ -164,6 +167,7 @@ fn upward_touchpad_between_chunk_and_paint_moves_from_visible_position(
         panel.update(cx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "scroll-race".into(),
                     text: " more".into(),
                 },

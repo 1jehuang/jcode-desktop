@@ -137,6 +137,7 @@ async fn encoded_image_asset_and_geometry_survive_streaming_and_history_reconstr
                         if streaming {
                             panel.apply(
                                 &ApiEvent::TextDelta {
+                                    message_id: None,
                                     session_id: "image-stability".into(),
                                     text: "Short answer.".into(),
                                 },
@@ -241,6 +242,7 @@ fn settled_html_preview_keeps_its_instance_across_streaming_ancestor_changes(
             if streaming {
                 panel.apply(
                     &ApiEvent::TextDelta {
+                        message_id: None,
                         session_id: "html-image-stability".into(),
                         text: "Unrelated answer.".into(),
                     },
