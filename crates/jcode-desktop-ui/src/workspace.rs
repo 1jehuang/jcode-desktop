@@ -262,6 +262,9 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 264.0;
+// Center the 4px thumb in the gap between the session tabs and main sheet.
+// The normal layout has no connector gap, so its gutter stays inside the sidebar.
+const SIDEBAR_SCROLLBAR_OUTSET: f32 = 8.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
@@ -4552,13 +4555,18 @@ impl Workspace {
 
     fn render_sidebar_scrollbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let sessions = self.sidebar_view == SidebarView::Sessions;
+        let outset = if self.layout_mode == crate::config::LayoutMode::FolderTabs {
+            SIDEBAR_SCROLLBAR_OUTSET
+        } else {
+            0.0
+        };
         div()
             .id("sidebar-scroll-gutter")
             .debug_selector(|| "sidebar-scroll-gutter".into())
             .absolute()
             .top_0()
             .bottom_0()
-            .right_0()
+            .right(px(-outset))
             .w(px(crate::scrollbar::GUTTER))
             // The gutter is a sibling overlay, not part of the scrollable
             // content. Handle its wheel input just like the folder-tab strip,
@@ -9066,12 +9074,12 @@ mod tests {
             .debug_bounds("sidebar-scrollbar")
             .expect("overflowing session history should paint a scrollbar");
         assert!(
-            scrollbar.right() == list.right() - px(4.0),
-            "the thin scrollbar is inset from the right edge of the session list"
+            scrollbar.right() == list.right() + px(SIDEBAR_SCROLLBAR_OUTSET - 4.0),
+            "the thin scrollbar sits in the gap beyond the session tabs"
         );
         assert_eq!(scrollbar.size.width, px(4.0));
         let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
-        assert_eq!(gutter.right(), list.right());
+        assert_eq!(gutter.right(), list.right() + px(SIDEBAR_SCROLLBAR_OUTSET));
         assert_eq!(gutter.size.width, px(crate::scrollbar::GUTTER));
     }
 
@@ -9133,6 +9141,21 @@ mod tests {
                 }
                 assert_eq!(gutter.top(), body.top());
                 assert_eq!(gutter.bottom(), body.bottom());
+                let outset = if mode == crate::config::LayoutMode::FolderTabs {
+                    SIDEBAR_SCROLLBAR_OUTSET
+                } else {
+                    0.0
+                };
+                assert_eq!(gutter.right(), body.right() + px(outset));
+                if view == SidebarView::Sessions
+                    && mode == crate::config::LayoutMode::FolderTabs
+                {
+                    let scrollbar = vcx.debug_bounds("sidebar-scrollbar").unwrap();
+                    let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
+                    let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+                    assert_eq!(scrollbar.left() - tab.right(), px(8.0));
+                    assert_eq!(canvas.left() - scrollbar.right(), px(8.0));
+                }
                 let tabs_before =
                     workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
                 let offset = |w: &Workspace| match view {
@@ -9142,15 +9165,7 @@ mod tests {
                     _ => w.sidebar_scroll.offset().y,
                 };
                 for (delta, expected) in [(-37.0, -37.0), (12.0, -25.0), (10000.0, 0.0)] {
-                    let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-                    let position = gpui::point(
-                        if view == SidebarView::Sessions {
-                            body.left() + px(6.0)
-                        } else {
-                            body.right() - px(6.0)
-                        },
-                        body.center().y,
-                    );
+                    let position = vcx.debug_bounds("sidebar-scroll-gutter").unwrap().center();
                     vcx.simulate_event(gpui::ScrollWheelEvent {
                         position,
                         delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(delta))),
@@ -9167,15 +9182,7 @@ mod tests {
                         assert_eq!(w.sidebar_navigation_scroll.offset(), tabs_before);
                     });
                 }
-                let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-                let position = gpui::point(
-                    if view == SidebarView::Sessions {
-                        body.left() + px(6.0)
-                    } else {
-                        body.right() - px(6.0)
-                    },
-                    body.center().y,
-                );
+                let position = vcx.debug_bounds("sidebar-scroll-gutter").unwrap().center();
                 for lines in [-4.0, 10000.0] {
                     vcx.simulate_event(gpui::ScrollWheelEvent {
                         position,
