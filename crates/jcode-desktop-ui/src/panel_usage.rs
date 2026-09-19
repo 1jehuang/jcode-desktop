@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn status_row_never_grows_with_width_or_content(cx: &mut gpui::TestAppContext) {
+    fn status_rows_wrap_with_bounded_height_and_visible_controls(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -254,12 +254,19 @@ mod tests {
                     });
                     vcx.run_until_parked();
                     let row = vcx.debug_bounds("panel-meta").expect("status row");
-                    assert_eq!(row.size.height, px(30.), "width={width}, status={status}");
+                    // Three bounded groups may wrap, but long metadata/status
+                    // text must never create unbounded footer height.
+                    assert!(
+                        row.size.height >= px(30.) && row.size.height <= px(90.),
+                        "width={width}, status={status}: {row:?}"
+                    );
                     for selector in [
                         "panel-identity",
                         "panel-build",
                         "panel-status",
                         "panel-usage",
+                        "voice-toggle",
+                        "voice-shortcut",
                     ] {
                         if let Some(child) = vcx.debug_bounds(selector) {
                             assert!(child.top() >= row.top(), "{selector}: {child:?}");

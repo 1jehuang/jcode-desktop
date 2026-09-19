@@ -3,6 +3,18 @@ use super::*;
 use jcode_base::voice::{self, MicrophoneRecording, VoiceError};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+gpui::actions!(panel_voice, [ToggleVoice]);
+
+pub(crate) fn bind_keys(cx: &mut gpui::App) {
+    cx.bind_keys([gpui::KeyBinding::new(
+        "ctrl-shift-v",
+        ToggleVoice,
+        Some("ChatPanel"),
+    )]);
+}
+
+const VOICE_SHORTCUT: &str = "Ctrl+Shift+V";
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
@@ -38,7 +50,7 @@ impl Render for VoiceTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().max_w(px(300.)).p_2().rounded_md().bg(Theme::global().HEADER_BG)
             .text_size(px(12.)).text_color(Theme::global().TEXT)
-            .child(format!("{} · Voice dictation is included with an active Jcode subscription. Audio is sent to Groq when you stop. Review the transcript before sending.", self.0))
+            .child(format!("{} · {VOICE_SHORTCUT} starts/stops voice dictation (or cancels a pending request). Voice dictation is included with an active Jcode subscription. Audio is sent to Groq when you stop. Review the transcript before sending.", self.0))
     }
 }
 
@@ -49,6 +61,14 @@ async fn canceled(token: &AtomicBool) {
 }
 
 impl Panel {
+    pub(super) fn toggle_voice(&mut self, cx: &mut Context<Self>) {
+        match self.voice.phase {
+            Phase::Idle => self.start_voice(cx),
+            Phase::Recording => self.stop_voice(cx),
+            Phase::Checking | Phase::Transcribing => self.cancel_voice(cx),
+        }
+    }
+
     fn cancel_voice(&mut self, cx: &mut Context<Self>) {
         self.voice = VoiceState::default();
         cx.notify();
@@ -256,12 +276,21 @@ impl Panel {
             })
             .flex()
             .items_center()
-            .flex_1()
-            .min_w(px(54.))
+            .gap_2()
+            .justify_end()
+            .flex_shrink_1()
+            .min_w(px(160.))
             .text_size(px(10.5))
             .text_color(theme.TEXT_DIM)
             .when(!active, |el| {
-                el.child(div().min_w_0().flex_shrink_1().truncate().child(status))
+                el.child(
+                    div()
+                        .debug_selector(|| "voice-ready-status".into())
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .truncate()
+                        .child(status),
+                )
             })
             .child(
                 div()
@@ -270,7 +299,10 @@ impl Panel {
                     .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
                     .flex_none()
                     .px_2()
-                    .py_1()
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .rounded_md()
                     .bg(theme.HEADER_BG)
                     .text_color(if phase == Phase::Recording {
@@ -281,14 +313,16 @@ impl Panel {
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                     .on_click(cx.listener(|panel, _, _, cx| {
-                        match panel.voice.phase {
-                            Phase::Idle => panel.start_voice(cx),
-                            Phase::Recording => panel.stop_voice(cx),
-                            _ => panel.cancel_voice(cx),
-                        }
+                        panel.toggle_voice(cx);
                         cx.stop_propagation();
                     }))
-                    .child(label),
+                    .child(label)
+                    .child(
+                        div()
+                            .debug_selector(|| "voice-shortcut".into())
+                            .text_size(px(10.))
+                            .child(VOICE_SHORTCUT),
+                    ),
             )
             .into_any_element()
     }
@@ -297,6 +331,95 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn voice_shortcut_toggles_focused_composer_without_sending(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::input::bind_keys(cx);
+            crate::bind_workspace_keys(cx);
+            // Reloading the keymap must not dispatch the toggle twice.
+            crate::bind_workspace_keys(cx);
+        });
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("keep my draft".into(), cx)
+            });
+        });
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        });
+        vcx.simulate_keystrokes("ctrl-shift-v");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            assert!(
+                panel
+                    .voice
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("offline previews")
+            );
+            assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft");
+            assert!(panel.voice.recording.is_none());
+        });
+        for phase in [Phase::Checking, Phase::Transcribing] {
+            panel.update(vcx, |panel, cx| {
+                panel.voice.error = None;
+                panel.voice.phase = phase;
+                cx.notify();
+            });
+            vcx.simulate_keystrokes("ctrl-shift-v");
+            panel.read_with(vcx, |panel, cx| {
+                assert!(panel.voice.phase == Phase::Idle);
+                assert!(panel.voice.error.is_none(), "toggle must fire only once");
+                assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn voice_footer_keeps_shortcut_and_spacing_at_all_widths(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [240., 320., 480., 800., 1440.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
+            for phase in [
+                Phase::Idle,
+                Phase::Checking,
+                Phase::Recording,
+                Phase::Transcribing,
+            ] {
+                panel.update(vcx, |panel, cx| {
+                    panel.model = Some("gpt-6-astra".into());
+                    panel.provider = Some("openai".into());
+                    panel.voice.phase = phase;
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let footer = vcx.debug_bounds("panel-meta").unwrap();
+                let button = vcx.debug_bounds("voice-toggle").unwrap();
+                let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
+                let status = vcx.debug_bounds("voice-ready-status").unwrap();
+                assert!(
+                    button.left() >= footer.left() && button.right() <= footer.right(),
+                    "voice at {width}: {button:?} outside {footer:?}"
+                );
+                assert!(button.top() >= footer.top() && button.bottom() <= footer.bottom());
+                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
+                assert!(
+                    shortcut.size.width > px(60.),
+                    "shortcut must not be clipped"
+                );
+                assert!(
+                    button.left() - status.right() >= px(7.),
+                    "Ready needs breathing room"
+                );
+                assert_eq!(button.size.height, px(22.));
+            }
+        }
+    }
 
     #[gpui::test]
     fn voice_controls_render_and_cancel_without_network(cx: &mut gpui::TestAppContext) {

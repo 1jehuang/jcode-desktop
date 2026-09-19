@@ -65,7 +65,7 @@ mod tool_streaming;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
 #[path = "panel_voice.rs"]
-mod voice;
+pub(crate) mod voice;
 #[path = "panel_side_document.rs"]
 mod side_document;
 pub use side_document::SideDocumentSnapshot;
@@ -4264,6 +4264,10 @@ impl Render for Panel {
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
+            .key_context("ChatPanel")
+            .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
+                panel.toggle_voice(cx);
+            }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);
@@ -4458,20 +4462,20 @@ impl Render for Panel {
             .when(self.recovery_picker_open, |el| {
                 el.child(self.render_recovery_model_picker(cx))
             })
-            // Keep metadata and usage in one stable-height row. The meters share
-            // the right side with activity, leaving model/account controls intact.
+            // Keep controls together, wrapping the status group on narrow panels
+            // rather than clipping the voice button or its shortcut.
             .child(
                 div()
                     .debug_selector(|| "panel-meta".into())
                     .flex_none()
-                    .h(px(30.))
+                    .min_h(px(30.))
                     .min_w_0()
                     .px_3()
                     .py_1()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .flex_nowrap()
+                    .flex_wrap()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(px(10.0))
@@ -4547,7 +4551,7 @@ impl Render for Panel {
                         div()
                             .debug_selector(|| "panel-status".into())
                             .flex_1()
-                            .min_w(px(54.))
+                            .min_w(px(200.))
                             .flex()
                             .justify_end()
                             .items_center()
