@@ -155,6 +155,7 @@ impl Panel {
                     div()
                         .id("session-image-main")
                         .debug_selector(|| "session-image-main".into())
+                        .relative()
                         .flex_1()
                         .min_h_0()
                         .w_full()
@@ -165,6 +166,7 @@ impl Panel {
                             el.cursor_pointer()
                                 .child(
                                     img(crate::image_cache::source(preview))
+                                        .absolute()
                                         .size_full()
                                         .object_fit(gpui::ObjectFit::Contain),
                                 )

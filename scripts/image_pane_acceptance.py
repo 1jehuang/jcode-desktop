@@ -2,7 +2,8 @@
 
 The caller invokes verify(output, env, root) after the initial screenshot with
 --transcript image, one panel, and the default warm-neutral theme. Dependencies:
-Pillow, tesseract, xdotool, ImageMagick import, and the harness's Xvfb/Openbox.
+Pillow, tesseract, xdotool (including windowstate), ImageMagick import, and the
+harness's Xvfb/Openbox. The 1000x600 fixture canvas is checked for clipping.
 Only pixels/OCR and real X11 input are evidence, never debug selectors or APIs.
 Writes per-step PNG/OCR artifacts, a JSON report, and the final open pane at
 output. No prompt is submitted and no live desktop environment is inherited.
@@ -51,7 +52,12 @@ def verify(output, env, root):
 
     def input_bounds(image):
         try:
-            return composer_bounds(image)
+            bounds = composer_bounds(image)
+            # The shared helper excludes the expanded sidebar at x < 280.
+            # Compact mode has no such sidebar, so recover the complete edge.
+            xs = [x for x in range(image.width)
+                  if image.getpixel((x, bounds[1]))[:3] == (135, 121, 107)]
+            return (min(xs), bounds[1], max(xs) + 1, bounds[3])
         except AssertionError:
             # Clicking the close control may legitimately blur the editor.
             # Match the warm-neutral unfocused outline in the footer, rather
@@ -85,16 +91,18 @@ def verify(output, env, root):
     def pane(image, label, draft=DRAFT):
         rows = words(image, label)
         anchor = phrase_bounds(rows, "Session images")
+        close_anchor = phrase_bounds(rows, "Inline")
         # Sparse full-window OCR can reorder the header's isolated count and
         # close control. Re-read its real visual row in left-to-right mode.
         header_crop = (max(0, int(anchor[0]) - 8), max(0, int(anchor[1]) - 6),
-                       image.width, min(image.height, int(anchor[3]) + 6))
+                       min(image.width, int(close_anchor[2]) + 20),
+                       min(image.height, int(anchor[3]) + 6))
         header_words = ui.words(image, header_crop, label + "-header", psm=7)
         header = phrase_bounds(header_words, "Session images 1")
         close = phrase_bounds(header_words, "Inline")  # OCR often drops ×.
         assert close[0] > header[0], ("Close control must share the pane header", header, close)
         assert abs(close[1] - header[1]) < 20, (header, close)
-        left, right = max(0, int(header[0]) - 8), min(image.width, int(close[2]) + 16)
+        left, right = max(0, int(header[0]) - 8), min(image.width, int(close[2]) + 32)
         # The fixture chart has a near-white canvas. Locate its largest run of
         # bright scanlines, excluding the small thumbnail. Keeping that bright
         # canvas out of caption OCR prevents Tesseract from dropping dim text.
@@ -119,6 +127,15 @@ def verify(output, env, root):
             else:
                 merged.append(run)
         top, bottom = max(merged, key=lambda run: run[1] - run[0])
+        bright_columns = [x for x in range(left, right)
+                          if any(min(pixels[x, y][:3]) > 220 for y in range(top, bottom))]
+        canvas_width = max(bright_columns) - min(bright_columns) + 1
+        canvas_height = bottom - top
+        # assets/previews/image-preview.png is 1000x600. A clipped image can
+        # still expose blue pixels, so verify its full visible canvas ratio.
+        assert abs(canvas_width / canvas_height - 5 / 3) < .06, (
+            "Main chart canvas is clipped or distorted", canvas_width, canvas_height)
+        report.setdefault("canvas_sizes", {})[label] = [canvas_width, canvas_height]
         crop_bounds = (left, top, right, bottom)
         count, point = chart_pixels(image.crop(crop_bounds))
         point = (point[0] + left, point[1] + top)
