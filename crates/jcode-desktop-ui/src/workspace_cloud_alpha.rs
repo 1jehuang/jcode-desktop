@@ -3,6 +3,7 @@ use super::{Command, harness};
 use serde::Deserialize;
 use std::{
     io::Read,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant, SystemTime},
@@ -10,8 +11,8 @@ use std::{
 
 pub(super) const HOST: &str = "jcode-cloud-alpha";
 const CUTOFF: &str = "Two-hour continuous cutoff, including active work. Monthly exhaustion or idle shutdown can stop it earlier. Save work before shutdown.";
-// A bounded optimization for another panel, not a renewed VM lease or an
-// assertion that AWS policy is freshly checked. Every panel still opens SSH.
+// Full-policy receipts are bounded proofs, never VM lease renewals.
+// Only read-only background checks may renew the proof while a panel is live.
 const READY_TTL: Duration = Duration::from_secs(30);
 const REUSING_READY: &str = "Reusing recently verified cloud VM...";
 
@@ -37,9 +38,97 @@ impl LocalIdentity {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct Receipt {
+    instance_id: String,
+    state: String,
+    launch_time: String,
+    lease_deadline: u64,
+    lease_remaining_seconds: u64,
+    allowance_remaining_minutes: u64,
+    observed_at: u64,
+    valid_for_seconds: u64,
+    #[serde(default)]
+    model_sync_supported: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Boot {
+    instance_id: String,
+    launch_time: String,
+}
+
 struct Ready {
     verified_at: Instant,
+    expires_at: Instant,
+    checked_wall: SystemTime,
+    expires_wall: SystemTime,
     identity: LocalIdentity,
+    boot: Boot,
+    model_sync_supported: bool,
+}
+
+impl Receipt {
+    fn parse(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| format!("Invalid cloud readiness receipt: {e}"))
+    }
+
+    fn into_ready(
+        self,
+        identity: LocalIdentity,
+        started: Instant,
+        now: Instant,
+        wall: SystemTime,
+    ) -> Result<Ready, String> {
+        let invalid = || "Cloud readiness receipt is stale or unsafe.".to_owned();
+        let wall = wall
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| invalid())?;
+        let observed = Duration::from_secs(self.observed_at);
+        let age = wall.checked_sub(observed).ok_or_else(invalid)?;
+        if self.state != "running"
+            || self.instance_id.is_empty()
+            || self.launch_time.is_empty()
+            || self.valid_for_seconds == 0
+            || self.valid_for_seconds > READY_TTL.as_secs()
+            || self.allowance_remaining_minutes == 0
+        {
+            return Err(invalid());
+        }
+        let lifetime = Duration::from_secs(
+            self.valid_for_seconds
+                .min(self.lease_remaining_seconds)
+                .min(self.lease_deadline.saturating_sub(self.observed_at))
+                .min(self.allowance_remaining_minutes.saturating_mul(60)),
+        );
+        // Charge both network time and wall receipt age, never extend from use
+        // or from the time the UI happens to consume a completed check.
+        let remaining = lifetime
+            .checked_sub(age.max(now.saturating_duration_since(started)))
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(invalid)?;
+        Ok(Ready {
+            verified_at: started,
+            expires_at: now + remaining,
+            checked_wall: SystemTime::UNIX_EPOCH + wall,
+            expires_wall: SystemTime::UNIX_EPOCH + wall + remaining,
+            identity,
+            boot: Boot {
+                instance_id: self.instance_id,
+                launch_time: self.launch_time,
+            },
+            model_sync_supported: self.model_sync_supported,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct Check {
+    generation: u64,
+    active_epoch: u64,
+    identity: LocalIdentity,
+    boot: Boot,
+    started: Instant,
 }
 
 #[derive(Default)]
@@ -51,6 +140,12 @@ struct State {
     updates: Vec<(String, bool, Option<String>)>,
     ready: Option<Ready>,
     ready_generation: u64,
+    waking: bool,
+    active_panels: Vec<String>,
+    active_epoch: u64,
+    checking: bool,
+    last_check: Option<Instant>,
+    check_result: Option<(Check, Result<Receipt, String>)>,
 }
 
 impl State {
@@ -60,11 +155,22 @@ impl State {
     }
 
     fn recently_ready(&self, identity: Option<&LocalIdentity>, now: Instant) -> bool {
+        self.recently_ready_at(identity, now, SystemTime::now())
+    }
+
+    fn recently_ready_at(
+        &self,
+        identity: Option<&LocalIdentity>,
+        now: Instant,
+        wall: SystemTime,
+    ) -> bool {
         let Some(ready) = &self.ready else {
             return false;
         };
         if identity != Some(&ready.identity)
-            || now.saturating_duration_since(ready.verified_at) >= READY_TTL
+            || now >= ready.expires_at
+            || wall < ready.checked_wall
+            || wall >= ready.expires_wall
         {
             return false;
         }
@@ -76,17 +182,109 @@ impl State {
         })
     }
 
+    fn set_active(&mut self, mut panels: Vec<String>) {
+        panels.sort();
+        panels.dedup();
+        if self.active_panels != panels {
+            self.active_epoch = self.active_epoch.wrapping_add(1);
+            if panels.is_empty() {
+                // Closing an old panel fences its background checks, but is
+                // not a failure of a distinct foreground connect in progress.
+                if self.waking {
+                    self.ready = None;
+                } else {
+                    self.invalidate_ready();
+                }
+            }
+            self.active_panels = panels;
+        }
+    }
+
+    fn begin_check(&mut self, identity: Option<LocalIdentity>, now: Instant) -> Option<Check> {
+        if self.active_panels.is_empty()
+            || self.checking
+            || self
+                .last_check
+                .is_some_and(|last| now.saturating_duration_since(last) < Duration::from_secs(10))
+        {
+            return None;
+        }
+        let ready = self.ready.as_ref()?;
+        if identity.as_ref() != Some(&ready.identity) {
+            self.invalidate_ready();
+            return None;
+        }
+        let check = Check {
+            generation: self.ready_generation,
+            active_epoch: self.active_epoch,
+            identity: ready.identity.clone(),
+            boot: ready.boot.clone(),
+            started: now,
+        };
+        self.checking = true;
+        self.last_check = Some(now);
+        Some(check)
+    }
+
+    fn finish_check(
+        &mut self,
+        check: Check,
+        result: Result<Receipt, String>,
+        identity: Option<LocalIdentity>,
+        now: Instant,
+        wall: SystemTime,
+    ) {
+        self.checking = false;
+        if self.ready_generation != check.generation
+            || self.active_epoch != check.active_epoch
+            || self.active_panels.is_empty()
+        {
+            return;
+        }
+        if identity.as_ref() != Some(&check.identity) {
+            self.invalidate_ready();
+            return;
+        }
+        let ready =
+            result.and_then(|receipt| receipt.into_ready(check.identity, check.started, now, wall));
+        match ready {
+            Ok(ready)
+                if ready.boot == check.boot
+                    && self
+                        .ready
+                        .as_ref()
+                        .is_some_and(|old| old.boot == check.boot) =>
+            {
+                self.ready = Some(ready)
+            }
+            _ => self.invalidate_ready(),
+        }
+    }
+
+    fn record_status_reply(
+        &mut self,
+        generation: u64,
+        result: Result<Status, String>,
+        now: Instant,
+    ) {
+        if self.ready_generation == generation {
+            self.record_status(result, now);
+        }
+    }
+
     fn record_status(&mut self, result: Result<Status, String>, now: Instant) {
         match result {
             Ok(status) => {
-                if !status.allows_ready_reuse(Duration::ZERO) {
+                if !self.waking && !status.allows_ready_reuse(Duration::ZERO) {
                     self.invalidate_ready();
                 }
                 self.status = Some((status, now));
                 self.error = None;
             }
             Err(error) => {
-                self.invalidate_ready();
+                if !self.waking {
+                    self.invalidate_ready();
+                }
                 self.error = Some(error);
             }
         }
@@ -179,6 +377,43 @@ fn send_progress(sender: &mpsc::SyncSender<String>, line: &mut Vec<u8>) {
     line.clear();
 }
 
+// Keep the leader unreaped until group cancellation. Reaping it first could
+// allow PID/PGID reuse while descendants still hold output pipes open.
+struct HelperGroup(Option<std::process::Child>);
+impl HelperGroup {
+    fn exited(&self) -> std::io::Result<bool> {
+        let child = self.0.as_ref().expect("owned helper");
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(unsafe { info.si_pid() } != 0)
+    }
+
+    fn finish(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let mut child = self.0.take().expect("owned helper");
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        child.wait()
+    }
+}
+impl Drop for HelperGroup {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            let _ = self.finish();
+        }
+    }
+}
+
 // No shell, PATH lookup, user-supplied executable, or stop action.
 fn run_helper(action: &'static str) -> Result<String, String> {
     run_helper_with_progress(action, |_| {})
@@ -195,6 +430,7 @@ fn run_helper_with_progress(
     let helper = helper_paths(Path::new(&home))?;
     let mut child = std::process::Command::new(helper)
         .arg(action)
+        .process_group(0)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -211,26 +447,28 @@ fn run_helper_with_progress(
     std::thread::spawn(move || {
         let _ = stderr_tx.send(drain_output(stderr, Some(progress_tx)));
     });
-    let deadline = Instant::now() + Duration::from_secs(360);
-    let status = loop {
+    let mut group = HelperGroup(Some(child));
+    let deadline =
+        Instant::now() + Duration::from_secs(if action == "check-ready" { 15 } else { 360 });
+    loop {
         for line in progress_rx.try_iter().take(16) {
-            if action == "wake" {
+            if matches!(action, "wake" | "wake-ready") {
                 progress(line);
             }
         }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+        match group.exited() {
+            Ok(true) => break,
+            Ok(false) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
             result => {
-                let _ = child.kill();
-                let _ = child.wait();
                 return Err(match result {
                     Err(e) => format!("Cloud helper failed: {e}"),
                     _ => "Cloud helper timed out. Check cloud status before retrying.".into(),
                 });
             }
         }
-    };
+    }
     // Also bound the wait for EOF if a helper descendant inherited its pipes.
     let stdout = stdout_rx
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -239,17 +477,21 @@ fn run_helper_with_progress(
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .map_err(|_| "Cloud helper output timed out.".to_owned())??;
     for line in progress_rx.try_iter().take(16) {
-        if action == "wake" {
+        if matches!(action, "wake" | "wake-ready") {
             progress(line);
         }
     }
+    let status = group
+        .finish()
+        .map_err(|e| format!("Cannot reap cloud helper: {e}"))?;
     if !status.success() {
         return Err(format!(
             "Cloud {action} failed: {}",
             String::from_utf8_lossy(&stderr).trim()
         ));
     }
-    String::from_utf8(stdout?).map_err(|e| e.to_string())
+    let output = String::from_utf8(stdout?).map_err(|e| e.to_string())?;
+    Ok(output)
 }
 
 fn wake_then_connect(
@@ -266,6 +508,14 @@ fn wake_then_connect(
     Ok(())
 }
 
+fn runtime_identity() -> Option<LocalIdentity> {
+    if harness::screenshot_mode() || cfg!(test) {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    LocalIdentity::read(Path::new(&home))
+}
+
 impl Lifecycle {
     /// Called when a cloud transport fails. A concurrent wake may finish, but
     /// cannot publish a cache entry over a newer failure or status invalidation.
@@ -277,7 +527,7 @@ impl Lifecycle {
         &self,
         identity: impl Fn() -> Option<LocalIdentity>,
         mut progress: impl FnMut(String),
-        wake: impl FnOnce(&mut dyn FnMut(String)) -> Result<(), String>,
+        wake: impl FnOnce(&mut dyn FnMut(String)) -> Result<Receipt, String>,
     ) -> Result<bool, String> {
         // Check *inside* the lock: queued requests reuse the first successful
         // wake rather than serially rerunning the entire AWS readiness sequence.
@@ -291,20 +541,59 @@ impl Lifecycle {
                 return Ok(true);
             }
             state.invalidate_ready();
+            state.waking = true;
             state.ready_generation
         };
         let result = wake(&mut progress);
         let after = identity();
         let mut state = self.state.lock().unwrap();
-        if result.is_err() {
-            state.invalidate_ready();
-        } else if state.ready_generation == generation && before == after {
-            state.ready = after.map(|identity| Ready {
-                verified_at: Instant::now(),
-                identity,
-            });
+        let result = result.and_then(|receipt| {
+            if state.ready_generation != generation || before != after {
+                return Err("Cloud readiness changed while waking. Retry Connect.".into());
+            }
+            let identity = after.ok_or("Cloud readiness identity unavailable.")?;
+            receipt.into_ready(identity, Instant::now(), Instant::now(), SystemTime::now())
+        });
+        state.waking = false;
+        match result {
+            Ok(ready) => {
+                state.ready_generation = state.ready_generation.wrapping_add(1);
+                state.ready = Some(ready);
+                Ok(false)
+            }
+            Err(error) => {
+                state.invalidate_ready();
+                Err(error)
+            }
         }
-        result.map(|_| false)
+    }
+
+    // The UI supplies the current panel set and consumes results before any
+    // publication, so a completed network worker cannot revive a closed panel.
+    pub(super) fn refresh_active(&self, panels: Vec<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.set_active(panels);
+        let identity = runtime_identity();
+        if let Some((check, result)) = state.check_result.take() {
+            state.finish_check(
+                check,
+                result,
+                identity.clone(),
+                Instant::now(),
+                SystemTime::now(),
+            );
+        }
+        if harness::screenshot_mode() || cfg!(test) {
+            return;
+        }
+        let Some(check) = state.begin_check(identity, Instant::now()) else {
+            return;
+        };
+        let lifecycle = self.clone();
+        std::thread::spawn(move || {
+            let result = run_helper("check-ready").and_then(|json| Receipt::parse(&json));
+            lifecycle.state.lock().unwrap().check_result = Some((check, result));
+        });
     }
 
     pub(super) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
@@ -319,15 +608,7 @@ impl Lifecycle {
             let mut reused = false;
             let result = wake_then_connect(&bridge, request_id, || {
                 reused = lifecycle.ensure_ready(
-                    || {
-                        // No cache identity in offline mode: the normal helper
-                        // guard remains authoritative, including on warm paths.
-                        if harness::screenshot_mode() || cfg!(test) {
-                            return None;
-                        }
-                        let home = std::env::var_os("HOME")?;
-                        LocalIdentity::read(Path::new(&home))
-                    },
+                    runtime_identity,
                     |message| {
                         let mut state = lifecycle.state.lock().unwrap();
                         // Retain only the newest pending phase for this request.
@@ -337,8 +618,26 @@ impl Lifecycle {
                             .updates
                             .push((message, false, update_request_id.clone()));
                     },
-                    |progress| run_helper_with_progress("wake", progress).map(|_| ()),
+                    |progress| {
+                        run_helper_with_progress("wake-ready", progress)
+                            .and_then(|json| Receipt::parse(&json))
+                    },
                 )?;
+                // Readiness is cached, model credentials are not. The helper
+                // hashes allowlisted local inputs, avoiding AWS/SSH when fresh.
+                let sync_supported = lifecycle
+                    .state
+                    .lock()
+                    .unwrap()
+                    .ready
+                    .as_ref()
+                    .is_some_and(|ready| ready.model_sync_supported);
+                if reused && sync_supported {
+                    if let Err(error) = run_helper("sync-models") {
+                        lifecycle.invalidate_ready();
+                        return Err(error);
+                    }
+                }
                 Ok(())
             });
             let mut state = lifecycle.state.lock().unwrap();
@@ -373,6 +672,7 @@ impl Lifecycle {
             return;
         }
         state.refreshing = true;
+        let generation = state.ready_generation;
         state.last_refresh = Some(Instant::now());
         let lifecycle = self.clone();
         std::thread::spawn(move || {
@@ -382,7 +682,7 @@ impl Lifecycle {
             });
             let mut state = lifecycle.state.lock().unwrap();
             state.refreshing = false;
-            state.record_status(result, Instant::now());
+            state.record_status_reply(generation, result, Instant::now());
         });
     }
 
@@ -460,6 +760,465 @@ impl Status {
 mod tests {
     use super::*;
 
+    fn test_receipt() -> Receipt {
+        receipt_at(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+    }
+
+    fn receipt_at(observed_at: u64) -> Receipt {
+        Receipt {
+            instance_id: "i-test".into(),
+            state: "running".into(),
+            launch_time: "boot-1".into(),
+            lease_deadline: observed_at + 600,
+            lease_remaining_seconds: 600,
+            allowance_remaining_minutes: 100,
+            observed_at,
+            valid_for_seconds: 30,
+            model_sync_supported: false,
+        }
+    }
+
+    fn wall(seconds: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
+    }
+
+    fn active_state(now: Instant) -> State {
+        let mut state = State::default();
+        state.ready = Some(
+            receipt_at(1000)
+                .into_ready(test_identity(), now, now, wall(1000))
+                .unwrap(),
+        );
+        state.set_active(vec!["ssh://jcode-cloud-alpha/one".into()]);
+        state
+    }
+
+    #[test]
+    fn cloud_background_checks_maintain_proof_beyond_35_and_65_seconds() {
+        let start = Instant::now();
+        let mut state = active_state(start);
+        for seconds in (0..=70).step_by(10) {
+            let now = start + Duration::from_secs(seconds);
+            let check = state.begin_check(Some(test_identity()), now).unwrap();
+            assert!(
+                state
+                    .begin_check(Some(test_identity()), now + Duration::from_secs(20))
+                    .is_none()
+            );
+            state.finish_check(
+                check,
+                Ok(receipt_at(1000 + seconds)),
+                Some(test_identity()),
+                now,
+                wall(1000 + seconds),
+            );
+            assert!(state.recently_ready_at(
+                Some(&test_identity()),
+                now + Duration::from_secs(5),
+                wall(1005 + seconds)
+            ));
+            assert!(
+                state
+                    .begin_check(Some(test_identity()), now + Duration::from_secs(9))
+                    .is_none()
+            );
+        }
+        assert!(!state.recently_ready_at(
+            Some(&test_identity()),
+            start + Duration::from_secs(100),
+            wall(1100)
+        ));
+    }
+
+    #[test]
+    fn cloud_receipt_capability_defaults_off_and_numeric_fields_are_strict() {
+        let json = r#"{"instance_id":"i-test","state":"running","launch_time":"boot-1","lease_deadline":1600,"lease_remaining_seconds":600,"allowance_remaining_minutes":100,"observed_at":1000,"valid_for_seconds":30}"#;
+        assert!(!Receipt::parse(json).unwrap().model_sync_supported);
+        for invalid in [
+            json.replace("\"observed_at\":1000", "\"observed_at\":1000.5"),
+            json.replace("\"valid_for_seconds\":30", "\"valid_for_seconds\":-1"),
+            json.replace("\"lease_deadline\":1600", "\"lease_deadline\":null"),
+        ] {
+            assert!(Receipt::parse(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn cloud_receipt_rejects_malformed_stopped_exhausted_and_expired_proofs() {
+        assert!(Receipt::parse("{}").is_err());
+        assert!(Receipt::parse("not JSON").is_err());
+        let start = Instant::now();
+        for mutate in [
+            (|r: &mut Receipt| r.state = "stopped".into()) as fn(&mut Receipt),
+            |r| r.state = "stopping".into(),
+            |r| r.lease_remaining_seconds = 0,
+            |r| r.lease_deadline = r.observed_at,
+            |r| r.allowance_remaining_minutes = 0,
+            |r| r.valid_for_seconds = 31,
+            |r| r.valid_for_seconds = 0,
+            |r| r.instance_id.clear(),
+            |r| r.launch_time.clear(),
+            |r| r.observed_at = 1001,
+        ] {
+            let mut receipt = receipt_at(1000);
+            mutate(&mut receipt);
+            assert!(
+                receipt
+                    .into_ready(test_identity(), start, start, wall(1000))
+                    .is_err()
+            );
+        }
+        assert!(
+            receipt_at(1000)
+                .into_ready(test_identity(), start, start, wall(1030))
+                .is_err()
+        );
+        assert!(
+            receipt_at(1000)
+                .into_ready(
+                    test_identity(),
+                    start,
+                    start + Duration::from_secs(30),
+                    wall(1000)
+                )
+                .is_err()
+        );
+        let delayed = receipt_at(1000)
+            .into_ready(
+                test_identity(),
+                start,
+                start + Duration::from_secs(14),
+                wall(1002),
+            )
+            .unwrap();
+        assert_eq!(delayed.expires_at, start + READY_TTL);
+        let aged = receipt_at(1000)
+            .into_ready(
+                test_identity(),
+                start,
+                start + Duration::from_secs(2),
+                wall(1014),
+            )
+            .unwrap();
+        assert_eq!(aged.expires_at, start + Duration::from_secs(18));
+        let mut short = receipt_at(1000);
+        short.lease_remaining_seconds = 4;
+        short.lease_deadline = 1003;
+        assert_eq!(
+            short
+                .into_ready(test_identity(), start, start, wall(1000))
+                .unwrap()
+                .expires_at,
+            start + Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn cloud_background_failure_guard_budget_lease_and_boot_change_invalidate() {
+        let start = Instant::now();
+        for mutate in [
+            (|r: &mut Receipt| r.state = "stopped".into()) as fn(&mut Receipt),
+            |r| r.allowance_remaining_minutes = 0,
+            |r| r.lease_remaining_seconds = 0,
+            |r| r.launch_time = "new-boot".into(),
+            |r| r.instance_id = "retarget".into(),
+        ] {
+            let mut state = active_state(start);
+            let check = state.begin_check(Some(test_identity()), start).unwrap();
+            let mut receipt = receipt_at(1000);
+            mutate(&mut receipt);
+            state.finish_check(check, Ok(receipt), Some(test_identity()), start, wall(1000));
+            assert!(state.ready.is_none());
+        }
+        for error in [
+            "guard stale",
+            "identity denied",
+            "helper timeout",
+            "malformed JSON",
+        ] {
+            let mut state = active_state(start);
+            let check = state.begin_check(Some(test_identity()), start).unwrap();
+            state.finish_check(
+                check,
+                Err(error.into()),
+                Some(test_identity()),
+                start,
+                wall(1000),
+            );
+            assert!(state.ready.is_none());
+            assert!(
+                state
+                    .begin_check(Some(test_identity()), start + Duration::from_secs(20))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_late_background_replies_cannot_revive_close_invalidation_retarget_or_new_wake() {
+        let start = Instant::now();
+        for mutation in 0..5 {
+            let mut state = active_state(start);
+            let check = state.begin_check(Some(test_identity()), start).unwrap();
+            match mutation {
+                0 => state.set_active(vec![]),
+                1 => state.invalidate_ready(),
+                2 => state.set_active(vec!["ssh://jcode-cloud-alpha/replacement".into()]),
+                3 | 4 => {
+                    state.invalidate_ready();
+                    let mut receipt = receipt_at(1001);
+                    receipt.launch_time = "new-wake".into();
+                    state.ready = Some(
+                        receipt
+                            .into_ready(test_identity(), start, start, wall(1001))
+                            .unwrap(),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let before = state.ready.as_ref().map(|r| (r.boot.clone(), r.expires_at));
+            state.finish_check(
+                check,
+                if mutation == 4 {
+                    Err("late failure".into())
+                } else {
+                    Ok(receipt_at(1002))
+                },
+                Some(test_identity()),
+                start + Duration::from_secs(2),
+                wall(1002),
+            );
+            assert_eq!(
+                state.ready.as_ref().map(|r| (r.boot.clone(), r.expires_at)),
+                before
+            );
+            assert!(!state.checking);
+        }
+        let mut state = active_state(start);
+        let check = state.begin_check(Some(test_identity()), start).unwrap();
+        let mut changed = test_identity();
+        changed.config.0 += 1;
+        state.finish_check(
+            check,
+            Ok(receipt_at(1000)),
+            Some(changed),
+            start,
+            wall(1000),
+        );
+        assert!(state.ready.is_none());
+    }
+
+    #[test]
+    fn cloud_background_never_starts_without_live_panel_or_wake_proof() {
+        let start = Instant::now();
+        let mut state = State::default();
+        state.record_status(Ok(running_status()), start);
+        state.set_active(vec!["connected".into()]);
+        assert!(state.begin_check(Some(test_identity()), start).is_none());
+        state = active_state(start);
+        state.set_active(vec![]);
+        assert!(state.begin_check(Some(test_identity()), start).is_none());
+        state = active_state(start);
+        assert!(state.begin_check(None, start).is_none());
+        assert!(state.ready.is_none());
+    }
+
+    #[test]
+    fn cloud_background_does_not_hold_foreground_wake_lock() {
+        let lifecycle = Lifecycle::default();
+        let start = Instant::now();
+        *lifecycle.state.lock().unwrap() = active_state(start);
+        lifecycle.state.lock().unwrap().ready = Some(
+            test_receipt()
+                .into_ready(test_identity(), start, start, SystemTime::now())
+                .unwrap(),
+        );
+        let check = lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .begin_check(Some(test_identity()), start)
+            .unwrap();
+        assert!(
+            lifecycle
+                .ensure_ready(
+                    || Some(test_identity()),
+                    |_| {},
+                    |_| panic!("fresh proof should not wake")
+                )
+                .unwrap()
+        );
+        lifecycle.state.lock().unwrap().finish_check(
+            check,
+            Err("check failed".into()),
+            Some(test_identity()),
+            start,
+            wall(1000),
+        );
+        assert!(lifecycle.state.lock().unwrap().ready.is_none());
+    }
+
+    #[test]
+    fn cloud_offline_readiness_actions_are_denied_even_with_injected_proof() {
+        for action in ["wake-ready", "check-ready"] {
+            assert!(run_helper(action).unwrap_err().contains("disabled"));
+        }
+        assert!(runtime_identity().is_none());
+        let lifecycle = Lifecycle::default();
+        *lifecycle.state.lock().unwrap() = active_state(Instant::now());
+        lifecycle.refresh_active(vec!["ssh://jcode-cloud-alpha/one".into()]);
+        assert!(!lifecycle.state.lock().unwrap().checking);
+        assert!(
+            !lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .recently_ready(runtime_identity().as_ref(), Instant::now())
+        );
+    }
+
+    #[test]
+    fn cloud_helper_group_cleanup_closes_descendant_pipes() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 60 & printf 'ready\\n'; wait"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut stdout, &mut line).unwrap();
+        assert_eq!(line.trim(), "ready");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(drain_output(stdout, None));
+        });
+        drop(HelperGroup(Some(child)));
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+    }
+
+    #[test]
+    fn cloud_cold_wake_ignores_intermediate_status_but_not_transport_invalidation() {
+        for result in [
+            Ok(Status {
+                state: "stopped".into(),
+                ..running_status()
+            }),
+            Err("temporary status failure".into()),
+        ] {
+            let lifecycle = Lifecycle::default();
+            let mut status_generation = 0;
+            lifecycle
+                .ensure_ready(
+                    || Some(test_identity()),
+                    |_| {},
+                    |_| {
+                        let mut state = lifecycle.state.lock().unwrap();
+                        status_generation = state.ready_generation;
+                        state.record_status(result, Instant::now());
+                        Ok(test_receipt())
+                    },
+                )
+                .unwrap();
+            let mut state = lifecycle.state.lock().unwrap();
+            assert!(state.recently_ready(Some(&test_identity()), Instant::now()));
+            state.record_status_reply(
+                status_generation,
+                Err("late stopped-boot status".into()),
+                Instant::now(),
+            );
+            assert!(state.recently_ready(Some(&test_identity()), Instant::now()));
+        }
+        let lifecycle = Lifecycle::default();
+        assert!(
+            lifecycle
+                .ensure_ready(
+                    || Some(test_identity()),
+                    |_| {},
+                    |_| {
+                        lifecycle.invalidate_ready();
+                        Ok(test_receipt())
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cloud_exited_helper_retains_group_ownership_until_descendant_cleanup() {
+        let unrelated = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 60"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let unrelated = HelperGroup(Some(unrelated));
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 60 & exit 0"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut group = HelperGroup(Some(child));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !group.exited().unwrap() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // WNOWAIT leaves the same zombie available on repeated observations.
+        assert!(group.exited().unwrap());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(drain_output(stdout, None));
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+        assert!(group.finish().unwrap().success());
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+        assert!(!unrelated.exited().unwrap());
+        drop(unrelated);
+    }
+
+    #[test]
+    fn cloud_proof_expires_across_suspend_or_wall_clock_rollback() {
+        let now = Instant::now();
+        let state = active_state(now);
+        assert!(state.recently_ready_at(Some(&test_identity()), now, wall(1000)));
+        assert!(!state.recently_ready_at(Some(&test_identity()), now, wall(1031)));
+        assert!(!state.recently_ready_at(Some(&test_identity()), now, wall(999)));
+    }
+
+    #[test]
+    fn cloud_last_old_panel_close_does_not_cancel_distinct_foreground_wake() {
+        let lifecycle = Lifecycle::default();
+        lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .set_active(vec!["old".into()]);
+        lifecycle
+            .ensure_ready(
+                || Some(test_identity()),
+                |_| {},
+                |_| {
+                    lifecycle.state.lock().unwrap().set_active(vec![]);
+                    Ok(test_receipt())
+                },
+            )
+            .unwrap();
+        assert!(
+            lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .recently_ready(Some(&test_identity()), Instant::now())
+        );
+    }
+
     fn test_identity() -> LocalIdentity {
         LocalIdentity {
             home: PathBuf::from("/offline-cloud-test"),
@@ -493,7 +1252,7 @@ mod tests {
                         |phase| phases.push(phase),
                         |_| {
                             wakes.set(wakes.get() + 1);
-                            Ok(())
+                            Ok(test_receipt())
                         },
                     )
                     .unwrap(),
@@ -538,7 +1297,7 @@ mod tests {
         let state = lifecycle.state.lock().unwrap();
         assert!(state.recently_ready(
             Some(&test_identity()),
-            verified + READY_TTL - Duration::from_nanos(1)
+            state.ready.as_ref().unwrap().expires_at - Duration::from_nanos(1)
         ));
         assert!(!state.recently_ready(Some(&test_identity()), verified + READY_TTL));
         drop(state);
@@ -549,10 +1308,10 @@ mod tests {
             .ready
             .as_mut()
             .unwrap()
-            .verified_at = Instant::now() - READY_TTL;
+            .expires_at = Instant::now();
         assert!(
             !lifecycle
-                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(()))
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(test_receipt()))
                 .unwrap()
         );
     }
@@ -571,25 +1330,29 @@ mod tests {
                     .is_err()
             );
             assert!(lifecycle.state.lock().unwrap().ready.is_none());
-            assert!(!lifecycle.ensure_ready(|| None, |_| {}, |_| Ok(())).unwrap());
+            assert!(
+                lifecycle
+                    .ensure_ready(|| None, |_| {}, |_| Ok(test_receipt()))
+                    .is_err()
+            );
             assert!(lifecycle.state.lock().unwrap().ready.is_none());
         }
         assert!(
             !lifecycle
-                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(()))
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(test_receipt()))
                 .unwrap()
         );
         let mut changed = test_identity();
         changed.config.0 += 1;
         assert!(
             !lifecycle
-                .ensure_ready(|| Some(changed.clone()), |_| {}, |_| Ok(()))
+                .ensure_ready(|| Some(changed.clone()), |_| {}, |_| Ok(test_receipt()))
                 .unwrap()
         );
         changed.helper.0 += 1;
         assert!(
             !lifecycle
-                .ensure_ready(|| Some(changed.clone()), |_| {}, |_| Ok(()))
+                .ensure_ready(|| Some(changed.clone()), |_| {}, |_| Ok(test_receipt()))
                 .unwrap()
         );
         lifecycle.invalidate_ready();
@@ -624,11 +1387,12 @@ mod tests {
         ];
         for result in outcomes {
             lifecycle
-                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(()))
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(test_receipt()))
                 .unwrap();
             let mut state = lifecycle.state.lock().unwrap();
             assert!(state.ready.is_some());
-            state.record_status(result, Instant::now());
+            let generation = state.ready_generation;
+            state.record_status_reply(generation, result, Instant::now());
             assert!(state.ready.is_none());
         }
     }
@@ -647,6 +1411,14 @@ mod tests {
         state.ready = Some(Ready {
             verified_at: now + Duration::from_millis(1),
             identity: test_identity(),
+            expires_at: now + READY_TTL,
+            checked_wall: SystemTime::now(),
+            expires_wall: SystemTime::now() + READY_TTL,
+            boot: Boot {
+                instance_id: "i-test".into(),
+                launch_time: "boot-1".into(),
+            },
+            model_sync_supported: false,
         });
         assert!(state.recently_ready(Some(&test_identity()), now + Duration::from_secs(1)));
         assert!(!state.recently_ready(Some(&test_identity()), now + Duration::from_secs(2)));
@@ -669,10 +1441,10 @@ mod tests {
                 |_| {},
                 |_| {
                     lifecycle.invalidate_ready();
-                    Ok(())
+                    Ok(test_receipt())
                 },
             )
-            .unwrap();
+            .unwrap_err();
         assert!(lifecycle.state.lock().unwrap().ready.is_none());
         let changed = std::cell::Cell::new(false);
         lifecycle
@@ -685,10 +1457,10 @@ mod tests {
                 |_| {},
                 |_| {
                     changed.set(true);
-                    Ok(())
+                    Ok(test_receipt())
                 },
             )
-            .unwrap();
+            .unwrap_err();
         assert!(lifecycle.state.lock().unwrap().ready.is_none());
     }
 
@@ -715,7 +1487,7 @@ mod tests {
                                 |_| {},
                                 |_| {
                                     wakes.fetch_add(1, Ordering::SeqCst);
-                                    Ok(())
+                                    Ok(test_receipt())
                                 },
                             )
                             .map(|_| ())
@@ -838,6 +1610,14 @@ mod tests {
         lifecycle.state.lock().unwrap().ready = Some(Ready {
             verified_at: Instant::now(),
             identity: test_identity(),
+            expires_at: Instant::now() + READY_TTL,
+            checked_wall: SystemTime::now(),
+            expires_wall: SystemTime::now() + READY_TTL,
+            boot: Boot {
+                instance_id: "i-test".into(),
+                launch_time: "boot-1".into(),
+            },
+            model_sync_supported: false,
         });
         let (bridge, commands) = harness::spawn_recording();
         let serial = lifecycle.wake_lock.lock().unwrap();

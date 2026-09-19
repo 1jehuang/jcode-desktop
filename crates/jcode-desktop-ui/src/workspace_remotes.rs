@@ -7,6 +7,22 @@ mod cloud_alpha;
 #[path = "workspace_cloud_progress.rs"]
 mod cloud_progress;
 
+fn live_cloud_panel(
+    closing: bool,
+    session_id: &str,
+    history_loaded: bool,
+    pending: bool,
+    connected: bool,
+) -> bool {
+    !closing
+        && history_loaded
+        && !pending
+        && connected
+        && session_id
+            .strip_prefix("ssh://jcode-cloud-alpha/")
+            .is_some_and(|id| !id.is_empty())
+}
+
 pub(super) struct HeaderTooltip(pub gpui::SharedString);
 
 impl Render for HeaderTooltip {
@@ -36,6 +52,7 @@ pub(super) struct Machines {
     notice: Option<String>,
     discovery: Option<gpui::Task<()>>,
     cloud: cloud_alpha::Lifecycle,
+    connected_cloud_sessions: std::collections::HashSet<String>,
     cloud_progress: std::collections::HashMap<String, cloud_progress::Progress>,
     cloud_monitor: Option<gpui::Task<()>>,
 }
@@ -58,6 +75,19 @@ impl Machines {
 }
 
 impl Workspace {
+    pub(super) fn set_cloud_transport_connected(&mut self, session_id: &str, connected: bool) {
+        if harness::remote_host(session_id).as_deref() != Some(cloud_alpha::HOST) {
+            return;
+        }
+        if connected {
+            self.remotes
+                .connected_cloud_sessions
+                .insert(session_id.to_owned());
+        } else {
+            self.remotes.connected_cloud_sessions.remove(session_id);
+        }
+    }
+
     pub(super) fn invalidate_cloud_connection(&self, host: &str) {
         if host == cloud_alpha::HOST {
             self.remotes.cloud.invalidate_ready();
@@ -452,6 +482,24 @@ impl Workspace {
             loop {
                 if this
                     .update(cx, |this, cx| {
+                        let active_cloud_panels = this
+                            .slots
+                            .iter()
+                            .filter_map(|slot| {
+                                let panel = slot.panel.read(cx);
+                                live_cloud_panel(
+                                    slot.closing,
+                                    &panel.session_id,
+                                    panel.history_loaded(),
+                                    panel.is_pending_session(),
+                                    this.remotes
+                                        .connected_cloud_sessions
+                                        .contains(&panel.session_id),
+                                )
+                                .then(|| panel.session_id.clone())
+                            })
+                            .collect();
+                        this.remotes.cloud.refresh_active(active_cloud_panels);
                         let configured = this
                             .remotes
                             .hosts
@@ -478,7 +526,11 @@ impl Workspace {
                         } else {
                             String::new()
                         };
-                        if summary != previous_summary || changed {
+                        let mut elapsed_changed = false;
+                        for progress in this.remotes.cloud_progress.values_mut() {
+                            elapsed_changed |= progress.tick();
+                        }
+                        if summary != previous_summary || changed || elapsed_changed {
                             previous_summary = summary;
                             cx.notify();
                         }
@@ -988,6 +1040,32 @@ impl Workspace {
 #[cfg(test)]
 mod cloud_routing_tests {
     use super::*;
+
+    #[test]
+    fn cloud_active_detector_requires_connected_nonclosing_exact_namespace() {
+        let id = "ssh://jcode-cloud-alpha/session";
+        assert!(live_cloud_panel(false, id, true, false, true));
+        assert!(!live_cloud_panel(false, id, true, false, false));
+        assert!(live_cloud_panel(false, id, true, false, true));
+        // A lost old panel must not keep checks alive once a new live one closes.
+        assert!(
+            ![(false, false), (true, true)]
+                .into_iter()
+                .any(|(closing, connected)| live_cloud_panel(closing, id, true, false, connected))
+        );
+        assert!(!live_cloud_panel(true, id, true, false, true));
+        assert!(!live_cloud_panel(false, id, false, false, true));
+        assert!(!live_cloud_panel(false, id, true, true, true));
+        for id in [
+            "local",
+            "startup://draft",
+            "ssh://other/session",
+            "ssh://jcode-cloud-alpha-evil/session",
+            "ssh://jcode-cloud-alpha/",
+        ] {
+            assert!(!live_cloud_panel(false, id, true, false, true));
+        }
+    }
 
     #[gpui::test]
     fn cloud_default_new_session_waits_for_wake_not_local_directory(cx: &mut gpui::TestAppContext) {
