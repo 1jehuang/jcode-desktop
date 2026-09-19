@@ -8,7 +8,10 @@ mod platform {
             net::{UnixListener, UnixStream},
         },
         path::{Path, PathBuf},
-        sync::mpsc::{self, Receiver},
+        sync::{
+            Mutex,
+            mpsc::{self, Receiver},
+        },
         thread,
         time::Duration,
     };
@@ -33,11 +36,22 @@ mod platform {
         Secondary,
     }
 
-    pub struct SocketGuard(PathBuf);
+    pub struct SocketGuard(Mutex<Option<PathBuf>>);
+
+    impl SocketGuard {
+        /// GPUI may terminate without dropping detached command-loop futures.
+        /// Explicit shutdown consumes ownership so a later Drop cannot unlink
+        /// a replacement host's socket at the same (non-single-panel) pathname.
+        pub fn cleanup(&self) {
+            if let Some(path) = self.0.lock().unwrap().take() {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 
     impl Drop for SocketGuard {
         fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
+            self.cleanup();
         }
     }
 
@@ -92,7 +106,7 @@ mod platform {
             .spawn(move || serve(listener, commands))?;
         Ok(Instance::Primary {
             commands: receiver,
-            _socket: SocketGuard(path),
+            _socket: SocketGuard(Mutex::new(Some(path))),
         })
     }
 
@@ -162,6 +176,77 @@ mod platform {
                 commands.recv_timeout(Duration::from_secs(1)).unwrap(),
                 Command::Reload
             );
+        }
+
+        #[test]
+        fn single_panel_sockets_are_independent_and_reload_only_their_owner() {
+            let root = tempfile::tempdir().unwrap();
+            use jcode_desktop_api::LaunchMode;
+            let names: Vec<_> = [
+                (LaunchMode::Workspace, 1),
+                (LaunchMode::NoSidebar, 2),
+                (LaunchMode::SinglePanel, 123),
+                (LaunchMode::SinglePanel, 456),
+            ]
+            .into_iter()
+            .map(|(mode, pid)| match mode.instance_name(pid) {
+                Some(name) => format!("jcode-desktop-{name}.sock"),
+                None => "jcode-desktop.sock".into(),
+            })
+            .collect();
+            let hosts: Vec<_> = names
+                .iter()
+                .map(|name| acquire_at(root.path().join(name), Command::Show).unwrap())
+                .collect();
+            for host in &hosts {
+                let Instance::Primary { commands, .. } = host else {
+                    panic!("independent primary expected")
+                };
+                assert!(
+                    commands.try_recv().is_err(),
+                    "launch must not wake another host"
+                );
+            }
+            notify(&root.path().join(&names[2]), Command::Reload).unwrap();
+            for (index, host) in hosts.iter().enumerate() {
+                let Instance::Primary { commands, .. } = host else {
+                    panic!()
+                };
+                if index == 2 {
+                    assert_eq!(
+                        commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+                        Command::Reload
+                    );
+                } else {
+                    assert!(
+                        commands.try_recv().is_err(),
+                        "reload must reach only its owner"
+                    );
+                }
+            }
+            drop(hosts);
+            assert!(names.iter().all(|name| !root.path().join(name).exists()));
+        }
+
+        #[test]
+        fn explicit_cleanup_is_idempotent_and_preserves_a_replacement_host() {
+            let (_root, path) = path("quit.sock");
+            let primary = acquire_at(path.clone(), Command::Show).unwrap();
+            let Instance::Primary { _socket, .. } = &primary else {
+                panic!()
+            };
+            _socket.cleanup();
+            assert!(!path.exists());
+            let replacement = acquire_at(path.clone(), Command::Show).unwrap();
+            assert!(matches!(replacement, Instance::Primary { .. }));
+            _socket.cleanup();
+            drop(primary);
+            assert!(
+                path.exists(),
+                "old owner must not unlink replacement socket"
+            );
+            drop(replacement);
+            assert!(!path.exists());
         }
 
         #[test]
@@ -253,6 +338,10 @@ mod platform {
     }
 
     pub struct SocketGuard;
+
+    impl SocketGuard {
+        pub fn cleanup(&self) {}
+    }
 
     pub fn notify_named(_name: Option<&str>, _command: Command) -> io::Result<()> {
         Err(io::Error::new(

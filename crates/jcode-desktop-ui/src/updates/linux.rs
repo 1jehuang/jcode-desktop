@@ -83,14 +83,11 @@ fn reload_enabled(args: &[std::ffi::OsString], environment: bool, development: b
 }
 
 fn socket_path(args: &[std::ffi::OsString]) -> PathBuf {
-    let name = if args
-        .iter()
-        .any(|arg| arg == "--no-sidebar" || arg == "--workspace")
-    {
-        "jcode-desktop-no-sidebar.sock"
-    } else {
-        "jcode-desktop.sock"
-    };
+    let name =
+        match jcode_desktop_api::LaunchMode::from_args(args).instance_name(std::process::id()) {
+            Some(name) => format!("jcode-desktop-{name}.sock"),
+            None => "jcode-desktop.sock".into(),
+        };
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(runtime) => PathBuf::from(runtime).join(name),
         None => std::env::temp_dir().join(format!(
@@ -117,6 +114,41 @@ fn request_reload(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn reload_socket_targets_this_process_in_single_panel_mode() {
+        let normal = socket_path(&[]);
+        let parent = normal.parent().unwrap();
+        let prefix = if std::env::var_os("XDG_RUNTIME_DIR").is_some() {
+            String::new()
+        } else {
+            format!(
+                "{}-",
+                std::env::var("USER").unwrap_or_else(|_| "user".into())
+            )
+        };
+        assert_eq!(normal, parent.join(format!("{prefix}jcode-desktop.sock")));
+        for alias in ["--no-sidebar", "--workspace"] {
+            assert_eq!(
+                socket_path(&[alias.into()]),
+                parent.join(format!("{prefix}jcode-desktop-no-sidebar.sock"))
+            );
+            assert_eq!(
+                socket_path(&[alias.into(), "--single-panel".into()]),
+                parent.join(format!(
+                    "{prefix}jcode-desktop-single-panel-{}.sock",
+                    std::process::id()
+                ))
+            );
+        }
+        assert_eq!(
+            socket_path(&["--single-panel".into()]),
+            parent.join(format!(
+                "{prefix}jcode-desktop-single-panel-{}.sock",
+                std::process::id()
+            ))
+        );
+    }
 
     #[test]
     fn installed_executable_is_not_source_even_when_checkout_exists() {

@@ -16,6 +16,9 @@ impl Workspace {
                 return;
             }
             let _ = workspace.update(cx, |this, cx| {
+                if this.single_panel {
+                    return;
+                }
                 if this.focus_handle.contains_focused(window, cx) {
                     return;
                 }

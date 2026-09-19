@@ -10,6 +10,9 @@ mod account_sign_in;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
+#[path = "workspace_single_panel.rs"]
+mod single_panel;
+
 #[path = "workspace_preview.rs"]
 mod preview;
 
@@ -628,6 +631,8 @@ pub struct Workspace {
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
+    /// Launch-only presentation, independent of persisted workspace preferences.
+    single_panel: bool,
     show_sidebar: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     show_beta_notice: bool,
@@ -753,6 +758,8 @@ impl Workspace {
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let performance_enabled = crate::performance::enabled(std::env::args_os());
+        let single_panel = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
+            == jcode_desktop_api::LaunchMode::SinglePanel;
 
         // Wake immediately when a bridge update arrives rather than polling an
         // empty channel at the display refresh rate.
@@ -874,7 +881,8 @@ impl Workspace {
             side_panel_snapshots: HashMap::new(),
             bridge,
             host,
-            show_beta_notice: snapshot.is_none(),
+            single_panel,
+            show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
@@ -1064,6 +1072,7 @@ impl Workspace {
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(1)
                 .clamp(1, 6);
+            let panel_count = if single_panel { 1 } else { panel_count };
             for index in 1..panel_count {
                 let mut session = workspace.sessions[0].clone();
                 session.session_id = format!("screenshot-fixture-{index}");
@@ -1173,6 +1182,7 @@ impl Workspace {
             side_panel_snapshots: HashMap::new(),
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
+            single_panel: false,
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
             show_sidebar: true,
@@ -3208,6 +3218,11 @@ impl Workspace {
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.single_panel && self.active == 0 {
+            // A standalone chat has no empty workspace to return to.
+            window.remove_window();
+            return;
+        }
         self.tutorial_cue("Q", "Close panel", "close", cx);
         if self
             .slots
@@ -3258,7 +3273,11 @@ impl Workspace {
             // on the next key repeat.
             .filter(|&index| !self.slots[index].closing)
             .collect();
-        self.active = focus_after_close(closed, &remaining);
+        self.active = if self.single_panel {
+            0
+        } else {
+            focus_after_close(closed, &remaining)
+        };
         self.row_focus[self.active_row] = self
             .slots
             .get(self.active)
@@ -6958,6 +6977,9 @@ impl Render for Workspace {
             let content = self.render_account_sign_in(cx);
             return self.voice_modal_root(content, cx);
         }
+        if self.single_panel {
+            return self.render_single_panel(window, cx);
+        }
         if self.onboarding_simulator.is_some() {
             let content = self.render_onboarding_simulator(cx);
             return self.voice_modal_root(content, cx);
@@ -7392,10 +7414,8 @@ fn sidebar_enabled(
     configured_default: bool,
 ) -> bool {
     configured_default
-        && !arguments.into_iter().any(|argument| {
-            let argument = argument.as_ref();
-            argument == "--no-sidebar" || argument == "--workspace"
-        })
+        && jcode_desktop_api::LaunchMode::from_args(arguments)
+            == jcode_desktop_api::LaunchMode::Workspace
 }
 
 fn default_working_dir() -> Option<String> {
@@ -8271,6 +8291,7 @@ mod tests {
         assert!(!sidebar_enabled(["jcode-desktop"], false));
         assert!(!sidebar_enabled(["jcode-desktop", "--no-sidebar"], true));
         assert!(!sidebar_enabled(["jcode-desktop", "--workspace"], true));
+        assert!(!sidebar_enabled(["jcode-desktop", "--single-panel"], true));
     }
 
     #[test]

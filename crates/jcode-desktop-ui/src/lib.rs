@@ -255,7 +255,9 @@ unsafe extern "C-unwind" fn activate(
             workspace.restore_focus(window, cx);
             let fixture = harness::screenshot_mode();
             let changelog_enabled =
-                !fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some();
+                jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
+                    != jcode_desktop_api::LaunchMode::SinglePanel
+                    && (!fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some());
             if changelog_enabled && changelog::should_open(snapshot_len != 0) {
                 workspace.open_changelog(&workspace::OpenChangelog, window, cx);
             }
