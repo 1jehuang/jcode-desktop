@@ -32,26 +32,19 @@ impl Workspace {
                 .pt_2()
                 .pb_2()
                 .flex()
-                .flex_col()
                 .gap_1()
-                .child(
-                    div()
-                        .px_2()
-                        .pb_1()
-                        .text_size(px(10.0))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child("Workspaces"),
-                )
                 .children(rows.into_iter().map(|(row, count)| {
                     let active = row == self.active_row;
                     div()
                         .id(("sidebar-workspace-switch", row))
                         .debug_selector(move || format!("sidebar-workspace-switch-{row}"))
-                        .h(px(30.0))
-                        .flex_none()
+                        .h(px(28.0))
+                        .flex_1()
+                        .min_w_0()
                         .px_2()
                         .flex()
                         .items_center()
+                        .justify_center()
                         .gap_2()
                         .rounded_md()
                         .cursor_pointer()
@@ -62,6 +55,9 @@ impl Workspace {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                         })
                         .hover(|el| el.bg(Theme::global().HEADER_BG))
+                        .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(
+                            format!("Workspace {} · {count} {}", row + 1, if count == 1 { "chat" } else { "chats" }).into()
+                        )).into())
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {
@@ -71,16 +67,7 @@ impl Workspace {
                                 cx.notify();
                             }),
                         )
-                        .child(div().flex_1().child(format!("Workspace {}", row + 1)))
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child(format!(
-                                    "{count} {}",
-                                    if count == 1 { "chat" } else { "chats" }
-                                )),
-                        )
+                        .child((row + 1).to_string())
                 }))
                 .into_any_element(),
         )

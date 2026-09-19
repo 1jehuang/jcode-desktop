@@ -40,6 +40,8 @@ mod sidebar_swarm;
 mod sidebar_workspaces;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
+#[path = "sidebar_workspace_groups.rs"]
+mod sidebar_workspace_groups;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -711,6 +713,7 @@ pub struct Workspace {
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
+    sidebar_workspace_groups: sidebar_workspace_groups::State,
     expanded_swarms: HashSet<String>,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
@@ -947,6 +950,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_workspace_groups: Default::default(),
             expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
@@ -1245,6 +1249,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_workspace_groups: Default::default(),
             expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
@@ -4731,12 +4736,6 @@ impl Workspace {
                 .iter()
                 .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id)
         });
-        let selection_order = open_sessions
-            .iter()
-            .map(|s| s.session_id.clone())
-            .collect::<Vec<_>>();
-        self.sidebar_selection.retain(&selection_order);
-        let open_session_count = open_sessions.len();
         let session_workspaces = self
             .slots
             .iter()
@@ -4748,7 +4747,20 @@ impl Workspace {
                 *workspace_counts.entry(*row).or_default() += 1;
             }
         }
-        let active_row = self.active_row;
+        self.sidebar_workspace_groups.sync_focus(self.active_row);
+        let mut seen_workspaces = HashSet::new();
+        // Retain one representative for each collapsed group so its disclosure
+        // remains a real virtual-list row, without painting any hidden sessions.
+        open_sessions.retain(|session| {
+            let row = session_workspaces[&session.session_id];
+            let first = seen_workspaces.insert(row);
+            first || self.sidebar_workspace_groups.expanded(row)
+        });
+        let selection_order = open_sessions.iter()
+            .filter(|session| self.sidebar_workspace_groups.expanded(session_workspaces[&session.session_id]))
+            .map(|session| session.session_id.clone())
+            .collect::<Vec<_>>();
+        self.sidebar_selection.retain(&selection_order);
         let other_session_count = other_sessions.len();
         let ordered_sessions = open_sessions
             .into_iter()
@@ -4764,6 +4776,8 @@ impl Workspace {
                 session_id: session.session_id.clone(),
                 open: *is_open,
                 workspace_row: session_workspaces.get(&session.session_id).copied(),
+                collapsed: *is_open && session_workspaces.get(&session.session_id)
+                    .is_some_and(|row| !self.sidebar_workspace_groups.expanded(*row)),
                 selected: active_id.as_deref() == Some(session.session_id.as_str()),
                 saved: session.saved,
                 swarm_rows: swarm
@@ -4863,86 +4877,30 @@ impl Workspace {
                                 .w_full()
                                 .flex()
                                 .flex_col()
-                                .when(sidebar_index == 0, |el| el.pt_2())
+                                .relative()
+                                .when(!is_open && sidebar_index == 0, |el| el.pt_2())
                                 .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
-                            if previous_section != Some(is_open) {
-                                let (id, label, count) = if is_open {
-                                    (
-                                        "sidebar-open-panels-heading",
-                                        "Active sessions",
-                                        open_session_count,
-                                    )
-                                } else {
-                                    (
-                                        "sidebar-other-sessions-heading",
-                                        "Session history",
-                                        other_session_count,
-                                    )
-                                };
+                            if !is_open && previous_section != Some(false) {
                                 list = list.child(
                                     div()
-                                        .id(id)
-                                        .debug_selector(move || id.into())
-                                        .mx_2()
-                                        .mt(if is_open { px(4.0) } else { px(12.0) })
-                                        .mb_2()
-                                        .px_2()
-                                        .pt(if is_open { px(4.0) } else { px(10.0) })
-                                        .when(!is_open, |heading| {
-                                            heading
-                                                .border_t_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .text_size(px(10.0))
-                                        .text_color(Theme::global().TEXT_DIM)
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                .child(label),
-                                        )
-                                        .child(
-                                            div()
-                                                .min_w(px(18.0))
-                                                .px_1()
-                                                .rounded_full()
-                                                .bg(Theme::global().HEADER_BG)
-                                                .text_center()
-                                                .text_size(px(9.0))
-                                                .child(count.to_string()),
-                                        ),
+                                        .id("sidebar-other-sessions-heading")
+                                        .debug_selector(|| "sidebar-other-sessions-heading".into())
+                                        .mx_2().mt_3().mb_2().px_2().pt_2()
+                                        .border_t_1().border_color(Theme::global().PANEL_BORDER)
+                                        .flex().items_center().gap_2()
+                                        .text_size(px(10.0)).text_color(Theme::global().TEXT_DIM)
+                                        .child(div().flex_1().font_weight(gpui::FontWeight::MEDIUM)
+                                            .child("Session history"))
+                                        .child(other_session_count.to_string()),
                                 );
                             }
-                            if is_open && workspace_row != previous_workspace
-                                && let Some(row) = workspace_row
-                            {
-                                let count = workspace_counts[&row];
-                                let accent = Theme::global().workspace_accent(row);
-                                list = list.child(
-                                    div()
-                                        .id(("sidebar-workspace-heading", row))
-                                        .debug_selector(move || format!("sidebar-workspace-heading-{row}"))
-                                        .mx_2().mt_1().mb_1().px_2().py_1()
-                                        .flex().items_center().gap_2()
-                                        .rounded_md().cursor_pointer()
-                                        .text_size(px(10.0))
-                                        .text_color(accent)
-                                        .when(row == active_row, |el| el.bg(Theme::global().HEADER_BG))
-                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                            window.prevent_default();
-                                            cx.stop_propagation();
-                                            let position = this.active_position_in_row();
-                                            this.select_row(row, position);
-                                            this.focus_active(window, cx);
-                                            cx.notify();
-                                        }))
-                                        .child(div().flex_1().font_weight(gpui::FontWeight::MEDIUM)
-                                            .child(format!("Workspace {}", row + 1)))
-                                        .child(count.to_string()),
-                                );
+                            if is_open && let Some(row) = workspace_row {
+                                if workspace_row != previous_workspace {
+                                    list = list.pt_2().child(this.render_workspace_group_marker(row, workspace_counts[&row], cx));
+                                }
+                                if !this.sidebar_workspace_groups.expanded(row) {
+                                    return list.h(px(32.0)).into_any_element();
+                                }
                             }
                             if !is_open && previous_section == Some(is_open)
                                 && previous_saved == Some(true)
@@ -5001,7 +4959,7 @@ impl Workspace {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
-                                    .when(is_open, |el| el.ml_4())
+                                    .when(is_open, |el| el.ml(px(40.0)))
                                     .mr_2()
                                     .mb_1()
                                     .relative()
@@ -7585,6 +7543,7 @@ struct SidebarSessionLayout {
     session_id: String,
     open: bool,
     workspace_row: Option<usize>,
+    collapsed: bool,
     selected: bool,
     saved: bool,
     details: bool,
@@ -9128,9 +9087,10 @@ mod tests {
         vcx.run_until_parked();
 
         assert!(
-            vcx.debug_bounds("sidebar-open-panels-heading").is_some(),
-            "sessions represented by a visible panel should have their own section"
+            vcx.debug_bounds("sidebar-open-panels-heading").is_none(),
+            "numbered workspace markers replace the redundant active-sessions row"
         );
+        assert!(vcx.debug_bounds("sidebar-workspace-group-0").is_some());
         assert!(
             vcx.debug_bounds("sidebar-other-sessions-heading").is_some(),
             "sessions without a panel should have their own section"
@@ -9386,14 +9346,18 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let upper = vcx.debug_bounds("sidebar-workspace-heading-0").unwrap();
-        let lower = vcx.debug_bounds("sidebar-workspace-heading-1").unwrap();
-        assert!(upper.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
+        let upper = vcx.debug_bounds("sidebar-workspace-group-0").unwrap();
+        let lower = vcx.debug_bounds("sidebar-workspace-group-1").unwrap();
+        let first = vcx.debug_bounds("sidebar-session-0").unwrap();
+        assert!(upper.top() < first.top());
+        assert!(upper.bottom() > first.top(), "marker sits beside the card, not in a separate heading row");
+        assert!(upper.right() <= first.left());
         assert!(vcx.debug_bounds("sidebar-session-1").unwrap().bottom() <= lower.top());
-        assert!(lower.bottom() <= vcx.debug_bounds("sidebar-session-2").unwrap().top());
-        assert!(vcx.debug_bounds("sidebar-session-0").unwrap().left() > upper.left());
+        assert!(vcx.debug_bounds("sidebar-session-2").is_none(), "inactive workspace starts collapsed");
         vcx.simulate_click(lower.center(), gpui::Modifiers::default());
-        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 1));
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 0));
+        assert!(vcx.debug_bounds("sidebar-session-2").is_some(), "manual expansion does not navigate");
 
         for (selector, expected_session) in [
             ("sidebar-session-0", "session_owl_upper_left"),
@@ -9413,6 +9377,10 @@ mod tests {
             });
         }
 
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-0").is_none(), "focus on workspace 2 collapses workspace 1");
+        assert!(vcx.debug_bounds("sidebar-session-1").is_some(), "workspace 2 stays expanded");
+
         // A move can change heading boundaries without changing session order.
         // The virtual list must invalidate its cached row heights in that case.
         let order = workspace.read_with(vcx, |workspace, _| {
@@ -9428,8 +9396,8 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-1").is_none());
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-2").is_some());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-1").is_none());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-2").is_some());
         workspace.read_with(vcx, |workspace, _| {
             assert_eq!(
                 workspace
@@ -9454,8 +9422,8 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-0").is_some());
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-1").is_none());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-1").is_none());
         workspace.read_with(vcx, |workspace, _| {
             assert!(
                 workspace
