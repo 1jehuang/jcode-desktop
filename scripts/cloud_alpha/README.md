@@ -78,6 +78,10 @@ idle shutdown. No user-configured SSH master is adopted or terminated.
 This removes repeated SSH/SSM authentication from eligible warm connections. It
 does not eliminate network round trips, expired readiness checks, or cold-boot
 latency, and it does not automatically retry ambiguous session creation.
+A [fresh end-to-end recheck](../../docs/cloud-session-latency.md) measured 389 ms
+for an immediate repeat but 5.587 seconds after a 35-second pause, with the same
+VM and SSH master still connected. An already-running VM alone is therefore not
+a guarantee of subsecond new sessions.
 
 Repositories belong under `~/workspaces` on the VM. No local checkout, model
 credential, AWS credential, or SSH private key is copied to the VM.
