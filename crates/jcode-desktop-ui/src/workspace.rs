@@ -94,6 +94,8 @@ mod remotes;
 mod super_action_behavior_tests;
 #[path = "window_navigation.rs"]
 mod window_navigation;
+#[path = "workspace_voice.rs"]
+mod voice;
 #[cfg(test)]
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
@@ -145,6 +147,7 @@ actions!(
         ToggleOnboardingSimulator,
         ToggleShowcase,
         ToggleSidebar,
+        ToggleVoice,
         CycleTheme,
         NewHelpSession,
         OpenChangelog,
@@ -566,6 +569,8 @@ pub struct WorkspaceSnapshot {
     active_row: usize,
     row_focus: [Option<usize>; STRIP_COUNT],
     previous: Option<usize>,
+    #[serde(default)]
+    last_voice_chat: Option<usize>,
     camera_x: [f32; STRIP_COUNT],
     camera_target: [f32; STRIP_COUNT],
     overview: bool,
@@ -614,6 +619,9 @@ impl WorkspaceSnapshot {
 }
 
 pub struct Workspace {
+    voice_key: voice::CopilotLatch,
+    last_voice_chat: Option<gpui::EntityId>,
+    _voice_activation: Option<gpui::Subscription>,
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
@@ -854,6 +862,13 @@ impl Workspace {
 
         let _ = window;
         let mut workspace = Self {
+            voice_key: Default::default(),
+            last_voice_chat: None,
+            _voice_activation: Some(cx.observe_window_activation(window, |this, window, _| {
+                if !window.is_window_active() {
+                    this.voice_key = Default::default();
+                }
+            })),
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
@@ -919,7 +934,7 @@ impl Workspace {
             accounts_layout_pending: true,
             status: "starting...".into(),
             connected: false,
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             _navigation_fallback: Self::install_navigation_fallback(cx),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
@@ -1150,6 +1165,9 @@ impl Workspace {
     pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
         crate::input::bind_keys(cx);
         Self {
+            voice_key: Default::default(),
+            last_voice_chat: None,
+            _voice_activation: None,
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
@@ -1212,7 +1230,7 @@ impl Workspace {
             accounts_layout_pending: true,
             status: "test".into(),
             connected: true,
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             _navigation_fallback: Self::install_navigation_fallback(cx),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
@@ -1328,6 +1346,7 @@ impl Workspace {
             },
             row_focus: self.row_focus.map(|id| id.and_then(index_for_id)),
             previous: self.previous.and_then(index_for_id),
+            last_voice_chat: self.last_voice_chat.and_then(index_for_id),
             camera_x: self.camera_x,
             camera_target: self.camera_target,
             overview: self.overview,
@@ -1500,6 +1519,8 @@ impl Workspace {
         });
         self.previous = snapshot
             .previous
+            .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
+        self.last_voice_chat = snapshot.last_voice_chat
             .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
         self.camera_x = snapshot.camera_x;
         self.camera_target = snapshot.camera_target;
@@ -2118,6 +2139,16 @@ impl Workspace {
     fn set_active(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.slots.len() {
             return;
+        }
+        // Preserve the most recent chat when moving through several utility
+        // panels, rather than relying on only the immediately previous slot.
+        if let Some(slot) = self.slots.get(self.active)
+            && slot.panel.read(cx).supports_voice()
+        {
+            self.last_voice_chat = Some(slot.panel.entity_id());
+        }
+        if self.slots[index].panel.read(cx).supports_voice() {
+            self.last_voice_chat = Some(self.slots[index].panel.entity_id());
         }
         let outgoing = self
             .slots
@@ -6917,12 +6948,19 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(slot) = self.slots.get(self.active)
+            && !slot.closing && slot.panel.read(cx).supports_voice()
+        {
+            self.last_voice_chat = Some(slot.panel.entity_id());
+        }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
-            return self.render_account_sign_in(cx);
+            let content = self.render_account_sign_in(cx);
+            return self.voice_modal_root(content, cx);
         }
         if self.onboarding_simulator.is_some() {
-            return self.render_onboarding_simulator(cx);
+            let content = self.render_onboarding_simulator(cx);
+            return self.voice_modal_root(content, cx);
         }
         self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar
@@ -7150,6 +7188,10 @@ impl Render for Workspace {
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(Self::toggle_voice))
+            .capture_action(cx.listener(Self::toggle_panel_voice))
+            .capture_key_down(cx.listener(Self::copilot_key_down))
+            .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 if this.show_beta_notice {
                     this.dismiss_beta_notice(window, cx);
@@ -8279,6 +8321,7 @@ mod tests {
             active_row: 2,
             row_focus: [None, None, Some(0), None],
             previous: Some(0),
+            last_voice_chat: Some(0),
             camera_x: [0.0, 10.0, 20.0, 30.0],
             camera_target: [1.0, 11.0, 21.0, 31.0],
             overview: true,
@@ -8491,6 +8534,7 @@ mod tests {
                     active_row: 0,
                     row_focus: [Some(0), None, None, None],
                     previous: None,
+                    last_voice_chat: None,
                     camera_x: [0.0; STRIP_COUNT],
                     camera_target: [0.0; STRIP_COUNT],
                     overview: false,

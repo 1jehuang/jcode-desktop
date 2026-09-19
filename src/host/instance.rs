@@ -15,12 +15,14 @@ mod platform {
 
     const SHOW: u8 = b'S';
     const RELOAD: u8 = b'R';
+    const TOGGLE_VOICE: u8 = b'V';
     const OK: &[u8] = b"ok\n";
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum Command {
         Show,
         Reload,
+        ToggleVoice,
     }
 
     pub enum Instance {
@@ -41,6 +43,12 @@ mod platform {
 
     pub fn acquire_named(name: Option<&str>, command: Command) -> io::Result<Instance> {
         acquire_at(socket_path(name), command)
+    }
+
+    /// Explicit commands must never start a new host or replace its socket.
+    /// In particular, an older live host may not understand a newer command.
+    pub fn notify_named(name: Option<&str>, command: Command) -> io::Result<()> {
+        notify(&socket_path(name), command)
     }
 
     fn socket_path(name: Option<&str>) -> PathBuf {
@@ -94,6 +102,7 @@ mod platform {
         stream.write_all(&[match command {
             Command::Show => SHOW,
             Command::Reload => RELOAD,
+            Command::ToggleVoice => TOGGLE_VOICE,
         }])?;
         let mut response = [0; 3];
         stream.read_exact(&mut response)?;
@@ -110,15 +119,19 @@ mod platform {
     fn serve(listener: UnixListener, commands: mpsc::Sender<Command>) {
         for incoming in listener.incoming() {
             let Ok(mut stream) = incoming else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
             let mut command = [0; 1];
             if stream.read_exact(&mut command).is_ok() {
                 let command = match command[0] {
                     SHOW => Command::Show,
                     RELOAD => Command::Reload,
+                    TOGGLE_VOICE => Command::ToggleVoice,
                     _ => continue,
                 };
-                let _ = commands.send(command);
-                let _ = stream.write_all(OK);
+                if commands.send(command).is_ok() {
+                    let _ = stream.write_all(OK);
+                }
             }
         }
     }
@@ -169,11 +182,51 @@ mod platform {
                 0o600
             );
         }
+
+        #[test]
+        fn voice_request_is_explicit_and_does_not_replay_on_startup() {
+            let (_root, path) = path("voice.sock");
+            assert!(notify(&path, Command::ToggleVoice).is_err());
+            assert!(
+                !path.exists(),
+                "a voice request must not create a host socket"
+            );
+            let primary = acquire_at(path.clone(), Command::Show).unwrap();
+            let Instance::Primary { commands, .. } = &primary else {
+                panic!()
+            };
+            assert!(
+                commands.try_recv().is_err(),
+                "startup must not toggle voice"
+            );
+            notify(&path, Command::ToggleVoice).unwrap();
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Command::ToggleVoice
+            );
+            assert!(commands.try_recv().is_err());
+        }
+
+        #[test]
+        fn unsupported_voice_request_preserves_live_old_host_socket() {
+            let (_root, path) = path("old-host.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                assert_eq!(byte, [TOGGLE_VOICE]);
+                // Old hosts simply close an unknown command connection.
+            });
+            assert!(notify(&path, Command::ToggleVoice).is_err());
+            server.join().unwrap();
+            assert!(path.exists(), "do not unlink an unsupported host's socket");
+        }
     }
 } // unix platform
 
 #[cfg(unix)]
-pub use platform::{Command, Instance, acquire_named};
+pub use platform::{Command, Instance, acquire_named, notify_named};
 
 // GPUI's Windows event loop is supported, but Unix-domain socket ownership and
 // permissions are not. Permit independent instances until named pipes land.
@@ -188,6 +241,7 @@ mod platform {
     pub enum Command {
         Show,
         Reload,
+        ToggleVoice,
     }
 
     pub enum Instance {
@@ -200,6 +254,13 @@ mod platform {
 
     pub struct SocketGuard;
 
+    pub fn notify_named(_name: Option<&str>, _command: Command) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "desktop command forwarding is not supported on this platform",
+        ))
+    }
+
     pub fn acquire_named(_name: Option<&str>, _command: Command) -> io::Result<Instance> {
         let (_sender, commands) = mpsc::channel();
         Ok(Instance::Primary {
@@ -210,4 +271,4 @@ mod platform {
 }
 
 #[cfg(not(unix))]
-pub use platform::{Command, Instance, acquire_named};
+pub use platform::{Command, Instance, acquire_named, notify_named};

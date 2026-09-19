@@ -11,6 +11,8 @@ mod host {
 }
 mod diagnostics;
 #[cfg(test)]
+mod voice_command_tests;
+#[cfg(test)]
 mod window_controls_tests;
 #[cfg(test)]
 mod window_lifecycle_tests;
@@ -257,6 +259,20 @@ fn main() {
         println!("Jcode Desktop {}", jcode_desktop_ui::build_version());
         return;
     }
+    // Global compositor shortcuts forward only. A missing or older host must
+    // never turn a keypress into a fresh application or recovered microphone.
+    let instance_name = env::args_os()
+        .any(|argument| argument == "--no-sidebar" || argument == "--workspace")
+        .then_some("no-sidebar");
+    if env::args_os().any(|argument| argument == "--toggle-voice") {
+        if let Err(error) = instance::notify_named(instance_name, InstanceCommand::ToggleVoice) {
+            eprintln!(
+                "could not toggle desktop voice: {error}. Start an updated Jcode Desktop host first."
+            );
+            std::process::exit(1);
+        }
+        return;
+    }
     let diagnostics_path = diagnostics::install().unwrap_or_else(|error| {
         eprintln!("failed to initialize desktop diagnostics: {error}");
         PathBuf::new()
@@ -267,9 +283,6 @@ fn main() {
     // Sidebar-free windows are intentionally independent from the main window.
     // Otherwise a shortcut for `--no-sidebar` only wakes the already-running
     // main instance, which silently ignores the new process's launch flags.
-    let instance_name = env::args_os()
-        .any(|argument| argument == "--no-sidebar" || argument == "--workspace")
-        .then_some("no-sidebar");
     let requested_command = if env::args_os().any(|argument| argument == "--reload-ui") {
         InstanceCommand::Reload
     } else {
@@ -398,7 +411,14 @@ fn main() {
                         continue;
                     }
 
-                    let result = cx.update(|cx| restore_window(&manager, &current_window, cx));
+                    let result = cx.update(|cx| {
+                        restore_window(&manager, &current_window, cx)?;
+                        if command == InstanceCommand::ToggleVoice {
+                            let window = current_window.borrow().ok_or_else(|| anyhow::anyhow!("desktop window unavailable"))?;
+                            dispatch_ui_action(window, "workspace::ToggleVoice", cx)?;
+                        }
+                        Ok::<_, anyhow::Error>(())
+                    });
                     if let Err(error) = result {
                         eprintln!("failed to restore desktop window: {error:#}");
                     }
@@ -467,6 +487,34 @@ fn main() {
         }
         cx.activate(true);
     });
+}
+
+/// Resolve against the current UI generation, not a statically linked Rust
+/// action TypeId. No host/plugin ABI or persisted-state changes are needed.
+fn dispatch_ui_action(
+    window: gpui::AnyWindowHandle,
+    name: &str,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    window.update(cx, |_, window, cx| {
+        // A restored root may not have mounted its listeners yet. Prepare its
+        // dispatch tree now, just as GPUI does before a native key event. Do
+        // not wait for a compositor frame: background activation can be denied.
+        window.draw(cx).clear(cx);
+        let action = cx.build_action(name, None)?;
+        if !window.is_action_available(action.as_ref(), cx) {
+            // A removed picker may leave no mounted focus target. The UI
+            // supplies its workspace as a tab stop for this bounded repair.
+            window.focus_next(cx);
+        }
+        anyhow::ensure!(
+            window.is_action_available(action.as_ref(), cx),
+            "current UI cannot handle {name}"
+        );
+        window.dispatch_action(action, cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    Ok(())
 }
 
 #[cfg(test)]
