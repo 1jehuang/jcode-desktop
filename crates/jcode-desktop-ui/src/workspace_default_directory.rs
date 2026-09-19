@@ -207,47 +207,48 @@ impl Workspace {
             .or_else(default_working_dir)
             .unwrap_or_else(|| "Not set".into());
         let display = match &self.remotes.default_host {
-            Some(host) => format!("{host}:~ (remote home)"),
+            Some(_) => "~".into(),
             None => compact_path(&path),
+        };
+        let tooltip = match &self.remotes.default_host {
+            Some(host) => format!(
+                "Default directory on {host}: ~ (remote home)\nCustom remote directories are not configurable yet."
+            ),
+            None => format!(
+                "Default directory on this computer: {path}\n{} opens a new session. Click to change the directory.",
+                spawn_shortcut()
+            ),
         };
         div()
             .id("default-directory-button")
             .debug_selector(|| "default-directory-button".into())
-            .flex_none()
-            .px_3()
-            .py_2()
+            .flex_1()
+            .min_w_0()
+            .ml_1()
+            .px_2()
+            .h(px(28.0))
             .flex()
-            .flex_col()
-            .gap_1()
-            .border_b_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .cursor_pointer()
-            .hover(|el| el.bg(Theme::global().TOOL_BG))
+            .items_center()
+            .rounded_md()
+            .when(self.remotes.default_host.is_none(), |el| {
+                el.cursor_pointer()
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+            })
+            .tooltip(move |_, cx| {
+                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
+                    .into()
+            })
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
-                this.open_default_directory_picker(window, cx);
+                if this.remotes.default_host.is_none() {
+                    this.open_default_directory_picker(window, cx);
+                }
             }))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(10.5))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child("Default directory"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(9.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(spawn_shortcut()),
-                    ),
-            )
-            .child(
-                div()
                     .debug_selector(|| "default-directory-path".into())
+                    .flex_1()
+                    .min_w_0()
                     .text_size(px(11.0))
                     .text_color(Theme::global().ACCENT)
                     .overflow_hidden()

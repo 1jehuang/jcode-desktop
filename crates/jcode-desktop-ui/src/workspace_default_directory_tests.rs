@@ -230,6 +230,12 @@ fn default_directory_header_click_opens_focused_picker(cx: &mut gpui::TestAppCon
             cx.notify();
         });
         vcx.run_until_parked();
+        let header = vcx.debug_bounds("default-directory-button").unwrap();
+        let path = vcx.debug_bounds("default-directory-path").unwrap();
+        assert_eq!(header.size.height, px(28.0));
+        assert!(path.top() >= header.top());
+        assert!(path.bottom() <= header.bottom());
+        assert!(path.right() <= header.right());
         click(vcx, "default-directory-button");
         assert!(vcx.debug_bounds("default-directory-panel").is_some());
         assert!(vcx.debug_bounds("folder-picker-overlay").is_none());

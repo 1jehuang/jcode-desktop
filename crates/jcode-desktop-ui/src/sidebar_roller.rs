@@ -439,9 +439,9 @@ mod tests {
                 assert_eq!(current_body, body);
                 assert!(vcx.debug_bounds("sidebar-workflow-switch").is_some());
             } else {
-                assert!(
-                    current_body.top() < body.top(),
-                    "non-chat sections reclaim the workflow switch space"
+                assert_eq!(
+                    current_body.top(), body.top(),
+                    "inline workflow icons must not consume a separate content row"
                 );
                 assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
             }

@@ -5148,7 +5148,8 @@ impl Workspace {
             .relative()
             .when(!folders, |el| el.bg(Theme::global().HEADER_BG))
             // Folder mode leaves this transparent: the native path owns its tab.
-            .child(if folders {
+            .child({
+                let navigation = if folders {
                 self.render_sidebar_roller(fullscreen, cx)
             } else {
                 div()
@@ -5495,12 +5496,17 @@ impl Workspace {
                             ),
                     )
                     .into_any_element()
+                };
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(navigation))
+                    .when(self.sidebar_view == SidebarView::Sessions, |el| {
+                        el.child(self.render_workflow_switch(cx))
+                    })
             })
-            .child(self.render_default_directory_button(cx))
             .child(self.render_machine_switcher(cx))
-            .when(self.sidebar_view == SidebarView::Sessions, |el| {
-                el.child(self.render_workflow_switch(cx))
-            })
             .child(
                 div()
                     .flex_1()
@@ -9229,7 +9235,7 @@ mod tests {
                 });
                 vcx.run_until_parked();
                 let directory = vcx.debug_bounds("default-directory-button").unwrap();
-                let machines = vcx.debug_bounds("machines-picker-button").unwrap();
+                let machines = vcx.debug_bounds("machine-destination-switcher").unwrap();
                 let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 assert!(gutter.top() >= directory.bottom());
@@ -9308,7 +9314,7 @@ mod tests {
                     directory
                 );
                 assert_eq!(
-                    vcx.debug_bounds("machines-picker-button").unwrap(),
+                    vcx.debug_bounds("machine-destination-switcher").unwrap(),
                     machines
                 );
             }
@@ -9774,11 +9780,11 @@ mod tests {
             assert_eq!(workspace.read_with(vcx, |w, _| w.sidebar_view), view);
             let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
             let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
-            let directory = vcx.debug_bounds("default-directory-button").unwrap();
+            let destinations = vcx.debug_bounds("machine-destination-switcher").unwrap();
             assert_eq!(
                 header.bottom(),
-                directory.top(),
-                "header must touch the fixed preference rows"
+                destinations.top(),
+                "header must touch the combined destination and directory row"
             );
             assert_eq!(header.size.height, px(TITLEBAR_HEIGHT));
             assert!(trigger.left() >= header.left() && trigger.right() <= header.right());
@@ -9948,7 +9954,7 @@ mod tests {
                 let list = vcx.debug_bounds("accounts-list").unwrap();
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 let section = vcx.debug_bounds("accounts-section").unwrap();
-                let machine_switcher = vcx.debug_bounds("machines-picker-button").unwrap();
+                let machine_switcher = vcx.debug_bounds("machine-destination-switcher").unwrap();
                 assert_eq!(section.origin.y, machine_switcher.bottom());
                 assert_eq!(section.bottom(), body.bottom());
                 assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
@@ -10017,7 +10023,7 @@ mod tests {
         assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
         let section = vcx.debug_bounds("accounts-section").unwrap();
         let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-        let machine_switcher = vcx.debug_bounds("machines-picker-button").unwrap();
+        let machine_switcher = vcx.debug_bounds("machine-destination-switcher").unwrap();
         assert_eq!(section.origin.y, machine_switcher.bottom());
         assert_eq!(section.bottom(), body.bottom());
         assert!(

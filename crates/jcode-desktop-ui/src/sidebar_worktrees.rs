@@ -180,43 +180,55 @@ impl Workspace {
             .flex_none()
             .flex()
             .gap_1()
-            .mx_3()
-            .my_2()
-            .p_1()
-            .rounded_md()
-            .bg(Theme::global().TOOL_BG)
+            .mr_3()
             .children(
                 [
-                    (false, "Swarm", "sidebar-mode-swarm"),
-                    (true, "Worktrees", "sidebar-mode-worktrees"),
+                    (
+                        false,
+                        "Swarm",
+                        "sidebar-mode-swarm",
+                        include_bytes!("../../../assets/icons/swarm.svg").as_slice(),
+                    ),
+                    (
+                        true,
+                        "Worktrees",
+                        "sidebar-mode-worktrees",
+                        include_bytes!("../../../assets/icons/worktree.svg").as_slice(),
+                    ),
                 ]
                 .into_iter()
-                .map(|(mode, label, id)| {
+                .map(|(mode, label, id, icon)| {
+                    let ink = if mode == self.worktree_mode {
+                        Theme::global().ACCENT
+                    } else {
+                        Theme::global().TEXT_DIM
+                    };
                     div()
                         .id(id)
                         .debug_selector(move || id.into())
-                        .flex_1()
-                        .py_1()
-                        .rounded_sm()
-                        .text_center()
-                        .text_size(px(12.0))
+                        .flex_none()
+                        .size(px(28.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
                         .cursor_pointer()
-                        .text_color(if mode == self.worktree_mode {
-                            Theme::global().TEXT
-                        } else {
-                            Theme::global().TEXT_DIM
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| WorktreeTooltip(format!("{label} mode"))).into()
                         })
                         .when(mode == self.worktree_mode, |el| {
-                            el.bg(Theme::global().PANEL_BG)
+                            el.bg(Theme::global().ACCENT_DIM)
                         })
+                        .hover(|el| el.bg(Theme::global().TOOL_BG))
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
                             this.worktree_mode = mode;
                             this.worktrees.input = None;
                             this.worktrees.input_directory = None;
                             this.focus_pending = true;
                             cx.notify();
                         }))
-                        .child(label)
+                        .child(gpui::svg().data(icon).size(px(16.0)).text_color(ink))
                 }),
             )
             .into_any_element()

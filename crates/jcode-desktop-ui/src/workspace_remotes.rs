@@ -7,6 +7,23 @@ mod cloud_alpha;
 #[path = "workspace_cloud_progress.rs"]
 mod cloud_progress;
 
+pub(super) struct HeaderTooltip(pub gpui::SharedString);
+
+impl Render for HeaderTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(Theme::global().PANEL_BG)
+            .border_1()
+            .border_color(Theme::global().PANEL_BORDER)
+            .text_size(px(12.0))
+            .text_color(Theme::global().TEXT)
+            .child(self.0.clone())
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Machines {
     pub default_host: Option<String>,
@@ -672,53 +689,108 @@ impl Workspace {
     }
 
     pub(super) fn render_machine_switcher(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let host = self.remotes.default_host.as_deref();
+        let button = |id: &'static str, icon: &'static [u8], title: String, selected: bool| {
+            let ink = if selected {
+                theme.ACCENT
+            } else {
+                theme.TEXT_DIM
+            };
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .flex_none()
+                .size(px(28.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .when(selected, |el| el.bg(theme.ACCENT_DIM))
+                .hover(|el| el.bg(theme.TOOL_BG))
+                .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(title.clone().into())).into())
+                .child(gpui::svg().data(icon).size(px(16.0)).text_color(ink))
+        };
         div()
-            .id("machines-picker-button")
-            .debug_selector(|| "machines-picker-button".into())
+            .debug_selector(|| "machine-destination-switcher".into())
             .flex_none()
             .px_3()
             .py_1p5()
             .flex()
-            .items_center()
-            .gap_2()
+            .flex_col()
+            .gap_1()
             .border_b_1()
-            .border_color(Theme::global().PANEL_BORDER)
+            .border_color(theme.PANEL_BORDER)
             .text_size(px(10.5))
-            .cursor_pointer()
-            .hover(|el| el.bg(Theme::global().TOOL_BG))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.open_machines(window, cx);
-                }),
-            )
-            .child(div().text_color(Theme::global().TEXT_DIM).child("Machines"))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(Theme::global().ACCENT)
-                    .child(format!(
-                        "New: {}",
-                        self.remotes
-                            .default_host
-                            .as_deref()
-                            .unwrap_or("This computer")
-                    )),
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        button(
+                            "machine-destination-local",
+                            include_bytes!("../../../assets/icons/computer.svg"),
+                            "This computer · Use locally for new sessions".into(),
+                            host.is_none(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.set_default_machine(None, cx);
+                        })),
+                    )
+                    .child(
+                        button(
+                            "machine-destination-cloud",
+                            include_bytes!("../../../assets/icons/machine-cloud.svg"),
+                            "Cloud · Use Jcode Cloud for new sessions".into(),
+                            host == Some(cloud_alpha::HOST),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.set_default_machine(Some(cloud_alpha::HOST.into()), cx);
+                        })),
+                    )
+                    .child(
+                        button(
+                            "machines-picker-button",
+                            include_bytes!("../../../assets/icons/ssh.svg"),
+                            match host.filter(|host| *host != cloud_alpha::HOST) {
+                                Some(host) => format!("SSH · {host} · Choose a remote host"),
+                                None => "SSH · Choose a remote host".into(),
+                            },
+                            host.is_some_and(|host| host != cloud_alpha::HOST),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.open_machines(window, cx);
+                            }),
+                        ),
+                    )
+                    .child(self.render_default_directory_button(cx)),
             )
             .when(self.remotes.failed, |el| {
-                el.child(div().text_color(Theme::global().ERROR).child("!"))
+                el.child(
+                    div()
+                        .text_color(theme.ERROR)
+                        .child("Connection needs attention"),
+                )
             })
+            .children(
+                self.remotes
+                    .notice
+                    .as_ref()
+                    .map(|notice| div().text_color(theme.ERROR).child(notice.clone())),
+            )
             .children(self.remotes.cloud.lease_warning().map(|warning| {
                 div()
                     .debug_selector(|| "cloud-alpha-lease-warning".into())
                     .text_color(Theme::global().ERROR)
                     .child(warning)
             }))
-            .child("→")
             .into_any_element()
     }
 

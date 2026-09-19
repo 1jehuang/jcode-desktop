@@ -34,6 +34,66 @@ fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
+fn sidebar_destination_icons_choose_defaults_without_starting_sessions(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = harness::spawn_recording();
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.bridge = bridge;
+        w.remotes.default_host = Some("desktop".into());
+        w.push_test_panel("existing", cx);
+        w
+    });
+    vcx.run_until_parked();
+    let local = vcx.debug_bounds("machine-destination-local").unwrap();
+    let cloud = vcx.debug_bounds("machine-destination-cloud").unwrap();
+    let ssh = vcx.debug_bounds("machines-picker-button").unwrap();
+    assert_eq!(local.origin.y, cloud.origin.y);
+    assert_eq!(cloud.origin.y, ssh.origin.y);
+    assert!(local.right() < cloud.left());
+    assert!(cloud.right() < ssh.left());
+    assert!((local.size.width - cloud.size.width).abs() <= px(1.0));
+    assert!((cloud.size.width - ssh.size.width).abs() <= px(1.0));
+    assert_eq!(local.size.height, cloud.size.height);
+    assert_eq!(cloud.size.height, ssh.size.height);
+    let swarm = vcx.debug_bounds("sidebar-mode-swarm").unwrap();
+    let worktrees = vcx.debug_bounds("sidebar-mode-worktrees").unwrap();
+    let navigation = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+    assert_eq!(swarm.center().y, navigation.center().y);
+    assert_eq!(worktrees.center().y, navigation.center().y);
+    assert!(navigation.right() <= swarm.left());
+    assert!(swarm.right() < worktrees.left());
+    assert_eq!(swarm.size, gpui::size(px(28.0), px(28.0)));
+    assert_eq!(worktrees.size, swarm.size);
+    let directory = vcx.debug_bounds("default-directory-button").unwrap();
+    assert_eq!(directory.origin.y, local.origin.y);
+    assert!(ssh.right() < directory.left());
+
+    click(vcx, "machine-destination-cloud");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.remotes.default_host.as_deref(), Some("jcode-cloud-alpha"));
+        assert_eq!(w.slots.len(), 1);
+    });
+    assert!(commands.try_recv().is_err(), "selecting cloud must not wake a VM or create a session");
+    click(vcx, "default-directory-button");
+    assert!(vcx.debug_bounds("default-directory-panel").is_none(), "remote paths must not open a local folder picker");
+    click(vcx, "sidebar-mode-worktrees");
+    workspace.read_with(vcx, |w, _| assert!(w.worktree_mode));
+    assert!(vcx.debug_bounds("sidebar-worktrees").is_some());
+    click(vcx, "sidebar-mode-swarm");
+    workspace.read_with(vcx, |w, _| assert!(!w.worktree_mode));
+    assert!(vcx.debug_bounds("sidebar-session-list").is_some());
+    click(vcx, "machine-destination-local");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.remotes.default_host, None);
+        assert_eq!(w.slots.len(), 1);
+    });
+    assert!(commands.try_recv().is_err());
+    click(vcx, "machines-picker-button");
+    assert!(vcx.debug_bounds("machine-host-input").is_some());
+    workspace.read_with(vcx, |w, _| assert_eq!(w.remotes.default_host, None));
+}
+
+#[gpui::test]
 fn settings_machine_entry_opens_the_connectable_picker(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
