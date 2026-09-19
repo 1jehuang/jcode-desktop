@@ -34,8 +34,8 @@ sending, especially after long pauses. No untested silence filter was added.
 
 | Requirement / changed output | Check and observed result |
 | --- | --- |
-| Native Nari, independent of Voice Lab | Three real authenticated Rust API streams succeeded. No loopback prototype dependency is in the Desktop implementation. |
-| Stream while speaking and finalize on Stop | Actual pre-EOF revisions on the public sample. WS tests cover PCM byte order, partial revisions, final protection, pending duration commits, and matching end acknowledgement. |
+| Native Nari, independent of Voice Lab | Three real authenticated Rust API streams succeeded. The normal production Desktop also passed the complete CPAL → resampler → Nari → live preview → final draft flow with isolated public-audio input. No loopback prototype dependency. |
+| Stream while speaking and finalize on Stop | Actual pre-EOF API revisions and a visible native live partial before the production CLI Stop. The correct complete phrase entered the draft after Stop. WS tests additionally cover byte order, revision/final protection, duration commits, and matching acknowledgement. |
 | Bounded native capture and cancellation | Shared client suite passes with capture enabled (33 tests) and disabled (19 tests). Fake capture factory tests cover startup gating/cancellation and worker lifecycle without physical microphone access. Independent DSP review exercised output counts and spectral attenuation. |
 | Keep drafts editable and never send automatically | Desktop panel tests exercise live preview replacement separately from typed draft, final append, undo, cancellation, error preservation, and unchanged conversation items. All 19 panel/workspace voice tests pass, including actual fallback-key and button routing to an existing recording owner in another chat. |
 | Keep interim audio/text out of recovery | Panel snapshot test verifies no live transcript field/content. Voice state is not serialized. Last-target chat identity alone may persist. |
@@ -96,9 +96,57 @@ removes stale unused entries while recording the shared client's rustls dependen
 ## Remaining limits
 
 No unattended physical microphone recording or keyboard monitoring was performed.
-The user had already accepted the browser prototype, but native hardware capture
-and the actual physical global key still require an intentional user trial.
+The user had already accepted the browser prototype, but the actual hardware microphone and physical global key still require an intentional
+user trial. The normal software capture-to-draft pipeline was exercised with a
+real ALSA virtual device carrying only the public sample, as detailed below.
 Wayland activation requests can be denied by compositor focus policy. The global
 voice command can still reach the last chat even when Desktop is not foreground.
 Linux is the exercised platform. macOS/Windows microphone permissions and native
 global shortcut registration are not claimed tested by this change.
+
+
+## Full native input-to-draft acceptance follow-through
+
+`target/voice-native-cloud/result.json` records a successful **normal, non-preview
+production Desktop** run through its actual public controls and integration
+boundaries. The executable is the same immutable release hash recorded above.
+The test did not substitute the provider, transport, CPAL capture, resampler,
+voice state machine, or draft insertion logic.
+
+1. A private Xvfb/Openbox display and bubblewrap sandbox ran the production host.
+   The host had a private home/config/runtime, no shared daemon sockets, an empty
+   application PATH, and no mounted `/dev/snd`. Physical recording was impossible.
+2. The real `--toggle-voice` command first exercised the native missing-key error.
+   The existing typed draft remained unchanged, and no audio/provider stream opened.
+3. A process-only ALSA file/null device supplied the SHA-pinned official public
+   sample. A regular file avoided the short-read problems observed with an input
+   FIFO. Draining the output FIFO at the native rate paced the device. The exact
+   mechanism had first passed an offline, network-disabled production CPAL probe:
+   44.1 kHz float stereo to 16 kHz mono, 56,000 normalized samples in about
+   3.492 seconds, 0.999467 waveform correlation, and bounded Drop cancellation.
+4. Only the existing Nari-only key file was copied into the private config. One
+   authenticated stream sent **6.7 seconds** of public sample plus bounded silence.
+   The live screenshot shows **“Hello.”** below the still-unchanged typed draft.
+5. Production CLI Stop was invoked 6.516 seconds after the source pump began.
+   The final visible draft was exactly:
+   **“Native dictation review: Hello. Welcome to Nari Labs.”**
+   The prefix was preserved once, the same startup draft and host socket remained,
+   and prompt history/queue showed no automatic sending.
+6. The copied credential was deleted and its absence independently verified.
+   The isolated app and display processes ended. No physical microphone or live
+   desktop input was used. Both live and final screenshots were independently read.
+
+The retained opt-in runner is `scripts/accept-voice-native.py`, with
+`scripts/voice_virtual_alsa.py` providing the restricted public-audio device.
+Cloud operation requires explicit arguments and has independent capture bounds.
+Preparation-only mode uses no credentials and no provider requests. This test
+validates the complete native software path, not a benchmark of human speech or
+an assertion that physical keyboard/microphone registration has been tested.
+
+The isolated X11 window initially remained unmapped on some attempts. Evidence
+showed no `WM_STATE` and an empty window-manager client list while checkpointing
+continued. The runner explicitly mapped/activated only its private test window
+and records `private_x11_map_requested: true`. This was a test-environment
+intervention, **not a claimed production fix**. No live compositor was controlled.
+The visible elapsed counter includes source/readiness/inspection delays, so the
+6.516-second stop timing is not reported as provider recognition latency.
