@@ -1,54 +1,60 @@
-# Subscription voice dictation
+# Nari streaming voice dictation
 
-Choose **Voice** in a session's account/model toolbar, speak, then choose **Stop**.
-The result is appended to the current draft. Review and edit it before sending.
-Typing and attachments are preserved, and the insertion can be undone normally.
-Voice capture is local even when the session runs over SSH.
+Press the **Copilot key** or choose **Voice** in a chat's toolbar to start dictation.
+Press again or choose **Stop** to finish. **Ctrl+Shift+V** remains available in the
+composer. A live, revisable transcript appears above the composer while audio is
+streaming. The final result is appended to the current draft as one undoable edit.
+It is never submitted automatically. Typing and attachments are preserved.
 
-Voice checks the signed-in local Jcode account's server-provided
-`capabilities.voice_transcription` entitlement before opening the microphone.
-No separate Groq API key is needed in Desktop. Older/unconfigured servers and
-accounts without the capability fail closed, with a message in the composer.
-Sign in using Accounts. Model-provider accounts alone do not grant this capability.
+## Global Copilot activation
 
-Audio is held in memory, then sent through the Jcode subscription service to
-Groq's `whisper-large-v3-turbo`. Audio and unfinished recording state are not
-saved in session history or hot-reload snapshots. A completed transcript is a
-normal editable draft. Recording is explicit, never automatic. Cancel, panel
-close, or application reload stops capture and discards pending results. Canceling
-an upload cannot retract audio already received by the service.
+The native Desktop host accepts `jcode-desktop --toggle-voice` through its private
+instance socket. A global operating-system shortcut can invoke that command from
+another app. Desktop requests window activation and routes the toggle to the active
+recording, or otherwise the last active chat. Wayland may deny foreground focus,
+but the toggle still reaches Desktop. It does not dictate into another
+application. A recording remains owned by the chat where it began even when
+selection changes. Non-chat document, terminal, and settings panels are excluded.
 
-A recording ends at five minutes or 10 MiB, whichever comes first. The backend
-allows 10 attempts per minute and 100 per day per paid account, including failed
-attempts. It does not charge the account's inference credit balance for voice.
-On macOS, allow microphone access when prompted. Linux needs a supported default
-ALSA/PipeWire/PulseAudio input. Windows uses the default input device.
-Offline screenshots/previews never access a microphone or the voice service.
+The command requires an already-running compatible Desktop host. It does not
+launch a new recording implicitly during startup or crash recovery. On Wayland,
+global keyboard shortcuts belong to the compositor, so the compositor forwards
+the Copilot press and Desktop owns recording, networking, and transcript insertion.
+The compositor binding must disable key repeat. Native in-app Copilot handling
+also suppresses repeated held-key events. See `global-voice-shortcut.md` for setup.
 
-## Rollout
+## Credentials and privacy
 
-Desktop enables the shared `jcode-base` `voice-capture` feature. The API changes
-live in `solosystems-backend/workers/api`. Deploy that service with its voice
-migration and server-side `GROQ_API_KEY` secret before enabling production use.
-Historical subscription records must acquire verified Stripe subscription status
-as described in the backend rollout guide. Do not copy a user's personal Groq key
-into the service or distribute a server key in Desktop builds.
+Desktop connects directly to Nari with a personal API key. Set `NARI_API_KEY`, or
+save `NARI_API_KEY=...` in the existing Jcode private-config convention at
+`~/.config/jcode/nari.env` (respecting `XDG_CONFIG_HOME`). Restrict that file to the
+user, for example mode `0600` on Unix. Never put it in the repository. This is
+separate from Jcode subscription voice entitlement and is billed to the Nari
+account. No key is compiled into Desktop or shared with other users.
 
-This checkout's implementation has local automated coverage. Production activation
-requires access to the subscription Cloudflare account and a service-owned Groq
-credential. A live Groq transcription is not implied by local tests.
+Voice capture is local even for an SSH-backed chat. The microphone opens only
+after an explicit toggle and successful Nari session setup. Audio streams as
+16 kHz mono PCM16, with bounded in-memory buffering and anti-alias resampling
+from the device rate. It is not recorded to disk. Nari may receive audio before
+you press Stop, unlike the former Groq batch path.
 
-## Verification (2026-09-18)
+Audio, pending requests, and interim transcripts are not saved in session history
+or hot-reload snapshots. Only the final, editable draft persists normally.
+Cancel, panel close, or reload cancels capture and discards pending results.
+Cancellation cannot retract audio already received by Nari. Failed requests are
+not automatically retried or sent to a different transcription provider.
 
-- Backend: 234 tests passed, including 18 voice endpoint tests with signed
-  subscription/invoice webhook events, real SQLite state, and mocked Groq.
-- Shared client/capture: 13 tests passed, including HTTP contract checks and
-  stop/cancel/drop ownership tests without opening a microphone.
-- Desktop: panel tests cover voice draft insertion, undo, cancellation, offline
-  isolation, and narrow-window controls. Packaged microphone metadata has two
-  passing checks. Real app screenshots run on private Xvfb displays.
-- The full dirty-checkout UI suite is not green. The preserved pre-voice test
-  binary also has failures in unrelated workspace motion and changelog work.
-  No claim is made that the full checkout passes.
-- Live microphone capture, macOS/Windows permissions, and production Groq
-  transcription still need end-to-end validation in an enabled deployment.
+Capture is bounded to five minutes. Stop flushes the final audio before committing
+and waits for the matching acknowledgement and outstanding final utterances.
+On macOS, grant microphone access when prompted. Linux needs a supported default
+ALSA/PipeWire/PulseAudio input. Windows uses its default input device.
+Offline screenshots and previews never access a microphone or Nari.
+
+The shared Jcode subscription/Groq batch API remains available to other clients.
+Changing Desktop's voice provider does not deploy or modify that hosted service.
+
+## Verification
+
+See [Nari voice validation](nari-voice-validation.md) for measured native-provider
+latency, requirement-to-check evidence, and remaining hardware limitations. Long
+silent stretches can produce stray provider text, so review the draft before sending.
