@@ -305,6 +305,7 @@ fn cloud_new_panel_shows_wake_progress_before_any_session_exists(cx: &mut gpui::
     assert!(vcx.debug_bounds("pending-session-status").is_some());
     assert!(vcx.debug_bounds("pending-cloud-label").is_some());
     assert!(vcx.debug_bounds("pending-cloud-background").is_some());
+    assert!(vcx.debug_bounds("cloud-startup-checklist").is_some());
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
         assert_eq!(
@@ -821,6 +822,7 @@ fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("pending-cloud-label").is_some());
     assert!(vcx.debug_bounds("pending-cloud-background").is_some());
+    assert!(vcx.debug_bounds("cloud-startup-checklist").is_some());
     vcx.simulate_input("preserve my draft");
     workspace.update(vcx, |w, cx| {
         // This is the same path used by the cloud lifecycle monitor.
@@ -852,6 +854,7 @@ fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
     click(vcx, "pending-session-local");
     assert!(vcx.debug_bounds("pending-cloud-label").is_none());
     assert!(vcx.debug_bounds("pending-cloud-background").is_none());
+    assert!(vcx.debug_bounds("cloud-startup-checklist").is_none());
     vcx.simulate_input("local draft");
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 1);

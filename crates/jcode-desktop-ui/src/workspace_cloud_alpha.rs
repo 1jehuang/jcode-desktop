@@ -5,11 +5,42 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 pub(super) const HOST: &str = "jcode-cloud-alpha";
 const CUTOFF: &str = "Two-hour continuous cutoff, including active work. Monthly exhaustion or idle shutdown can stop it earlier. Save work before shutdown.";
+// A bounded optimization for another panel, not a renewed VM lease or an
+// assertion that AWS policy is freshly checked. Every panel still opens SSH.
+const READY_TTL: Duration = Duration::from_secs(30);
+const REUSING_READY: &str = "Reusing recently verified cloud VM...";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalIdentity {
+    home: PathBuf,
+    config: (u64, SystemTime),
+    helper: (u64, SystemTime),
+}
+
+impl LocalIdentity {
+    fn read(home: &Path) -> Option<Self> {
+        let helper = helper_paths(home).ok()?;
+        let stamp = |path: &Path| {
+            let metadata = std::fs::metadata(path).ok()?;
+            Some((metadata.len(), metadata.modified().ok()?))
+        };
+        Some(Self {
+            home: home.into(),
+            config: stamp(&home.join(".config/jcode/cloud-alpha.json"))?,
+            helper: stamp(&helper)?,
+        })
+    }
+}
+
+struct Ready {
+    verified_at: Instant,
+    identity: LocalIdentity,
+}
 
 #[derive(Default)]
 struct State {
@@ -18,6 +49,48 @@ struct State {
     refreshing: bool,
     last_refresh: Option<Instant>,
     updates: Vec<(String, bool, Option<String>)>,
+    ready: Option<Ready>,
+    ready_generation: u64,
+}
+
+impl State {
+    fn invalidate_ready(&mut self) {
+        self.ready = None;
+        self.ready_generation = self.ready_generation.wrapping_add(1);
+    }
+
+    fn recently_ready(&self, identity: Option<&LocalIdentity>, now: Instant) -> bool {
+        let Some(ready) = &self.ready else {
+            return false;
+        };
+        if identity != Some(&ready.identity)
+            || now.saturating_duration_since(ready.verified_at) >= READY_TTL
+        {
+            return false;
+        }
+        // A status obtained before this wake may describe the previous stopped
+        // boot. Still honor a known running lease's deadline as it elapses.
+        self.status.as_ref().is_none_or(|(status, fetched)| {
+            (*fetched < ready.verified_at && status.state != "running")
+                || status.allows_ready_reuse(now.saturating_duration_since(*fetched))
+        })
+    }
+
+    fn record_status(&mut self, result: Result<Status, String>, now: Instant) {
+        match result {
+            Ok(status) => {
+                if !status.allows_ready_reuse(Duration::ZERO) {
+                    self.invalidate_ready();
+                }
+                self.status = Some((status, now));
+                self.error = None;
+            }
+            Err(error) => {
+                self.invalidate_ready();
+                self.error = Some(error);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -34,6 +107,8 @@ struct Status {
     used_minutes: u64,
     allowance_minutes: u64,
     maximum_continuous_hours: u64,
+    #[serde(default)]
+    depleted: bool,
     #[serde(default)]
     lease_remaining_seconds: Option<u64>,
 }
@@ -192,6 +267,46 @@ fn wake_then_connect(
 }
 
 impl Lifecycle {
+    /// Called when a cloud transport fails. A concurrent wake may finish, but
+    /// cannot publish a cache entry over a newer failure or status invalidation.
+    pub(super) fn invalidate_ready(&self) {
+        self.state.lock().unwrap().invalidate_ready();
+    }
+
+    fn ensure_ready(
+        &self,
+        identity: impl Fn() -> Option<LocalIdentity>,
+        mut progress: impl FnMut(String),
+        wake: impl FnOnce(&mut dyn FnMut(String)) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        // Check *inside* the lock: queued requests reuse the first successful
+        // wake rather than serially rerunning the entire AWS readiness sequence.
+        let _serial = self.wake_lock.lock().unwrap();
+        let before = identity();
+        let generation = {
+            let mut state = self.state.lock().unwrap();
+            if state.recently_ready(before.as_ref(), Instant::now()) {
+                drop(state);
+                progress(REUSING_READY.into());
+                return Ok(true);
+            }
+            state.invalidate_ready();
+            state.ready_generation
+        };
+        let result = wake(&mut progress);
+        let after = identity();
+        let mut state = self.state.lock().unwrap();
+        if result.is_err() {
+            state.invalidate_ready();
+        } else if state.ready_generation == generation && before == after {
+            state.ready = after.map(|identity| Ready {
+                verified_at: Instant::now(),
+                identity,
+            });
+        }
+        result.map(|_| false)
+    }
+
     pub(super) fn connect(&self, bridge: harness::Bridge, request_id: Option<String>) {
         let lifecycle = self.clone();
         let update_request_id = request_id.clone();
@@ -201,21 +316,34 @@ impl Lifecycle {
             update_request_id.clone(),
         ));
         std::thread::spawn(move || {
-            let _serial = lifecycle.wake_lock.lock().unwrap();
+            let mut reused = false;
             let result = wake_then_connect(&bridge, request_id, || {
-                run_helper_with_progress("wake", |message| {
-                    let mut state = lifecycle.state.lock().unwrap();
-                    // Retain only the newest pending phase for this request.
-                    // Never relabel a stale request as a newer panel's update.
-                    state.updates.retain(|(_, _, id)| id != &update_request_id);
-                    state
-                        .updates
-                        .push((message, false, update_request_id.clone()));
-                })
-                .map(|_| ())
+                reused = lifecycle.ensure_ready(
+                    || {
+                        // No cache identity in offline mode: the normal helper
+                        // guard remains authoritative, including on warm paths.
+                        if harness::screenshot_mode() || cfg!(test) {
+                            return None;
+                        }
+                        let home = std::env::var_os("HOME")?;
+                        LocalIdentity::read(Path::new(&home))
+                    },
+                    |message| {
+                        let mut state = lifecycle.state.lock().unwrap();
+                        // Retain only the newest pending phase for this request.
+                        // Never relabel a stale request as a newer panel's update.
+                        state.updates.retain(|(_, _, id)| id != &update_request_id);
+                        state
+                            .updates
+                            .push((message, false, update_request_id.clone()));
+                    },
+                    |progress| run_helper_with_progress("wake", progress).map(|_| ()),
+                )?;
+                Ok(())
             });
             let mut state = lifecycle.state.lock().unwrap();
             let (message, failed) = match result {
+                Ok(()) if reused => (REUSING_READY.into(), false),
                 Ok(()) => (format!("{HOST} is awake. Connecting…"), false),
                 Err(error) => (
                     format!("{error} No local fallback. Retry Connect when ready."),
@@ -225,7 +353,9 @@ impl Lifecycle {
             state.error = failed.then(|| message.clone());
             state.updates.retain(|(_, _, id)| id != &update_request_id);
             state.updates.push((message, failed, update_request_id));
-            state.last_refresh = None;
+            if !reused {
+                state.last_refresh = None;
+            }
         });
     }
 
@@ -252,13 +382,7 @@ impl Lifecycle {
             });
             let mut state = lifecycle.state.lock().unwrap();
             state.refreshing = false;
-            match result {
-                Ok(status) => {
-                    state.status = Some((status, Instant::now()));
-                    state.error = None;
-                }
-                Err(error) => state.error = Some(error),
-            }
+            state.record_status(result, Instant::now());
         });
     }
 
@@ -293,6 +417,13 @@ impl Lifecycle {
 }
 
 impl Status {
+    fn allows_ready_reuse(&self, elapsed: Duration) -> bool {
+        self.state == "running"
+            && !self.depleted
+            && self.used_minutes < self.allowance_minutes
+            && self.remaining_lease(elapsed) != Some(0)
+    }
+
     fn remaining_lease(&self, elapsed: Duration) -> Option<u64> {
         self.lease_remaining_seconds
             .filter(|_| self.state == "running")
@@ -328,6 +459,312 @@ impl Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_identity() -> LocalIdentity {
+        LocalIdentity {
+            home: PathBuf::from("/offline-cloud-test"),
+            config: (2, SystemTime::UNIX_EPOCH),
+            helper: (10, SystemTime::UNIX_EPOCH),
+        }
+    }
+
+    fn running_status() -> Status {
+        Status {
+            state: "running".into(),
+            used_minutes: 10,
+            allowance_minutes: 3000,
+            maximum_continuous_hours: 2,
+            depleted: false,
+            lease_remaining_seconds: Some(600),
+        }
+    }
+
+    #[test]
+    fn cloud_warm_cache_is_success_only_and_does_not_slide() {
+        let lifecycle = Lifecycle::default();
+        let wakes = std::cell::Cell::new(0);
+        let mut phases = Vec::new();
+        let mut first_verified = None;
+        for expected_reuse in [false, true, true] {
+            assert_eq!(
+                lifecycle
+                    .ensure_ready(
+                        || Some(test_identity()),
+                        |phase| phases.push(phase),
+                        |_| {
+                            wakes.set(wakes.get() + 1);
+                            Ok(())
+                        },
+                    )
+                    .unwrap(),
+                expected_reuse,
+            );
+            let verified = lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .ready
+                .as_ref()
+                .unwrap()
+                .verified_at;
+            assert_eq!(*first_verified.get_or_insert(verified), verified);
+        }
+        assert_eq!(wakes.get(), 1);
+        assert_eq!(phases, [REUSING_READY, REUSING_READY]);
+        let verified = lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .ready
+            .as_ref()
+            .unwrap()
+            .verified_at;
+        lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .record_status(Ok(running_status()), Instant::now());
+        assert_eq!(
+            lifecycle
+                .state
+                .lock()
+                .unwrap()
+                .ready
+                .as_ref()
+                .unwrap()
+                .verified_at,
+            verified
+        );
+        let state = lifecycle.state.lock().unwrap();
+        assert!(state.recently_ready(
+            Some(&test_identity()),
+            verified + READY_TTL - Duration::from_nanos(1)
+        ));
+        assert!(!state.recently_ready(Some(&test_identity()), verified + READY_TTL));
+        drop(state);
+        lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .ready
+            .as_mut()
+            .unwrap()
+            .verified_at = Instant::now() - READY_TTL;
+        assert!(
+            !lifecycle
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(()))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn cloud_warm_cache_refuses_failures_missing_identity_and_changed_files() {
+        let lifecycle = Lifecycle::default();
+        for _ in 0..2 {
+            assert!(
+                lifecycle
+                    .ensure_ready(
+                        || Some(test_identity()),
+                        |_| {},
+                        |_| Err("guard stale".into())
+                    )
+                    .is_err()
+            );
+            assert!(lifecycle.state.lock().unwrap().ready.is_none());
+            assert!(!lifecycle.ensure_ready(|| None, |_| {}, |_| Ok(())).unwrap());
+            assert!(lifecycle.state.lock().unwrap().ready.is_none());
+        }
+        assert!(
+            !lifecycle
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(()))
+                .unwrap()
+        );
+        let mut changed = test_identity();
+        changed.config.0 += 1;
+        assert!(
+            !lifecycle
+                .ensure_ready(|| Some(changed.clone()), |_| {}, |_| Ok(()))
+                .unwrap()
+        );
+        changed.helper.0 += 1;
+        assert!(
+            !lifecycle
+                .ensure_ready(|| Some(changed.clone()), |_| {}, |_| Ok(()))
+                .unwrap()
+        );
+        lifecycle.invalidate_ready();
+        assert!(lifecycle.state.lock().unwrap().ready.is_none());
+    }
+
+    #[test]
+    fn cloud_warm_cache_invalidates_on_status_failure_stops_budget_and_cutoff() {
+        let lifecycle = Lifecycle::default();
+        let outcomes = [
+            Err("status unavailable".into()),
+            Ok(Status {
+                state: "stopped".into(),
+                ..running_status()
+            }),
+            Ok(Status {
+                state: "stopping".into(),
+                ..running_status()
+            }),
+            Ok(Status {
+                depleted: true,
+                ..running_status()
+            }),
+            Ok(Status {
+                used_minutes: 3000,
+                ..running_status()
+            }),
+            Ok(Status {
+                lease_remaining_seconds: Some(0),
+                ..running_status()
+            }),
+        ];
+        for result in outcomes {
+            lifecycle
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(()))
+                .unwrap();
+            let mut state = lifecycle.state.lock().unwrap();
+            assert!(state.ready.is_some());
+            state.record_status(result, Instant::now());
+            assert!(state.ready.is_none());
+        }
+    }
+
+    #[test]
+    fn cloud_warm_cache_honors_known_lease_without_treating_old_stop_as_current() {
+        let now = Instant::now();
+        let mut state = State::default();
+        state.record_status(
+            Ok(Status {
+                lease_remaining_seconds: Some(2),
+                ..running_status()
+            }),
+            now,
+        );
+        state.ready = Some(Ready {
+            verified_at: now + Duration::from_millis(1),
+            identity: test_identity(),
+        });
+        assert!(state.recently_ready(Some(&test_identity()), now + Duration::from_secs(1)));
+        assert!(!state.recently_ready(Some(&test_identity()), now + Duration::from_secs(2)));
+        state.status.as_mut().unwrap().0.state = "stopped".into();
+        assert!(state.recently_ready(Some(&test_identity()), now + Duration::from_secs(2)));
+        // Reuse did not refresh status, lease, or wake timestamps.
+        assert_eq!(state.status.as_ref().unwrap().1, now);
+        assert_eq!(
+            state.status.as_ref().unwrap().0.lease_remaining_seconds,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn cloud_warm_cache_invalidation_during_wake_is_not_overwritten() {
+        let lifecycle = Lifecycle::default();
+        lifecycle
+            .ensure_ready(
+                || Some(test_identity()),
+                |_| {},
+                |_| {
+                    lifecycle.invalidate_ready();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(lifecycle.state.lock().unwrap().ready.is_none());
+        let changed = std::cell::Cell::new(false);
+        lifecycle
+            .ensure_ready(
+                || {
+                    let mut identity = test_identity();
+                    identity.config.0 += u64::from(changed.get());
+                    Some(identity)
+                },
+                |_| {},
+                |_| {
+                    changed.set(true);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(lifecycle.state.lock().unwrap().ready.is_none());
+    }
+
+    #[test]
+    fn cloud_concurrent_warm_requests_share_wake_but_keep_distinct_creates() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let lifecycle = Lifecycle::default();
+        let (bridge, commands) = harness::spawn_recording();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|id| {
+                let lifecycle = lifecycle.clone();
+                let bridge = bridge.clone();
+                let wakes = wakes.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    wake_then_connect(&bridge, Some(id.into()), || {
+                        lifecycle
+                            .ensure_ready(
+                                || Some(test_identity()),
+                                |_| {},
+                                |_| {
+                                    wakes.fetch_add(1, Ordering::SeqCst);
+                                    Ok(())
+                                },
+                            )
+                            .map(|_| ())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        let mut ids: Vec<_> = commands
+            .try_iter()
+            .map(|command| match command {
+                Command::CreateRemoteSession {
+                    host,
+                    request_id: Some(id),
+                    ..
+                } => {
+                    assert_eq!(host, HOST);
+                    id
+                }
+                _ => panic!("expected distinct remote create, never a local fallback"),
+            })
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["first", "second"]);
+    }
+
+    #[test]
+    fn cloud_local_identity_requires_files_and_detects_metadata_change() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(LocalIdentity::read(home.path()).is_none());
+        let config = home.path().join(".config/jcode/cloud-alpha.json");
+        let helper = home.path().join(".local/bin/jcode-cloud-alpha");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        std::fs::write(&config, "{}").unwrap();
+        std::fs::write(&helper, "helper").unwrap();
+        let original = LocalIdentity::read(home.path()).unwrap();
+        std::fs::write(&config, "{\"profile\":\"other\"}").unwrap();
+        let changed = LocalIdentity::read(home.path()).unwrap();
+        assert_ne!(original, changed);
+        std::fs::write(&helper, "changed helper").unwrap();
+        assert_ne!(changed, LocalIdentity::read(home.path()).unwrap());
+        std::fs::remove_file(helper).unwrap();
+        assert!(LocalIdentity::read(home.path()).is_none());
+    }
 
     #[test]
     fn cloud_progress_is_streamed_before_eof() {
@@ -397,6 +834,11 @@ mod tests {
     #[test]
     fn cloud_initial_and_failure_updates_preserve_independent_request_ids() {
         let lifecycle = Lifecycle::default();
+        // Even a populated cache cannot bypass the offline operation guard.
+        lifecycle.state.lock().unwrap().ready = Some(Ready {
+            verified_at: Instant::now(),
+            identity: test_identity(),
+        });
         let (bridge, commands) = harness::spawn_recording();
         let serial = lifecycle.wake_lock.lock().unwrap();
         lifecycle.connect(bridge.clone(), Some("panel-old".into()));
@@ -477,6 +919,7 @@ mod tests {
                 used_minutes: 10,
                 allowance_minutes: 3000,
                 maximum_continuous_hours: 2,
+                depleted: false,
                 lease_remaining_seconds: Some(599),
             },
             Instant::now(),

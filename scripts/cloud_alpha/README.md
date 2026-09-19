@@ -4,6 +4,21 @@ This is a **single-user test deployment**, not a launched subscription backend.
 The $20/month recommendation and proposed customer limits are in
 [cloud-economics.md](../../docs/cloud-economics.md).
 
+### Hosting and billing boundary
+
+The intended hosted product authenticates customers with their **Jcode account**,
+maps each user to a shared-per-user VM in **Jcode's AWS hosting account**, and keeps
+AWS credentials and VM lifecycle management on the service side. AWS bills the
+hosting account owner, who owns connection latency and operating costs. Customers
+should not need an AWS account, AWS CLI, or local SSH setup.
+
+**That managed access path is not implemented by this personal alpha.** Today the
+workstation's configured AWS CLI profile and SSH identity access the operator's
+AWS account. AWS charges go to that account. Jcode sign-in does not yet provision
+or authorize a customer's VM, and no customer cloud subscription charge or
+entitlement is enforced here. Multiple panels already share the configured VM,
+but this does not establish multi-user isolation or a customer hosting service.
+
 ## Test from this workstation
 
 After setup, use:
@@ -17,13 +32,17 @@ jcode-cloud-alpha stop
 
 Use the existing native **Machines** panel. Reopen it if it was already open
 before SSH configuration was installed. **Connect** immediately opens an editable
-panel, then runs the fixed local `~/.local/bin/jcode-cloud-alpha wake` helper
-before creating the remote session. Choose **Set default** for `jcode-cloud-alpha`
+panel, then checks readiness using the fixed local
+`~/.local/bin/jcode-cloud-alpha wake` helper before creating the remote session.
+Choose **Set default** for `jcode-cloud-alpha`
 to use this path for new session panels. All cloud panels share the one configured
 VM, with a separate Jcode session per panel, not a new VM per panel.
 
 While connecting, the panel shows **Jcode Cloud VM**, a cloud watermark, and live
-sign-in, guard, VM, SSM, and SSH progress. Enter queues a prompt until connection
+sign-in, guard, VM, SSM, and SSH progress. Its checklist shows **AWS access**,
+**Runtime guard and allowance**, **Shared VM running**, **Private SSH connection**,
+and **Jcode session**, with completed, active, waiting, and failed states based on
+observed progress, never a timer. Enter queues a prompt until connection
 and history initialization finish. The same panel/editor is promoted when ready.
 Failures stay beside the preserved draft, with **Retry connection** and an explicit
 **Use this computer** option. Retry and reload retain the draft's original remote
@@ -32,6 +51,16 @@ fallback. Explicit local-folder actions and existing panels are unaffected.
 The connected alpha still uses the existing SSH transport and SSH identity label,
 not a managed multi-user provisioning service. For a terminal,
 `jcode-cloud-alpha ssh` wakes and connects.
+
+After a successful readiness check, another panel within 30 seconds can reuse
+that result instead of repeating AWS guard queries and the bootstrap probe. The
+checklist calls these steps **Recently verified**, not newly checked. Reuse does
+not extend the cache deadline or the VM's lease. Connection failures, unavailable
+or unsafe status, changed helper/configuration files, and expiry invalidate reuse.
+Requests waiting on the same successful wake share this short-lived result.
+Each panel still creates its own remote API session. A running VM is not itself
+proof of a working connection, and this optimization does not guarantee instant
+attachment or bypass the independent shutdown guards.
 Repositories belong under `~/workspaces` on the VM. No local checkout, model
 credential, AWS credential, or SSH private key is copied to the VM.
 

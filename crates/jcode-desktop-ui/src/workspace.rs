@@ -969,7 +969,14 @@ impl Workspace {
             workspace.start_default_startup(cx);
             let failed =
                 std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP").as_deref() == Ok("failed");
-            workspace.update_startup_status(
+            workspace.update_pending_remote_status(
+                Some(Panel::STARTUP_SESSION_ID),
+                "Starting your cloud virtual machine…",
+                false,
+                cx,
+            );
+            workspace.update_pending_remote_status(
+                Some(Panel::STARTUP_SESSION_ID),
                 if failed {
                     "Cloud VM could not start. Check your cloud connection and retry."
                 } else {
@@ -1708,6 +1715,9 @@ impl Workspace {
                 request_id,
                 failed,
             } => {
+                if failed {
+                    self.invalidate_cloud_connection(&host);
+                }
                 self.update_pending_remote_status(
                     request_id.as_deref(),
                     &format!("{host}: {message}"),
@@ -1935,6 +1945,9 @@ impl Workspace {
                 self.status = format!("disconnected: {reason} (retrying)");
             }
             Update::SessionLost { session_id, reason } => {
+                if let Some(host) = harness::remote_host(&session_id) {
+                    self.invalidate_cloud_connection(&host);
+                }
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {

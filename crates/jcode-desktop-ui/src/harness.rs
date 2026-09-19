@@ -562,6 +562,12 @@ fn create_remote_session(
             failed: false,
         });
         let client = connector(&host).map_err(|error| error.to_string())?;
+        let _ = updates.send(Update::RemoteStatus {
+            host: host.clone(),
+            message: "SSH connected. Creating Jcode session...".into(),
+            request_id: request_id.clone(),
+            failed: false,
+        });
         let mut session = client
             .create_session(working_dir)
             .map_err(|error| error.to_string())?;
