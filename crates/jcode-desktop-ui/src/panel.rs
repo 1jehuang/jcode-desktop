@@ -3263,47 +3263,7 @@ impl Panel {
     ) -> gpui::AnyElement {
         match item {
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
-            Item::User(text) => {
-                let now = Instant::now();
-                let pending = self.pending_users.contains(&index);
-                let (offset, opacity, animating) = self
-                    .accepted_users
-                    .get(&index)
-                    .map(|at| crate::ack::motion(*at, now))
-                    .unwrap_or((
-                        0.0,
-                        if pending {
-                            crate::ack::PENDING_TONE
-                        } else {
-                            1.0
-                        },
-                        false,
-                    ));
-                if animating {
-                    window.request_animation_frame();
-                }
-                let card = div()
-                    .flex()
-                    .flex_col()
-                    .ml(px(offset))
-                    .opacity(opacity)
-                    .bg(Theme::global().USER_BG)
-                    .rounded_md()
-                    .px_3()
-                    .py_2()
-                    .text_color(Theme::global().TEXT_USER)
-                    .child(markdown::render_interactive(
-                        text,
-                        index,
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                        false,
-                        self.media_preview_handler(cx),
-                    ))
-                    .into_any_element();
-                role_caption(prompt::user_prompt_label(&self.items, index), card)
-            }
+            Item::User(text) => self.render_user_prompt(index, text, true, window, cx),
             Item::Image(image) => {
                 if self.image_pane_open {
                     return self.render_image_pane_link(index, image, cx);
