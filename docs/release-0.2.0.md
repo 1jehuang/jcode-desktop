@@ -36,3 +36,14 @@ Preparation is not publication. Final delivery requires successful platform work
 The first full suite exposed a real unfinished-work card click panic caused by re-entering a borrowed Panel. The card now calls its captured workspace opener without a Panel update lease, and routes through the common activation method. The unchanged original regression and a new existing-session/focus regression pass. Stale gesture tests now exercise supported upward navigation and explicitly verify that downward swipes cannot navigate. Sidebar/resize acceptance uses the current compact controls.
 
 Platform workflow links and public download evidence will be appended after they are observed.
+
+## Native release builds started
+
+On September 20, 2026 at 09:44 UTC, `desktop-v0.2.0` was pushed at immutable commit
+`d420a1933a5a686fa9baf4c8c9c979060c608755` together with the reviewed source on main.
+
+- macOS universal: https://github.com/1jehuang/jcode-desktop/actions/runs/35503143057
+- Linux x86_64/ARM64, Windows x86_64/ARM64, FreeBSD x86_64: https://github.com/1jehuang/jcode-desktop/actions/runs/35503143193
+
+The build release was observed as a draft with `isPrerelease: false`. It had no
+assets yet. This is evidence of release initiation, not public availability.
