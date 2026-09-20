@@ -75,3 +75,15 @@ six timing-sensitive animation failures. Those animation assertions passed
 unchanged in the serial suite. Both explicit stable and unset-version changelog
 test runs passed. The release Python suite again passed 70 tests with 5 local
 package-tooling skips.
+
+At 10:05 UTC, `desktop-v0.2.1` was pushed at immutable commit
+`4c5495f85a03671b20a00a108f10e6dbe041584d`.
+
+- macOS universal: https://github.com/1jehuang/jcode-desktop/actions/runs/35504110073
+- Linux/Windows/FreeBSD: https://github.com/1jehuang/jcode-desktop/actions/runs/35504110181
+
+After both original Windows jobs failed with the same compile diagnostics, the
+remaining unpublishable 0.2.0 workflows were cancelled at 10:07 UTC to avoid
+wasting runner time and unblock the serialized macOS recovery build. The old
+tag and draft were preserved. The 0.2.1 workflows must independently satisfy
+every native publication gate. Public availability has not yet been verified.
