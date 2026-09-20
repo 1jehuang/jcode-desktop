@@ -375,12 +375,17 @@ mod tests {
         assert!(vcx.debug_bounds("update-running-build").is_some());
         assert!(vcx.debug_bounds("update-history").is_none());
         assert!(vcx.debug_bounds("update-build").is_none());
+        let development = update_notes::development();
+        assert_eq!(vcx.debug_bounds("updates-build").is_some(), development);
         for (control, target, view) in [
             ("update-see-all", "update-history", View::History),
             ("updates-build", "update-build", View::Build),
             ("updates-latest", "update-summary", View::Latest),
             ("updates-history", "update-history", View::History),
-        ] {
+        ]
+        .into_iter()
+        .filter(|(_, _, view)| development || *view != View::Build)
+        {
             let bounds = vcx
                 .debug_bounds(control)
                 .expect("update navigation control");
@@ -402,8 +407,27 @@ mod tests {
         vcx.simulate_keystrokes("left");
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("update-summary").is_some());
-        vcx.simulate_keystrokes("right right");
+        vcx.simulate_keystrokes("right");
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("update-build").is_some());
+        assert!(vcx.debug_bounds("update-history").is_some());
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.changelog_view, View::History)
+        });
+        vcx.simulate_keystrokes("right");
+        vcx.run_until_parked();
+        let (target, view) = if development {
+            ("update-build", View::Build)
+        } else {
+            // Stable builds cycle directly from history back to latest.
+            ("update-summary", View::Latest)
+        };
+        assert!(vcx.debug_bounds(target).is_some());
+        panel.read_with(vcx, |panel, _| assert_eq!(panel.changelog_view, view));
+        assert_eq!(vcx.debug_bounds("updates-build").is_some(), development);
+        assert_eq!(vcx.debug_bounds("update-build").is_some(), development);
+        assert!(
+            commands.try_recv().is_err(),
+            "keyboard navigation must remain local"
+        );
     }
 }

@@ -2166,21 +2166,7 @@ impl Workspace {
                 swarm_status: None,
                 edit_stats: None,
             });
-        // This can run from a click listener on the active unfinished-work
-        // panel. Do not read that same entity while GPUI is updating it.
-        let index = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != self.active)
-            .find(|(_, slot)| slot.panel.read(cx).session_id == session.session_id)
-            .map(|(index, _)| index)
-            .unwrap_or_else(|| self.open_session(session, cx));
-        self.set_active(index, cx);
-        self.overview = false;
-        self.overview_progress.set(0.0, Instant::now());
-        self.focus_active(window, cx);
-        cx.notify();
+        self.activate_session(session, window, cx);
     }
 
     /// Focus the slot at `index`, remembering the outgoing panel so
@@ -9693,6 +9679,62 @@ mod tests {
                 "todo-chat"
             );
         });
+    }
+
+    #[gpui::test]
+    fn clicking_an_unfinished_work_card_reuses_its_open_chat_session(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.push_test_panel("current-chat", cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        click_sidebar_navigation(&workspace, vcx, "sidebar-unfinished-work");
+
+        let chat = workspace.read_with(vcx, |workspace, _| workspace.slots[0].panel.clone());
+        let work = workspace.read_with(vcx, |workspace, _| workspace.slots[1].panel.clone());
+        work.update(vcx, |panel, cx| {
+            panel.set_unfinished_work(
+                vec![crate::harness::UnfinishedSession {
+                    session_id: "current-chat".into(),
+                    title: "Current chat".into(),
+                    working_dir: None,
+                    todos: vec![crate::harness::UnfinishedTodo {
+                        content: "Finish this work".into(),
+                        status: "pending".into(),
+                        group: None,
+                    }],
+                }],
+                cx,
+            );
+        });
+
+        // Route from both the active work panel and an inactive work panel
+        // while its destination chat is already active. Neither may duplicate
+        // the chat or leave focus on the card's containing panel.
+        for source_active in [true, false] {
+            workspace.update_in(vcx, |workspace, window, cx| {
+                workspace.set_active(usize::from(source_active), cx);
+                workspace.focus_active(window, cx);
+                work.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let card = vcx
+                .debug_bounds("unfinished-session-0")
+                .expect("unfinished session card paints");
+            vcx.simulate_click(card.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+
+            workspace.read_with(vcx, |workspace, _| {
+                assert_eq!(workspace.slots.len(), 2, "reuse, do not duplicate the chat");
+                assert_eq!(workspace.slots[workspace.active].panel, chat);
+            });
+            workspace.update_in(vcx, |_, window, cx| {
+                assert!(chat.read(cx).input.read(cx).focus_handle(cx).is_focused(window));
+            });
+        }
     }
 
     #[gpui::test]

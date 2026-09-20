@@ -152,7 +152,7 @@ class GitHub:
 
 def validate_runtime_pins(ref):
     pins = []
-    for workflow in BUILD_WORKFLOWS.values():
+    for workflow in (*BUILD_WORKFLOWS.values(), "freebsd-release.yml"):
         text = git("show", f"{ref}:.github/workflows/{workflow}")
         match = re.search(r"repository: 1jehuang/jcode\s+ref: ([0-9a-f]{40})\b", text)
         if not match:

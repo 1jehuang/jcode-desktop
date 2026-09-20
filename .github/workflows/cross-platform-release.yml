@@ -12,13 +12,42 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: desktop-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Prepare private draft release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # macOS and the matrix coordinator can start together. A concurrent
+            # create is safe only when the resulting release passes the gate below.
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --prerelease="$PRERELEASE" \
+              --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" \
+              --notes "Verified platform packages. All release gates must pass before publication." \
+              || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -56,7 +85,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 7dd973912a7acb8792c7d6caf9254270b0dd1b02 # Account login and cancellable desktop OAuth callbacks
+          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495 # Desktop 0.2 runtime: voice capture, native panels, and shared SSH transports
           path: jcode
           submodules: recursive
       - name: Validate release target and publication contracts
@@ -88,7 +117,7 @@ jobs:
       - name: Build and package Linux
         if: matrix.platform == 'linux'
         env:
-          VERSION: ${{ inputs.version || github.ref_name }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}
           JCODE_REPO: ${{ github.workspace }}/jcode
           TARGET: ${{ matrix.target }}
         run: jcode-desktop/scripts/package-linux.sh
@@ -99,10 +128,10 @@ jobs:
           dpkg-deb --info jcode-desktop/dist/linux/*.deb
           dpkg-deb --contents jcode-desktop/dist/linux/*.deb | grep -E 'jcode-desktop|jcode-harness-api-bridge|jcode.desktop|jcode.png'
           (cd jcode-desktop/dist/linux && sha256sum -c '${{ matrix.checksums }}')
-      # Keep the hour-long Linux build recoverable if smoke infrastructure
-      # fails. The publish job remains gated on this entire matrix job.
+      # Preserve branch validation builds even if smoke infrastructure fails.
+      # Tags use private release transport only after all native smoke gates.
       - name: Preserve packaged Linux artifacts before smoke
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && !startsWith(github.ref, 'refs/tags/desktop-v')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-linux-${{ matrix.arch }}
@@ -213,9 +242,9 @@ jobs:
           done
       - name: Upload Linux smoke diagnostics
         if: always() && matrix.platform == 'linux'
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          # The publish job downloads desktop-* as release assets.
           name: linux-smoke-diagnostics-${{ matrix.arch }}
           if-no-files-found: warn
           include-hidden-files: true
@@ -225,7 +254,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         env:
-          VERSION: ${{ inputs.version || github.ref_name }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}
           JCODE_REPO: ${{ github.workspace }}/jcode
           TARGET: ${{ matrix.target }}
         run: ./jcode-desktop/scripts/package-windows.ps1
@@ -253,7 +282,7 @@ jobs:
           Stop-Process -Id $process.Id
           $process.WaitForExit()
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && !startsWith(github.ref, 'refs/tags/desktop-v')
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
@@ -262,11 +291,35 @@ jobs:
             jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.deb
             jcode-desktop/dist/${{ matrix.platform }}/Jcode-*.zip
             jcode-desktop/dist/${{ matrix.platform }}/SHA256SUMS-*
+      - name: Upload verified platform packages to private draft
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          CHECKSUMS: ${{ matrix.checksums }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
+          case "$RELEASE_PLATFORM" in
+            linux) files=(jcode-desktop/dist/linux/Jcode-*.tar.gz jcode-desktop/dist/linux/Jcode-*.deb) ;;
+            windows) files=(jcode-desktop/dist/windows/Jcode-*.zip) ;;
+            *) exit 1 ;;
+          esac
+          files+=("jcode-desktop/dist/$RELEASE_PLATFORM/$CHECKSUMS")
+          for file in "${files[@]}"; do test -s "$file"; done
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
 
   build-freebsd:
+    needs: prepare
     uses: ./.github/workflows/freebsd-release.yml
     with:
-      version: ${{ inputs.version || github.ref_name }}
+      version: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}
 
   publish:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
@@ -274,24 +327,61 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 190
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          pattern: desktop-*
-          path: artifacts
-          merge-multiple: true
-      - name: Wait for secure macOS workflow and upload to its prerelease
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Wait for secure macOS workflow
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          # Assets stay on the private draft. Require the entire signing workflow
+          # (including post-job steps) for this exact tag and commit to succeed.
           for attempt in {1..90}; do
-            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease' | grep -qx true; then
-              mapfile -d '' files < <(find artifacts -type f -print0)
-              test "${#files[@]}" -gt 0
-              gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
-              exit 0
-            fi
-            echo "Waiting for notarized macOS workflow to create prerelease ($attempt/90)..."
+            state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow macos-beta.yml \
+              --branch "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --limit 100 \
+              --json status,conclusion,event,headSha,headBranch \
+              --jq 'map(select((.event == "push" or .event == "workflow_dispatch") and .headSha == env.GITHUB_SHA and .headBranch == env.GITHUB_REF_NAME)) | first | if .status == "completed" then .conclusion else "pending" end')
+            case "$state" in
+              success) exit 0 ;;
+              pending) ;;
+              *) echo "macOS secure workflow did not succeed: $state" >&2; exit 1 ;;
+            esac
+            echo "Waiting for notarized macOS workflow ($attempt/90)..."
             sleep 120
           done
-          echo "macOS secure workflow did not create the prerelease" >&2
+          echo "macOS secure workflow did not complete" >&2
           exit 1
+      - name: Validate complete private draft and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
+          mkdir -p artifacts
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir artifacts \
+            --pattern 'Jcode-*.dmg' --pattern 'Jcode-*.zip' \
+            --pattern 'Jcode-*.tar.gz' --pattern 'Jcode-*.deb' \
+            --pattern 'SHA256SUMS*' --pattern appcast.xml
+          python3 jcode-desktop/scripts/prepare-public-release.py artifacts "$GITHUB_REF_NAME" --manifest artifacts/latest.json
+          # Advance the update feed only after the full platform set passes.
+          if ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create desktop-updates --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --prerelease --title "Jcode Desktop update feed" \
+              --notes "Machine-readable Sparkle update feed. Download the latest desktop release instead."
+          fi
+          gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber artifacts/appcast.xml
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease="$PRERELEASE"

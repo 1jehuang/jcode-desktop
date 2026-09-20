@@ -1,8 +1,10 @@
 # Public desktop release distribution
 
-The desktop source repository is private. GitHub release assets and its Releases
-API are therefore not public download endpoints, even for published prereleases.
-Never send website visitors or Sparkle directly to that repository.
+The desktop source/build repository and the binaries-only distribution repository
+serve different purposes. The source repository is now public, but draft releases
+and their staged assets remain unpublished. Never send website visitors or Sparkle
+directly to the build repository. Only the validated distribution channel is the
+supported download origin.
 
 ## Public URL contract
 
@@ -17,8 +19,8 @@ and release metadata are published. Source archives are not mirrored.
 
 The initial origin is the public, binaries-only
 `1jehuang/jcode-desktop-releases` repository. Its Git history contains only a
-distribution README, never private application source. Each release uses the
-same version tag as the private build. The `desktop-latest` release holds the
+distribution README, never application source. Each release uses the
+same version tag as the build repository. The `desktop-latest` release holds the
 current manifest and appcast. Website routes can later move to an owned server
 without changing the URLs embedded in apps.
 
@@ -31,28 +33,32 @@ use immutable caching. The mutable manifest/appcast and failures remain uncached
 
 `.github/workflows/publish-public-release.yml` runs after a successful tagged
 cross-platform build. `JCODE_PUBLIC_RELEASE_TOKEN` is an encrypted Actions secret
-in the private repository, used only in the publication step. It needs release
+in the build repository, used only in the publication step. It needs release
 write access to the distribution repository. Prefer a repository-scoped token
-when rotating this credential. Private asset downloads use the job's separate
+when rotating this credential. Build asset downloads use the job's separate
 read-only repository token.
 
 ## Release gates
 
-1. Pin the same published Jcode runtime commit in both build workflows.
+1. Pin the same published Jcode runtime commit in all three native build workflows.
 2. Push a new `desktop-v*` tag. Existing tags must not be moved.
 3. The macOS workflow builds universal binaries, signs with Developer ID,
    notarizes, tests installation, and generates the signed Sparkle archive.
-4. Linux and Windows packaging and launch smoke checks must pass. The
-   cross-platform workflow waits for macOS before uploading the remaining assets.
+4. Linux, Windows, and FreeBSD packaging and native launch smoke checks must pass.
+   Tagged builds upload verified packages to an unpublished draft release rather
+   than depending on Actions artifact storage quota. The cross-platform workflow
+   requires the successful macOS workflow for the same tag and commit, validates
+   the complete package set, then publishes the build release. Manual branch
+   validation still uses Actions artifacts.
 5. `scripts/prepare-public-release.py ASSET_DIRECTORY TAG --manifest latest.json`
-   validates that all three platforms are complete, checks SHA-256 hashes, and
+   validates that all seven architecture/OS targets are represented, checks SHA-256 hashes, and
    rejects appcasts targeting private GitHub URLs. It emits a public asset
    allowlist suitable for publication. Do not mirror the whole repository.
 6. `scripts/publish-public-release.py ASSET_DIRECTORY TAG` uploads the explicit
    allowlist to a draft public release, publishes it, then downloads every asset
    anonymously and verifies its hash before changing the manifest or appcast.
    Published versions cannot be overwritten. Older reruns cannot roll the
-   current channel back.
+   current channel back. A later beta cannot replace a promoted stable channel.
 7. Download public artifacts without credentials, verify their checksums, and run
    the `macOS public release acceptance` workflow against the new tag.
 

@@ -41,6 +41,27 @@ class ReleaseTargetTests(unittest.TestCase):
         for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
             self.assertIn(target, packager)
 
+    def test_native_voice_build_dependencies_are_installed(self):
+        # CPAL uses ALSA on FreeBSD as well as Linux. These must be installed
+        # before the desktop build, not just supplied on a developer machine.
+        linux = (ROOT / ".github/workflows/cross-platform-release.yml").read_text()
+        linux_prepare = linux.split("- name: Install Linux build dependencies", 1)[1].split(
+            "- name: Build and package Linux", 1
+        )[0]
+        self.assertRegex(linux_prepare, r"\blibasound2-dev\b")
+        freebsd = (ROOT / ".github/workflows/freebsd-release.yml").read_text()
+        freebsd_prepare = freebsd.split("          prepare: |\n", 1)[1].split(
+            "          run: |\n", 1
+        )[0]
+        self.assertRegex(freebsd_prepare, r"\balsa-lib\b")
+
+    def test_linux_package_declares_native_voice_runtime(self):
+        # Native capture creates a DT_NEEDED entry for libasound.so.2 even
+        # before the user activates Voice. Support both Debian package names.
+        packager = (ROOT / "scripts/package-linux.sh").read_text()
+        depends = re.search(r"^Depends: (.+)$", packager, re.MULTILINE).group(1)
+        self.assertIn("libasound2t64 | libasound2", depends.split(", "))
+
     def test_cli_release_target_parity(self):
         cli = ROOT.parent / "jcode/.github/workflows/release.yml"
         if not cli.exists():

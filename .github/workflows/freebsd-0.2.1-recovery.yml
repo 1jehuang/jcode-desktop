@@ -1,67 +1,69 @@
-name: FreeBSD desktop release
+name: FreeBSD 0.2.1 native recovery
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: Desktop package version or desktop-v tag
-        required: true
-        type: string
   workflow_dispatch:
-    inputs:
-      version:
-        description: Package version used for validation artifacts
-        required: true
-        type: string
-        default: 0.1.0-beta.29
 
 permissions:
   contents: write
 
+concurrency:
+  group: desktop-freebsd-recovery-0.2.1
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: desktop-v0.2.1
+
 jobs:
-  build-freebsd:
-    name: Build and smoke-test FreeBSD x86_64
+  recover-freebsd:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - name: Prepare private draft release
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+      - name: Require unpublished stable draft
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
-          PRERELEASE=false
-          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
-          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # macOS and the matrix coordinator can start together. A concurrent
-            # create is safe only when the resulting release passes the gate below.
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --verify-tag --draft --prerelease="$PRERELEASE" \
-              --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" \
-              --notes "Verified platform packages. All release gates must pass before publication." \
-              || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
-          fi
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json tagName,isDraft,isPrerelease \
-            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+            --jq '(.tagName == "desktop-v0.2.1" and .isDraft == true and .isPrerelease == false)' | grep -qx true
+      - name: Check out immutable Desktop source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          path: jcode-desktop
+          ref: desktop-v0.2.1
           fetch-depth: 0
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+          path: jcode-desktop
+          persist-credentials: false
+      - name: Check out pinned runtime
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495 # Desktop 0.2 runtime: voice capture, native panels, and shared SSH transports
+          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495
           path: jcode
           submodules: recursive
-      # Match the adjacent CLI's native FreeBSD VM. A Linux cross-build cannot
-      # establish that the FreeBSD graphics/PTY/IPC dependencies work together.
+          persist-credentials: false
+      - name: Check out reviewed recovery recipe
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          persist-credentials: false
+      - name: Verify immutable source and recovery tooling
+        run: |
+          set -euo pipefail
+          test "$(git -C jcode-desktop rev-parse HEAD)" = 4c5495f85a03671b20a00a108f10e6dbe041584d
+          test "$(git -C jcode-desktop rev-parse 'desktop-v0.2.1^{}')" = 4c5495f85a03671b20a00a108f10e6dbe041584d
+          test "$(git -C jcode rev-parse HEAD)" = 91c0bdda3884952bd2eba2e5cfc78fbed1281495
+          test "$(git -C release-tools rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f release-tools/scripts/test_prepare_freebsd_gpui.py
+          python3 -m unittest discover -s release-tools/scripts -p test_prepare_freebsd_gpui.py -v
+      - name: Test recovery smoke fixture
+        run: |
+          test -f release-tools/tests/test_freebsd_recovery_smoke.py
+          python3 -m unittest discover -s release-tools/tests -p test_freebsd_recovery_smoke.py -v
       - name: Build, package, and smoke-test inside FreeBSD
         uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1
         env:
-          VERSION: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}
+          VERSION: desktop-v0.2.1
         with:
           release: "15.1"
           arch: x86_64
@@ -83,16 +85,33 @@ jobs:
             uname -a
             cargo --version
             rustc --version
+            # Only the dedicated dependency checkout receives a compatibility
+            # overlay. Immutable application/runtime sources remain untouched.
+            # rsync retains host ownership. Trust only the two verified source
+            # directories, not arbitrary repositories, inside this disposable VM.
+            git config --global --add safe.directory "$PWD/jcode-desktop"
+            git config --global --add safe.directory "$PWD/jcode"
+            test "$(git -C jcode-desktop rev-parse HEAD)" = 4c5495f85a03671b20a00a108f10e6dbe041584d
+            test "$(git -C jcode rev-parse HEAD)" = 91c0bdda3884952bd2eba2e5cfc78fbed1281495
+            export CARGO_HOME="$HOME/.cargo-freebsd-recovery"
+            python3 release-tools/scripts/prepare-freebsd-gpui.py --desktop-root "$PWD/jcode-desktop" --cargo-home "$CARGO_HOME" --target x86_64-unknown-freebsd
+            git -C jcode-desktop diff HEAD --exit-code
+            git -C jcode diff HEAD --exit-code
             bash jcode-desktop/scripts/package-freebsd.sh
+            python3 release-tools/scripts/prepare-freebsd-gpui.py --desktop-root "$PWD/jcode-desktop" --cargo-home "$CARGO_HOME" --target x86_64-unknown-freebsd --verify-only
+            git -C jcode-desktop diff HEAD --exit-code
+            git -C jcode diff HEAD --exit-code
             cd jcode-desktop
             python3 scripts/verify-release-package.py --target x86_64-unknown-freebsd dist/freebsd/Jcode-*.tar.gz
             mkdir -p dist/freebsd/smoke/package
             python3 - <<'PY'
             import hashlib
             import pathlib
+            import re
             import subprocess
             import tarfile
             import time
+            import tempfile
             import os
 
             root = pathlib.Path("dist/freebsd").resolve()
@@ -111,7 +130,7 @@ jobs:
             for key in ("WAYLAND_DISPLAY", "ZED_HEADLESS", "DBUS_SESSION_BUS_ADDRESS"):
                 env.pop(key, None)
             for key, directory in {
-                "HOME": "home", "XDG_RUNTIME_DIR": "runtime", "XDG_CONFIG_HOME": "config",
+                "HOME": "home", "XDG_CONFIG_HOME": "config",
                 "XDG_CACHE_HOME": "cache", "XDG_DATA_HOME": "data", "XDG_STATE_HOME": "state",
                 "JCODE_HOME": "jcode", "JCODE_DESKTOP_STATE": "desktop-state",
             }.items():
@@ -122,6 +141,25 @@ jobs:
                        JCODE_DESKTOP_SCREENSHOT="1")
             # Offline fixture exercises the real native window and renderer,
             # without network calls or reliance on configured provider accounts.
+            def private_runtime():
+                # Explicit /tmp avoids long checkout paths and inherited TMPDIR.
+                # This directory exists only inside the disposable FreeBSD VM.
+                return tempfile.TemporaryDirectory(prefix="jcd-", dir="/tmp")
+
+            def check_native_window(app, env, smoke):
+                mapped = False
+                for _ in range(100):
+                    assert app.poll() is None, "FreeBSD desktop exited before creating its window"
+                    tree = subprocess.check_output(["xwininfo", "-root", "-tree"], env=env).decode("utf-8", errors="replace")
+                    (smoke / "windows.log").write_text(tree, encoding="utf-8")
+                    if re.search(r'^\s*0x[0-9a-fA-F]+\s+"Jcode"\s*(?:\(|:)', tree, re.MULTILINE):
+                        mapped = True
+                        break
+                    time.sleep(0.2)
+                assert mapped, "FreeBSD desktop did not create a Jcode X11 window"
+                time.sleep(8)
+                assert app.poll() is None, "FreeBSD desktop exited during graphical smoke"
+
             processes = []
             logs = []
             def launch(name, command):
@@ -130,7 +168,10 @@ jobs:
                 process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
                 processes.append(process)
                 return process
+            runtime = None
             try:
+                runtime = private_runtime()
+                env["XDG_RUNTIME_DIR"] = runtime.name
                 xvfb = launch("xvfb", ["Xvfb", ":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"])
                 for _ in range(100):
                     if subprocess.run(["xprop", "-root"], env=env, stdout=subprocess.DEVNULL,
@@ -151,18 +192,7 @@ jobs:
                 else:
                     raise RuntimeError("Openbox did not become ready")
                 app = launch("app", [str(package / "jcode-desktop")])
-                mapped = False
-                for _ in range(100):
-                    assert app.poll() is None, "FreeBSD desktop exited before creating its window"
-                    tree = subprocess.check_output(["xwininfo", "-root", "-tree"], env=env, text=True)
-                    (smoke / "windows.log").write_text(tree)
-                    if '"Jcode' in tree:
-                        mapped = True
-                        break
-                    time.sleep(0.2)
-                assert mapped, "FreeBSD desktop did not create a Jcode X11 window"
-                time.sleep(8)
-                assert app.poll() is None, "FreeBSD desktop exited during graphical smoke"
+                check_native_window(app, env, smoke)
                 print("FreeBSD native X11 window smoke passed")
             finally:
                 for process in reversed(processes):
@@ -173,47 +203,41 @@ jobs:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
+                if runtime is not None:
+                    runtime.cleanup()
                 for log in logs:
                     log.close()
                 for log in smoke.rglob("*.log"):
                     print(f"===== {log} =====")
                     print(log.read_text(errors="replace"))
             PY
-      # Never make an artifact available for publication unless native package
-      # verification, CLI launch, and graphical smoke all passed in the VM.
-      # The VM syncs the workspace back to the Linux host before this step.
-      # Use the host's gh CLI, not Actions artifact storage, for tagged builds.
-      - name: Upload verified FreeBSD package to private draft
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+      - name: Upload only native-verified missing FreeBSD assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
-          PRERELEASE=false
-          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json tagName,isDraft,isPrerelease \
-            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
-          files=(jcode-desktop/dist/freebsd/Jcode-*.tar.gz jcode-desktop/dist/freebsd/SHA256SUMS-freebsd-x86_64)
+            --jq '(.tagName == "desktop-v0.2.1" and .isDraft == true and .isPrerelease == false)' | grep -qx true
+          files=(jcode-desktop/dist/freebsd/Jcode-0.2.1-freebsd-x86_64.tar.gz jcode-desktop/dist/freebsd/SHA256SUMS-freebsd-x86_64)
           for file in "${files[@]}"; do test -s "$file"; done
           (cd jcode-desktop/dist/freebsd && sha256sum -c SHA256SUMS-freebsd-x86_64)
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
-      - name: Upload verified FreeBSD package
-        if: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: desktop-freebsd-x86_64
-          if-no-files-found: error
-          path: |
-            jcode-desktop/dist/freebsd/Jcode-*.tar.gz
-            jcode-desktop/dist/freebsd/SHA256SUMS-freebsd-x86_64
-      - name: Upload FreeBSD smoke diagnostics
+          # Never overwrite a previously uploaded package, even in the draft.
+          remote_tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+          remote_commit=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$remote_tag" --jq .object.sha)
+          test "$remote_commit" = 4c5495f85a03671b20a00a108f10e6dbe041584d
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${files[@]}"
+          mkdir -p verified-remote-freebsd
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir verified-remote-freebsd \
+            --pattern Jcode-0.2.1-freebsd-x86_64.tar.gz --pattern SHA256SUMS-freebsd-x86_64
+          for file in "${files[@]}"; do cmp "$file" "verified-remote-freebsd/$(basename "$file")"; done
+          (cd verified-remote-freebsd && sha256sum -c SHA256SUMS-freebsd-x86_64)
+      - name: Preserve FreeBSD native smoke diagnostics
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: freebsd-smoke-diagnostics-x86_64
+          name: freebsd-0.2.1-recovery-smoke
           if-no-files-found: ignore
           path: jcode-desktop/dist/freebsd/smoke/**/*.log

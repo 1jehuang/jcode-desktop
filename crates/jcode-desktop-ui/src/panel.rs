@@ -3947,6 +3947,7 @@ impl Render for Panel {
             }
             for (index, session) in sessions.iter().enumerate() {
                 let session_to_open = session.clone();
+                let open_session = self.unfinished_session_opener.clone();
                 let mut card = div()
                     .id(("unfinished-session", index))
                     .debug_selector(move || format!("unfinished-session-{index}").into())
@@ -3962,18 +3963,21 @@ impl Render for Panel {
                     })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |panel, _event, window, cx| {
-                            if let Some(open_session) = &panel.unfinished_session_opener {
+                        // Routing into the workspace can read or focus any panel,
+                        // including this one. Do not hold a Panel update lease via
+                        // cx.listener while invoking the opener.
+                        move |_event, window, cx| {
+                            if let Some(open_session) = &open_session {
                                 open_session(session_to_open.clone(), window, cx);
                                 cx.stop_propagation();
                             }
-                        }),
+                        },
                     )
                     .on_mouse_up(
                         gpui::MouseButton::Left,
-                        cx.listener(move |_panel, _event, _window, cx| {
+                        move |_event, _window, cx| {
                             cx.stop_propagation();
-                        }),
+                        },
                     )
                     .flex()
                     .flex_col()

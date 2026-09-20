@@ -13,19 +13,21 @@ TAG = "desktop-v0.1.0-beta.29"
 
 
 class PublicReleaseTests(unittest.TestCase):
+    tag = TAG
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
-        for checksum, names in RELEASE.expected_assets(TAG).items():
+        for checksum, names in RELEASE.expected_assets(self.tag).items():
             lines = []
             for name in names:
                 path = self.directory / name
                 path.write_bytes(b"release fixture")
                 lines.append(f"{RELEASE.digest(path)}  {name}\n")
             (self.directory / checksum).write_text("".join(lines))
-        self.archive = "Jcode-0.1.0-beta.29-macOS-universal.zip"
-        self.url = f"{RELEASE.PUBLIC_BASE}/{TAG}/{self.archive}"
+        self.archive = f"Jcode-{self.tag.removeprefix('desktop-v')}-macOS-universal.zip"
+        self.url = f"{RELEASE.PUBLIC_BASE}/{self.tag}/{self.archive}"
         self.appcast = self.directory / "appcast.xml"
         self.appcast.write_text(
             f'<rss xmlns:sparkle="{RELEASE.SPARKLE}"><channel><item>'

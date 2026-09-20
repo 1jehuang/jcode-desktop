@@ -81,5 +81,112 @@ class PublisherTests(unittest.TestCase):
         verify.assert_not_called()
 
 
+class StablePublisherTests(unittest.TestCase):
+    def fixture(self, tag):
+        fixture = fixtures.PublicReleaseTests()
+        fixture.tag = tag
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        return fixture.directory
+
+    def test_new_versions_and_draft_retries_use_tag_metadata(self):
+        for tag, prerelease in [("desktop-v0.2.0", False), ("desktop-v0.2.1-beta.1", True)]:
+            for draft in (False, True):
+                with self.subTest(tag=tag, draft=draft):
+                    directory = self.fixture(tag)
+                    current = {"isDraft": True, "isPrerelease": not prerelease, "assets": []} if draft else None
+                    with patch.object(PUBLISH, "release", side_effect=[current, None]), \
+                         patch.object(PUBLISH, "gh") as gh, patch.object(PUBLISH, "verify_download") as verify:
+                        PUBLISH.publish(directory, tag)
+                    calls = [c.args for c in gh.call_args_list]
+                    flag = f"--prerelease={str(prerelease).lower()}"
+                    version_creates = [c for c in calls if c[:3] == ("release", "create", tag)]
+                    self.assertEqual(len(version_creates), 0 if draft else 1)
+                    if not draft:
+                        self.assertIn(flag, version_creates[0])
+                        self.assertIn("--draft", version_creates[0])
+                    edit = next(c for c in calls if c[:3] == ("release", "edit", tag))
+                    self.assertIn(flag, edit)
+                    self.assertIn("--draft=false", edit)
+                    channel = next(c for c in calls if c[:3] == ("release", "create", PUBLISH.CHANNEL))
+                    self.assertIn("--prerelease", channel, "Metadata-only channel is never a stable binary release")
+                    manifest = json.loads((directory / "latest.json").read_text())
+                    self.assertIs(manifest["prerelease"], prerelease)
+                    self.assertEqual(verify.call_count, 16)
+
+    def test_published_retry_only_repairs_metadata_after_byte_verification(self):
+        tag = "desktop-v0.2.0"
+        for wrong_metadata, corrupt_bytes in [(False, False), (True, False), (True, True)]:
+            with self.subTest(wrong_metadata=wrong_metadata, corrupt_bytes=corrupt_bytes):
+                directory = self.fixture(tag)
+                manifest = PUBLISH.PREPARE.validate(directory, tag)
+                events = []
+
+                def gh_call(*args, **kwargs):
+                    events.append(args)
+                    if args[:2] == ("release", "download"):
+                        (Path(args[args.index("--dir") + 1]) / "latest.json").write_text(json.dumps(manifest))
+
+                def verify(*args):
+                    events.append(("verified",))
+                    if corrupt_bytes:
+                        raise ValueError("bad public bytes")
+
+                current = {"isDraft": False, "isPrerelease": wrong_metadata, "assets": []}
+                with patch.object(PUBLISH, "release", side_effect=[current, None]), \
+                     patch.object(PUBLISH, "gh", side_effect=gh_call), \
+                     patch.object(PUBLISH, "verify_download", side_effect=verify):
+                    if corrupt_bytes:
+                        with self.assertRaisesRegex(ValueError, "bad public bytes"):
+                            PUBLISH.publish(directory, tag)
+                    else:
+                        PUBLISH.publish(directory, tag)
+                self.assertFalse(any(c[:3] == ("release", "upload", tag) for c in events))
+                edits = [c for c in events if c[:3] == ("release", "edit", tag)]
+                self.assertEqual(len(edits), int(wrong_metadata and not corrupt_bytes))
+                if edits:
+                    self.assertIn("--prerelease=false", edits[0])
+                    self.assertEqual(events[1:17], [("verified",)] * 16)
+                    self.assertEqual(events[17], edits[0])
+
+    def test_stable_channel_resists_newer_beta_but_allows_stable_upgrade(self):
+        cases = [
+            ("desktop-v0.2.0", "desktop-v0.3.0-beta.1", False),
+            ("desktop-v0.2.0", "desktop-v0.2.1", True),
+            ("desktop-v0.2.0", "desktop-v0.1.0", False),
+            ("desktop-v0.2.0-beta.29", "desktop-v0.2.0", True),
+            ("desktop-v0.2.0-beta.9", "desktop-v0.2.0-beta.10", True),
+            ("desktop-v0.2.0-beta.10", "desktop-v0.2.0-beta.9", False),
+        ]
+        for previous, tag, promote in cases:
+            with self.subTest(previous=previous, tag=tag):
+                directory = self.fixture(tag)
+
+                def gh_call(*args, **kwargs):
+                    if args[:3] == ("release", "download", PUBLISH.CHANNEL):
+                        (Path(args[args.index("--dir") + 1]) / "latest.json").write_text(
+                            json.dumps({"tag_name": previous}))
+                    return subprocess.CompletedProcess([], 0, "", "")
+
+                channel = {"isDraft": False, "isPrerelease": True, "assets": [{"name": "latest.json"}]}
+                with patch.object(PUBLISH, "release", side_effect=[None, channel]), \
+                     patch.object(PUBLISH, "gh", side_effect=gh_call) as gh, \
+                     patch.object(PUBLISH, "verify_download") as verify:
+                    PUBLISH.publish(directory, tag)
+                calls = [c.args for c in gh.call_args_list]
+                self.assertTrue(any(c[:3] == ("release", "upload", tag) for c in calls))
+                self.assertEqual(any(c[:3] == ("release", "upload", PUBLISH.CHANNEL) for c in calls), promote)
+                self.assertEqual(verify.call_count, 16)
+
+    def test_incomplete_stable_release_never_calls_github(self):
+        tag = "desktop-v0.2.0"
+        directory = self.fixture(tag)
+        (directory / "SHA256SUMS-freebsd-x86_64").unlink()
+        with patch.object(PUBLISH, "gh") as gh:
+            with self.assertRaises(FileNotFoundError):
+                PUBLISH.publish(directory, tag)
+        gh.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

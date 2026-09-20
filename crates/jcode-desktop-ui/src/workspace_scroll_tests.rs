@@ -2,6 +2,8 @@
 use super::*;
 use gpui::TouchPhase::{Cancelled, Ended, Moved, Started};
 
+// StripGesture integrates either direction. The workspace event routers apply
+// the policy that downward row navigation is keyboard-only.
 #[test]
 fn workspace_swipe_requires_more_travel_and_latches_until_a_new_start() {
     let mut gesture = StripGesture::default();
@@ -54,10 +56,12 @@ fn assert_destination_latches(cx: &mut gpui::TestAppContext, destination: Option
     let (workspace, cx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.show_sidebar = false;
+        // Start below the destination: downward workspace swipes are disabled.
+        w.active_row = 3;
         w.push_test_panel("source", cx);
         if destination.is_some() {
             w.push_test_panel("destination", cx);
-            w.slots[1].row = 1;
+            w.slots[1].row = 2;
         }
         w.active = 0;
         for (index, slot) in w.slots.iter().enumerate() {
@@ -77,10 +81,10 @@ fn assert_destination_latches(cx: &mut gpui::TestAppContext, destination: Option
     });
     cx.run_until_parked();
     let target = cx.debug_bounds("panel-0").unwrap().center();
-    swipe(&workspace, cx, target, -130.0, Started);
-    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 0);
-    swipe(&workspace, cx, target, -(STRIP_BREAK - 130.0), Moved);
-    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
+    swipe(&workspace, cx, target, 130.0, Started);
+    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 3);
+    swipe(&workspace, cx, target, STRIP_BREAK - 130.0, Moved);
+    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 2);
     let panel = workspace.read_with(cx, |w, _| w.test_panel(1));
     let before = panel
         .as_ref()
@@ -88,11 +92,11 @@ fn assert_destination_latches(cx: &mut gpui::TestAppContext, destination: Option
     for index in 0..12 {
         let direction = if index % 2 == 0 { -1.0 } else { 1.0 };
         swipe(&workspace, cx, target, direction * STRIP_BREAK * 2.0, Moved);
-        assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
+        assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 2);
     }
     swipe(&workspace, cx, target, 0.0, Ended);
     swipe(&workspace, cx, target, STRIP_BREAK * 3.0, Moved);
-    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
+    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 2);
     let after = panel
         .as_ref()
         .map(|p| p.read_with(cx, |p, _| p.test_scroll_offset_y()));
@@ -101,14 +105,14 @@ fn assert_destination_latches(cx: &mut gpui::TestAppContext, destination: Option
         "workspace momentum must not scroll the destination transcript"
     );
     if destination != Some(true) {
-        swipe(&workspace, cx, target, -STRIP_BREAK, Started);
-        assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 2);
+        swipe(&workspace, cx, target, STRIP_BREAK, Started);
+        assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
         cx.background_executor
             .advance_clock(GESTURE_RESET + Duration::from_millis(1));
         swipe(&workspace, cx, target, STRIP_BREAK, Moved);
         assert_eq!(
             workspace.read_with(cx, |w, _| w.active_row),
-            1,
+            0,
             "platforms without Started must re-arm after an idle gap"
         );
     } else {
@@ -117,7 +121,7 @@ fn assert_destination_latches(cx: &mut gpui::TestAppContext, destination: Option
             .advance_clock(Duration::from_millis(16));
         cx.update(|window, cx| window.simulate_next_frame(cx));
         cx.run_until_parked();
-        assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
+        assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 2);
         let fresh = panel
             .as_ref()
             .map(|p| p.read_with(cx, |p, _| p.test_scroll_offset_y()));
@@ -147,19 +151,70 @@ fn workspace_swipe_tail_cannot_scroll_destination_conversation(cx: &mut gpui::Te
 fn workspace_swipe_partial_pulls_expire_over_empty_panels(cx: &mut gpui::TestAppContext) {
     let (workspace, cx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.active_row = 2;
         w.push_test_panel("empty", cx);
         w.slots[0].panel.update(cx, |p, _| p.items.clear());
         w
     });
     cx.run_until_parked();
     let target = cx.debug_bounds("panel-0").unwrap().center();
-    swipe(&workspace, cx, target, -STRIP_BREAK * 0.6, Started);
+    swipe(&workspace, cx, target, STRIP_BREAK * 0.6, Started);
     cx.background_executor
         .advance_clock(GESTURE_RESET + Duration::from_millis(1));
-    swipe(&workspace, cx, target, -STRIP_BREAK * 0.6, Moved);
-    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 0);
-    swipe(&workspace, cx, target, -STRIP_BREAK * 0.6, Moved);
+    swipe(&workspace, cx, target, STRIP_BREAK * 0.6, Moved);
+    assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 2);
+    swipe(&workspace, cx, target, STRIP_BREAK * 0.6, Moved);
     assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
-    swipe(&workspace, cx, target, -STRIP_BREAK * 3.0, Cancelled);
+    swipe(&workspace, cx, target, STRIP_BREAK * 3.0, Cancelled);
     assert_eq!(workspace.read_with(cx, |w, _| w.active_row), 1);
+}
+
+#[gpui::test]
+fn downward_workspace_swipes_never_preview_or_navigate(cx: &mut gpui::TestAppContext) {
+    // Exercise the empty-row router, empty-panel router, and a horizontal pan
+    // breaking vertically over a populated transcript. Start away from the
+    // bottom edge so clamping cannot accidentally make the test pass.
+    for source in [None, Some(false), Some(true)] {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            w.active_row = 1;
+            if let Some(populated) = source {
+                w.push_test_panel("source", cx);
+                if !populated {
+                    w.slots[0].panel.update(cx, |p, _| p.items.clear());
+                }
+            }
+            w
+        });
+        vcx.run_until_parked();
+        let target = vcx.debug_bounds("workspace-canvas").unwrap().center();
+        if source == Some(true) {
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: target,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(-40.0), px(0.0))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: Started,
+            });
+            vcx.run_until_parked();
+            assert!(workspace.read_with(vcx, |w, _| w.gesture.axis == GestureAxis::Horizontal));
+        }
+        for (dy, phase) in [
+            (
+                -STRIP_BREAK * 0.5,
+                if source == Some(true) { Moved } else { Started },
+            ),
+            (-STRIP_BREAK * 2.0, Moved),
+            (0.0, Ended),
+        ] {
+            swipe(&workspace, vcx, target, dy, phase);
+            workspace.read_with(vcx, |w, _| {
+                assert_eq!(w.active_row, 1);
+                assert_eq!(w.gesture.pull, 0.0);
+                assert_eq!(w.workspace_pull.value, 0.0);
+                assert!(w.outgoing_row.is_none());
+            });
+            assert!(vcx.debug_bounds("row-pull-neighbor").is_none());
+        }
+    }
 }

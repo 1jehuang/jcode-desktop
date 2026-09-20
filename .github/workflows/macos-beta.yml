@@ -26,6 +26,28 @@ jobs:
       HAS_APPLE_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
       HAS_SPARKLE_KEYS: ${{ secrets.SPARKLE_PUBLIC_KEY != '' && secrets.SPARKLE_PRIVATE_KEY != '' }}
     steps:
+      - name: Prepare private draft release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # macOS and the matrix coordinator can start together. A concurrent
+            # create is safe only when the resulting release passes the gate below.
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --prerelease="$PRERELEASE" \
+              --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" \
+              --notes "Verified platform packages. All release gates must pass before publication." \
+              || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
       - name: Check out Jcode Desktop
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -36,7 +58,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 7dd973912a7acb8792c7d6caf9254270b0dd1b02 # Account login and cancellable desktop OAuth callbacks
+          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495 # Desktop 0.2 runtime: voice capture, native panels, and shared SSH transports
           path: jcode
           submodules: recursive
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -117,7 +139,7 @@ jobs:
             --issuer "$APPLE_API_ISSUER_ID"
       - name: Build universal app, DMG, and ZIP
         env:
-          VERSION: ${{ inputs.version || github.ref_name }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}
           JCODE_REPO: ${{ github.workspace }}/jcode
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_API_KEY_P8 != '' && 'jcode-notary' || '' }}
@@ -152,7 +174,32 @@ jobs:
             cd jcode-desktop/dist/macos
             shasum -a 256 "$ARCHIVE" Jcode-macOS-universal.dmg > SHA256SUMS
           )
+      - name: Upload verified macOS packages to private draft
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          VERSIONED_ZIP="jcode-desktop/dist/macos/Jcode-${VERSION}-macOS-universal.zip"
+          test -s "$VERSIONED_ZIP"
+          test -s jcode-desktop/dist/macos/appcast.xml
+          (cd jcode-desktop/dist/macos && shasum -a 256 -c SHA256SUMS)
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            jcode-desktop/dist/macos/Jcode-macOS-universal.dmg \
+            "$VERSIONED_ZIP" \
+            jcode-desktop/dist/macos/SHA256SUMS \
+            jcode-desktop/dist/macos/appcast.xml
+      # Optional preservation follows the required verified upload, never gates it.
       - name: Upload workflow artifact
+        continue-on-error: ${{ startsWith(github.ref, 'refs/tags/desktop-v') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Jcode-macOS-beta
@@ -163,36 +210,3 @@ jobs:
             jcode-desktop/dist/macos/Jcode-*-macOS-universal.zip
             jcode-desktop/dist/macos/appcast.xml
             jcode-desktop/dist/macos/SHA256SUMS
-      - name: Publish tagged beta release
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#desktop-v}"
-          VERSIONED_ZIP="jcode-desktop/dist/macos/Jcode-${VERSION}-macOS-universal.zip"
-          if [[ ! -f "$VERSIONED_ZIP" ]]; then
-            cp jcode-desktop/dist/macos/Jcode-macOS-universal.zip "$VERSIONED_ZIP"
-          fi
-          (
-            cd jcode-desktop/dist/macos
-            shasum -a 256 "$(basename "$VERSIONED_ZIP")" Jcode-macOS-universal.dmg > SHA256SUMS
-          )
-          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" --prerelease \
-              --notes "macOS beta for Apple Silicon and Intel Macs. Download the DMG, drag Jcode to Applications, and open it. The Jcode runtime is included."
-          fi
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
-            jcode-desktop/dist/macos/Jcode-macOS-universal.dmg \
-            "$VERSIONED_ZIP" \
-            jcode-desktop/dist/macos/SHA256SUMS \
-            jcode-desktop/dist/macos/appcast.xml
-          if [[ -f jcode-desktop/dist/macos/appcast.xml ]] && ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create desktop-updates --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --prerelease --title "Jcode Desktop update feed" \
-              --notes "Machine-readable Sparkle update feed. Download the latest desktop release instead."
-          fi
-          if [[ -f jcode-desktop/dist/macos/appcast.xml ]]; then
-            gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber \
-              jcode-desktop/dist/macos/appcast.xml
-          fi
