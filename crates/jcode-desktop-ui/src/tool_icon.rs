@@ -2,10 +2,74 @@
 //! No asset loader registration or filesystem access is required.
 
 use crate::theme::Theme;
-use gpui::{Div, div, prelude::*, px};
+use gpui::{Animation, AnimationExt, Div, Rgba, div, prelude::*, px};
+use std::time::Duration;
 
 /// A stable-sized icon that never compresses the tool-call label.
 pub(crate) fn render(name: &str) -> Div {
+    render_colored(name, Theme::global().TEXT_FAINT)
+}
+
+/// The tool glyph itself carries execution status, without a second status mark.
+pub(crate) fn render_status(name: &str, done: bool, failed: bool) -> Div {
+    let state = status(done, failed);
+    let theme = Theme::global();
+    let color = match state {
+        Status::Running => theme.WARN,
+        Status::Succeeded => theme.OK,
+        Status::Failed => theme.ERROR,
+    };
+    let icon = render_colored(name, color);
+    div()
+        .size(px(14.0))
+        .flex_shrink_0()
+        .debug_selector(move || state.selector().into())
+        .child(if state == Status::Running {
+            icon.with_animation(
+                "tool-icon-pulse",
+                Animation::new(Duration::from_millis(1400))
+                    .repeat_synced()
+                    .with_max_fps(20.0),
+                |icon, phase| icon.opacity(pulse_opacity(phase)),
+            )
+            .into_any_element()
+        } else {
+            icon.into_any_element()
+        })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl Status {
+    fn selector(self) -> &'static str {
+        match self {
+            Self::Running => "tool-icon-running",
+            Self::Succeeded => "tool-icon-succeeded",
+            Self::Failed => "tool-icon-failed",
+        }
+    }
+}
+
+fn status(done: bool, failed: bool) -> Status {
+    if failed {
+        Status::Failed
+    } else if done {
+        Status::Succeeded
+    } else {
+        Status::Running
+    }
+}
+
+fn pulse_opacity(phase: f32) -> f32 {
+    0.7 + 0.3 * (phase * std::f32::consts::TAU).cos()
+}
+
+fn render_colored(name: &str, color: Rgba) -> Div {
     div()
         .debug_selector(|| "tool-type-icon".into())
         .size(px(14.0))
@@ -14,7 +78,7 @@ pub(crate) fn render(name: &str) -> Div {
             gpui::svg()
                 .data(icon_data(name))
                 .size(px(14.0))
-                .text_color(Theme::global().TEXT_FAINT),
+                .text_color(color),
         )
 }
 
@@ -106,6 +170,17 @@ fn icon_data(name: &str) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_status_and_pulse() {
+        assert_eq!(status(false, false), Status::Running);
+        assert_eq!(status(true, false), Status::Succeeded);
+        assert_eq!(status(true, true), Status::Failed);
+        assert_eq!(status(false, true), Status::Failed);
+        assert!((pulse_opacity(0.0) - 1.0).abs() < 0.001);
+        assert!((pulse_opacity(0.5) - 0.4).abs() < 0.001);
+        assert!((pulse_opacity(1.0) - pulse_opacity(0.0)).abs() < 0.001);
+    }
 
     // Snapshot of production names in jcode-app-core/src/tool (including
     // conditional, ambient, MCP management and self-development tools), plus

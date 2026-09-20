@@ -3516,31 +3516,6 @@ impl Panel {
                         .child(preview)
                         .into_any_element();
                 }
-                let status = match (done, error) {
-                    (false, _) => div()
-                        .w(px(12.0))
-                        .flex_none()
-                        .text_color(Theme::global().WARN)
-                        // Tool events notify the panel on meaningful progress. A
-                        // perpetual spinner otherwise reparses and repaints the
-                        // complete transcript while a long-running tool is quiet.
-                        .child("●")
-                        .into_any_element(),
-                    (true, None) => div()
-                        .w(px(12.0))
-                        .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::global().OK)
-                        .child("✓")
-                        .into_any_element(),
-                    (true, Some(_)) => div()
-                        .w(px(12.0))
-                        .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::global().ERROR)
-                        .child("×")
-                        .into_any_element(),
-                };
                 let expanded = self.expanded_tools.contains(call_id);
                 let detail_progress = self
                     .tool_detail_motion
@@ -3580,8 +3555,7 @@ impl Panel {
                             .text_size(px(14.0))
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
-                            .child(status)
-                            .child(crate::tool_icon::render(name))
+                            .child(crate::tool_icon::render_status(name, *done, error.is_some()))
                             .child(
                                 div()
                                     .debug_selector(|| "tool-name".into())
@@ -5405,7 +5379,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .items_center()
                 .justify_between()
                 .gap_2()
-                .child(crate::tool_icon::render("todo"))
+                .child(crate::tool_icon::render_status("todo", true, false))
                 .when_some(intention, |header, intention| {
                     header.child(
                         div()
@@ -7011,7 +6985,12 @@ mod tests {
         let panel = workspace
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
-        for (done, output) in [(false, ""), (true, ""), (true, "ok")] {
+        for (done, output, failed) in [
+            (false, "", false),
+            (true, "", false),
+            (true, "ok", false),
+            (true, "failed", true),
+        ] {
             panel.update(vcx, |panel, cx| {
                 panel.items = vec![Item::Tool {
                     call_id: "token-visibility".into(),
@@ -7019,7 +6998,7 @@ mod tests {
                     input: r#"{"command":"true"}"#.into(),
                     output: output.into(),
                     done,
-                    error: None,
+                    error: failed.then(|| "Tool failed".into()),
                 }];
                 cx.notify();
             });
@@ -7038,6 +7017,14 @@ mod tests {
                     "{selector} aligns with the pill"
                 );
             }
+            let status_selector = if failed {
+                "tool-icon-failed"
+            } else if done {
+                "tool-icon-succeeded"
+            } else {
+                "tool-icon-running"
+            };
+            assert!(vcx.debug_bounds(status_selector).is_some());
             let icon = vcx.debug_bounds("tool-type-icon").expect("tool icon paints");
             let name = vcx.debug_bounds("tool-name").unwrap();
             assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
@@ -7064,6 +7051,11 @@ mod tests {
             workspace.push_test_panel("session-a", cx);
             workspace
         });
+        // Keep the long expanded card and its header inside the viewport.
+        // Otherwise bottom anchoring can clip the header behind workspace chrome,
+        // and a debug-bounds click hits the chrome rather than the tool row.
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1200.), px(1400.)));
         vcx.run_until_parked();
         let panel = workspace
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
@@ -7098,10 +7090,10 @@ mod tests {
         );
 
         // The row itself is no longer an expansion target.
-        let header = vcx
-            .debug_bounds("tool-header")
-            .expect("tool header painted");
-        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        // The compact header's center may land on the token button.
+        // Click the name to exercise the non-interactive part of the row.
+        let name = vcx.debug_bounds("tool-name").unwrap();
+        vcx.simulate_click(name.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_none());
         vcx.simulate_click(hint.center(), gpui::Modifiers::default());
@@ -7137,7 +7129,10 @@ mod tests {
         assert!(rendered.contains("lines hidden"));
 
         // Clicking the header or output card leaves it open.
-        vcx.simulate_click(header.center(), gpui::Modifiers::default());
+        // The compact header's center may land on the token button.
+        // Click the name to exercise the non-interactive part of the row.
+        let name = vcx.debug_bounds("tool-name").unwrap();
+        vcx.simulate_click(name.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_some());
         vcx.simulate_click(detail.center(), gpui::Modifiers::default());
