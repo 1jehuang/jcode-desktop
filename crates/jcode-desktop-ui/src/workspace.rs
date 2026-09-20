@@ -7431,7 +7431,63 @@ fn sidebar_enabled(
 }
 
 fn default_working_dir() -> Option<String> {
-    std::env::var("HOME").ok()
+    default_working_dir_from(
+        std::env::var("JCODE_DESKTOP_WORKING_DIR").ok(),
+        std::env::var("HOME").ok(),
+        Path::is_dir,
+    )
+}
+
+fn default_working_dir_from(
+    override_dir: Option<String>,
+    home: Option<String>,
+    is_dir: impl FnOnce(&Path) -> bool,
+) -> Option<String> {
+    override_dir
+        .filter(|directory| {
+            let path = Path::new(directory);
+            path.is_absolute() && is_dir(path)
+        })
+        .or(home)
+}
+
+#[cfg(test)]
+mod default_working_dir_tests {
+    use super::default_working_dir_from;
+
+    #[test]
+    fn existing_absolute_override_takes_precedence() {
+        for home in [Some("/home/user".to_owned()), None] {
+            assert_eq!(
+                default_working_dir_from(Some("/workspace".to_owned()), home, |_| true),
+                Some("/workspace".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn missing_empty_or_relative_override_retains_home() {
+        for directory in [None, Some(""), Some("relative"), Some("~/project")] {
+            assert_eq!(
+                default_working_dir_from(
+                    directory.map(str::to_owned),
+                    Some("/home/user".to_owned()),
+                    |_| panic!("only absolute overrides should query the filesystem"),
+                ),
+                Some("/home/user".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn nonexistent_directory_or_file_retains_home_unchanged() {
+        for home in [None, Some(String::new()), Some("relative-home".to_owned())] {
+            assert_eq!(
+                default_working_dir_from(Some("/not-a-directory".to_owned()), home.clone(), |_| false),
+                home
+            );
+        }
+    }
 }
 
 /// Count session directories once. Lexical ties make the initial choice stable
