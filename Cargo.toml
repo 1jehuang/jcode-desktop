@@ -28,7 +28,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def454553420
 
 [package]
 name = "jcode-desktop"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 description = "Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions"
 license.workspace = true
