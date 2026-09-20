@@ -1,4 +1,5 @@
 name: Announce public Desktop release on Discord
+run-name: Announce ${{ inputs.tag }}
 
 on:
   # Source publication precedes public website hash verification. Never trigger

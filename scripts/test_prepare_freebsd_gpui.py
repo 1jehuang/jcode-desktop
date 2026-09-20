@@ -160,8 +160,21 @@ class FreeBSDGPUICompatibilityTests(unittest.TestCase):
             path = self.home / f"git/checkouts/{name}/bc538de" / helper.RELATIVE_SOURCE
             path.parent.mkdir(parents=True)
             path.write_bytes(FIXTURE)
-        with self.assertRaisesRegex(ValueError, "found 2"):
+        with patch.object(helper.subprocess, "check_output", return_value=helper.REVISION), self.assertRaisesRegex(ValueError, "found 2"):
             self.prepare(verify_only=True)
+
+    def test_linux_fork_is_ignored_without_modification(self):
+        paths = []
+        for name in ("upstream", "linux-fork"):
+            path = self.home / f"git/checkouts/zed-{name}/checkout" / helper.RELATIVE_SOURCE
+            path.parent.mkdir(parents=True)
+            path.write_bytes(FIXTURE)
+            paths.append(path)
+        def revision(command, **kwargs):
+            return helper.REVISION if "zed-upstream" in command[2] else "a6598832" + "0" * 32
+        with patch.object(helper.subprocess, "check_output", side_effect=revision):
+            self.assertEqual(helper.find_source(self.home), paths[0])
+        self.assertEqual(paths[1].read_bytes(), FIXTURE)
 
     def test_checkout_escape_rejected(self):
         path = self.home / "git/checkouts/zed-fixture/bc538de" / helper.RELATIVE_SOURCE

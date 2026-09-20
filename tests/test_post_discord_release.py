@@ -240,10 +240,15 @@ Development builds additionally report uncommitted files.
     def test_repository_changelog_excludes_historical_and_pending_text(self):
         body = (ROOT / "CHANGELOG.md").read_text()
         notes = D.release_notes_for_discord(body)
-        current = body.split("## Previous update", 1)[0]
+        current, history = body.split("## Previous releases", 1)
+        self.assertIn("### Jcode Desktop 0.3.0", current)
+        self.assertIn("### Jcode Desktop 0.2.1", history)
         expected = [line for line in current.splitlines() if line.startswith("- ")]
         self.assertTrue(expected)
         self.assertEqual(notes.splitlines(), expected)
+        for old_highlight in (line for line in history.splitlines() if line.startswith("- ")):
+            self.assertNotIn(old_highlight, notes.splitlines())
+        self.assertNotIn("0.2.1", notes)
         self.assertNotIn("Downloads are available", notes)
         self.assertNotIn("###", notes)
 

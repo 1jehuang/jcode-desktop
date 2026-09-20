@@ -53,9 +53,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495 # Desktop 0.2 runtime: voice capture, native panels, and shared SSH transports
+          ref: b6375bb146b211cc77b4ec63e2d4986bf7316b2b # Desktop 0.3 runtime: structured stop reasons and keyed parallel tool streaming
           path: jcode
           submodules: recursive
+      - name: Test FreeBSD dependency preparation and graphical gate contracts
+        run: |
+          python3 -m unittest discover -s jcode-desktop/scripts -p test_prepare_freebsd_gpui.py -v
+          python3 -m unittest discover -s jcode-desktop/tests -p test_freebsd_regular_smoke.py -v
       # Match the adjacent CLI's native FreeBSD VM. A Linux cross-build cannot
       # establish that the FreeBSD graphics/PTY/IPC dependencies work together.
       - name: Build, package, and smoke-test inside FreeBSD
@@ -83,16 +87,29 @@ jobs:
             uname -a
             cargo --version
             rustc --version
+            # Keep the reviewed dependency-only overlay in a fresh private home.
+            # Never patch shared Cargo caches or tagged application sources.
+            git config --global --add safe.directory "$PWD/jcode-desktop"
+            git config --global --add safe.directory "$PWD/jcode"
+            export CARGO_HOME="$HOME/.cargo-freebsd-release"
+            python3 jcode-desktop/scripts/prepare-freebsd-gpui.py --desktop-root "$PWD/jcode-desktop" --cargo-home "$CARGO_HOME"
+            git -C jcode-desktop diff HEAD --exit-code
+            git -C jcode diff HEAD --exit-code
             bash jcode-desktop/scripts/package-freebsd.sh
+            python3 jcode-desktop/scripts/prepare-freebsd-gpui.py --desktop-root "$PWD/jcode-desktop" --cargo-home "$CARGO_HOME" --verify-only
+            git -C jcode-desktop diff HEAD --exit-code
+            git -C jcode diff HEAD --exit-code
             cd jcode-desktop
             python3 scripts/verify-release-package.py --target x86_64-unknown-freebsd dist/freebsd/Jcode-*.tar.gz
             mkdir -p dist/freebsd/smoke/package
             python3 - <<'PY'
             import hashlib
             import pathlib
+            import re
             import subprocess
             import tarfile
             import time
+            import tempfile
             import os
 
             root = pathlib.Path("dist/freebsd").resolve()
@@ -111,7 +128,7 @@ jobs:
             for key in ("WAYLAND_DISPLAY", "ZED_HEADLESS", "DBUS_SESSION_BUS_ADDRESS"):
                 env.pop(key, None)
             for key, directory in {
-                "HOME": "home", "XDG_RUNTIME_DIR": "runtime", "XDG_CONFIG_HOME": "config",
+                "HOME": "home", "XDG_CONFIG_HOME": "config",
                 "XDG_CACHE_HOME": "cache", "XDG_DATA_HOME": "data", "XDG_STATE_HOME": "state",
                 "JCODE_HOME": "jcode", "JCODE_DESKTOP_STATE": "desktop-state",
             }.items():
@@ -122,6 +139,25 @@ jobs:
                        JCODE_DESKTOP_SCREENSHOT="1")
             # Offline fixture exercises the real native window and renderer,
             # without network calls or reliance on configured provider accounts.
+            def private_runtime():
+                # Explicit /tmp avoids long checkout paths and inherited TMPDIR.
+                # This directory exists only inside the disposable FreeBSD VM.
+                return tempfile.TemporaryDirectory(prefix="jcd-", dir="/tmp")
+
+            def check_native_window(app, env, smoke):
+                mapped = False
+                for _ in range(100):
+                    assert app.poll() is None, "FreeBSD desktop exited before creating its window"
+                    tree = subprocess.check_output(["xwininfo", "-root", "-tree"], env=env).decode("utf-8", errors="replace")
+                    (smoke / "windows.log").write_text(tree, encoding="utf-8")
+                    if re.search(r'^\s*0x[0-9a-fA-F]+\s+"Jcode"\s*(?:\(|:)', tree, re.MULTILINE):
+                        mapped = True
+                        break
+                    time.sleep(0.2)
+                assert mapped, "FreeBSD desktop did not create a Jcode X11 window"
+                time.sleep(8)
+                assert app.poll() is None, "FreeBSD desktop exited during graphical smoke"
+
             processes = []
             logs = []
             def launch(name, command):
@@ -130,7 +166,10 @@ jobs:
                 process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
                 processes.append(process)
                 return process
+            runtime = None
             try:
+                runtime = private_runtime()
+                env["XDG_RUNTIME_DIR"] = runtime.name
                 xvfb = launch("xvfb", ["Xvfb", ":99", "-screen", "0", "1280x800x24", "-nolisten", "tcp"])
                 for _ in range(100):
                     if subprocess.run(["xprop", "-root"], env=env, stdout=subprocess.DEVNULL,
@@ -151,18 +190,7 @@ jobs:
                 else:
                     raise RuntimeError("Openbox did not become ready")
                 app = launch("app", [str(package / "jcode-desktop")])
-                mapped = False
-                for _ in range(100):
-                    assert app.poll() is None, "FreeBSD desktop exited before creating its window"
-                    tree = subprocess.check_output(["xwininfo", "-root", "-tree"], env=env, text=True)
-                    (smoke / "windows.log").write_text(tree)
-                    if '"Jcode' in tree:
-                        mapped = True
-                        break
-                    time.sleep(0.2)
-                assert mapped, "FreeBSD desktop did not create a Jcode X11 window"
-                time.sleep(8)
-                assert app.poll() is None, "FreeBSD desktop exited during graphical smoke"
+                check_native_window(app, env, smoke)
                 print("FreeBSD native X11 window smoke passed")
             finally:
                 for process in reversed(processes):
@@ -173,6 +201,8 @@ jobs:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
+                if runtime is not None:
+                    runtime.cleanup()
                 for log in logs:
                     log.close()
                 for log in smoke.rglob("*.log"):

@@ -1,4 +1,5 @@
 name: macOS public release acceptance
+run-name: Accept ${{ inputs.tag }}
 
 on:
   workflow_dispatch:

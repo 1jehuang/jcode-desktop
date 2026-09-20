@@ -74,7 +74,11 @@ state_path = root / "state.json"
 state = json.loads(state_path.read_text()) if state_path.exists() else {}
 index = state.get(route, 0)
 state[route] = index + 1
-state_path.write_text(json.dumps(state))
+# The real gate may terminate this subprocess at its deadline. Keep the last
+# complete call journal readable even when termination interrupts this write.
+pending_state = state_path.with_suffix(".pending")
+pending_state.write_text(json.dumps(state))
+pending_state.replace(state_path)
 fixtures = json.loads((root / "fixtures.json").read_text())
 values = fixtures[route]
 value = values[min(index, len(values) - 1)]

@@ -28,6 +28,7 @@ TAG_RE = re.compile(r"desktop-v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?\Z")
 INPUT_ROOTS = ("src", "crates", "assets", "packaging", ".cargo", ".github/workflows")
 INPUT_FILES = (
     "Cargo.toml", "Cargo.lock", "build.rs", "scripts/package-linux.sh",
+    "scripts/package-freebsd.sh", "scripts/prepare-freebsd-gpui.py",
     "scripts/package-macos.sh", "scripts/package-windows.ps1",
     "scripts/fetch-sparkle.sh", "scripts/render-macos-plist.py",
     "scripts/verify-macos-package.sh", "scripts/verify-release-package.py",

@@ -62,20 +62,23 @@ def patch_source(path):
 
 def find_source(cargo_home):
     candidates = list((cargo_home / "git/checkouts").glob(f"zed-*/*/{RELATIVE_SOURCE}"))
-    if len(candidates) != 1:
-        raise ValueError(f"expected one isolated Zed GPUI source, found {len(candidates)}")
-    source = candidates[0]
-    if not source.resolve(strict=True).is_relative_to(cargo_home):
-        raise ValueError("GPUI source escaped isolated Cargo home")
-    if source.is_symlink() or source.stat().st_nlink != 1:
-        raise ValueError("refusing linked GPUI source")
-    checkout = source.parents[3]
-    revision = subprocess.check_output(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True,
-    ).strip()
-    if revision != REVISION:
-        raise ValueError(f"unexpected Zed checkout revision: {revision}")
-    return source
+    matches = []
+    for source in candidates:
+        if not source.resolve(strict=True).is_relative_to(cargo_home):
+            raise ValueError("GPUI source escaped isolated Cargo home")
+        if source.is_symlink() or source.stat().st_nlink != 1:
+            raise ValueError("refusing linked GPUI source")
+        checkout = source.parents[3]
+        revision = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        # Cargo may also fetch the Linux platform fork. Directory names are
+        # not identity evidence, and that checkout must remain untouched.
+        if revision == REVISION:
+            matches.append(source)
+    if len(matches) != 1:
+        raise ValueError(f"expected one isolated Zed GPUI checkout revision {REVISION}, found {len(matches)}")
+    return matches[0]
 
 
 def prepare(desktop_root, cargo_home, target, verify_only=False):

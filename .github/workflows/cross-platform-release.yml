@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495 # Desktop 0.2 runtime: voice capture, native panels, and shared SSH transports
+          ref: b6375bb146b211cc77b4ec63e2d4986bf7316b2b # Desktop 0.3 runtime: structured stop reasons and keyed parallel tool streaming
           path: jcode
           submodules: recursive
       - name: Validate release target and publication contracts
@@ -340,7 +340,7 @@ jobs:
           [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
           # Assets stay on the private draft. Require the entire signing workflow
           # (including post-job steps) for this exact tag and commit to succeed.
-          for attempt in {1..90}; do
+          for attempt in {1..540}; do
             state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow macos-beta.yml \
               --branch "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --limit 100 \
               --json status,conclusion,event,headSha,headBranch \
@@ -350,8 +350,8 @@ jobs:
               pending) ;;
               *) echo "macOS secure workflow did not succeed: $state" >&2; exit 1 ;;
             esac
-            echo "Waiting for notarized macOS workflow ($attempt/90)..."
-            sleep 120
+            echo "Waiting for notarized macOS workflow ($attempt/540)..."
+            sleep 20
           done
           echo "macOS secure workflow did not complete" >&2
           exit 1
