@@ -22,7 +22,7 @@ impl AutoPoke {
     pub(super) fn observe(&mut self, event: &ApiEvent) {
         match event {
             ApiEvent::TurnDone { .. } => self.ready = self.start_index.is_some(),
-            ApiEvent::Error { .. } => *self = Self::default(),
+            ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => *self = Self::default(),
             ApiEvent::SessionStatus { status, .. }
                 if matches!(status.as_str(), "cancelled" | "canceled" | "disconnected") =>
             {

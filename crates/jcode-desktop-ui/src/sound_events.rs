@@ -50,6 +50,12 @@ impl SoundEvents {
                 let complete = std::mem::take(&mut self.live_turn);
                 complete.then_some(Cue::Complete)
             }
+            ApiEvent::TurnStopped { reason, .. } => {
+                self.live_turn = false;
+                let repeated = std::mem::replace(&mut self.error_reported, true);
+                (!repeated && *reason != jcode_sdk::TurnStopReason::Interrupted)
+                    .then_some(Cue::Error)
+            }
             ApiEvent::Error { .. } => {
                 self.live_turn = false;
                 let repeated = std::mem::replace(&mut self.error_reported, true);
@@ -186,6 +192,50 @@ mod tests {
             (json!({"ev":"message_accepted"}), None),
             (json!({"ev":"turn_done"}), Some(Cue::Complete)),
         ]);
+    }
+
+    #[test]
+    fn structured_stops_sound_once_and_legacy_error_done_stay_silent() {
+        for reason in [
+            jcode_sdk::TurnStopReason::Interrupted,
+            jcode_sdk::TurnStopReason::Failure,
+            jcode_sdk::TurnStopReason::Crash,
+            jcode_sdk::TurnStopReason::ProviderGuardrail,
+            jcode_sdk::TurnStopReason::LimitReached,
+            jcode_sdk::TurnStopReason::Unknown,
+        ] {
+            for locally_cancelled in [false, true] {
+                let mut sounds = SoundEvents::default();
+                let accepted = event(json!({"ev":"message_accepted"}));
+                assert_eq!(sounds.observe(&accepted), None);
+                if locally_cancelled {
+                    sounds.cancel();
+                }
+                let stopped = ApiEvent::TurnStopped {
+                    session_id: "session".into(),
+                    reason,
+                    message: "Runtime stop detail".into(),
+                    provider_stop_reason: Some("provider_finish_reason".into()),
+                };
+                let expected = (reason != jcode_sdk::TurnStopReason::Interrupted)
+                    .then_some(Cue::Error);
+                assert_eq!(sounds.observe(&stopped), expected, "{reason:?}");
+                assert!(!sounds.live_turn);
+                let error = event(json!({
+                    "ev":"error", "code":"internal", "message":"Runtime stop detail"
+                }));
+                let done = event(json!({"ev":"turn_done"}));
+                for replay in [&stopped, &error, &done, &error, &stopped, &done] {
+                    assert_eq!(sounds.observe(replay), None, "{reason:?}: {replay:?}");
+                }
+                // The next accepted turn must not inherit suppression.
+                assert_eq!(sounds.observe(&accepted), None);
+                assert_eq!(sounds.observe(&done), Some(Cue::Complete));
+                assert_eq!(sounds.observe(&done), None);
+                assert_eq!(sounds.observe(&accepted), None);
+                assert_eq!(sounds.observe(&stopped), expected, "new turn: {reason:?}");
+            }
+        }
     }
 
     #[test]

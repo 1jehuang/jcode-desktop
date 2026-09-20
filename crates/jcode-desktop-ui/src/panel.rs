@@ -52,6 +52,8 @@ mod prompt;
 mod queue;
 #[path = "panel_recovery.rs"]
 mod recovery;
+#[path = "panel_stop_reason.rs"]
+mod stop_reason;
 #[cfg(test)]
 #[path = "panel_scroll_momentum_tests.rs"]
 mod scroll_momentum_tests;
@@ -123,6 +125,7 @@ pub enum Item {
     },
     Todos(TodoCardPayload),
     Error(String),
+    Stopped(stop_reason::StopNotice),
 }
 
 #[derive(Clone)]
@@ -2259,7 +2262,7 @@ impl Panel {
                                 }
                                 this.prompt_queue.paused = true;
                                 this.sound_events.cancel();
-                                this.finish_response();
+                                this.record_stop(stop_reason::StopNotice::cancel_requested());
                                 handled = true;
                             }
                             cx.notify();
@@ -2400,9 +2403,7 @@ impl Panel {
                     self.bridge.send(Command::Cancel {
                         session_id: self.session_id.clone(),
                     });
-                    self.finish_response();
-                    self.items
-                        .push(Item::Assistant("Cancellation requested.".into()));
+                    self.record_stop(stop_reason::StopNotice::cancel_requested());
                 }
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
@@ -2878,11 +2879,24 @@ impl Panel {
             ApiEvent::TurnDone { .. } => {
                 self.finish_response();
             }
+            ApiEvent::TurnStopped { reason, message, provider_stop_reason, .. } => {
+                self.record_stop(stop_reason::StopNotice::from_event(
+                    reason, message, provider_stop_reason.as_deref(),
+                ));
+            }
             ApiEvent::SessionStatus { status, .. } if status == "attached" => {
                 // Transport bookkeeping is not a turn transition. In particular,
                 // a late attach notification must not resurrect a completed turn.
             }
             ApiEvent::SessionStatus { status, .. } => {
+                if let Some(notice) = stop_reason::StopNotice::from_status(status) {
+                    // New runtimes send a richer event before their legacy status.
+                    if !matches!(self.items.last(), Some(Item::Stopped(notice)) if !notice.provisional) {
+                        self.record_stop(notice);
+                    }
+                    cx.notify();
+                    return;
+                }
                 self.status = if status == "processing" {
                     "running".into()
                 } else {
@@ -2952,7 +2966,9 @@ impl Panel {
             }
             ApiEvent::Error { message, .. } => {
                 self.finish_response();
-                self.items.push(Item::Error(message.clone()));
+                if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message) {
+                    self.items.push(Item::Error(message.clone()));
+                }
             }
             _ => {}
         }
@@ -3271,6 +3287,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match item {
+            Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
@@ -4787,6 +4804,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Tool { .. }
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
+        | Item::Stopped(_)
         | Item::Error(_) => None,
     }
 }

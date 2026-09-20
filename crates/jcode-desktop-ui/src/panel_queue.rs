@@ -23,6 +23,11 @@ struct QueuedPrompt {
 }
 
 impl Panel {
+    pub(super) fn pause_queue_for_stop(&mut self) {
+        self.prompt_queue.paused = true;
+        self.prompt_queue.auto_poke = Default::default();
+    }
+
     pub(super) fn submit_or_queue(
         &mut self,
         content: String,
@@ -93,7 +98,7 @@ impl Panel {
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         self.prompt_queue.auto_poke.observe(event);
         match event {
-            ApiEvent::Error { .. } => self.prompt_queue.paused = true,
+            ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => self.prompt_queue.paused = true,
             ApiEvent::SessionStatus { status, .. }
                 if matches!(status.as_str(), "cancelled" | "canceled") =>
             {

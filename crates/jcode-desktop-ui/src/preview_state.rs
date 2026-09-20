@@ -7,6 +7,8 @@ use std::str::FromStr;
 pub enum PreviewState {
     Empty,
     Streaming,
+    Interrupted,
+    Crashed,
     VoiceConnecting,
     VoiceListening,
     LoginError,
@@ -20,6 +22,8 @@ impl PreviewState {
     pub const ALL: &'static [Self] = &[
         Self::Empty,
         Self::Streaming,
+        Self::Interrupted,
+        Self::Crashed,
         Self::VoiceConnecting,
         Self::VoiceListening,
         Self::LoginError,
@@ -33,6 +37,8 @@ impl PreviewState {
         match self {
             Self::Empty => "empty",
             Self::Streaming => "streaming",
+            Self::Interrupted => "interrupted",
+            Self::Crashed => "crashed",
             Self::VoiceConnecting => "voice-connecting",
             Self::VoiceListening => "voice-listening",
             Self::LoginError => "login-error",
@@ -47,6 +53,8 @@ impl PreviewState {
         match self {
             Self::Empty => "Empty session",
             Self::Streaming => "Streaming response",
+            Self::Interrupted => "Interrupted response",
+            Self::Crashed => "Session crashed",
             Self::VoiceConnecting => "Connecting microphone",
             Self::VoiceListening => "Live voice transcription",
             Self::LoginError => "Authentication error",

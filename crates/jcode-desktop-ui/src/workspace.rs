@@ -1993,8 +1993,7 @@ impl Workspace {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
                         slot.panel.update(cx, |panel, cx| {
-                            panel.status = format!("lost: {reason}");
-                            cx.notify();
+                            panel.connection_lost(&reason, cx);
                         });
                         break;
                     }

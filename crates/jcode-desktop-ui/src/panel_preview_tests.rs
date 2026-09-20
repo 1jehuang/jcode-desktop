@@ -16,6 +16,10 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
                 assert!(!panel.streaming_text.is_empty());
             }
             PreviewState::LoginDialogError => assert!(panel.login.is_some()),
+            PreviewState::Interrupted | PreviewState::Crashed => {
+                assert!(panel.items.iter().any(|item| matches!(item, Item::Stopped(_))));
+                assert!(!panel.activity_active());
+            }
             _ => assert!(
                 panel
                     .items
@@ -64,6 +68,14 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn preview_empty(cx: &mut gpui::TestAppContext) {
     assert_preview(PreviewState::Empty, cx);
+}
+#[gpui::test]
+fn preview_interrupted(cx: &mut gpui::TestAppContext) {
+    assert_preview(PreviewState::Interrupted, cx);
+}
+#[gpui::test]
+fn preview_crashed(cx: &mut gpui::TestAppContext) {
+    assert_preview(PreviewState::Crashed, cx);
 }
 #[gpui::test]
 fn preview_streaming(cx: &mut gpui::TestAppContext) {

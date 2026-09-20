@@ -59,6 +59,24 @@ impl Panel {
         );
         match state {
             PreviewState::Empty => {}
+            PreviewState::Interrupted | PreviewState::Crashed => {
+                self.items.push(Item::User("Review the implementation.".into()));
+                self.apply(&ApiEvent::TextDelta {
+                    message_id: None,
+                    session_id: self.session_id.clone(),
+                    text: "I checked the implementation and started reviewing its tests.".into(),
+                }, cx);
+                let (reason, message) = if state == PreviewState::Interrupted {
+                    (jcode_sdk::TurnStopReason::Interrupted, "You interrupted this response.")
+                } else {
+                    (jcode_sdk::TurnStopReason::Crash, "The session task panicked while processing the response.")
+                };
+                self.apply(&ApiEvent::TurnStopped {
+                    session_id: self.session_id.clone(), reason, message: message.into(),
+                    provider_stop_reason: None,
+                }, cx);
+                self.apply(&ApiEvent::TurnDone { session_id: self.session_id.clone() }, cx);
+            }
             PreviewState::VoiceConnecting | PreviewState::VoiceListening => {
                 self.seed_voice_preview(state);
             }
