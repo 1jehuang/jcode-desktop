@@ -41,6 +41,7 @@ mod terminal;
 mod text_selection;
 mod theme;
 pub mod todoist;
+mod tool_icon;
 mod transition;
 mod update_notes;
 mod updates;

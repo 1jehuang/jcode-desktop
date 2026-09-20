@@ -3576,6 +3576,7 @@ impl Panel {
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
                             .child(status)
+                            .child(crate::tool_icon::render(name))
                             .child(
                                 div()
                                     .debug_selector(|| "tool-name".into())
@@ -5199,6 +5200,7 @@ fn render_pinned_todo_summary(
         .bg(Theme::global().TOOL_BG)
         .px_2()
         .text_size(px(12.0))
+        .child(crate::tool_icon::render("todo"))
         .child(
             div()
                 .debug_selector(|| "pinned-todo-task".into())
@@ -5383,6 +5385,8 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_between()
+                .gap_2()
+                .child(crate::tool_icon::render("todo"))
                 .when_some(intention, |header, intention| {
                     header.child(
                         div()
@@ -7015,6 +7019,11 @@ mod tests {
                     "{selector} aligns with the pill"
                 );
             }
+            let icon = vcx.debug_bounds("tool-type-icon").expect("tool icon paints");
+            let name = vcx.debug_bounds("tool-name").unwrap();
+            assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
+            assert!(icon.right() <= name.left(), "icon precedes the tool name");
+            assert!((f32::from(icon.center().y - name.center().y)).abs() < 1.0);
             vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("tool-detail").is_some());
@@ -7222,6 +7231,7 @@ mod tests {
             assert_eq!(vcx.debug_bounds("tool-error").is_some(), error.is_some());
             assert_eq!(vcx.debug_bounds("code-edit-preview").is_some(), preview);
             if preview {
+                assert!(vcx.debug_bounds("tool-type-icon").is_some());
                 let card = vcx
                     .debug_bounds("edit-preview-card-0")
                     .expect("edit card paints");
@@ -7255,6 +7265,7 @@ mod tests {
                 continue;
             }
             let row = vcx.debug_bounds("tool-inline").expect("inline row paints");
+            assert!(vcx.debug_bounds("tool-type-icon").is_some());
             let header = vcx
                 .debug_bounds("tool-header")
                 .expect("status header paints");
@@ -8379,7 +8390,10 @@ Goals: []"#,
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
         assert!(pinned.bottom() <= transcript.top());
         assert_eq!(summary.size.height, px(30.0));
+        let icon = vcx.debug_bounds("tool-type-icon").expect("pinned task icon paints");
+        assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
         let task = vcx.debug_bounds("pinned-todo-task").expect("task label");
+        assert!(icon.right() <= task.left());
         let dots = vcx.debug_bounds("pinned-todo-dots").expect("progress dots");
         assert!(
             dots.left() >= task.right(),
@@ -8448,6 +8462,26 @@ Goals: []"#,
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-icons")
+    {
+        return [
+            "read", "write", "edit", "multiedit", "apply_patch", "bash", "ls",
+            "agentgrep", "websearch", "webfetch", "browser", "gmail", "memory",
+            "todo", "schedule", "swarm", "batch", "mcp", "custom_tool",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| Item::Tool {
+            call_id: format!("icon-{index}"),
+            name: name.into(),
+            input: serde_json::json!({"intent": format!("{} tool", name)}).to_string(),
+            output: "Done".into(),
+            done: index != 5,
+            error: (index == 11).then(|| "Example error".into()),
+        })
+        .collect();
+    }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-streaming")
     {

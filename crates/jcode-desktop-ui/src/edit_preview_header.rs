@@ -98,6 +98,7 @@ impl TimedPreview {
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.TEXT)
+                    .child(crate::tool_icon::render(&self.header.review.name))
                     .child(
                         div()
                             .debug_selector(move || format!("edit-preview-intent-{index}").into())
@@ -158,6 +159,9 @@ mod tests {
                 vcx.run_until_parked();
                 let header = vcx.debug_bounds("edit-preview-header-0").unwrap();
                 let intent = vcx.debug_bounds("edit-preview-intent-0").unwrap();
+                let icon = vcx.debug_bounds("tool-type-icon").expect("edit icon paints");
+                assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
+                assert!(icon.right() <= intent.left());
                 let intent_row = vcx.debug_bounds("edit-preview-intent-row-0").unwrap();
                 let counts = vcx.debug_bounds("edit-change-counts-0").unwrap();
                 let metadata = vcx.debug_bounds("edit-preview-metadata-0").unwrap();
