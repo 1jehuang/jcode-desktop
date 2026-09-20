@@ -169,8 +169,8 @@ impl Panel {
             .flex_col()
             .bg(background)
             .rounded_md()
-            .px_3()
-            .py_2()
+            .px_2()
+            .py_1()
             .text_color(Theme::global().TEXT_USER)
             .child(
                 div()
@@ -204,7 +204,7 @@ impl Panel {
                     div()
                         .debug_selector(move || format!("prompt-number-{index}-{number}").into())
                         .flex_none()
-                        .mt(px(8.))
+                        .mt(px(4.))
                         .w(px(number_width))
                         .h(px(20.))
                         .rounded_full()
@@ -338,7 +338,7 @@ mod tests {
             px(6.),
             "badge sits left of card"
         );
-        assert_eq!(number.top(), card.top() + px(8.));
+        assert_eq!(number.top(), card.top() + px(4.));
         assert_eq!(number.size, gpui::size(px(20.), px(20.)));
         assert!(number.left() >= vcx.debug_bounds("transcript").unwrap().left());
         let content = vcx.debug_bounds("prompt-content-0").unwrap();
@@ -348,12 +348,12 @@ mod tests {
         );
         assert_eq!(
             card.size.height,
-            content.size.height + px(16.),
+            content.size.height + px(8.),
             "number adds no footer height"
         );
         assert_eq!(
             card.size.width,
-            content.size.width + px(24.),
+            content.size.width + px(16.),
             "number does not change card padding"
         );
     }
@@ -711,13 +711,13 @@ mod tests {
                         "multi-digit number never overlaps markdown"
                     );
                     assert_eq!(number.right() + px(6.), card.left());
-                    assert_eq!(number.top(), card.top() + px(8.));
+                    assert_eq!(number.top(), card.top() + px(4.));
                     assert_eq!(number.size.width, px(if count == 99 { 22. } else { 29. }));
                     assert!(number.left() >= vcx.debug_bounds("transcript").unwrap().left());
-                    assert_eq!(card.size.width, content.size.width + px(24.));
+                    assert_eq!(card.size.width, content.size.width + px(16.));
                     assert_eq!(
                         card.size.height,
-                        content.size.height + px(16.),
+                        content.size.height + px(8.),
                         "no numbered footer"
                     );
                     assert!(card.right() <= vcx.debug_bounds("transcript").unwrap().right());

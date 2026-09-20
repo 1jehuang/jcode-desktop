@@ -69,15 +69,15 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// A light wash of the CLI prompt-number rainbow, newest prompt first.
-    /// Match jcode-tui-style's rainbow_prompt_color hue order and exponential
-    /// falloff, but fade back into the palette's card paper rather than gray.
+    /// A light wash of the CLI prompt-number rainbow in reverse hue order.
+    /// Newest prompts start violet and older prompts move toward red, retaining
+    /// the exponential fade back into the palette's card paper rather than gray.
     /// Backgrounds need much less color than the CLI's small foreground labels.
     pub fn prompt_background(&self, distance: usize) -> Rgba {
         const RAINBOW: [u32; 7] = [
             0xff5050, 0xffa050, 0xffe650, 0x50dc64, 0x50c8dc, 0x648cff, 0xb464ff,
         ];
-        let tint = rgb(RAINBOW[distance.min(RAINBOW.len() - 1)]);
+        let tint = rgb(RAINBOW[RAINBOW.len() - 1 - distance.min(RAINBOW.len() - 1)]);
         let strength = 0.05 * (-0.4 * distance as f32).exp();
         // Prompt cards cover transcript text, including with custom RGBA themes.
         // Blend a light tint into opaque paper, never into a translucent layer.
@@ -798,17 +798,17 @@ mod tests {
     }
 
     #[test]
-    fn prompt_age_tints_follow_cli_hues_and_fade_back_to_card_paper() {
+    fn prompt_age_tints_reverse_cli_hues_and_fade_back_to_card_paper() {
         let mut theme = Theme::defaults();
         theme.USER_BG = rgb(0x808080);
         let colors: Vec<_> = (0..7).map(|age| theme.prompt_background(age)).collect();
-        assert!(colors[0].r > colors[0].g && colors[0].g == colors[0].b);
-        assert!(colors[1].r > colors[1].g && colors[1].g > colors[1].b);
-        assert!(colors[2].r > colors[2].g && colors[2].g > colors[2].b);
+        assert!(colors[0].b > colors[0].r && colors[0].r > colors[0].g);
+        assert!(colors[1].b > colors[1].g && colors[1].g > colors[1].r);
+        assert!(colors[2].b > colors[2].g && colors[2].g > colors[2].r);
         assert!(colors[3].g > colors[3].b && colors[3].b > colors[3].r);
-        assert!(colors[4].b > colors[4].g && colors[4].g > colors[4].r);
-        assert!(colors[5].b > colors[5].g && colors[5].g > colors[5].r);
-        assert!(colors[6].b > colors[6].r && colors[6].r > colors[6].g);
+        assert!(colors[4].r > colors[4].g && colors[4].g > colors[4].b);
+        assert!(colors[5].r > colors[5].g && colors[5].g > colors[5].b);
+        assert!(colors[6].r > colors[6].g && colors[6].g == colors[6].b);
         let old = theme.prompt_background(32);
         assert!((old.r - theme.USER_BG.r).abs() < 0.00001);
         assert!((old.g - theme.USER_BG.g).abs() < 0.00001);
