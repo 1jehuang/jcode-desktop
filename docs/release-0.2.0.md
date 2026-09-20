@@ -161,3 +161,28 @@ mentions and records a source-release marker to avoid duplicates on ordinary
 retries. Announcement failures do not block package publication. A successful
 Discord post followed by a marker-write failure requires manual reconciliation
 before retrying, since the two services cannot provide an atomic transaction.
+
+At 11:23 UTC the announcement automation was pushed in `3c9e0b4`. All 34
+focused Discord tests and all 151 publication tests passed (5 local tooling
+skips). The offline 0.2.1 message preview was 1,303 characters and included only
+current feature bullets, the website link, and public binary release link.
+No live Discord message has yet been sent.
+
+## Website release-channel presentation
+
+The website's hard-coded beta labels were replaced with manifest-derived
+beta/stable labels and neutral loading copy. The unrelated private feature
+branch was preserved unchanged. Only the two-file presentation patch was applied
+to an isolated `origin/main` clone (`3d3741c`), with the existing fail-closed
+marketplace denial retained separately (`2340b11`). No marketplace payloads or
+unreleased account changes were deployed.
+
+Website Actions run `35507778411` could not start because of the account's
+existing payments/spending limit. No billing settings were changed. Using the
+existing local Cloudflare authentication, the same production build was checked:
+6 Desktop Rust tests, 75 route/privacy/data tests, cargo check, formatting,
+release Trunk build, prerender, and the 100/100 SEO gate all passed. Production
+deployment `https://9a349407.solosystems.pages.dev` completed at 11:28 UTC.
+Live browser inspection confirmed corrected metadata and working existing beta
+links. Five private marketplace routes returned 404 with no-store. The live
+manifest still advertises 0.1.0-beta.28 until the native 0.2.1 gates pass.
