@@ -78,7 +78,7 @@ impl Theme {
             0xff5050, 0xffa050, 0xffe650, 0x50dc64, 0x50c8dc, 0x648cff, 0xb464ff,
         ];
         let tint = rgb(RAINBOW[distance.min(RAINBOW.len() - 1)]);
-        let strength = 0.12 * (-0.4 * distance as f32).exp();
+        let strength = 0.05 * (-0.4 * distance as f32).exp();
         self.USER_BG.blend(tint.opacity(strength))
     }
 
@@ -823,9 +823,15 @@ mod tests {
                     .max((background.g - theme.USER_BG.g).abs())
                     .max((background.b - theme.USER_BG.b).abs());
                 assert!(
-                    difference <= 0.12,
+                    difference <= 0.05 + f32::EPSILON,
                     "{} age {age}: excessive tint",
                     preset.id()
+                );
+                assert!(
+                    contrast(theme.TEXT_DIM, background) >= 4.5,
+                    "{} age {age}: prompt number contrast {}",
+                    preset.id(),
+                    contrast(theme.TEXT_DIM, background)
                 );
                 assert!(
                     contrast(theme.TEXT_USER, background) >= 4.5,

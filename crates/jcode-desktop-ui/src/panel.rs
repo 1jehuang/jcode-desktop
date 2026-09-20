@@ -284,6 +284,7 @@ pub struct Panel {
     flicker_diagnostics: std::rc::Rc<std::cell::RefCell<flicker::Detector>>,
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
+    offscreen_prompt_clip: Option<gpui::Pixels>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
     changelog_view: crate::update_notes::View,
@@ -796,6 +797,7 @@ impl Panel {
             flicker_diagnostics: Default::default(),
             startup_layout: None,
             offscreen_prompt: None,
+            offscreen_prompt_clip: None,
             pinned_todo_expanded: false,
             transcript_selection,
             changelog_view: crate::update_notes::View::Latest,
@@ -4186,6 +4188,7 @@ impl Render for Panel {
                                     })
                                     .child(prompt::visibility_marker(
                                         row_index,
+                                        prompt::is_pinnable_prompt(item),
                                         row_first_visible.clone(),
                                         prompt_list.clone(),
                                     ))
