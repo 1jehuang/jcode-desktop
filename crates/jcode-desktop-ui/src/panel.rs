@@ -65,6 +65,8 @@ pub use startup::StartupLayout;
 mod response_stats;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
+#[path = "panel_task_label.rs"]
+mod task_label;
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
 #[path = "panel_usage.rs"]
@@ -302,6 +304,9 @@ pub struct Panel {
     history_loaded: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
+    pinned_task_label: Entity<task_label::TypeInLabel>,
+    /// Retain closing cards until their fade finishes, and allow smooth reversal.
+    tool_detail_motion: HashMap<String, crate::transition::AnimatedValue>,
     prompt_queue: queue::PromptQueue,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
@@ -811,6 +816,8 @@ impl Panel {
             preview_state: None,
             history_loaded: false,
             expanded_tools: HashSet::new(),
+            pinned_task_label: cx.new(task_label::TypeInLabel::new),
+            tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
@@ -3530,6 +3537,15 @@ impl Panel {
                         .into_any_element(),
                 };
                 let expanded = self.expanded_tools.contains(call_id);
+                let detail_progress = self
+                    .tool_detail_motion
+                    .get(call_id)
+                    .map(|motion| {
+                        let mut motion = *motion;
+                        motion.sample(Instant::now())
+                    })
+                    .unwrap_or(if expanded { 1.0 } else { 0.0 });
+                let detail_visible = expanded || self.tool_detail_motion.contains_key(call_id);
                 let summary = tool_summary(input);
                 let detail = tool_detail(name, input, output);
                 let has_detail = !detail.is_empty();
@@ -3609,8 +3625,29 @@ impl Panel {
                                         .text_color(token_color)
                                         .on_click(cx.listener(move |this, _event, _window, cx| {
                                             cx.stop_propagation();
-                                            if !this.expanded_tools.remove(&call_id) {
+                                            let was_expanded = this.expanded_tools.remove(&call_id);
+                                            if !was_expanded {
                                                 this.expanded_tools.insert(call_id.clone());
+                                            }
+                                            let duration = crate::transition::policy(
+                                                crate::transition::Transition::Overlay,
+                                            )
+                                            .duration;
+                                            if cx.reduce_motion() || duration.is_zero() {
+                                                this.tool_detail_motion.remove(&call_id);
+                                            } else {
+                                                this.tool_detail_motion
+                                                    .entry(call_id.clone())
+                                                    .or_insert_with(|| {
+                                                        crate::transition::AnimatedValue::new(
+                                                            if was_expanded { 1.0 } else { 0.0 },
+                                                            duration,
+                                                        )
+                                                    })
+                                                    .set(
+                                                        if was_expanded { 0.0 } else { 1.0 },
+                                                        Instant::now(),
+                                                    );
                                             }
                                             this.transcript_measurements.dirty = true;
                                             cx.notify();
@@ -3619,12 +3656,15 @@ impl Panel {
                                 )
                             }),
                     )
-                    .when(expanded && has_detail, |el| {
+                    .when(detail_visible && has_detail, |el| {
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
                                 // Keep the collapsed header inline, and give
                                 // expanded output its own quiet card surface.
+                                .opacity(detail_progress)
+                                .relative()
+                                .left(px(6.0 * (1.0 - detail_progress)))
                                 .ml(px(24.0))
                                 .mt_1()
                                 .mb_1()
@@ -3735,6 +3775,20 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.tool_detail_motion.is_empty() {
+            let now = Instant::now();
+            let reduce_motion = cx.reduce_motion() || crate::config::get().appearance.reduce_motion;
+            self.tool_detail_motion.retain(|_, motion| {
+                motion.sample(now);
+                !reduce_motion && motion.is_animating()
+            });
+            // Virtualized rows cache their geometry. Repaint during motion and
+            // remeasure once more when the exiting card is finally removed.
+            self.transcript_measurements.dirty = true;
+            if !self.tool_detail_motion.is_empty() {
+                window.request_animation_frame();
+            }
+        }
         self.schedule_transcript_wheel_frame(window, cx);
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
@@ -4342,7 +4396,8 @@ impl Render for Panel {
                             .child(render_todo_card(&payload))
                             .into_any_element()
                     } else {
-                        render_pinned_todo_summary(&payload).into_any_element()
+                        render_pinned_todo_summary(&payload, &self.pinned_task_label, cx)
+                            .into_any_element()
                     })
             }))
             .child(
@@ -5114,7 +5169,11 @@ fn pinned_todo_summary(payload: &TodoCardPayload) -> PinnedTodoSummary {
     }
 }
 
-fn render_pinned_todo_summary(payload: &TodoCardPayload) -> impl IntoElement {
+fn render_pinned_todo_summary(
+    payload: &TodoCardPayload,
+    label: &Entity<task_label::TypeInLabel>,
+    cx: &mut Context<Panel>,
+) -> impl IntoElement {
     let summary = pinned_todo_summary(payload);
     let task = summary.current.unwrap_or_else(|| {
         if summary.total > 0 && summary.completed == summary.total {
@@ -5123,6 +5182,8 @@ fn render_pinned_todo_summary(payload: &TodoCardPayload) -> impl IntoElement {
             "No active task".into()
         }
     });
+
+    label.update(cx, |label, cx| label.set_text(task, cx));
 
     div()
         .debug_selector(|| "pinned-todo-summary".into())
@@ -5147,7 +5208,7 @@ fn render_pinned_todo_summary(payload: &TodoCardPayload) -> impl IntoElement {
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .text_color(Theme::global().TEXT)
-                .child(task),
+                .child(label.clone()),
         )
         .child(
             div()
@@ -6905,6 +6966,16 @@ mod tests {
         );
     }
 
+    fn settle_tool_details(panel: &Entity<Panel>, cx: &mut gpui::VisualTestContext) {
+        panel.update(cx, |panel, cx| {
+            for motion in panel.tool_detail_motion.values_mut() {
+                motion.sample(Instant::now() + Duration::from_secs(1));
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
     #[gpui::test]
     fn tool_token_badge_paints_for_empty_and_single_line_results(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -6947,9 +7018,11 @@ mod tests {
             vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("tool-detail").is_some());
+            settle_tool_details(&panel, vcx);
             let button = vcx.debug_bounds("tool-output-size").unwrap();
             vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
+            settle_tool_details(&panel, vcx);
             assert!(vcx.debug_bounds("tool-detail").is_none());
         }
     }
@@ -7005,6 +7078,7 @@ mod tests {
         assert!(vcx.debug_bounds("tool-detail").is_none());
         vcx.simulate_click(hint.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        settle_tool_details(&panel, vcx);
         let detail = vcx
             .debug_bounds("tool-detail")
             .expect("clicking the token button expands the output card");
@@ -7047,9 +7121,38 @@ mod tests {
         vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(
-            vcx.debug_bounds("tool-detail").is_none(),
-            "a second click collapses the detail"
+            vcx.debug_bounds("tool-detail").is_some(),
+            "closing card remains mounted during exit"
         );
+        panel.read_with(vcx, |panel, _| {
+            assert!(!panel.expanded_tools.contains("call-1"));
+            assert!(panel.tool_detail_motion.contains_key("call-1"));
+        });
+        // Reverse a closing card without unmounting it or jumping back to zero.
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_some());
+        settle_tool_details(&panel, vcx);
+        assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call-1")));
+        let button = vcx.debug_bounds("tool-output-size").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        settle_tool_details(&panel, vcx);
+        assert!(
+            vcx.debug_bounds("tool-detail").is_none(),
+            "the exit unmounts after its final frame"
+        );
+
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
+        let button = vcx.debug_bounds("tool-output-size").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_some());
+        assert!(panel.read_with(vcx, |panel, _| panel.tool_detail_motion.is_empty()));
+        let button = vcx.debug_bounds("tool-output-size").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("tool-detail").is_none());
     }
 
     #[gpui::test]
