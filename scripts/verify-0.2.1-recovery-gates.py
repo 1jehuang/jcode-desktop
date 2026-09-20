@@ -20,8 +20,8 @@ _spec.loader.exec_module(BASE)
 require, GateError = BASE.require, BASE.GateError
 REPOSITORY, SOURCE_SHA, TAG = BASE.REPOSITORY, BASE.SHA, BASE.TAG
 ATTEMPT = 1
-FREEBSD_RUN = 35505649315
-FREEBSD_SHA = "b7292323a8c9b138e71998a32b17fa8f3e106173"
+FREEBSD_RUN = 35508120526
+FREEBSD_SHA = "1121a4e998f86c699ea5273b32f9b66b57359039"
 RECOVERY_BRANCH = "release/desktop-0.2.0"
 WINDOWS_RUN = 35505943861
 WINDOWS_SHA = "7461bb2ce1faeba5e5891881d90b3cc5160e1b1a"
@@ -56,7 +56,7 @@ WINDOWS_REQUIRED = (
 )
 FREEBSD_REQUIRED = (
     "Require unpublished stable draft", "Verify immutable source and recovery tooling",
-    "Build, package, and smoke-test inside FreeBSD",
+    "Test recovery smoke fixture", "Build, package, and smoke-test inside FreeBSD",
     "Upload only native-verified missing FreeBSD assets",
 )
 LINUX_REQUIRED = ("Build and package Linux", "Verify Linux package",

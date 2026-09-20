@@ -186,3 +186,25 @@ deployment `https://9a349407.solosystems.pages.dev` completed at 11:28 UTC.
 Live browser inspection confirmed corrected metadata and working existing beta
 links. Five private marketplace routes returned 404 with no-store. The live
 manifest still advertises 0.1.0-beta.28 until the native 0.2.1 gates pass.
+
+## FreeBSD native smoke fixture correction
+
+Recovery run `35505649315` successfully built and validated all FreeBSD binaries,
+including CLI execution and dynamic library checks. Its native graphical fixture
+then failed: the checkout-derived XDG runtime directory exceeded FreeBSD's Unix
+socket path limit, and a non-UTF-8 X11 window title caused diagnostic decoding
+to fail. This is not accepted as a successful native GUI gate.
+
+Recipe `1121a4e998f86c699ea5273b32f9b66b57359039` uses a short private runtime
+directory inside the disposable VM, removes it only after all child processes
+exit, and decodes unrelated window titles safely while still requiring the
+actual Jcode window and eight seconds of app liveness. Seven executable fixture
+regressions cover short socket binding, permissions, malformed title bytes,
+missing windows, process exit, command failure, and cleanup ordering. They run
+before the full native rebuild. Application/runtime source tags remain unchanged.
+
+The new required whole-run-success evidence is
+https://github.com/1jehuang/jcode-desktop/actions/runs/35508120526.
+The prior failed combined publication `35506023408` remained blocked and did
+not publish or announce the release. The new combined gate pins this corrected
+FreeBSD run, retaining the same successful macOS and required Windows recovery.
