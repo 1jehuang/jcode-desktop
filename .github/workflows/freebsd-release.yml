@@ -16,7 +16,7 @@ on:
         default: 0.1.0-beta.29
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-freebsd:
@@ -24,6 +24,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
+      - name: Prepare private draft release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # macOS and the matrix coordinator can start together. A concurrent
+            # create is safe only when the resulting release passes the gate below.
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --draft --prerelease="$PRERELEASE" \
+              --title "Jcode Desktop ${GITHUB_REF_NAME#desktop-v}" \
+              --notes "Verified platform packages. All release gates must pass before publication." \
+              || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          fi
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: jcode-desktop
@@ -39,7 +61,7 @@ jobs:
       - name: Build, package, and smoke-test inside FreeBSD
         uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}
         with:
           release: "15.1"
           arch: x86_64
@@ -159,7 +181,27 @@ jobs:
             PY
       # Never make an artifact available for publication unless native package
       # verification, CLI launch, and graphical smoke all passed in the VM.
+      # The VM syncs the workspace back to the Linux host before this step.
+      # Use the host's gh CLI, not Actions artifact storage, for tagged builds.
+      - name: Upload verified FreeBSD package to private draft
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
+          files=(jcode-desktop/dist/freebsd/Jcode-*.tar.gz jcode-desktop/dist/freebsd/SHA256SUMS-freebsd-x86_64)
+          for file in "${files[@]}"; do test -s "$file"; done
+          (cd jcode-desktop/dist/freebsd && sha256sum -c SHA256SUMS-freebsd-x86_64)
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
       - name: Upload verified FreeBSD package
+        if: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-freebsd-x86_64
@@ -169,6 +211,7 @@ jobs:
             jcode-desktop/dist/freebsd/SHA256SUMS-freebsd-x86_64
       - name: Upload FreeBSD smoke diagnostics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: freebsd-smoke-diagnostics-x86_64

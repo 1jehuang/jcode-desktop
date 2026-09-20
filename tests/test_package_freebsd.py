@@ -93,6 +93,9 @@ class FreeBSDPackagingTests(unittest.TestCase):
         self.assertIn('release: "15.1"', workflow)
         self.assertIn("name: desktop-freebsd-x86_64\n", workflow)
         self.assertIn("assert mapped", source)
-        self.assertNotIn("continue-on-error:", workflow)
+        native = workflow.split("- name: Build, package, and smoke-test inside FreeBSD", 1)[1].split("- name:", 1)[0]
+        self.assertNotIn("continue-on-error:", native)
+        diagnostics = workflow.split("- name: Upload FreeBSD smoke diagnostics", 1)[1]
+        self.assertIn("continue-on-error: true", diagnostics)
         upload = workflow.split("- name: Upload verified FreeBSD package", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("if: always()", upload)
