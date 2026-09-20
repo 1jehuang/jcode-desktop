@@ -401,7 +401,16 @@ fn main() {
             if let Err(error) = host::global_shortcut::install(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
-                move |cx| restore_window(&manager, &current_window, cx)
+                move |event, cx| {
+                    restore_window(&manager, &current_window, cx)?;
+                    if event == host::global_shortcut::ShortcutEvent::ToggleVoice {
+                        let window = current_window.borrow().ok_or_else(|| {
+                            anyhow::anyhow!("desktop window unavailable")
+                        })?;
+                        dispatch_ui_action(window, "workspace::ToggleVoice", cx)?;
+                    }
+                    Ok(())
+                }
             }) {
                 eprintln!("could not register global Control+Command+I shortcut: {error:#}");
             }
