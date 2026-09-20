@@ -74,7 +74,7 @@ impl Workspace {
             "focused_slot": focused,
             "keyboard_panel": keyboard_panel,
             "tab_targets": self.live_tabs.hit_targets.iter()
-                .map(|(index, x)| (*index, x + live_tabs::TAB_STATUS_WIDTH))
+                .map(|(index, x)| (*index, x + self.live_tabs.header_offset))
                 .collect::<Vec<_>>(),
             "tab_motion": self.live_tabs.is_animating(),
             "camera_motion": self.camera_started[self.active_row].is_some() || self.row_progress.is_animating(),

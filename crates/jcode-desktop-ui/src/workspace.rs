@@ -186,9 +186,9 @@ const STRUT: f32 = 0.58;
 /// Leave the canvas visible around the joined folder surfaces.
 const STRIP_PADDING_Y: f32 = 16.0;
 /// A tighter header keeps floating tabs close to the top without crowding the footer.
-const STRIP_PADDING_TOP: f32 = 10.0;
+const STRIP_PADDING_TOP: f32 = 6.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
-const FOLDER_CONTENT_INSET: f32 = 40.0;
+const FOLDER_CONTENT_INSET: f32 = 32.0;
 /// Keep the sidebar separate from the session sheet with a canvas gutter.
 const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
 const FOLDER_RIGHT_MARGIN: f32 = 12.0;
@@ -277,7 +277,7 @@ Composer shortcuts ported from the TUI:
 - Escape: clear the draft
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
-const SIDEBAR_WIDTH: f32 = 264.0;
+const SIDEBAR_WIDTH: f32 = 224.0;
 // Center the 4px thumb in the gap between the session tabs and main sheet.
 // The normal layout has no connector gap, so its gutter stays inside the sidebar.
 const SIDEBAR_SCROLLBAR_OUTSET: f32 = 8.0;
@@ -285,7 +285,7 @@ const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
-const TITLEBAR_HEIGHT: f32 = 52.0;
+const TITLEBAR_HEIGHT: f32 = 40.0;
 /// Horizontal space occupied by the macOS close, minimize, and zoom controls.
 /// Keep sidebar navigation out of this region while retaining Linux's current
 /// left alignment.
@@ -723,7 +723,6 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_workspace_groups: sidebar_workspace_groups::State,
-    expanded_swarms: HashSet<String>,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     sidebar_navigation_scroll: ScrollHandle,
@@ -967,7 +966,6 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_workspace_groups: Default::default(),
-            expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -1268,7 +1266,6 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_workspace_groups: Default::default(),
-            expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
@@ -4590,7 +4587,7 @@ impl Workspace {
             .debug_selector(|| "sidebar-navigation-scrollbar".into())
             .relative()
             .w_full()
-            .h(px(if folders { 16.0 } else { 10.0 }))
+            .h(px(if folders { 16.0 } else { 6.0 }))
             .when(folders, |el| el.absolute().top(px(10.0)))
             .flex_none()
             .cursor_pointer()
@@ -4609,7 +4606,7 @@ impl Workspace {
                 el.child(
                     div()
                         .absolute()
-                        .top(px(3.0))
+                        .top(px(1.0))
                         .w_full()
                         .h(px(4.0))
                         .rounded_full()
@@ -4620,7 +4617,7 @@ impl Workspace {
                 el.child(
                     div()
                         .absolute()
-                        .top(px(3.0))
+                        .top(px(1.0))
                         .left(relative((width - thumb) * progress / width))
                         .w(relative(thumb / width))
                         .h(px(4.0))
@@ -4631,7 +4628,7 @@ impl Workspace {
         div()
             .relative()
             .w_full()
-            .h(px(10.0))
+            .h(px(if folders { 10.0 } else { 6.0 }))
             .flex_none()
             .child(track)
             .into_any_element()
@@ -4835,20 +4832,6 @@ impl Workspace {
                     .is_some_and(|row| !self.sidebar_workspace_groups.expanded(*row)),
                 selected: active_id.as_deref() == Some(session.session_id.as_str()),
                 saved: session.saved,
-                swarm_rows: swarm
-                    .children
-                    .get(&session.session_id)
-                    .map_or(0, |children| {
-                        if self.expanded_swarms.contains(&session.session_id) {
-                            children.len()
-                        } else {
-                            children.len().min(sidebar_swarm::PREVIEW)
-                        }
-                    }),
-                swarm_more: swarm
-                    .children
-                    .get(&session.session_id)
-                    .is_some_and(|children| children.len() > sidebar_swarm::PREVIEW),
                 details: (!*is_open || active_id.as_deref() == Some(session.session_id.as_str())
                     || session_workspaces.get(&session.session_id).is_none_or(|row| workspace_counts[row] < 2))
                     && (session
@@ -5014,9 +4997,6 @@ impl Workspace {
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let selection_order = selection_order.clone();
-                            let swarm_content = swarm.children.get(&session.session_id).map(|children| {
-                                this.render_swarm_children(&session.session_id, children, active_id.as_deref(), cx)
-                            });
                             let session = session.clone();
                             list = list.child(
                                 div()
@@ -5027,10 +5007,10 @@ impl Workspace {
                                     })
                                     .ml_2()
                                     .mr_2()
-                                    .mb_1()
+                                    .mb(px(2.0))
                                     .relative()
                                     .px_2()
-                                    .py_1()
+                                    .py(px(2.0))
                                     .flex()
                                     .flex_col()
                                     .gap(px(1.0))
@@ -5136,8 +5116,7 @@ impl Workspace {
                                                 .child(div().flex_1().min_w_0().truncate().children(details))
                                                 .children(edits),
                                         )
-                                    })
-                                    .when_some(swarm_content, |row, content| row.child(content)),
+                                    }),
                             );
                             list.into_any_element()
                         })
@@ -5211,7 +5190,6 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .justify_end()
-                            .gap(px(6.0))
                             // Folder mode uses the tabs' upper contour as the thumb.
                             // Reserve the same header geometry in both modes.
                             .child(self.render_sidebar_navigation_scrollbar(cx))
@@ -7711,8 +7689,6 @@ struct SidebarSessionLayout {
     selected: bool,
     saved: bool,
     details: bool,
-    swarm_rows: usize,
-    swarm_more: bool,
 }
 
 fn sync_sidebar_session_layout(
@@ -11942,7 +11918,7 @@ mod tests {
 
         assert!(vcx.debug_bounds("edge-new-session").is_none());
         let plus = vcx.debug_bounds("tab-new-session").unwrap();
-        assert_eq!(plus.size, gpui::size(px(32.0), px(32.0)));
+        assert_eq!(plus.size, gpui::size(px(28.0), px(28.0)));
         vcx.simulate_click(plus.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
 

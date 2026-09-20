@@ -198,7 +198,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_edit_metadata_remeasures_and_swarm_counts_fit(cx: &mut gpui::TestAppContext) {
+    fn sidebar_edit_metadata_remeasures_root_without_rendering_swarm_counts(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         let root = session_info("root", Some("Parent"));
@@ -227,7 +229,10 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("sidebar-session-0").unwrap().size.height > before);
-        assert!(vcx.debug_bounds("sidebar-edits-root").is_some());
+        let root_badge = vcx.debug_bounds("sidebar-edits-root").unwrap();
+        let root_row = vcx.debug_bounds("sidebar-session-0").unwrap();
+        assert!(root_badge.right() <= root_row.right());
+        assert!(root_badge.bottom() <= root_row.bottom());
         let mut child = session_info("child", Some("A very long swarm agent task label"));
         child.parent_session_id = Some("root".into());
         child.edit_stats = Some(jcode_sdk::SessionEditStats {
@@ -245,10 +250,11 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let badge = vcx.debug_bounds("sidebar-edits-child").unwrap();
-        let row = vcx.debug_bounds("swarm-child-child").unwrap();
-        assert!(badge.right() <= row.right());
-        assert!(badge.bottom() <= row.bottom());
+        assert!(vcx.debug_bounds("sidebar-edits-child").is_none());
+        assert!(vcx.debug_bounds("swarm-child-child").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-1").is_none());
+        assert_eq!(vcx.debug_bounds("sidebar-edits-root").unwrap(), root_badge);
+        assert_eq!(vcx.debug_bounds("sidebar-session-0").unwrap(), root_row);
         workspace.update(vcx, |w, cx| {
             w.apply(
                 Update::Sessions {

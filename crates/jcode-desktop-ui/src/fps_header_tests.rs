@@ -48,13 +48,27 @@ fn fps_and_new_session_share_the_tab_row_without_a_top_header(cx: &mut gpui::Tes
                         "width={width}, sidebar={sidebar}, minimap={minimap}, plus={plus:?}, tabs={tabs:?}, row={row:?}"
                     );
                     assert_eq!(plus.top(), tabs.top());
+                    assert_eq!(plus.size.height, px(28.0));
+                    assert_eq!(
+                        tabs.left() - row.left(),
+                        px(workspace.read_with(vcx, |w, _| w.live_tabs.header_offset)),
+                        "native navigation coordinates include the version tag offset"
+                    );
                     assert!(
                         tabs.size.width > px(0.0),
                         "width={width}, sidebar={sidebar}, minimap={minimap}"
                     );
                     if let Some(version) = vcx.debug_bounds("workspace-version") {
-                        assert!(version.left() >= tabs.right());
-                        assert!(version.right() <= plus.left());
+                        assert!(version.left() >= row.left());
+                        assert!(version.right() <= counter.left());
+                        assert_eq!(version.size.height, px(24.0));
+                        assert!(version.top() >= row.top() && version.bottom() <= row.bottom());
+                        let build = vcx.debug_bounds("workspace-build").unwrap();
+                        assert!(
+                            build.size.height <= px(16.0),
+                            "version must stay on one line"
+                        );
+                        assert!((version.center().y - counter.center().y).abs() < px(1.0));
                         assert!(tabs.size.width >= px(208.0));
                     }
                     if sidebar {

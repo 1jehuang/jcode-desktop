@@ -3,7 +3,7 @@ use super::*;
 use crate::panel::folder_session_title;
 
 /// Canvas air beneath the rounded tabs keeps them detached from the sheets.
-const TAB_FLOAT_GAP: f32 = 8.0;
+const TAB_FLOAT_GAP: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
@@ -23,6 +23,17 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
             + TAB_NEW_WIDTH
             + TAB_CLOSE_WIDTH
             + 64.0
+}
+
+/// Reserve a compact tag only when a full selected tab still fits. The tag
+/// precedes FPS, so all other left-anchored header content shares this offset.
+pub(super) fn version_header_width(tab_budget: f32) -> f32 {
+    const VERSION_WIDTH: f32 = 164.0;
+    if tab_budget >= VERSION_WIDTH + 208.0 + TAB_GROUP_LABEL_WIDTH {
+        VERSION_WIDTH
+    } else {
+        0.0
+    }
 }
 
 fn group_label_width(available: f32, group_count: usize) -> f32 {
@@ -250,6 +261,7 @@ pub(super) struct TabMotion {
     tabs: HashMap<u64, TabTween>,
     available: Option<f32>,
     pub(super) hit_targets: Vec<(usize, f32)>,
+    pub(super) header_offset: f32,
 }
 
 impl TabMotion {
@@ -338,13 +350,7 @@ impl Workspace {
         // Session navigation takes priority over secondary build metadata.
         // Keep enough room for a useful selected tab before showing the chip.
         let tab_budget = canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH;
-        let version_width = if canvas_width - right >= 800.0 {
-            240.0
-        } else if tab_budget >= 184.0 + 208.0 + TAB_GROUP_LABEL_WIDTH {
-            184.0
-        } else {
-            0.0
-        };
+        let version_width = version_header_width(tab_budget);
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
@@ -406,7 +412,12 @@ impl Workspace {
                 .as_ref()
                 .filter(|_| coach_progress > 0.0)
                 .map(|hint| {
-                    self.render_coach_chip(hint, coach_progress, TAB_STATUS_WIDTH + left, cx)
+                    self.render_coach_chip(
+                        hint,
+                        coach_progress,
+                        version_width + TAB_STATUS_WIDTH + left,
+                        cx,
+                    )
                 })
         });
         let mut tabs = div()
@@ -414,9 +425,10 @@ impl Workspace {
             .debug_selector(|| "live-session-tabs".into())
             .absolute()
             .top_0()
-            .left(px(TAB_STATUS_WIDTH))
-            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH + version_width))
+            .left(px(version_width + TAB_STATUS_WIDTH))
+            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
+        self.live_tabs.header_offset = version_width + TAB_STATUS_WIDTH;
         self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
             let (index, row, _) = entries[position];
@@ -717,7 +729,7 @@ impl Workspace {
                 div()
                     .debug_selector(|| "fps-counter-slot".into())
                     .absolute()
-                    .left_0()
+                    .left(px(version_width))
                     .top_0()
                     .w(px(TAB_STATUS_WIDTH))
                     .h(px(TAB_HEIGHT))
@@ -735,11 +747,7 @@ impl Workspace {
             )
             .child(tabs)
             .when(version_width > 0.0, |el| {
-                el.child(self.render_version_header(
-                    version_width,
-                    TAB_NEW_WIDTH + TAB_CLOSE_WIDTH,
-                    cx,
-                ))
+                el.child(self.render_version_header(version_width, cx))
             })
             .children(coach_chip)
             .child(
@@ -1631,7 +1639,7 @@ mod tests {
             now + Duration::from_millis(50),
         );
         assert!(middle[5].width > initial[5].width && middle[5].width < 208.0);
-        assert!(middle[5].height > 28.0 && middle[5].height < 32.0);
+        assert!(middle[5].height > TAB_HEIGHT - 4.0 && middle[5].height < TAB_HEIGHT);
         assert!(middle[5].left < initial[5].left);
         let reversal = motion.sample(
             &targets(0),

@@ -7,18 +7,22 @@ from PIL import Image
 
 
 def header_pixels(image, height, minimap):
-    """FPS occupies the left slot of the tab row, not a separate top strip."""
+    """A single-line version tag precedes FPS in the compact tab row."""
     assert height == 0, ("the separate header must be removed", height)
     # This acceptance fixture uses the default folder layout and full sidebar.
-    slot = image.crop((276, 10, 364, 42))
+    canvas_left = 224 + 12
+    right = image.width - 12 - (154 if minimap else 0)
+    tab_budget = right - canvas_left - 88 - 40 - 40
+    version_width = 164 if tab_budget >= 164 + 208 + 24 else 0
+    fps_left = canvas_left + version_width
+    slot = image.crop((fps_left, 6, fps_left + 88, 34))
     background = slot.getpixel((0, 0))
     changed = [(x, y) for y in range(slot.height) for x in range(slot.width)
                if slot.getpixel((x, y)) != background]
     assert changed, "FPS text is missing"
     assert all(0 < x < slot.width - 1 and 0 < y < slot.height - 1 for x, y in changed), "FPS content is clipped"
     # The new-session plus is always visible to the right of the tabs, before the minimap.
-    right = image.width - 12 - (154 if minimap else 0)
-    plus = image.crop((right - 32, 10, right, 42))
+    plus = image.crop((right - 40 - 28, 6, right - 40, 34))
     assert any(pixel != plus.getpixel((0, 0)) for pixel in plus.getdata()), "tab plus is missing"
     return {"header_height": height, "text_pixels": len(changed), "background": background}
 
@@ -40,8 +44,8 @@ def verify(output, env, root):
 
     height = round(nav()["header_height"])
     for slot in [1, 2, 3]:
-        x = dict(nav()["tab_targets"])[slot] + 276
-        native("mousemove", str(round(x)), str(height + 34), "click", "1")
+        x = dict(nav()["tab_targets"])[slot] + 236
+        native("mousemove", str(round(x)), str(height + 20), "click", "1")
         assert nav()["focused_slot"] == slot, nav()
         for _ in range(slot):
             native("key", "super+shift+j")
@@ -65,11 +69,11 @@ def verify(output, env, root):
     width = nav()["viewport"][0]
     native("mousemove", str(round(width - 24)), "400", "click", "1")
     assert sum(len(row["panels"]) for row in nav()["rows"]) == 4, "old edge target still creates sessions"
-    native("mousemove", str(round(width - 12 - (154 if nav()["minimap_visible"] else 0) - 16)), "26", "click", "1")
+    native("mousemove", str(round(width - 12 - (154 if nav()["minimap_visible"] else 0) - 40 - 14)), "20", "click", "1")
     current = nav()
     assert sum(len(row["panels"]) for row in current["rows"]) == 5, "tab plus did not create exactly one session"
     assert current["active_row"] == 3 and len(current["rows"][3]["panels"]) == 2, current
     assert current["keyboard_panel"] == current["focused_slot"], "new composer did not receive focus"
     report.write_text(json.dumps(dict(passed=True, frames=frames, plus_created_session=True,
                                      edge_did_not_create_session=True), indent=2) + "\n")
-    print("FPS tab row PASS: left FPS, right plus, native tab navigation across 4 workspaces, new-session focus, and removed edge target", flush=True)
+    print("FPS tab row PASS: version before FPS, right plus, native tab navigation across 4 workspaces, new-session focus, and removed edge target", flush=True)

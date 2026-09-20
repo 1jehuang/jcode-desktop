@@ -61,9 +61,9 @@ def main():
     parser.add_argument("--tab-actions-interact", action="store_true",
                         help="verify hover-only tab actions and shortcut tooltips")
     parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
-    parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
+    parser.add_argument("--swarm", action="store_true", help="load nested swarm fixtures (children remain hidden in the sidebar)")
     parser.add_argument("--swarm-interact", action="store_true",
-                        help="verify native swarm expand, child focus, collapse, lead return and view close (implies --swarm)")
+                        help="verify swarm showcase stays absent and lead selection remains stable (implies --swarm)")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--changelog", action="store_true", help="show the read-only Desktop changelog panel")
     parser.add_argument("--fresh-interact", action="store_true",
@@ -106,7 +106,7 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "reasoning", "streaming", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")

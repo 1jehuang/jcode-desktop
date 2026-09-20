@@ -25,13 +25,12 @@ impl Workspace {
     pub(super) fn render_version_header(
         &self,
         width: f32,
-        right: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         updates::ensure_release_check();
         let release = updates::release_status();
         let update = updates::current();
-        let (mut label, action) = status_label(&release, &update);
+        let (label, action) = status_label(&release, &update);
         let detail = match &update {
             UpdateState::Finished { message } | UpdateState::Failed { message } => message.clone(),
             _ => match &release {
@@ -40,54 +39,36 @@ impl Workspace {
                 _ => label.clone(),
             },
         };
-        if width < 200.0
-            && matches!(release, ReleaseStatus::Newer { .. })
-            && update == UpdateState::Idle
-        {
-            label = "Update available".into();
-        }
         div()
             .id("workspace-version")
             .debug_selector(|| "workspace-version".into())
             .absolute()
-            .right(px(right))
-            .top_0()
-            .w(px(width))
-            .h(px(FOLDER_CONTENT_INSET - 8.0))
+            .left(px(4.0))
+            .top(px(2.0))
+            .w(px(width - 4.0))
+            .h(px(24.0))
+            .rounded_md()
+            .bg(Theme::global().PANEL_BG)
             .px_2()
             .flex()
             .items_center()
-            .justify_end()
-            .gap_2()
+            .gap_1()
             .occlude()
+            .tooltip(move |_, cx| {
+                cx.new(|_| live_tabs::TabTooltip(if detail == label { label.clone() } else { format!("{label}\n{detail}") }.into()))
+                    .into()
+            })
             .child(
                 div()
+                    .id("workspace-build")
+                    .debug_selector(|| "workspace-build".into())
                     .min_w_0()
                     .flex_1()
-                    .flex()
-                    .flex_col()
+                    .truncate()
                     .text_size(px(10.0))
                     .text_color(Theme::global().TEXT_DIM)
-                    .child(
-                        div()
-                            .id("workspace-build")
-                            .debug_selector(|| "workspace-build".into())
-                            .truncate()
-                            .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
-                            .child(if width < 200.0 { crate::build_info::version() } else { format!("Desktop {}", crate::build_info::version()) }),
-                    )
-                    .child(
-                        div()
-                            .id("workspace-version-status")
-                            .debug_selector(|| "workspace-version-status".into())
-                            .truncate()
-                            .when(action.is_some(), |el| el.text_color(Theme::global().ACCENT))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| live_tabs::TabTooltip(detail.clone().into()))
-                                    .into()
-                            })
-                            .child(label),
-                    ),
+                    .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
+                    .child(crate::build_info::version()),
             )
             .when_some(action, |el, action| {
                 el.child(
@@ -95,8 +76,10 @@ impl Workspace {
                         .id("workspace-update-button")
                         .debug_selector(|| "workspace-update-button".into())
                         .flex_none()
-                        .px_2()
-                        .py_1()
+                        .px_1()
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
                         .rounded_md()
                         .bg(Theme::global().ACCENT.opacity(0.12))
                         .text_color(Theme::global().ACCENT)
@@ -199,6 +182,13 @@ mod tests {
             .debug_bounds("workspace-version")
             .expect("version in header");
         assert!(header.origin.y < px(100.));
+        assert_eq!(header.size.height, px(24.0));
+        let fps = vcx.debug_bounds("fps-counter").unwrap();
+        let build = vcx.debug_bounds("workspace-build").unwrap();
+        assert!(header.right() <= fps.left());
+        assert!(build.size.height <= px(16.0));
+        assert!(build.top() >= header.top() && build.bottom() <= header.bottom());
+        assert!(vcx.debug_bounds("workspace-version-status").is_none());
         assert!(
             vcx.debug_bounds("panel-build").is_none(),
             "workspace footer must not duplicate version"
@@ -214,6 +204,10 @@ mod tests {
         let button = vcx
             .debug_bounds("workspace-update-button")
             .expect("new release offers Update");
+        let build = vcx.debug_bounds("workspace-build").unwrap();
+        assert!(build.right() <= button.left());
+        assert!((build.center().y - button.center().y).abs() < px(1.0));
+        assert!(button.right() <= header.right());
         assert!(button.origin.y >= header.origin.y);
         assert!(button.bottom() <= header.bottom());
         let before = REQUESTS.load(Ordering::SeqCst);
