@@ -3269,6 +3269,7 @@ impl Panel {
                     return self.render_image_pane_link(index, image, cx);
                 }
                 let preview_image = image.clone();
+                let panel = cx.entity().downgrade();
                 let label = image
                     .label
                     .clone()
@@ -3292,20 +3293,41 @@ impl Panel {
                                 .child(caption),
                         )
                     })
-                    .when(image.preview.is_some(), |el| {
-                        el.cursor_pointer()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_image_preview(preview_image.clone(), window, cx);
-                                cx.stop_propagation();
-                            }))
-                    })
                     .when_some(image.preview.clone(), |el, preview| {
+                        let scroll_panel = panel.clone();
+                        let gesture_panel = panel.clone();
                         el.child(
-                            img(crate::image_cache::source(preview))
-                                .w_full()
-                                .h(px(320.0))
-                                .object_fit(gpui::ObjectFit::Contain)
-                                .rounded_md(),
+                            crate::inline_image::InlineImage::new(
+                                index,
+                                preview,
+                                move |window, cx| {
+                                    let _ = panel.update(cx, |panel, cx| {
+                                        panel.open_image_preview(preview_image.clone(), window, cx);
+                                    });
+                                },
+                            )
+                            .on_fit_scroll(move |event, window, cx| {
+                                let _ = scroll_panel.update(cx, |panel, cx| {
+                                    if panel.transcript_list.is_scrollbar_dragging() {
+                                        return;
+                                    }
+                                    let y =
+                                        f32::from(event.delta.pixel_delta(window.line_height()).y);
+                                    if y == 0.0 {
+                                        return;
+                                    }
+                                    if event.delta.precise() {
+                                        panel.glide_transcript_input(-y, true, cx);
+                                    } else {
+                                        panel.glide_transcript_wheel(-y, cx);
+                                    }
+                                });
+                            })
+                            .on_gesture(move |_, cx| {
+                                let _ = gesture_panel.update(cx, |panel, _| {
+                                    panel.cancel_transcript_momentum();
+                                });
+                            }),
                         )
                     })
                     .child(

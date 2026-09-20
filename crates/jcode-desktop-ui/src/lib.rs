@@ -16,6 +16,7 @@ mod fps_counter;
 mod harness;
 mod html_preview;
 mod image_cache;
+mod inline_image;
 mod input;
 mod learning;
 mod live_profile;

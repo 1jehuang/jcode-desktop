@@ -50,6 +50,21 @@ def verify(output, env, root):
                 return count, point
         raise AssertionError(f"Image preview interaction failed: {suffix}, initial={initial_count}, actual={count}")
 
+    def mouse(*args):
+        subprocess.run(["xdotool", *map(str, args)], env=env, cwd=root, check=True, timeout=10)
+
+    # Zoom and pan the thumbnail without ever opening the full-window viewer.
+    mouse("mousemove", *initial_point, "keydown", "ctrl", "click", "4", "keyup", "ctrl")
+    inline_count, inline_point = capture("-inline-zoomed", lambda count: count > initial_count * 1.1)
+    mouse("mousemove", *inline_point, "mousedown", "1", "mousemove_relative", "--", "-15", "-10", "mouseup", "1")
+    capture("-inline-panned", lambda count: abs(count - inline_count) < inline_count * .08)
+    edges = [chart_pixels(Image.open(output.with_name(output.stem + suffix + ".png")).convert("RGB"), top_left=True)[1]
+             for suffix in ("-inline-zoomed", "-inline-panned")]
+    assert abs(edges[1][0] - edges[0][0] + 15) <= 2, edges
+    assert abs(edges[1][1] - edges[0][1] + 10) <= 2, edges
+    mouse("mousemove", *initial_point, "keydown", "ctrl", "click", "--repeat", "12", "--delay", "30", "5", "keyup", "ctrl")
+    capture("-inline-fit", lambda count: abs(count - initial_count) < initial_count * .05)
+
     click(initial_point)
     enlarged_count, _ = capture("-enlarged", lambda count: count > initial_count * 2)
     subprocess.run(["xdotool", "key", "Escape"], env=env, cwd=root, check=True, timeout=10)
@@ -60,9 +75,6 @@ def verify(output, env, root):
     capture("-click-closed", lambda count: abs(count - initial_count) < initial_count * .05)
     click(initial_point)
     _, enlarged_point = capture("-gesture-reopened", lambda count: count > initial_count * 2)
-
-    def mouse(*args):
-        subprocess.run(["xdotool", *map(str, args)], env=env, cwd=root, check=True, timeout=10)
 
     # Ctrl+wheel zooms at the pointer instead of scrolling the transcript.
     mouse("mousemove", *enlarged_point, "keydown", "ctrl", "click", "4", "keyup", "ctrl")
@@ -77,6 +89,6 @@ def verify(output, env, root):
     assert abs(edges[1][1] - edges[0][1] + 25) <= 2, edges
     click(panned_point)
     capture("-gesture-closed", lambda count: abs(count - initial_count) < initial_count * .05)
-    print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> {enlarged_count} -> {zoomed_count}; wheel zoom, drag pan, click-to-close at fit and zoomed sizes, and Escape")
+    print(f"Image preview native acceptance passed: blue-bar pixels {initial_count} -> inline {inline_count} -> viewer {enlarged_count} -> {zoomed_count}; inline wheel zoom, drag pan and fit, viewer wheel zoom, drag pan, click-to-close and Escape")
     from image_flicker_acceptance import verify_repeated_preview
     verify_repeated_preview(output, env, root, initial_point)

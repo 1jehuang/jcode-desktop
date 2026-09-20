@@ -299,6 +299,173 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn inline_image_panel_hover_gestures_preserve_composer_and_route_scroll(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| crate::input::bind_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("inline-gestures", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.items = (0..40)
+                    .map(|i| Item::User(format!("earlier message {i}")))
+                    .collect();
+                panel.items.push(Item::Image(fixture_image()));
+                panel
+                    .input
+                    .update(cx, |input, cx| input.set_content("draft".into(), cx));
+                panel.focus_input(window, cx);
+                cx.notify();
+            })
+        });
+        vcx.run_until_parked();
+        let viewport = vcx
+            .debug_bounds("inline-image-viewport")
+            .expect("inline viewport paints");
+        let before = vcx.debug_bounds("inline-image-content").unwrap();
+        assert_eq!(viewport.size.height, px(320.0));
+        assert_eq!(before.size, viewport.size);
+        let anchor = viewport.center();
+        let transcript_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+        // No click/focus transfer precedes this hover pinch. Existing chat
+        // momentum must be cancelled as the image takes ownership.
+        panel.update(vcx, |panel, _| {
+            panel.transcript_wheel_glide.remaining = 70.0
+        });
+        vcx.simulate_event(gpui::MouseMoveEvent {
+            position: anchor,
+            ..Default::default()
+        });
+        vcx.simulate_event(gpui::PinchEvent {
+            position: anchor,
+            delta: 1.0,
+            phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        let zoomed = vcx.debug_bounds("inline-image-content").unwrap();
+        assert_eq!(zoomed.size.height, before.size.height * 2.0);
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.transcript_wheel_glide.remaining),
+            0.0
+        );
+        vcx.simulate_keystrokes("x");
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
+            "draftx"
+        );
+        for (control, x, y) in [(true, 0.0, 10.0), (false, -15.0, -20.0)] {
+            let old = vcx.debug_bounds("inline-image-content").unwrap();
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: anchor,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(x), px(y))),
+                modifiers: gpui::Modifiers {
+                    control,
+                    ..Default::default()
+                },
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+            let new = vcx.debug_bounds("inline-image-content").unwrap();
+            let expected = if control {
+                anchor + (old.origin - anchor) * 0.1_f32.exp()
+            } else {
+                old.origin + gpui::point(px(x), px(y))
+            };
+            assert!((new.origin.x - expected.x).abs() < px(1.0));
+            assert!((new.origin.y - expected.y).abs() < px(1.0));
+            assert_eq!(
+                panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
+                transcript_before
+            );
+            assert_eq!(
+                panel.read_with(vcx, |panel, _| panel.transcript_wheel_glide.remaining),
+                0.0
+            );
+            assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+        }
+        panel.update(vcx, |panel, _| {
+            panel.transcript_wheel_glide.remaining = 25.0
+        });
+        vcx.simulate_event(gpui::MouseDownEvent {
+            position: anchor,
+            button: gpui::MouseButton::Left,
+            ..Default::default()
+        });
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.transcript_wheel_glide.remaining),
+            0.0
+        );
+        vcx.run_until_parked();
+        let moved = anchor + gpui::point(px(20.0), px(15.0));
+        vcx.simulate_event(gpui::MouseMoveEvent {
+            position: moved,
+            pressed_button: Some(gpui::MouseButton::Left),
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        vcx.simulate_event(gpui::MouseUpEvent {
+            position: moved,
+            button: gpui::MouseButton::Left,
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
+            transcript_before
+        );
+        let fit = vcx.debug_bounds("inline-image-fit").unwrap();
+        vcx.simulate_click(fit.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(vcx.debug_bounds("inline-image-content").unwrap(), before);
+        // Ctrl-wheel must also bypass parent capture at fit, not just zoomed.
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: anchor,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(10.0))),
+            modifiers: gpui::Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("inline-image-content")
+                .unwrap()
+                .size
+                .height
+                > before.size.height
+        );
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
+            transcript_before
+        );
+        let fit = vcx.debug_bounds("inline-image-fit").unwrap();
+        vcx.simulate_click(fit.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: anchor,
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 3.0)),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        assert!(
+            panel.read_with(vcx, |panel, _| panel.transcript_wheel_glide.remaining
+                != 0.0
+                || panel.test_scroll_offset_y() != transcript_before),
+            "fit wheel goes through transcript scrolling"
+        );
+    }
+
+    #[gpui::test]
     fn image_preview_click_enlarges_and_escape_restores_draft(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::input::bind_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
