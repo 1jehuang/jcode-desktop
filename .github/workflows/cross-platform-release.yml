@@ -296,7 +296,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PLATFORM: ${{ matrix.platform }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
           CHECKSUMS: ${{ matrix.checksums }}
         run: |
           set -euo pipefail
@@ -306,12 +306,12 @@ jobs:
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --json tagName,isDraft,isPrerelease \
             --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true
-          case "$PLATFORM" in
+          case "$RELEASE_PLATFORM" in
             linux) files=(jcode-desktop/dist/linux/Jcode-*.tar.gz jcode-desktop/dist/linux/Jcode-*.deb) ;;
             windows) files=(jcode-desktop/dist/windows/Jcode-*.zip) ;;
             *) exit 1 ;;
           esac
-          files+=("jcode-desktop/dist/$PLATFORM/$CHECKSUMS")
+          files+=("jcode-desktop/dist/$RELEASE_PLATFORM/$CHECKSUMS")
           for file in "${files[@]}"; do test -s "$file"; done
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
 

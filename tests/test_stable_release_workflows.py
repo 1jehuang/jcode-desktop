@@ -148,7 +148,7 @@ class StableWorkflowTests(unittest.TestCase):
             stub = STUB + '\nshasum() { return "$CHECKSUM_STATUS"; }\nsha256sum() { return "$CHECKSUM_STATUS"; }\n'
             for failure in ("0", "1"):
                 with self.subTest(platform=platform, failure=failure):
-                    result, calls = self.run_script(self.uploads[workflow], stub=stub, PLATFORM=platform,
+                    result, calls = self.run_script(self.uploads[workflow], stub=stub, RELEASE_PLATFORM=platform,
                                                     CHECKSUMS=checksum, UPLOAD_STATUS=failure)
                     self.assertEqual(result.returncode == 0, failure == "0", result.stderr)
                     uploads = [c for c in calls if c.startswith("release upload ")]
@@ -161,7 +161,7 @@ class StableWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(any(c.startswith("release upload ") for c in calls))
             (dist / names[0]).unlink()
-            result, calls = self.run_script(self.uploads[workflow], stub=stub, PLATFORM=platform, CHECKSUMS=checksum)
+            result, calls = self.run_script(self.uploads[workflow], stub=stub, RELEASE_PLATFORM=platform, CHECKSUMS=checksum)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(any(c.startswith("release upload ") for c in calls))
 
