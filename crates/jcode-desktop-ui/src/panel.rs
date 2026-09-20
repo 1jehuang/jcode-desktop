@@ -3290,18 +3290,6 @@ impl Panel {
                     .flex_col()
                     .items_start()
                     .gap_1()
-                    .rounded_md()
-                    .p_2()
-                    .bg(Theme::global().USER_BG)
-                    .when_some(image.model_input_caption(), |el, caption| {
-                        el.child(
-                            div()
-                                .debug_selector(|| "image-model-input".into())
-                                .text_size(px(11.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child(caption),
-                        )
-                    })
                     .when_some(image.preview.clone(), |el, preview| {
                         let scroll_panel = panel.clone();
                         let gesture_panel = panel.clone();
