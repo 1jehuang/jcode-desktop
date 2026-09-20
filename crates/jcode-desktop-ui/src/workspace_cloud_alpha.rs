@@ -523,6 +523,20 @@ impl Lifecycle {
         self.state.lock().unwrap().invalidate_ready();
     }
 
+    fn sync_reused_ready(
+        &self,
+        reused: bool,
+        sync: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if reused {
+            if let Err(error) = sync() {
+                self.invalidate_ready();
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_ready(
         &self,
         identity: impl Fn() -> Option<LocalIdentity>,
@@ -1236,6 +1250,37 @@ mod tests {
             depleted: false,
             lease_remaining_seconds: Some(600),
         }
+    }
+
+    #[test]
+    fn cloud_warm_model_sync_failure_blocks_create_and_invalidates_readiness() {
+        let lifecycle = Lifecycle::default();
+        lifecycle
+            .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(test_receipt()))
+            .unwrap();
+        let (bridge, commands) = harness::spawn_recording();
+        let result = wake_then_connect(&bridge, Some("sync-failure".into()), || {
+            lifecycle.sync_reused_ready(true, || Err("model sync failed".into()))
+        });
+        assert_eq!(result.unwrap_err(), "model sync failed");
+        assert!(commands.try_recv().is_err());
+        assert!(lifecycle.state.lock().unwrap().ready.is_none());
+    }
+
+    #[test]
+    fn cloud_cold_wake_does_not_duplicate_model_sync() {
+        let lifecycle = Lifecycle::default();
+        lifecycle
+            .sync_reused_ready(false, || panic!("cold wake already synchronizes"))
+            .unwrap();
+        let calls = std::cell::Cell::new(0);
+        lifecycle
+            .sync_reused_ready(true, || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]

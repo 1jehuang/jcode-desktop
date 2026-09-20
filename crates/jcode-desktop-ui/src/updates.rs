@@ -5,10 +5,161 @@
 mod linux;
 #[cfg(target_os = "linux")]
 mod linux_package;
+mod release;
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+/// Public release availability, independent of installer/download state.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ReleaseStatus {
+    #[default]
+    Unknown,
+    Checking,
+    /// Running release is equal to or newer than the latest public release.
+    Current {
+        latest: String,
+    },
+    Newer {
+        version: String,
+    },
+    Error {
+        message: String,
+    },
+    /// A checkout build cannot claim to be a published release.
+    Source,
+}
+
+fn release_state() -> &'static Mutex<ReleaseStatus> {
+    static STATE: OnceLock<Mutex<ReleaseStatus>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(ReleaseStatus::Unknown))
+}
+
+pub fn release_status() -> ReleaseStatus {
+    release_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn store_release_status(next: ReleaseStatus) {
+    *release_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = next;
+}
+
+#[cfg(test)]
+pub fn set_release_status(next: ReleaseStatus) {
+    store_release_status(next);
+}
+
+fn source_build() -> bool {
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let Some(checkout) = manifest.parent().and_then(std::path::Path::parent) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    {
+        linux::source_executable(&executable, checkout)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Ok(relative) = executable.strip_prefix(checkout.join("target")) else {
+            return false;
+        };
+        let components: Vec<_> = relative.iter().collect();
+        checkout.join("Cargo.toml").is_file()
+            && match components.as_slice() {
+                [profile, binary] | [_, profile, binary] => {
+                    (*profile == "debug" || *profile == "release")
+                        && (*binary == "jcode-desktop" || *binary == "jcode-desktop.exe")
+                }
+                _ => false,
+            }
+    }
+}
+
+fn compare_release(running: &str, latest: semver::Version) -> anyhow::Result<ReleaseStatus> {
+    let running = semver::Version::parse(running)?;
+    // Build metadata does not affect SemVer precedence.
+    Ok(if latest.cmp_precedence(&running).is_gt() {
+        ReleaseStatus::Newer {
+            version: latest.to_string(),
+        }
+    } else {
+        ReleaseStatus::Current {
+            latest: latest.to_string(),
+        }
+    })
+}
+
+fn fixture_release_status(value: &str) -> ReleaseStatus {
+    match value {
+        "current" => ReleaseStatus::Current {
+            latest: crate::build_info::VERSION.into(),
+        },
+        "newer" => ReleaseStatus::Newer {
+            version: "0.2.0-beta.1".into(),
+        },
+        "checking" => ReleaseStatus::Checking,
+        "error" => ReleaseStatus::Error {
+            message: "Could not reach the release server".into(),
+        },
+        "source" => ReleaseStatus::Source,
+        _ => ReleaseStatus::Unknown,
+    }
+}
+
+/// Safe to call from every render. Only the first call starts a read-only worker.
+/// This never invokes request_now, Sparkle, an installer, or a source rebuild.
+/// UI rendering observes completion via release_status, with no host ABI changes.
+pub fn ensure_release_check() {
+    let mut state = release_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if *state != ReleaseStatus::Unknown {
+        return;
+    }
+    if crate::harness::screenshot_mode() {
+        // Offline screenshots must never contact the network.
+        *state = fixture_release_status(
+            &std::env::var("JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS")
+                .unwrap_or_else(|_| "source".into()),
+        );
+        return;
+    }
+    // Render tests run from Cargo test executables, not a packaged release.
+    // Never let a unit test start external network work.
+    if cfg!(test) || source_build() {
+        *state = ReleaseStatus::Source;
+        return;
+    }
+    *state = ReleaseStatus::Checking;
+    drop(state);
+    if let Err(error) = std::thread::Builder::new()
+        .name("desktop-release-check".into())
+        .spawn(|| {
+            let result = std::panic::catch_unwind(|| {
+                compare_release(env!("JCODE_DESKTOP_VERSION"), release::latest()?)
+            })
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Release checker unexpectedly stopped")));
+            store_release_status(match result {
+                Ok(status) => status,
+                Err(error) => ReleaseStatus::Error {
+                    message: format!("{error:#}"),
+                },
+            });
+        })
+    {
+        store_release_status(ReleaseStatus::Error {
+            message: format!("Could not start release checker: {error}"),
+        });
+    }
+}
 
 /// What the updater is doing right now, in the user's terms.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -214,6 +365,81 @@ pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_comparison_respects_numeric_beta_and_stable_precedence() {
+        for (running, latest, newer) in [
+            ("0.1.0-beta.9", "0.1.0-beta.10", true),
+            ("0.1.0-beta.10", "0.1.0-beta.9", false),
+            ("0.1.0-beta.10", "0.1.0-beta.10", false),
+            ("0.1.0-beta.99", "0.1.0", true),
+            ("0.1.0", "0.1.0-beta.99", false),
+            ("0.1.0+local", "0.1.0", false),
+            ("0.2.0", "0.1.0", false),
+        ] {
+            let status = compare_release(running, semver::Version::parse(latest).unwrap()).unwrap();
+            assert_eq!(
+                matches!(status, ReleaseStatus::Newer { .. }),
+                newer,
+                "{running} versus {latest}"
+            );
+        }
+        assert!(compare_release("not a version", semver::Version::new(1, 0, 0)).is_err());
+    }
+
+    #[test]
+    fn release_status_is_independent_and_render_checks_do_not_repeat_or_install() {
+        let _guard = test_lock();
+        static CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        extern "C" fn unexpected() {
+            CALLED.store(true, Ordering::Release);
+        }
+        unsafe { jcode_update_register_actions(unexpected, unexpected) };
+        set(UpdateState::Idle);
+        for status in [
+            ReleaseStatus::Checking,
+            ReleaseStatus::Current {
+                latest: "0.1.0".into(),
+            },
+            ReleaseStatus::Newer {
+                version: "0.2.0".into(),
+            },
+            ReleaseStatus::Error {
+                message: "offline".into(),
+            },
+            ReleaseStatus::Source,
+        ] {
+            set_release_status(status.clone());
+            ensure_release_check();
+            ensure_release_check();
+            assert_eq!(release_status(), status);
+            assert_eq!(current(), UpdateState::Idle);
+        }
+        assert!(
+            !CALLED.load(Ordering::Acquire),
+            "release check invoked an updater action"
+        );
+        clear_test_actions();
+        set_release_status(ReleaseStatus::Unknown);
+    }
+
+    #[test]
+    fn offline_release_fixtures_cover_all_visible_states() {
+        assert!(matches!(
+            fixture_release_status("current"),
+            ReleaseStatus::Current { .. }
+        ));
+        assert!(matches!(
+            fixture_release_status("newer"),
+            ReleaseStatus::Newer { .. }
+        ));
+        assert!(matches!(
+            fixture_release_status("error"),
+            ReleaseStatus::Error { .. }
+        ));
+        assert_eq!(fixture_release_status("checking"), ReleaseStatus::Checking);
+        assert_eq!(fixture_release_status("source"), ReleaseStatus::Source);
+    }
 
     #[test]
     fn synchronous_check_completion_is_not_overwritten() {

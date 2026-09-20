@@ -345,6 +345,17 @@ mod tests {
             vcx.debug_bounds("pdf-page-image").is_some(),
             "actual PDF image must be laid out"
         );
+        let image = vcx.debug_bounds("pdf-page-image").unwrap();
+        let viewport = vcx.debug_bounds("pdf-viewport").unwrap();
+        let ratio = f32::from(image.size.width) / f32::from(image.size.height);
+        assert!(
+            (ratio - 600. / 800.).abs() < 0.01,
+            "image must use page aspect, not intrinsic raster height: {ratio}"
+        );
+        assert!(
+            image.origin.y - viewport.origin.y < px(20.),
+            "PDF starts immediately below the toolbar"
+        );
         panel.update(vcx, |panel, cx| {
             let mut saved = panel.snapshot(cx);
             saved.side_document.as_mut().unwrap().pdf_view =

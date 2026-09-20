@@ -83,8 +83,63 @@ for an immediate repeat but 5.587 seconds after a 35-second pause, with the same
 VM and SSH master still connected. An already-running VM alone is therefore not
 a guarantee of subsecond new sessions.
 
-Repositories belong under `~/workspaces` on the VM. No local checkout, model
-credential, AWS credential, or SSH private key is copied to the VM.
+Repositories belong under `~/workspaces` on the VM. No local checkout, AWS
+credential, or SSH private key is copied to the VM.
+
+### Personal model synchronization
+
+For this explicitly authorized **personal alpha only**, successful `wake`, `ssh`,
+and Desktop cloud-session creation synchronize allowlisted local model credentials
+and settings before spawning the session. This is not a default credential-export
+policy for arbitrary SSH machines or a multi-user hosted service.
+
+- Jcode-owned OpenAI, Claude, and Gemini model OAuth stores are projected to their
+  provider-specific fields. Gmail's `google_oauth.json`, Slides, Jcode account
+  login tokens, AWS credentials, GitHub/Hugging Face account tokens, SSH keys,
+  external-tool stores, unrelated `.env` entries, hooks, and integration secrets
+  are excluded. No complete local configuration file or environment is copied.
+- Built-in model API keys use the explicit `API_KEYS` allowlist in `model_sync.py`.
+  Provider/model defaults, reasoning, transport, service-tier, model-picker, and
+  swarm-model/effort settings are projected separately. Recognized local model
+  environment overrides take precedence over saved settings. Session-only model
+  selections are not persistent defaults and are not inferred from transcripts.
+- Named/custom provider profiles fail closed rather than exporting arbitrary
+  headers, environment names, or files. Broad account-backed providers and
+  external-tool discovery are intentionally unsupported. This is not universal
+  parity for every possible local provider.
+- Secrets travel only in encrypted, pinned-host SSH **stdin**, never argv, logs,
+  progress output, or a local plaintext snapshot. Local deduplication stores only
+  a target-bound digest and timestamp. A 30-second cache avoids an additional
+  AWS/SSH handshake for unchanged warm panels. Changed credentials/settings,
+  SSH configuration, host pin, target, or sync implementation invalidate it.
+- Remote writes are bounded and atomic, mode `0600`, with symlink and special-file
+  rejection. Unrelated remote configuration is preserved semantically, although
+  TOML comments/formatting are not retained. Local credential removal does not
+  revoke or delete remote credentials.
+- **OAuth is never overwritten automatically.** Initial publication uses an
+  atomic no-replace operation because native OAuth refresh writers do not share
+  the synchronizer's lock. An equal existing store can be adopted. Unchanged local
+  input preserves remotely rotated tokens. A differing existing store or changed
+  local OAuth account fails closed and requires explicit account reconciliation.
+  API-key/config updates are atomic, but manual concurrent edits are not a
+  multi-file transaction. No process or VM is restarted by model synchronization.
+- A running native daemon is refreshed with secret-free `notify_auth_changed`
+  messages on a dedicated no-prompt connection. Completion waits for the native
+  catalog-completion notification, not just its enqueue acknowledgement. Existing
+  sessions retain their selected models. Fresh daemons read the native stores.
+
+The alpha's older Jcode v0.84 runtime does not implement all current settings,
+notably Gemini forced-OAuth/project configuration and Anthropic one-hour caching.
+Copying settings cannot add unsupported runtime behavior. Do not assume Gemini
+billing/auth-route parity on that version when both OAuth and an API key exist.
+Provider-side OAuth refresh-token rotation can also invalidate another device's
+copy independently of synchronization.
+
+Use `jcode-cloud-alpha sync-models` to explicitly recheck the snapshot without
+waking or restarting the VM. A sync error blocks new cloud-session creation and
+does not fall back to a local session. The receiver carries the local Python
+standard-library TOML parser in memory for the alpha's Python 3.9, requiring no
+remote package installation. Local helper execution requires Python 3.11+.
 
 Closing a panel does not delete the disk or promise that an agent has stopped.
 `stop` is explicit and ends running processes. Stop/start preserves files and

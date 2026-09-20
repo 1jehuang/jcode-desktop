@@ -217,6 +217,20 @@ pub fn selectable(
     child: impl IntoElement,
     cx: &App,
 ) -> gpui::AnyElement {
+    selectable_with_prefix(model, key, text, layout, child, 0, cx)
+}
+
+/// Select a native shaped text leaf whose display has a layout-only prefix.
+/// Selection state and clipboard text always use the original source offsets.
+pub(crate) fn selectable_with_prefix(
+    model: Entity<TextSelection>,
+    key: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    layout: TextLayout,
+    child: impl IntoElement,
+    prefix_len: usize,
+    cx: &App,
+) -> gpui::AnyElement {
     let key = key.into();
     let text = text.into();
     let focus_handle = model.read(cx).focus_handle();
@@ -233,7 +247,11 @@ pub fn selectable(
             let text = text.clone();
             let layout = layout.clone();
             move |event, window, cx| {
-                let offset = layout_index(&layout, event.position);
+                let offset = source_index(
+                    layout_index(&layout, event.position),
+                    prefix_len,
+                    text.len(),
+                );
                 model.update(cx, |selection, cx| {
                     selection.begin(
                         key.clone(),
@@ -252,8 +270,10 @@ pub fn selectable(
             let model = model.clone();
             let key = key.clone();
             let layout = layout.clone();
+            let text_len = text.len();
             move |event, _window, cx| {
-                let offset = layout_index(&layout, event.position);
+                let offset =
+                    source_index(layout_index(&layout, event.position), prefix_len, text_len);
                 model.update(cx, |selection, cx| {
                     selection.drag_to(&key, offset);
                     cx.notify();
@@ -288,6 +308,10 @@ pub fn plain(
         StyledText::new(text.clone()).with_default_highlights(&window.text_style(), highlights);
     let layout = styled.layout().clone();
     selectable(model, key, text, layout, styled, cx)
+}
+
+fn source_index(display_index: usize, prefix_len: usize, text_len: usize) -> usize {
+    display_index.saturating_sub(prefix_len).min(text_len)
 }
 
 fn layout_index(layout: &TextLayout, position: gpui::Point<gpui::Pixels>) -> usize {
@@ -337,6 +361,22 @@ fn surrounding_line(text: &str, offset: usize) -> Range<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_prefix_maps_back_to_source_without_copying_spacer() {
+        let text = "βeta and code";
+        let prefix = 8;
+        for offset in 0..=prefix {
+            assert_eq!(source_index(offset, prefix, text.len()), 0);
+        }
+        for (offset, _) in text.char_indices() {
+            assert_eq!(source_index(prefix + offset, prefix, text.len()), offset);
+        }
+        assert_eq!(source_index(usize::MAX, prefix, text.len()), text.len());
+        let start = source_index(prefix, prefix, text.len());
+        let end = source_index(prefix + "βeta".len(), prefix, text.len());
+        assert_eq!(&text[start..end], "βeta");
+    }
 
     #[test]
     fn drag_selection_preserves_utf8_boundaries_and_direction() {

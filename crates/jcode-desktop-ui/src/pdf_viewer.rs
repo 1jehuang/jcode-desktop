@@ -288,13 +288,19 @@ impl Render for PdfViewer {
             .p_3();
         if let Some(image) = &self.image {
             contents = contents.child(
-                div().w(relative(self.state.zoom)).flex_none().child(
-                    img(image_cache::source(image.clone()))
-                        .debug_selector(|| "pdf-page-image".into())
-                        .w_full()
-                        .aspect_ratio(self.ratio)
-                        .object_fit(gpui::ObjectFit::Contain),
-                ),
+                // GPUI substitutes the raster's intrinsic height when an img has
+                // percentage width and auto height, even with aspect_ratio set.
+                // Size the container by page ratio, then fill both image axes.
+                div()
+                    .w(relative(self.state.zoom))
+                    .aspect_ratio(self.ratio)
+                    .flex_none()
+                    .child(
+                        img(image_cache::source(image.clone()))
+                            .debug_selector(|| "pdf-page-image".into())
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    ),
             );
         } else if let Some(error) = &self.error {
             contents = contents.child(

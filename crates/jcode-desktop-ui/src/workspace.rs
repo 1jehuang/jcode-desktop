@@ -198,6 +198,8 @@ mod folder_surface;
 
 #[path = "live_tabs.rs"]
 mod live_tabs;
+#[path = "workspace_version.rs"]
+mod version;
 
 #[path = "sidebar_roller.rs"]
 mod sidebar_roller;
@@ -809,11 +811,14 @@ impl Workspace {
             // Pick those up promptly, then resume the configured idle cadence.
             let mut next_session_refresh = session_refresh_interval.min(Duration::from_secs(2));
             let mut last_update_state = updates::current();
+            let mut last_release_state = updates::release_status();
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let update_state = updates::current();
-                if update_state != last_update_state {
+                let release_state = updates::release_status();
+                if update_state != last_update_state || release_state != last_release_state {
                     last_update_state = update_state;
+                    last_release_state = release_state;
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
@@ -2116,6 +2121,17 @@ impl Workspace {
             .iter()
             .position(|slot| slot.panel.read(cx).session_id == session.session_id)
             .unwrap_or_else(|| self.open_session(session, cx));
+        // A sidebar card can be reopened before its close animation finishes.
+        // Revive the original entity, including its composer draft, rather than
+        // focusing a disappearing view or creating duplicate event recipients.
+        if self.slots[index].closing {
+            self.slots[index].closing = false;
+            self.slots[index].close_progress.set(1.0, Instant::now());
+            let session_id = self.slots[index].panel.read(cx).session_id.clone();
+            if !Panel::is_pending_session_id(&session_id) {
+                self.bridge.send(Command::Watch { session_id });
+            }
+        }
         self.set_active(index, cx);
         self.overview = false;
         self.overview_progress.set(0.0, Instant::now());
@@ -3888,6 +3904,10 @@ impl Workspace {
             let focused = index == self.active;
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             slot.panel.update(cx, |panel, cx| {
+                if panel.show_build_footer {
+                    panel.show_build_footer = false;
+                    cx.notify();
+                }
                 panel.set_surface_focused(focused, cx);
             });
             let surface_hitboxes = panel_hitboxes.clone();
@@ -7384,12 +7404,6 @@ impl Render for Workspace {
                                     // tutorial shortcut gets a visible keybinding/action cue.
                                     .when_some(self.showcase_cue.as_ref(), |el, cue| {
                                         el.child(self.render_showcase_cue(cue, window))
-                                    })
-                                    // Update status stays visible in every mode, including
-                                    // overview: a user whose build cannot render text still
-                                    // needs to see that a fix is on its way.
-                                    .when_some(self.render_update_chip(cx), |el, chip| {
-                                        el.child(chip)
                                     }),
                             ),
                     ),
@@ -11969,6 +11983,7 @@ mod tests {
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("one", cx);
+            workspace.single_panel = true;
             let _ = window;
             workspace
         });
@@ -12008,8 +12023,8 @@ mod tests {
             "the chip must occupy real space, got {downloading:?}"
         );
         assert!(
-            downloading.origin.x >= px(SIDEBAR_WIDTH),
-            "the chip should stay inside the workspace instead of spilling into the sidebar"
+            downloading.origin.x >= px(0.0),
+            "the chip should stay inside the workspace instead of spilling outside the window"
         );
 
         // And the staged build keeps offering the restart that applies it.

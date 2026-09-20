@@ -270,11 +270,13 @@ pub struct Panel {
     streaming_reasoning: String,
     sound_events: crate::sound_events::SoundEvents,
     activity_spinner: Entity<activity::Spinner>,
+    latest_activity_spinner: Entity<activity::Spinner>,
     tab_emoji: Entity<tab_emoji::TabEmoji>,
     sidebar_spinner: Entity<activity::Spinner>,
     /// Selected workspace surface, independent of temporary keyboard focus.
     surface_focused: bool,
     pub input: Entity<PromptInput>,
+    pub(super) show_build_footer: bool,
     voice: voice::VoiceState,
     image_pane_open: bool,
     image_pane_selected: Option<usize>,
@@ -788,6 +790,8 @@ impl Panel {
             streaming_reasoning: String::new(),
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(activity::Spinner::new),
+            show_build_footer: true,
+            latest_activity_spinner: cx.new(activity::Spinner::new),
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
             sidebar_spinner: cx.new(activity::Spinner::new),
             surface_focused: true,
@@ -3294,6 +3298,7 @@ impl Panel {
         &self,
         index: usize,
         item: &Item,
+        show_avatar: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -3372,7 +3377,7 @@ impl Panel {
                 .font_family(Theme::global().FONT_AI)
                 .px_1()
                 .text_color(Theme::global().TEXT)
-                .child(markdown::render_interactive(
+                .child(markdown::render_interactive_with_avatar(
                     text,
                     index,
                     &self.transcript_selection,
@@ -3380,6 +3385,7 @@ impl Panel {
                     cx,
                     false,
                     self.media_preview_handler(cx),
+                    show_avatar,
                 ))
                 .into_any_element(),
             // Thinking is secondary transcript text, not a separate card. Keep
@@ -4221,12 +4227,9 @@ impl Render for Panel {
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
                                 };
-                                let element = panel.render_item(row.index, item, window, cx);
-                                let element = if matches!(item, Item::Assistant(_)) {
-                                    assistant_response_row(element, row.show_label)
-                                } else {
-                                    element
-                                };
+                                let element = panel.render_item(
+                                    row.index, item, row.show_label, window, cx,
+                                );
                                 div()
                                     .debug_selector(move || {
                                         format!("transcript-row-{row_index}").into()
@@ -4515,6 +4518,9 @@ impl Render for Panel {
                                     }
                                 })
                                 .right_3()
+                                .flex()
+                                .items_center()
+                                .gap_2()
                                 .px_2p5()
                                 .py_1()
                                 .rounded_md()
@@ -4533,6 +4539,18 @@ impl Render for Panel {
                                         this.jump_to_latest(cx);
                                     }),
                                 )
+                                .when(self.activity_active(), |el| {
+                                    el.child(
+                                        div()
+                                            .debug_selector(|| "latest-activity".into())
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .text_color(Theme::global().ACCENT)
+                                            .child(self.latest_activity_spinner.clone())
+                                            .child(self.status_line()),
+                                    )
+                                })
                                 .child("↓ latest"),
                         )
                     }),
@@ -4614,17 +4632,19 @@ impl Render for Panel {
                                     .map(|effort| div().min_w_0().truncate().child(effort)),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("panel-build")
-                            .debug_selector(|| "panel-build".into())
-                            .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
-                            // Build metadata must yield space to interactive controls.
-                            .flex_shrink_1()
-                            .min_w(px(24.))
-                            .truncate()
-                            .child(crate::build_info::label()),
-                    )
+                    .when(self.show_build_footer, |el| {
+                        el.child(
+                            div()
+                                .id("panel-build")
+                                .debug_selector(|| "panel-build".into())
+                                .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
+                                // Build metadata must yield space to interactive controls.
+                                .flex_shrink_1()
+                                .min_w(px(24.))
+                                .truncate()
+                                .child(crate::build_info::label()),
+                        )
+                    })
                     .child(
                         div()
                             .debug_selector(|| "panel-status".into())
@@ -4795,34 +4815,6 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Stopped(_)
         | Item::Error(_) => None,
     }
-}
-
-/// Keep every assistant segment aligned, including streaming continuations.
-/// The canonical mark replaces the old caption at the start of a speaker group.
-fn assistant_response_row(body: gpui::AnyElement, show_avatar: bool) -> gpui::AnyElement {
-    div()
-        .flex()
-        // Virtualized transcript rows must retain their natural content height.
-        .flex_none()
-        .items_start()
-        .gap_2()
-        .child(
-            div()
-                .flex_none()
-                .w(px(24.0))
-                .pt(px(2.0))
-                .when(show_avatar, |el| {
-                    el.child(
-                        gpui::svg()
-                            .debug_selector(|| "assistant-avatar".into())
-                            .data(crate::accounts::logo("jcode").expect("vendored Jcode logo"))
-                            .size(px(24.0))
-                            .text_color(Theme::global().TEXT),
-                    )
-                }),
-        )
-        .child(div().flex_1().min_w_0().child(body))
-        .into_any_element()
 }
 
 /// The credential route serving `model`, phrased for humans. The route

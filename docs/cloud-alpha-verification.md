@@ -4,6 +4,32 @@ Original deployment: 2026-09-18 UTC. Observed then: **single-user alpha was runn
 Desktop's existing native SSH machine support**. This is not a launched
 subscription control plane or public customer service.
 
+## Startup latency follow-up, 2026-09-19 06:24 UTC
+
+The already-running VM's full guarded helper readiness path measured **9.477 s**
+before this change. It made eight sequential AWS CLI calls plus an SSH bootstrap
+probe. Individual AWS reads took 0.68–0.90 s and SSH took 3.459 s. This is helper
+readiness, not Desktop's full API/history-ready latency or a cold boot.
+
+The helper now overlaps the five independent guard, ledger and host reads after
+account validation, and probes the real SSH/bootstrap path directly rather than
+gating it on SSM inventory and another EC2 read. All safety checks must succeed
+before start or SSH. Proxy account/ownership checks, the monthly allowance,
+independent guard heartbeat and original two-hour lease are unchanged.
+
+Three live repetitions on the same running VM took **4.958 s, 5.081 s and
+6.366 s**. The median is 46% lower than the measured baseline. The SSH probe
+remains the largest component. `scripts/cloud_alpha/benchmark_ready.py` repeats
+this read-only measurement and refuses instance start/stop or other mutating
+AWS calls. It does not sync credentials or run inference.
+
+All **107 Python alpha tests passed**, including barrier-based coverage proving
+the five reads overlap and start waits for all of them, fail-closed behavior for
+each preflight failure, and a simulated cold wake that retries SSH timeout and
+bootstrap failure without trusting stale/delayed SSM inventory. **No live cold
+stop/start was performed**, to avoid disrupting existing cloud work. No claim
+about actual EC2 boot-time improvement follows from these helper measurements.
+
 ## Daily-use follow-up, 2026-09-18 23:08 UTC
 
 - Desktop now wakes the personal alias before explicit Connect or default new

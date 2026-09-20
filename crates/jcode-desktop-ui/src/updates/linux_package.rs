@@ -18,8 +18,7 @@ use std::{
     time::Duration,
 };
 
-const PUBLIC_RELEASES: &str =
-    "https://github.com/1jehuang/jcode-desktop-releases/releases/download";
+use super::release::{PUBLIC_RELEASES, parse_version};
 const FILES: [&str; 5] = [
     "jcode-desktop",
     "jcode",
@@ -78,19 +77,6 @@ fn secure_directory(path: &Path) -> Result<()> {
         path.display()
     );
     Ok(())
-}
-
-fn parse_version(text: &str) -> Result<Version> {
-    let text = text
-        .strip_prefix("desktop-v")
-        .or_else(|| text.strip_prefix('v'))
-        .unwrap_or(text);
-    let version = Version::parse(text).context("Invalid managed desktop version")?;
-    ensure!(
-        version.build.is_empty(),
-        "Desktop versions with build metadata are not supported"
-    );
-    Ok(version)
 }
 
 fn detect(home: &Path, executable: &Path) -> Result<ManagedInstall> {
@@ -384,27 +370,8 @@ pub fn update() -> Result<String> {
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()?;
-    let mut metadata = Vec::new();
-    download(
-        &client,
-        &format!("{PUBLIC_RELEASES}/desktop-latest/latest.json"),
-        &mut metadata,
-        1024 * 1024,
-    )?;
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata)
-        .context("Invalid public latest desktop release metadata")?;
-    let tag = metadata["tag_name"]
-        .as_str()
-        .context("Latest release metadata has no tag_name")?;
-    let version = parse_version(
-        tag.strip_prefix("desktop-v")
-            .context("Unexpected desktop release tag")?,
-    )?;
-    // Reconstruct the tag rather than accepting any URL/path supplied by metadata.
-    ensure!(
-        tag == format!("desktop-v{version}"),
-        "Noncanonical desktop release tag"
-    );
+    let version = super::release::latest()?;
+    let tag = format!("desktop-v{version}");
     if version == install.version {
         return Ok(format!(
             "Jcode Desktop {} is already up to date.",

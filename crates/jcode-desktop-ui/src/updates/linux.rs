@@ -55,7 +55,7 @@ fn update() -> Result<String> {
     super::linux_package::update()
 }
 
-fn source_executable(executable: &Path, checkout: &Path) -> bool {
+pub(super) fn source_executable(executable: &Path, checkout: &Path) -> bool {
     // A packaged binary may embed a checkout path that happens to still exist.
     // Only an executable actually in this checkout's Cargo output is a source
     // launch. Never classify ~/.local/opt or /usr/bin by compile-time metadata.

@@ -36,6 +36,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--release-status", choices=("current", "newer", "checking", "error", "source"),
+                        help="render an offline Desktop release status in the workspace top bar")
     parser.add_argument("--account-sign-in", action="store_true",
                         help="show optional first-launch account sign-in without network access")
     parser.add_argument("--account-sign-in-interact", action="store_true",
@@ -60,6 +62,8 @@ def main():
                         help="verify hover-only tab actions and shortcut tooltips")
     parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
     parser.add_argument("--swarm", action="store_true", help="show nested swarm agents in the sidebar")
+    parser.add_argument("--swarm-interact", action="store_true",
+                        help="verify native swarm expand, child focus, collapse, lead return and view close (implies --swarm)")
     parser.add_argument("--notification", action="store_true", help="show the shortcut notification design fixture")
     parser.add_argument("--changelog", action="store_true", help="show the read-only Desktop changelog panel")
     parser.add_argument("--fresh-interact", action="store_true",
@@ -111,6 +115,8 @@ def main():
     parser.add_argument("--mermaid-source", type=Path,
                         help="custom Mermaid source file for the mermaid transcript fixture")
     parser.add_argument("--size", default="1440x1000")
+    parser.add_argument("--scroll-up", type=int, default=0, metavar="STEPS",
+                        help="scroll the transcript upward on the private display before capture")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
                         help="show the staged tutorial in the top-left Learn tab")
     parser.add_argument("--panels", type=int, choices=range(1, 7), default=1,
@@ -145,6 +151,19 @@ def main():
             parser.error("image-pane-interact requires --transcript image, default size/theme/layout, one panel, and no other interactions or overlays")
         if not shutil.which("xdotool") or not shutil.which("tesseract"):
             parser.error("image-pane-interact requires xdotool and tesseract")
+    if args.swarm_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "swarm_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.theme != "warm-neutral" or args.layout_mode != "folder_tabs"
+                or args.transcript != "all" or args.focus_panel is not None
+                or args.learn_stage is not None or args.preview_state is not None
+                or args.changelog or args.notification or args.worktrees
+                or args.account_sign_in or args.beta_notice or args.ai_font):
+            parser.error("swarm-interact requires the default single-panel size/theme/layout/transcript and no other interactions or overlays")
+        if not shutil.which("xdotool") or not shutil.which("tesseract"):
+            parser.error("swarm-interact requires xdotool and tesseract")
+        args.swarm = True
     if args.cloud_startup and (args.transcript != "empty" or args.panels != 1
             or args.preview_state or args.changelog or args.account_sign_in
             or any(value for key, value in vars(args).items() if key.endswith("_interact"))):
@@ -401,6 +420,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="screenshot-", dir=scratch) as temporary:
         root = Path(temporary)
         env = isolated_env(root)
+        if args.release_status:
+            env["JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS"] = args.release_status
         if args.worktrees:
             env["JCODE_DESKTOP_SCREENSHOT_WORKTREES"] = "1"
         if args.swarm:
@@ -564,6 +585,11 @@ def main():
                 if args.onboarding_interact:
                     from onboarding_acceptance import verify
                     verify(output, env, root)
+                if args.scroll_up > 0:
+                    subprocess.run(["xdotool", "mousemove", str((canvas_left + width) // 2),
+                                    str(height // 2), "click", "--repeat", str(args.scroll_up),
+                                    "--delay", "40", "4"], env=env, cwd=root, check=True, timeout=30)
+                    time.sleep(1)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.beta_notice_interact:
@@ -571,6 +597,9 @@ def main():
                     verify(output, env, root)
                 if args.pending_interact:
                     from pending_submission_acceptance import verify
+                    verify(output, env, root)
+                if args.swarm_interact:
+                    from screenshot_swarm import verify
                     verify(output, env, root)
                 if args.tab_actions_interact:
                     from tab_actions_acceptance import verify

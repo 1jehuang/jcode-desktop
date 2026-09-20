@@ -93,18 +93,125 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("jump-to-latest").is_some());
+        assert!(vcx.debug_bounds("latest-activity").is_some());
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(1600.)));
         vcx.run_until_parked();
         assert!(
             vcx.debug_bounds("jump-to-latest").is_none(),
             "resizing to reveal the stream and activity row hides Latest"
         );
+        assert!(vcx.debug_bounds("latest-activity").is_none());
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(400.)));
         vcx.run_until_parked();
         assert!(
             vcx.debug_bounds("jump-to-latest").is_some(),
             "resizing to clip the end shows Latest again"
         );
+        assert!(vcx.debug_bounds("latest-activity").is_some());
+    }
+
+    #[gpui::test]
+    fn latest_shows_live_activity_while_scrolled_up(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "latest-activity".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(vcx, |panel, cx| {
+            panel.items = (0..80)
+                .map(|n| Item::Assistant(format!("message {n}")))
+                .collect();
+            panel.stick_to_bottom = false;
+            panel.transcript_list.scroll_to(gpui::ListOffset::default());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.transcript_list.scroll_to(gpui::ListOffset::default());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("jump-to-latest").is_some());
+        assert!(vcx.debug_bounds("latest-activity").is_none());
+
+        for (status, label) in [
+            ("thinking", "Thinking"),
+            ("streaming", "Responding"),
+            ("running_tools", "Running tools"),
+        ] {
+            panel.update(vcx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::SessionStatus {
+                        session_id: "latest-activity".into(),
+                        status: status.into(),
+                    },
+                    cx,
+                );
+                assert_eq!(panel.status_line(), label);
+            });
+            vcx.run_until_parked();
+            let activity = vcx
+                .debug_bounds("latest-activity")
+                .expect("pinned activity paints");
+            let chip = vcx.debug_bounds("jump-to-latest").unwrap();
+            let transcript = vcx.debug_bounds("transcript").unwrap();
+            assert!(activity.left() >= chip.left() && activity.right() <= chip.right());
+            assert!(activity.top() >= transcript.top() && activity.bottom() <= transcript.bottom());
+            assert!(
+                vcx.debug_bounds("transcript-activity").is_none(),
+                "tail is offscreen"
+            );
+            assert!(!panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
+        }
+
+        let chip = vcx.debug_bounds("jump-to-latest").unwrap();
+        vcx.simulate_click(chip.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
+        assert!(vcx.debug_bounds("latest-activity").is_none());
+        assert!(vcx.debug_bounds("transcript-activity").is_some());
+
+        for terminal in ["done", "idle", "cancelled", "error"] {
+            panel.update(vcx, |panel, cx| {
+                panel.stick_to_bottom = false;
+                panel.transcript_list.scroll_to(gpui::ListOffset::default());
+                panel.apply(
+                    &ApiEvent::SessionStatus {
+                        session_id: "latest-activity".into(),
+                        status: "thinking".into(),
+                    },
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("latest-activity").is_some());
+            panel.update(vcx, |panel, cx| {
+                let event = match terminal {
+                    "done" => ApiEvent::TurnDone {
+                        session_id: "latest-activity".into(),
+                    },
+                    "error" => ApiEvent::Error {
+                        code: jcode_sdk::api::ErrorCode::Internal,
+                        message: "Provider failed".into(),
+                    },
+                    status => ApiEvent::SessionStatus {
+                        session_id: "latest-activity".into(),
+                        status: status.into(),
+                    },
+                };
+                panel.apply(&event, cx);
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("latest-activity").is_none(), "{terminal}");
+            assert!(
+                vcx.debug_bounds("jump-to-latest").is_some(),
+                "catch-up remains available"
+            );
+        }
     }
 
     #[gpui::test]

@@ -286,7 +286,7 @@ impl TabMotion {
     }
 }
 
-struct TabTooltip(gpui::SharedString);
+pub(super) struct TabTooltip(pub(super) gpui::SharedString);
 
 impl Render for TabTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -318,6 +318,11 @@ impl Workspace {
         } else {
             0.0
         };
+        let version_width = if canvas_width - right >= 800.0 {
+            240.0
+        } else {
+            184.0
+        };
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
         for row in 0..STRIP_COUNT {
@@ -341,8 +346,13 @@ impl Workspace {
                 *row == self.active_row && index.is_none_or(|index| index == self.active)
             })
             .unwrap_or(0);
-        let available =
-            (canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH).max(0.0);
+        let available = (canvas_width
+            - right
+            - TAB_STATUS_WIDTH
+            - TAB_NEW_WIDTH
+            - TAB_CLOSE_WIDTH
+            - version_width)
+            .max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
         let targets: Vec<_> = entries
@@ -383,7 +393,7 @@ impl Workspace {
             .absolute()
             .top_0()
             .left(px(TAB_STATUS_WIDTH))
-            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH))
+            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH + version_width))
             .h(px(FOLDER_CONTENT_INSET));
         self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
@@ -702,6 +712,7 @@ impl Workspace {
                     ),
             )
             .child(tabs)
+            .child(self.render_version_header(version_width, TAB_NEW_WIDTH + TAB_CLOSE_WIDTH, cx))
             .children(coach_chip)
             .child(
                 div()

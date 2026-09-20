@@ -74,13 +74,98 @@ pub(super) fn groups(sessions: &[SessionInfo]) -> Groups {
 fn status(session: &SessionInfo) -> (&str, bool) {
     let status = session.swarm_status.as_deref().unwrap_or(&session.status);
     match status {
-        "running" | "working" | "active" | "busy" => ("working", true),
+        "running" | "working" | "active" | "busy" | "thinking" | "streaming" => ("working", true),
+        "waiting_network" => ("blocked", false),
         "completed" | "done" => ("done", false),
-        "ready" => ("ready", false),
-        "blocked" | "waiting" => ("waiting", false),
         "failed" | "error" | "crashed" => ("failed", false),
         "stopped" | "closed" => ("stopped", false),
-        _ => ("idle", false),
+        "" => ("idle", false),
+        other => (other, false),
+    }
+}
+
+fn title(session: &SessionInfo) -> String {
+    session
+        .agent_label
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| sidebar_session_title(session).1)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Keep focus and actionable work visible, retaining catalog/depth-first order
+/// within the preview. Expansion always shows the full ownership tree.
+fn visible_children<'a>(
+    children: &'a [Child],
+    expanded: bool,
+    active_id: Option<&str>,
+) -> Vec<&'a Child> {
+    if expanded {
+        return children.iter().collect();
+    }
+    let mut indices = (0..children.len()).collect::<Vec<_>>();
+    indices.sort_by_key(|&i| {
+        let session = &children[i].session;
+        if active_id == Some(session.session_id.as_str()) {
+            return 0;
+        }
+        match status(session).0 {
+            "failed" | "blocked" => 1,
+            "working" => 2,
+            "ready" | "waiting" => 3,
+            _ => 4,
+        }
+    });
+    indices.truncate(PREVIEW);
+    indices.sort_unstable();
+    indices.into_iter().map(|i| &children[i]).collect()
+}
+
+fn summary(children: &[Child]) -> String {
+    let mut counts = [0; 6];
+    for child in children {
+        counts[match status(&child.session).0 {
+            "working" => 0,
+            "failed" | "blocked" => 1,
+            "done" => 2,
+            "ready" => 3,
+            "waiting" => 4,
+            _ => 5,
+        }] += 1;
+    }
+    counts
+        .into_iter()
+        .zip([
+            "working",
+            "need attention",
+            "done",
+            "ready",
+            "waiting",
+            "inactive",
+        ])
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, label)| format!("{n} {label}"))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+struct SwarmTooltip(String);
+impl Render for SwarmTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .max_w(px(360.0))
+            .rounded_md()
+            .bg(Theme::global().HEADER_BG)
+            .border_1()
+            .border_color(Theme::global().PANEL_BORDER)
+            .text_size(px(11.0))
+            .text_color(Theme::global().TEXT)
+            .child(self.0.clone())
     }
 }
 
@@ -93,72 +178,148 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let expanded = self.expanded_swarms.contains(root_id);
-        let working = children.iter().filter(|c| status(&c.session).1).count();
         let root = root_id.to_owned();
+        let detail = summary(children);
+        let summary_tooltip = format!(
+            "{detail}. Status comes from the latest swarm report, not a live connection check."
+        );
+        let lead = self
+            .sessions
+            .iter()
+            .find(|s| s.session_id == root_id)
+            .cloned();
         let mut content = div()
             .mt_1()
-            .ml(px(20.0))
-            .pl_2()
+            .ml(px(12.0))
+            .min_w_0()
             .flex()
             .flex_col()
-            .gap(px(2.0));
-        content = content.child(
-            div()
-                .text_size(px(9.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .child(format!("{} agents · {} working", children.len(), working)),
-        );
-        for child in children
-            .iter()
-            .take(if expanded { usize::MAX } else { PREVIEW })
-        {
+            .gap(px(3.0));
+        content = content
+            .child(
+                div()
+                    .h(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .child(format!("Swarm · {}", children.len())),
+                    )
+                    .when_some(lead, |row, lead| {
+                        let tooltip = format!("Open lead: {}", sidebar_session_title(&lead).1);
+                        row.child(
+                            div()
+                                .id(gpui::SharedString::from(format!("swarm-lead-{root_id}")))
+                                .debug_selector({
+                                    let root = root.clone();
+                                    move || format!("swarm-lead-{root}")
+                                })
+                                .px_1()
+                                .rounded_sm()
+                                .text_size(px(10.0))
+                                .text_color(Theme::global().ACCENT)
+                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                .cursor_pointer()
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| SwarmTooltip(tooltip.clone())).into()
+                                })
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                        this.sidebar_gesture = None;
+                                    }),
+                                )
+                                .on_mouse_up(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.activate_session(lead.clone(), window, cx);
+                                    }),
+                                )
+                                .child("Open lead ↗"),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!("swarm-summary-{root_id}")))
+                    .h(px(15.0))
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(9.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .tooltip(move |_, cx| cx.new(|_| SwarmTooltip(summary_tooltip.clone())).into())
+                    .child(detail),
+            );
+        for child in visible_children(children, expanded, active_id) {
             let session = child.session.clone();
             let id = session.session_id.clone();
             let selector = id.clone();
-            let title = session
-                .agent_label
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| sidebar_session_title(&session).1)
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            let (state, working) = status(&session);
-            let color = if state == "failed" {
-                Theme::global().ERROR
-            } else if working {
-                Theme::global().ACCENT
-            } else {
-                Theme::global().TEXT_DIM
+            let label = title(&session);
+            let (state, _) = status(&session);
+            let (icon, color) = match state {
+                "failed" => ("!", Theme::global().ERROR),
+                "blocked" => ("!", Theme::global().ACCENT),
+                "working" => ("●", Theme::global().ACCENT),
+                "done" => ("✓", Theme::global().OK),
+                "ready" => ("○", Theme::global().OK),
+                "waiting" => ("◷", Theme::global().TEXT_DIM),
+                _ => ("○", Theme::global().TEXT_DIM),
             };
-            let state = state.to_owned();
             let selected = active_id == Some(id.as_str());
+            let open = self
+                .slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == id);
+            let parent = self
+                .sessions
+                .iter()
+                .find(|s| Some(s.session_id.as_str()) == session.parent_session_id.as_deref())
+                .map(title)
+                .unwrap_or_else(|| "lead".into());
+            let tooltip = format!(
+                "{label}\nStatus: {state}\nReports to: {parent}\n{}\nClick to {} this agent's conversation.",
+                session
+                    .working_dir
+                    .as_deref()
+                    .unwrap_or("No working directory"),
+                if open { "focus" } else { "open" }
+            );
+            let state = state.to_owned();
+            let close_id = id.clone();
             let edits = session.edit_stats.as_ref().map(|stats| {
-                super::sidebar_edits::render(
-                    &session.session_id,
-                    stats.added,
-                    stats.removed,
-                    stats.approximate,
-                )
+                super::sidebar_edits::render(&id, stats.added, stats.removed, stats.approximate)
             });
             content = content.child(
                 div()
                     .id(gpui::SharedString::from(format!("swarm-child-{id}")))
                     .debug_selector(move || format!("swarm-child-{selector}"))
-                    .h(px(19.0))
+                    .h(px(44.0))
                     .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_1()
-                    .rounded_sm()
-                    .ml(px((child.depth.saturating_sub(1).min(3) * 8) as f32))
+                    .flex_col()
+                    .justify_center()
+                    .gap(px(2.0))
+                    .px_2()
+                    .rounded_md()
+                    // Compact previews can omit ancestors. Only indent the full tree.
+                    .ml(px(if expanded {
+                        (child.depth.saturating_sub(1).min(3) * 8) as f32
+                    } else {
+                        0.0
+                    }))
                     // Working or open agents are not selected. Only the viewed
                     // conversation gets a fill; all other rows inherit the sidebar.
                     .when(selected, |el| el.bg(Theme::global().ACCENT_DIM))
                     .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .cursor_pointer()
+                    .tooltip(move |_, cx| cx.new(|_| SwarmTooltip(tooltip.clone())).into())
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -174,22 +335,91 @@ impl Workspace {
                             this.activate_session(session.clone(), window, cx);
                         }),
                     )
-                    .child(div().text_size(px(8.0)).text_color(color).child("●"))
                     .child(
                         div()
-                            .flex_1()
+                            .h(px(17.0))
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .min_w_0()
-                            .truncate()
-                            .text_size(px(10.0))
-                            .child(title),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(Theme::global().TEXT)
+                                    .child(label),
+                            )
+                            .when(open, |row| {
+                                row.child(
+                                    div()
+                                        .id(gpui::SharedString::from(format!("swarm-close-{id}")))
+                                        .debug_selector({
+                                            let id = id.clone();
+                                            move || format!("swarm-close-{id}")
+                                        })
+                                        .text_size(px(12.0))
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_color(Theme::global().TEXT_DIM)
+                                        .hover(|el| el.bg(Theme::global().ACCENT_DIM))
+                                        .tooltip(|_, cx| {
+                                            cx.new(|_| {
+                                                SwarmTooltip(
+                                                    "Close this view. The agent keeps running."
+                                                        .into(),
+                                                )
+                                            })
+                                            .into()
+                                        })
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(|this, _, window, cx| {
+                                                window.prevent_default();
+                                                cx.stop_propagation();
+                                                this.sidebar_gesture = None;
+                                            }),
+                                        )
+                                        .on_mouse_up(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.close_sidebar_sessions(
+                                                    vec![close_id.clone()],
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                        .child("×"),
+                                )
+                            }),
                     )
-                    .children(edits)
                     .child(
                         div()
-                            .flex_none()
-                            .text_size(px(9.0))
-                            .text_color(color)
-                            .child(state),
+                            .h(px(14.0))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w_0()
+                            .child(div().text_size(px(9.0)).text_color(color).child(icon))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(9.0))
+                                    .text_color(color)
+                                    .child(if selected {
+                                        format!("{state} · viewing")
+                                    } else if open {
+                                        format!("{state} · open")
+                                    } else {
+                                        state
+                                    }),
+                            )
+                            .children(edits),
                     ),
             );
         }
@@ -199,8 +429,14 @@ impl Workspace {
                 div()
                     .id(gpui::SharedString::from(format!("swarm-toggle-{root}")))
                     .debug_selector(move || format!("swarm-toggle-{selector}"))
-                    .text_size(px(9.0))
+                    .h(px(23.0))
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .rounded_sm()
+                    .text_size(px(10.0))
                     .text_color(Theme::global().ACCENT)
+                    .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .cursor_pointer()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -221,9 +457,9 @@ impl Workspace {
                         }),
                     )
                     .child(if expanded {
-                        "Show less".into()
+                        "Show fewer ▴".into()
                     } else {
-                        format!("Show {} more", children.len() - PREVIEW)
+                        format!("Show all {} agents ▾", children.len())
                     }),
             );
         }
@@ -238,6 +474,89 @@ mod tests {
         let mut session = super::super::tests::session_info(id, Some(id));
         session.parent_session_id = parent.map(str::to_owned);
         session
+    }
+
+    fn children_with_states(states: &[&str]) -> Vec<Child> {
+        states
+            .iter()
+            .enumerate()
+            .map(|(i, state)| {
+                let mut session = session(&format!("child{i}"), Some("root"));
+                session.swarm_status = Some((*state).into());
+                Child { session, depth: 1 }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sidebar_swarm_preview_keeps_focus_and_attention_without_reordering_tree() {
+        let children = children_with_states(&["done", "running", "blocked", "failed", "ready"]);
+        let ids = |expanded, active| {
+            visible_children(&children, expanded, active)
+                .iter()
+                .map(|c| c.session.session_id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(false, None), ["child2", "child3"]);
+        assert_eq!(ids(false, Some("child4")), ["child2", "child4"]);
+        assert_eq!(ids(false, Some("child0")), ["child0", "child2"]);
+        assert_eq!(ids(false, Some("missing")), ["child2", "child3"]);
+        assert_eq!(
+            ids(true, Some("child4")),
+            ["child0", "child1", "child2", "child3", "child4"]
+        );
+        assert!(visible_children(&[], false, None).is_empty());
+        let working = children_with_states(&["done", "running", "ready"]);
+        assert_eq!(
+            visible_children(&working, false, None)[0]
+                .session
+                .session_id,
+            "child1"
+        );
+    }
+
+    #[test]
+    fn sidebar_swarm_status_does_not_confuse_ready_blocked_or_unknown_with_done() {
+        let children = children_with_states(&[
+            "completed",
+            "blocked",
+            "ready",
+            "waiting",
+            "failed",
+            "running",
+        ]);
+        assert_eq!(
+            summary(&children),
+            "1 working · 2 need attention · 1 done · 1 ready · 1 waiting"
+        );
+        assert_eq!(
+            summary(&children_with_states(&["blocked", "ready"])),
+            "1 need attention · 1 ready"
+        );
+        let mut s = session("agent", None);
+        s.status = "running".into();
+        assert_eq!(status(&s), ("working", true));
+        for value in [
+            "running",
+            "working",
+            "active",
+            "busy",
+            "thinking",
+            "streaming",
+        ] {
+            s.swarm_status = Some(value.into());
+            assert_eq!(status(&s), ("working", true));
+        }
+        s.swarm_status = Some("waiting_network".into());
+        assert_eq!(status(&s), ("blocked", false));
+        for value in ["blocked", "waiting", "ready", "new-future-state"] {
+            s.swarm_status = Some(value.into());
+            assert_eq!(status(&s), (value, false));
+        }
+        s.agent_label = Some("  API\n reviewer  ".into());
+        assert_eq!(title(&s), "API reviewer");
+        s.agent_label = Some(" \n ".into());
+        assert_eq!(title(&s), sidebar_session_title(&s).1);
     }
 
     // The pre-optimization algorithm is an independent equivalence oracle and
@@ -540,12 +859,65 @@ mod tests {
     }
 
     #[gpui::test]
+    fn sidebar_swarm_reopening_during_close_preserves_entity_and_restores_watch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let child = session("child", Some("root"));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w.sessions = vec![session("root", None), child.clone()];
+            w.active = w.open_session(child.clone(), cx);
+            w
+        });
+        vcx.run_until_parked();
+        while commands.try_recv().is_ok() {}
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                let panel = w.slots[w.active].panel.clone();
+                let input = panel.read(cx).input.clone();
+                w.close_sidebar_sessions(vec!["child".into()], window, cx);
+                assert!(w.slots[0].closing);
+                w.activate_session(child.clone(), window, cx);
+                assert_eq!(w.slots.len(), 1);
+                assert!(!w.slots[0].closing);
+                assert_eq!(w.slots[0].panel.entity_id(), panel.entity_id());
+                assert_eq!(
+                    w.slots[0].panel.read(cx).input.entity_id(),
+                    input.entity_id()
+                );
+                w.apply(
+                    Update::Event {
+                        session_id: "child".into(),
+                        event: jcode_sdk::ApiEvent::SessionStatus {
+                            session_id: "child".into(),
+                            status: "running".into(),
+                        },
+                    },
+                    cx,
+                );
+                assert_eq!(panel.read(cx).status, "running");
+            })
+        });
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Unwatch { session_id }) if session_id == "child")
+        );
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Watch { session_id }) if session_id == "child")
+        );
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[gpui::test]
     fn sidebar_swarm_expands_in_parent_and_child_click_opens_only_child(
         cx: &mut gpui::TestAppContext,
     ) {
+        let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
+            w.set_test_bridge(bridge);
             w.sessions = vec![
                 session("root", None),
                 session("child1", Some("root")),
@@ -577,5 +949,48 @@ mod tests {
             assert_eq!(w.slots.len(), 1);
             assert_eq!(w.slots[w.active].panel.read(cx).session_id, "child3");
         });
+        // Collapsing must retain the agent being viewed even beyond the first two.
+        let toggle = vcx.debug_bounds("swarm-toggle-root").unwrap();
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("swarm-child-child3").is_some());
+        assert!(vcx.debug_bounds("swarm-child-child2").is_none());
+        let lead = vcx.debug_bounds("swarm-lead-root").unwrap();
+        vcx.simulate_click(lead.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 2);
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "root");
+        });
+        let toggle = vcx.debug_bounds("swarm-toggle-root").unwrap();
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let child = vcx.debug_bounds("swarm-child-child3").unwrap();
+        vcx.simulate_click(child.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 2, "refocusing must reuse the agent's panel");
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "child3");
+        });
+        while commands.try_recv().is_ok() {}
+        let close = vcx.debug_bounds("swarm-close-child3").unwrap();
+        vcx.simulate_click(close.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.iter().filter(|s| !s.closing).count(), 1);
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "root");
+            assert_eq!(
+                w.sessions.len(),
+                5,
+                "closing a view must retain the worker catalog"
+            );
+        });
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Unwatch { session_id }) if session_id == "child3")
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "close must only detach, never cancel or reopen"
+        );
     }
 }

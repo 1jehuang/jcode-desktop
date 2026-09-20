@@ -871,33 +871,77 @@ fn styled_line(
     _window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui::AnyElement {
-    styled_line_layout(source, selection, key, _window, cx).0
+    styled_line_with_avatar(source, selection, key, _window, cx, false)
 }
 
-/// Keep the native layout for line-fitting prompt backgrounds.
+// A layout-only spacer participates in native shaping/wrapping, not paragraph
+// padding: later visual lines start at the original left edge. Use ASCII
+// spaces because GPUI's wrapper recognizes these as leading whitespace and
+// does not create a word-break opportunity between them and the first word.
+// Selection and clipboard offsets exclude the prefix entirely.
+const AVATAR_PREFIX: &str = "    ";
+
+fn assistant_avatar() -> impl IntoElement {
+    gpui::svg()
+        .debug_selector(|| "assistant-avatar".into())
+        .data(crate::accounts::logo("jcode").expect("vendored Jcode logo"))
+        .size(px(20.0))
+        .text_color(Theme::global().TEXT)
+}
+
+fn styled_line_with_avatar(
+    source: &str,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
+    _window: &gpui::Window,
+    cx: &gpui::App,
+    avatar: bool,
+) -> gpui::AnyElement {
+    styled_line_layout(source, selection, key, _window, cx, avatar).0
+}
+
+/// Retain the native layout alongside the interactive leaf, so geometry tests
+/// exercise exactly the same shaping, highlighting and links as the renderer.
 fn styled_line_layout(
     source: &str,
     selection: &gpui::Entity<TextSelection>,
     key: SharedString,
     _window: &gpui::Window,
     cx: &gpui::App,
+    avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
     let inline = inline_spans(source);
     let mut highlights = inline.highlights.clone();
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
+    let prefix = if avatar { AVATAR_PREFIX } else { "" };
+    let shift =
+        |range: std::ops::Range<usize>| range.start + prefix.len()..range.end + prefix.len();
+    let display: SharedString = format!("{prefix}{}", inline.plain).into();
     // Resolve the base style during layout, inside the surrounding element.
     // Capturing window.text_style() here bypasses the dimmed reasoning color
     // (and heading weight), since the parent has not been laid out yet.
-    let text = StyledText::new(inline.plain.clone())
-        .with_highlights(flatten_highlights(&highlights))
+    // Give the spacer its own monospace run. Four proportional spaces can be
+    // narrower than the icon when the user changes the assistant font.
+    let prefix_highlight = avatar.then(|| (0..prefix.len(), HighlightStyle::default()));
+    let prefix_font = avatar.then(|| (0..prefix.len(), Theme::global().FONT_MONO.into()));
+    let text = StyledText::new(display)
+        .with_highlights(
+            prefix_highlight.into_iter().chain(
+                flatten_highlights(&highlights)
+                    .into_iter()
+                    .map(|(range, style)| (shift(range), style)),
+            ),
+        )
         .with_font_family_overrides(
-            inline
-                .code_ranges
-                .iter()
-                .cloned()
-                .map(|range| (range, Theme::global().FONT_MONO.into())),
+            prefix_font.into_iter().chain(
+                inline
+                    .code_ranges
+                    .iter()
+                    .cloned()
+                    .map(|range| (shift(range), Theme::global().FONT_MONO.into())),
+            ),
         );
     let layout = text.layout().clone();
     let child = if inline.links.is_empty() {
@@ -906,7 +950,7 @@ fn styled_line_layout(
         let ranges: Vec<_> = inline
             .links
             .iter()
-            .map(|(range, _)| range.clone())
+            .map(|(range, _)| shift(range.clone()))
             .collect();
         let urls: Vec<String> = inline.links.iter().map(|(_, url)| url.clone()).collect();
         let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
@@ -918,9 +962,28 @@ fn styled_line_layout(
             })
             .into_any_element()
     };
-    let child = crate::markdown_inline_code::wrap(child, layout.clone(), inline.code_ranges);
-    let child = text_selection::selectable(selection.clone(), key, inline.plain, layout.clone(), child, cx);
-    (child, layout)
+    let child = crate::markdown_inline_code::wrap(
+        child,
+        layout.clone(),
+        inline.code_ranges.iter().cloned().map(shift).collect(),
+    );
+    let selectable = text_selection::selectable_with_prefix(
+        selection.clone(),
+        key,
+        inline.plain,
+        layout.clone(),
+        child,
+        prefix.len(),
+        cx,
+    );
+    let element = div()
+        .relative()
+        .child(selectable)
+        .when(avatar, |el| {
+            el.child(div().absolute().top_0().left_0().child(assistant_avatar()))
+        })
+        .into_any_element();
+    (element, layout)
 }
 
 fn hash(text: &str) -> u64 {
@@ -1428,6 +1491,7 @@ pub(crate) fn render_prompt(
         cx,
         false,
         Some(on_preview),
+        false,
         Some(background),
     )
 }
@@ -1442,14 +1506,31 @@ pub(crate) fn render_interactive(
     reasoning: bool,
     on_preview: MediaPreviewHandler,
 ) -> impl IntoElement {
-    render_with_style(
+    render_interactive_with_avatar(
+        source, row, selection, window, cx, reasoning, on_preview, false,
+    )
+}
+
+pub(crate) fn render_interactive_with_avatar(
+    source: &str,
+    row: usize,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    reasoning: bool,
+    on_preview: MediaPreviewHandler,
+    avatar: bool,
+) -> impl IntoElement {
+    render_document(
         source,
         row,
+        &row.to_string(),
         selection,
         window,
         cx,
         reasoning,
         Some(on_preview),
+        avatar,
     )
 }
 
@@ -1471,6 +1552,7 @@ fn render_with_style(
         cx,
         reasoning,
         on_preview,
+        false,
     )
 }
 
@@ -1483,9 +1565,10 @@ fn render_document(
     cx: &gpui::App,
     reasoning: bool,
     on_preview: Option<MediaPreviewHandler>,
+    avatar: bool,
 ) -> gpui::AnyElement {
     render_document_with_prompt_background(
-        source, row, key_prefix, selection, window, cx, reasoning, on_preview, None,
+        source, row, key_prefix, selection, window, cx, reasoning, on_preview, avatar, None,
     )
 }
 
@@ -1498,6 +1581,7 @@ fn render_document_with_prompt_background(
     cx: &gpui::App,
     reasoning: bool,
     on_preview: Option<MediaPreviewHandler>,
+    avatar: bool,
     prompt_background: Option<gpui::Rgba>,
 ) -> gpui::AnyElement {
     let blocks = if prompt_background.is_some() {
@@ -1514,17 +1598,38 @@ fn render_document_with_prompt_background(
         let tight = is_list && previous_was_list;
         previous_was_list = is_list;
 
+        let first_line_avatar = avatar && block_index == 0;
         let fitted_background = matches!(
             &block,
             Block::Heading(..) | Block::Paragraph(..) | Block::Reasoning(..)
         );
         let inline_text = |text: &str| {
-            let (child, layout) = styled_line_layout(text, selection, text_key(), window, cx);
+            let (child, layout) =
+                styled_line_layout(text, selection, text_key(), window, cx, first_line_avatar);
             match prompt_background {
                 Some(color) => crate::prompt_background::wrap(child, layout, color),
                 None => child,
             }
         };
+        // Structured non-inline blocks get a separate mark, never an overlay
+        // on code, table cells, diagrams, or media.
+        let inline_avatar = matches!(
+            &block,
+            Block::Heading(..)
+                | Block::Paragraph(..)
+                | Block::Reasoning(..)
+                | Block::Bullet { .. }
+                | Block::Numbered { .. }
+                | Block::Quote(..)
+        );
+        if first_line_avatar && !inline_avatar {
+            children.push(
+                div()
+                    .h(px(22.0))
+                    .child(assistant_avatar())
+                    .into_any_element(),
+            );
+        }
         let element = match block {
             Block::Heading(level, text) => {
                 let (size, weight) = match level {
@@ -1570,6 +1675,7 @@ fn render_document_with_prompt_background(
                     cx,
                     true,
                     on_preview.clone(),
+                    first_line_avatar,
                     prompt_background,
                 ))
                 .into_any_element(),
@@ -1604,6 +1710,7 @@ fn render_document_with_prompt_background(
                     cx,
                     tight,
                     task,
+                    first_line_avatar,
                 )
             }
             Block::Numbered {
@@ -1625,6 +1732,7 @@ fn render_document_with_prompt_background(
                 cx,
                 tight,
                 None,
+                first_line_avatar,
             ),
             Block::Quote(lines) => div()
                 .debug_selector(|| "md-quote".into())
@@ -1653,12 +1761,13 @@ fn render_document_with_prompt_background(
                                 .filter(|line| !line.trim().is_empty())
                                 .enumerate()
                                 .map(|(line_index, line)| {
-                                    div().child(styled_line(
+                                    div().child(styled_line_with_avatar(
                                         line,
                                         selection,
                                         format!("{row}-{block_index}-{line_index}").into(),
                                         window,
                                         cx,
+                                        first_line_avatar && line_index == 0,
                                     ))
                                 }),
                         ),
@@ -1684,9 +1793,12 @@ fn render_document_with_prompt_background(
                 .bg(Theme::global().PANEL_BORDER)
                 .into_any_element(),
         };
-        // Structured blocks retain their native rectangular geometry.
+        // Structured blocks retain their native rectangular geometry. Prose
+        // instead gets a contour from the actual shaped visual line widths.
         children.push(match prompt_background {
-            Some(color) if !fitted_background => crate::prompt_background::wrap_block(element, color),
+            Some(color) if !fitted_background => {
+                crate::prompt_background::wrap_block(element, color)
+            }
             _ => element,
         });
     }
@@ -1710,6 +1822,7 @@ fn list_row(
     cx: &gpui::App,
     tight: bool,
     task: Option<bool>,
+    avatar: bool,
 ) -> gpui::AnyElement {
     div()
         .flex()
@@ -1734,7 +1847,9 @@ fn list_row(
                 .when(task == Some(true), |el| {
                     el.text_color(Theme::global().TEXT_DIM)
                 })
-                .child(styled_line(text, selection, key, window, cx)),
+                .child(styled_line_with_avatar(
+                    text, selection, key, window, cx, avatar,
+                )),
         )
         .into_any_element()
 }
@@ -1957,6 +2072,199 @@ mod tests {
         assert_eq!(parse(decoded), parse(original));
         assert!(matches!(&parse(decoded)[3], Block::Code { lang, .. } if lang == "rust"));
         assert_eq!(blocks[1], Block::Paragraph("Done.".into()));
+    }
+
+    struct AvatarTextView {
+        selection: gpui::Entity<TextSelection>,
+        source: String,
+        width: f32,
+        layout: gpui::TextLayout,
+        continuation: gpui::TextLayout,
+    }
+
+    impl gpui::Render for AvatarTextView {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let (first, layout) = styled_line_layout(
+                &self.source,
+                &self.selection,
+                "first".into(),
+                window,
+                cx,
+                true,
+            );
+            let (next, continuation) = styled_line_layout(
+                "Subsequent streaming segment",
+                &self.selection,
+                "next".into(),
+                window,
+                cx,
+                false,
+            );
+            self.layout = layout;
+            self.continuation = continuation;
+            div()
+                .w(px(self.width))
+                .text_size(px(14.0))
+                .line_height(px(22.0))
+                .flex()
+                .flex_col()
+                .child(first)
+                .child(next)
+        }
+    }
+
+    #[gpui::test]
+    fn avatar_indents_only_first_visual_line_and_preserves_copy_and_links(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let source = "[Linked](https://example.com) **bold βeta** and `code` then enough words to wrap over several visual lines without indenting the remainder of the paragraph.";
+        let plain = inline_spans(source).plain;
+        let (view, vcx) = cx.add_window_view(|_, cx| AvatarTextView {
+            selection: cx.new(TextSelection::new),
+            source: source.into(),
+            width: 180.0,
+            layout: gpui::TextLayout::default(),
+            continuation: gpui::TextLayout::default(),
+        });
+        vcx.run_until_parked();
+        let (layout, continuation, selection) = view.read_with(vcx, |view, _| {
+            (
+                view.layout.clone(),
+                view.continuation.clone(),
+                view.selection.clone(),
+            )
+        });
+        let first = layout.position_for_index(AVATAR_PREFIX.len()).unwrap();
+        let avatar = vcx.debug_bounds("assistant-avatar").unwrap();
+        assert!(
+            first.x >= avatar.right(),
+            "first text must clear the icon: {first:?} {avatar:?}"
+        );
+        assert_eq!(
+            first.y,
+            layout.bounds().top(),
+            "spacer must not wrap onto its own line"
+        );
+        assert!(
+            first.x - layout.bounds().left() <= px(50.0),
+            "first-line spacer must stay compact"
+        );
+        // GPUI gives a byte at a wrap boundary upstream affinity (the end
+        // of the preceding line). Hit-test each actual following line's left
+        // edge instead, and require its first glyph, not a padded gutter.
+        let lines = layout.line_layouts();
+        let wrapped = &lines[0];
+        assert!(wrapped.wrap_boundaries.len() >= 2);
+        for (line_index, boundary) in wrapped.wrap_boundaries.iter().enumerate() {
+            let expected =
+                wrapped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index;
+            let position = gpui::point(
+                layout.bounds().left() + px(0.1),
+                first.y + layout.line_height() * (line_index + 1) as f32 + px(5.0),
+            );
+            assert_eq!(
+                layout.index_for_position(position),
+                Ok(expected),
+                "wrapped line must begin at normal margin"
+            );
+            assert!(
+                position.y - px(5.0) >= avatar.bottom(),
+                "icon must not overlap second line"
+            );
+        }
+        assert_eq!(
+            continuation.position_for_index(0).unwrap().x,
+            layout.bounds().left()
+        );
+        let click = first + gpui::point(px(2.0), px(5.0));
+        vcx.simulate_click(click, gpui::Modifiers::default());
+        assert_eq!(vcx.opened_url().as_deref(), Some("https://example.com"));
+        for (click_count, expected) in [(2, "Linked"), (4, plain.as_str())] {
+            vcx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: click,
+                modifiers: gpui::Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            vcx.update(|_, cx| selection.update(cx, |selection, cx| selection.copy(cx)));
+            assert_eq!(
+                vcx.update(|_, cx| cx.read_from_clipboard())
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+        // Shift-select across a soft wrap and mixed UTF-8/style runs. The
+        // selected bytes must be source bytes, not the display-only prefix.
+        vcx.simulate_click(click, gpui::Modifiers::default());
+        let end = plain.find("code").unwrap() + "code".len();
+        let end_position = layout
+            .position_for_index(AVATAR_PREFIX.len() + end)
+            .unwrap();
+        vcx.simulate_click(
+            end_position + gpui::point(px(0.1), px(5.0)),
+            gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        vcx.update(|_, cx| selection.update(cx, |selection, cx| selection.copy(cx)));
+        assert_eq!(
+            vcx.update(|_, cx| cx.read_from_clipboard())
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(&plain[..end])
+        );
+        // Repaint selection highlights, including UTF-8, link, bold and code
+        // ranges shifted by the layout prefix, then resize and append live text.
+        view.update(vcx, |view, cx| {
+            view.width = 260.0;
+            view.source.push_str(" Streamed **tail**.");
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let layout = view.read_with(vcx, |view, _| view.layout.clone());
+        assert_eq!(
+            layout.position_for_index(AVATAR_PREFIX.len()).unwrap().y,
+            layout.bounds().top()
+        );
+    }
+
+    #[gpui::test]
+    fn avatar_markdown_blocks_keep_their_normal_left_margin(cx: &mut gpui::TestAppContext) {
+        struct Document {
+            selection: gpui::Entity<TextSelection>,
+        }
+        impl gpui::Render for Document {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(190.0)).child(render_document(
+                    "# A heading that wraps across multiple visual lines\n\nThe next paragraph stays at its normal margin.\n\n- A list item", 0, "avatar-document", &self.selection, window, cx, false, None, true,
+                ))
+            }
+        }
+        let (_, vcx) = cx.add_window_view(|_, cx| Document {
+            selection: cx.new(TextSelection::new),
+        });
+        vcx.run_until_parked();
+        let first = vcx
+            .debug_bounds("selectable-text-avatar-document-0")
+            .unwrap();
+        let next = vcx
+            .debug_bounds("selectable-text-avatar-document-1")
+            .unwrap();
+        let avatar = vcx.debug_bounds("assistant-avatar").unwrap();
+        assert_eq!(first.left(), next.left());
+        assert_eq!(avatar.left(), first.left());
+        assert!(next.top() >= first.bottom());
     }
 
     struct RestoredReasoningView {
