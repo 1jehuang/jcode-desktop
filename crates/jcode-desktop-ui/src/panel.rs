@@ -8022,8 +8022,8 @@ mod tests {
             assert_eq!(
                 panel.read(cx).input.read(cx).model_picker_rows(),
                 vec![
-                    ("claude-fable-5".into(), false),
-                    ("gpt-5.6-sol".into(), true)
+                    ("gpt-5.6-sol".into(), false),
+                    ("claude-fable-5".into(), true)
                 ]
             );
         });
@@ -8032,7 +8032,7 @@ mod tests {
         match received {
             Ok(Command::SetModel { session_id, model }) => {
                 assert_eq!(session_id, "session-a");
-                assert_eq!(model, "gpt-5.6-sol");
+                assert_eq!(model, "claude-api:claude-fable-5");
             }
             _ => panic!("picker did not emit SetModel"),
         }
@@ -8071,7 +8071,7 @@ mod tests {
         vcx.simulate_click(row.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(
-            matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "claude-fable-5")
+            matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-oauth:gpt-5.6-sol")
         );
         assert!(vcx.debug_bounds("slash-command-overlay").is_none());
         vcx.simulate_input("composer focus retained");

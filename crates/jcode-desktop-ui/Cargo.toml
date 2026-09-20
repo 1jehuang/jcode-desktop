@@ -14,6 +14,7 @@ gpui_platform.workspace = true
 jcode-desktop-api.workspace = true
 jcode-desktop-motion.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
+jcode-provider-core = { path = "../../../jcode/crates/jcode-provider-core" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-render-core = { path = "../../../jcode/crates/jcode-render-core" }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig"] }

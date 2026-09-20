@@ -4327,6 +4327,7 @@ dependencies = [
  "jcode-core",
  "jcode-desktop-api",
  "jcode-desktop-motion",
+ "jcode-provider-core",
  "jcode-render-core",
  "jcode-sdk",
  "libc",

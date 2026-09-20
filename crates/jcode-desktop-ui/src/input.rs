@@ -1,7 +1,7 @@
 //! Prompt input with full IME support, adapted from gpui's input example.
 //! Long prompts soft-wrap in a bounded, scrollable editor. Enter submits via a callback.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,7 +25,8 @@ mod paste_preview;
 use crate::commands::registered_command_entries;
 use crate::theme::{Theme, to_hsla};
 
-const PENDING_COMMAND_NOTICE: &str = "Commands are available once connected. Your command is still in the editor.";
+const PENDING_COMMAND_NOTICE: &str =
+    "Commands are available once connected. Your command is still in the editor.";
 
 actions!(
     prompt_input,
@@ -156,6 +157,7 @@ pub struct PromptInput {
     command_selection: usize,
     model_logo_providers: HashMap<String, String>,
     model_details: HashMap<String, model_menu::ModelDetails>,
+    expanded_model_groups: HashSet<String>,
     current_model: Option<String>,
     command_scroll: gpui::ScrollHandle,
     command_layout_key: Option<(SharedString, usize, usize, gpui::Size<Pixels>)>,
@@ -172,6 +174,8 @@ struct CommandSuggestion {
     value: String,
     help: String,
     detail: Option<String>,
+    header: Option<String>,
+    toggle: Option<String>,
 }
 
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
@@ -193,6 +197,8 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
                 value: format!("/model {model}"),
                 help: "Switch this session".into(),
                 detail: None,
+                header: None,
+                toggle: None,
             })
             .collect();
     }
@@ -208,6 +214,8 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
                 value: format!("/effort {effort}"),
                 help: "Set reasoning effort".into(),
                 detail: None,
+                header: None,
+                toggle: None,
             })
             .collect();
     }
@@ -229,6 +237,8 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
             value: value.into(),
             help: help.into(),
             detail: None,
+            header: None,
+            toggle: None,
         })
         .collect()
 }
@@ -240,7 +250,10 @@ fn accepted_command_submission(
     let suggestion = suggestions.get(selection.min(suggestions.len().saturating_sub(1)))?;
     // Matching includes descriptions, not only command-name prefixes. Enter
     // must select the highlighted result for either kind of search.
-    Some(suggestion.value.clone())
+    suggestion
+        .toggle
+        .is_none()
+        .then(|| suggestion.value.clone())
 }
 
 #[derive(Clone)]
@@ -399,6 +412,7 @@ impl PromptInput {
             command_selection: 0,
             model_logo_providers: HashMap::new(),
             model_details: HashMap::new(),
+            expanded_model_groups: HashSet::new(),
             current_model: None,
             command_scroll: gpui::ScrollHandle::new(),
             command_layout_key: None,
@@ -467,16 +481,40 @@ impl PromptInput {
         let selected = self
             .command_suggestions()
             .get(self.command_selection)
-            .map(|suggestion| suggestion.value.clone());
+            .cloned();
         self.model_details = model_menu::from_routes(routes);
         self.current_model = current_model;
+        if !routes.is_empty() {
+            models = self.model_details.keys().cloned().collect();
+        }
         model_menu::rank(&mut models, &self.model_details);
         self.set_command_models(models, cx);
-        // A background usage update must not move Enter onto a different model.
-        if let Some(index) = selected.and_then(|value| {
-            self.command_suggestions()
+        if let Some(model) = selected
+            .as_ref()
+            .and_then(|row| row.value.strip_prefix("/model "))
+        {
+            if !self
+                .command_suggestions()
                 .iter()
-                .position(|suggestion| suggestion.value == value)
+                .any(|row| row.value == format!("/model {model}"))
+                && self
+                    .command_models
+                    .iter()
+                    .any(|candidate| candidate == model)
+            {
+                self.expanded_model_groups
+                    .insert(model_menu::group_key(model, &self.model_details));
+            }
+        }
+        // A background usage update must not move Enter onto a different model.
+        if let Some(index) = selected.and_then(|selected| {
+            self.command_suggestions().iter().position(|row| {
+                if selected.toggle.is_some() {
+                    row.toggle == selected.toggle
+                } else {
+                    row.toggle.is_none() && row.value == selected.value
+                }
+            })
         }) {
             self.command_selection = index;
             self.command_scroll.scroll_to_item(index);
@@ -508,10 +546,14 @@ impl PromptInput {
             .into_iter()
             .enumerate()
             .filter_map(|(index, suggestion)| {
-                suggestion
-                    .value
-                    .strip_prefix("/model ")
-                    .map(|model| (model.to_string(), index == self.command_selection))
+                suggestion.value.strip_prefix("/model ").map(|model| {
+                    (
+                        self.model_details
+                            .get(model)
+                            .map_or_else(|| model.to_string(), |detail| detail.model.clone()),
+                        index == self.command_selection,
+                    )
+                })
             })
             .collect()
     }
@@ -526,7 +568,30 @@ impl PromptInput {
             return Vec::new();
         }
         let now = model_menu::now_unix_secs();
-        command_suggestions(&self.content, &self.command_models)
+        let trimmed = self.content.trim_start();
+        let suggestions =
+            if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
+                let query = trimmed.strip_prefix("/model").unwrap_or_default();
+                model_menu::grouped_rows(
+                    &self.command_models,
+                    &self.model_details,
+                    self.current_model.as_deref(),
+                    &self.expanded_model_groups,
+                    query,
+                )
+                .into_iter()
+                .map(|row| CommandSuggestion {
+                    value: row.value,
+                    help: String::new(),
+                    detail: None,
+                    header: row.header,
+                    toggle: row.toggle,
+                })
+                .collect()
+            } else {
+                command_suggestions(&self.content, &self.command_models)
+            };
+        suggestions
             .into_iter()
             .map(|mut suggestion| {
                 if let Some(model) = suggestion.value.strip_prefix("/model ") {
@@ -536,7 +601,12 @@ impl PromptInput {
                             .map(|details| details.label(now))
                             .unwrap_or_else(|| model_menu::usage_label(None, now)),
                     );
-                    suggestion.help = if self.current_model.as_deref() == Some(model) {
+                    suggestion.help = if model_menu::current_spec(
+                        self.current_model.as_deref(),
+                        &self.command_models,
+                        &self.model_details,
+                    ) == Some(model)
+                    {
                         "Current".into()
                     } else {
                         String::new()
@@ -545,6 +615,22 @@ impl PromptInput {
                 suggestion
             })
             .collect()
+    }
+
+    fn toggle_model_group(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.expanded_model_groups.remove(&key) {
+            self.expanded_model_groups.insert(key.clone());
+        }
+        // Keep focus on the disclosure when rows appear or disappear above it.
+        if let Some(index) = self
+            .command_suggestions()
+            .iter()
+            .position(|row| row.toggle.as_ref() == Some(&key))
+        {
+            self.command_selection = index;
+            self.command_scroll.scroll_to_item(index);
+        }
+        cx.notify();
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
@@ -574,7 +660,17 @@ impl PromptInput {
         }
         if self.command_completion && self.attachments.is_empty() {
             let suggestions = self.command_suggestions();
-            if raw_content.trim_start().starts_with("/model ") && suggestions.is_empty() {
+            if let Some(key) = suggestions
+                .get(self.command_selection)
+                .and_then(|row| row.toggle.clone())
+            {
+                self.toggle_model_group(key, cx);
+                return;
+            }
+            if (raw_content.trim_start() == "/model"
+                || raw_content.trim_start().starts_with("/model "))
+                && suggestions.is_empty()
+            {
                 return;
             }
             if let Some(accepted) =
@@ -595,6 +691,7 @@ impl PromptInput {
         self.attachment_notice = None;
         self.attachment_preview = None;
         self.content = "".into();
+        self.expanded_model_groups.clear();
         // The cleared editor is one line immediately. Waiting for its next
         // paint leaves a tall, empty composer after a wrapped prompt submits.
         self.visual_line_count = 1;
@@ -871,8 +968,16 @@ impl PromptInput {
         });
     }
 
+    fn reset_model_groups_after_exit(&mut self) {
+        let content = self.content.trim_start();
+        if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
+            self.expanded_model_groups.clear();
+        }
+    }
+
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content.into();
+        self.reset_model_groups_after_exit();
         self.command_selection = 0;
         self.command_scroll.scroll_to_item(0);
         self.selected_range = self.content.len()..self.content.len();
@@ -1102,6 +1207,7 @@ impl EntityInputHandler for PromptInput {
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
+        self.reset_model_groups_after_exit();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         self.command_selection = 0;
@@ -1129,6 +1235,7 @@ impl EntityInputHandler for PromptInput {
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
+        self.reset_model_groups_after_exit();
         if !new_text.is_empty() {
             self.marked_range = Some(range.start..range.start + new_text.len());
         } else {
@@ -1579,8 +1686,8 @@ impl Render for PromptInput {
                                             .flex()
                                             .flex_col()
                                             .max_h(px((f32::from(window.viewport_size().height)
-                                                * 0.35)
-                                                .min(280.)))
+                                                * if self.content.trim_start().starts_with("/model") { 0.6 } else { 0.35 })
+                                                .min(if self.content.trim_start().starts_with("/model") { 480. } else { 280. })))
                                             .overflow_y_scroll()
                                             .track_scroll(&self.command_scroll)
                                             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
@@ -1597,6 +1704,7 @@ impl Render for PromptInput {
                                             })
                                             .children(suggestions.into_iter().enumerate().map(
                                                 |(index, suggestion)| {
+                                                    let is_toggle = suggestion.toggle.is_some();
                                                     let selected = index == command_selection;
                                                     let ink = if selected {
                                                         Theme::global().BG
@@ -1610,6 +1718,7 @@ impl Render for PromptInput {
                                                             .model_logo_providers
                                                             .get(model)
                                                             .map(String::as_str)
+                                                            .or_else(|| self.model_details.get(model).and_then(|detail| self.model_logo_providers.get(&detail.model).map(String::as_str)))
                                                             .unwrap_or("");
                                                         let logo: gpui::AnyElement =
                                                             match crate::accounts::logo(provider) {
@@ -1637,12 +1746,20 @@ impl Render for PromptInput {
                                                             .child(logo)
                                                     });
                                                     let label = model
+                                                        .and_then(|model| self.model_details.get(model).map(|detail| detail.model.as_str()))
+                                                        .or(model)
                                                         .unwrap_or(&suggestion.value)
                                                         .to_string();
-                                                    div()
+                                                    div().flex_none().flex().flex_col()
+                                                        .children(suggestion.header.clone().map(|header| div()
+                                                            .debug_selector(move || format!("model-picker-group-{index}"))
+                                                            .px_3().pt_2().pb_1().text_size(px(11.0))
+                                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                            .text_color(Theme::global().TEXT_FAINT).child(header)))
+                                                        .child(div()
                                                         .id(("slash-command", index))
                                                         .debug_selector(move || {
-                                                            format!("slash-command-row-{index}")
+                                                            if is_toggle { format!("model-picker-toggle-{index}") } else { format!("slash-command-row-{index}") }
                                                         })
                                                         .flex_none()
                                                         .flex()
@@ -1741,6 +1858,10 @@ impl Render for PromptInput {
                                                                         &this.focus_handle,
                                                                         cx,
                                                                     );
+                                                                    if let Some(key) = suggestion.toggle.clone() {
+                                                                        this.toggle_model_group(key, cx);
+                                                                        return;
+                                                                    }
                                                                     if matches!(
                                                                         suggestion.value.as_str(),
                                                                         "/model" | "/models"
@@ -1764,13 +1885,17 @@ impl Render for PromptInput {
                                                                                 .clone(),
                                                                             cx,
                                                                         );
+                                                                        // Search may also match a longer model name. Click must
+                                                                        // submit this exact route, not the first substring match.
+                                                                        this.command_selection = this.command_suggestions().iter()
+                                                                            .position(|row| row.value == suggestion.value).unwrap_or(0);
                                                                         this.submit(
                                                                             &Submit, window, cx,
                                                                         );
                                                                     }
                                                                 },
                                                             ),
-                                                        )
+                                                        ))
                                                 },
                                             )),
                                     )
@@ -1963,6 +2088,116 @@ mod tests {
     }
 
     #[gpui::test]
+    fn model_groups_expand_with_enter_without_submitting_and_preserve_exact_routes(
+        cx: &mut TestAppContext,
+    ) {
+        let window = input_window(cx);
+        let routes: Vec<_> = (1..=5)
+            .map(|n| jcode_sdk::ModelRouteInfo {
+                model: format!("atlas-{n}"),
+                provider: "OpenAI".into(),
+                api_method: "openai-api-key".into(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+            })
+            .collect();
+        window
+            .update(cx, |input, _, cx| {
+                input.set_model_routes(Vec::new(), &routes, None, cx);
+                input.set_content("/model".into(), cx);
+                assert_eq!(input.model_picker_rows().len(), 3);
+                input.command_selection = 3;
+                assert!(accepted_command_submission(&input.command_suggestions(), 3).is_none());
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "/model");
+                assert!(input.history.is_empty());
+                assert_eq!(input.model_picker_rows().len(), 5);
+                assert_eq!(input.command_selection, 5);
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, cx| {
+                assert_eq!(input.model_picker_rows().len(), 3);
+                assert_eq!(input.command_selection, 3);
+                input.toggle_model_group("OpenAI · openai-api-key".into(), cx);
+                input.set_content("/model atlas-5".into(), cx);
+                assert!(!input.expanded_model_groups.is_empty());
+                assert_eq!(
+                    input.command_suggestions()[0].value,
+                    "/model openai-api:atlas-5"
+                );
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "enter");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(
+                    input.history.last().map(String::as_str),
+                    Some("/model openai-api:atlas-5")
+                );
+                assert!(input.content.is_empty());
+                assert!(input.expanded_model_groups.is_empty());
+            })
+            .unwrap();
+        window
+            .update(cx, |input, _, cx| {
+                input.set_content("/model".into(), cx);
+                input.toggle_model_group("OpenAI · openai-api-key".into(), cx);
+                input.set_content(String::new(), cx);
+                input.set_content("/model".into(), cx);
+                assert_eq!(input.model_picker_rows().len(), 3);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn model_group_refresh_reveals_selected_choice_if_it_falls_below_top_three(
+        cx: &mut TestAppContext,
+    ) {
+        let window = input_window(cx);
+        let routes = |favored: &str| {
+            (1..=5)
+                .map(|n| {
+                    let model = format!("atlas-{n}");
+                    jcode_sdk::ModelRouteInfo {
+                        usage: Some(jcode_sdk::ModelUsage {
+                            count: if model == favored { 99 } else { n },
+                            ..Default::default()
+                        }),
+                        model,
+                        provider: "OpenAI".into(),
+                        api_method: "openai-oauth".into(),
+                        available: true,
+                        detail: String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        window
+            .update(cx, |input, _, cx| {
+                input.set_model_routes(Vec::new(), &routes("atlas-1"), None, cx);
+                input.set_content("/model".into(), cx);
+                assert_eq!(
+                    input.command_suggestions()[0].value,
+                    "/model openai-oauth:atlas-1"
+                );
+                input.set_model_routes(Vec::new(), &routes("atlas-5"), None, cx);
+                assert_eq!(
+                    input.command_suggestions()[input.command_selection].value,
+                    "/model openai-oauth:atlas-1"
+                );
+                assert_eq!(input.model_picker_rows().len(), 5);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn model_usage_ranking_preserves_the_highlighted_choice_on_refresh(cx: &mut TestAppContext) {
         let window = input_window(cx);
         let route = |model: &str, count| jcode_sdk::ModelRouteInfo {
@@ -2014,7 +2249,7 @@ mod tests {
                     cx,
                 );
                 let suggestions = input.command_suggestions();
-                assert_eq!(input.command_selection, 0);
+                assert_eq!(input.command_selection, 1);
                 assert_eq!(
                     accepted_command_submission(&suggestions, input.command_selection).as_deref(),
                     Some("/model a-rare")

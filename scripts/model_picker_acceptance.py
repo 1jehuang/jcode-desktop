@@ -20,12 +20,14 @@ from fresh_session_acceptance import composer_bounds
 
 
 # These routes are supplied by the explicitly enabled screenshot model fixture.
-# The UI sorts these 14 names: anthropic, google, then atlas-01 through -12.
-TENTH_ROUTE = "openai:atlas-08"
+# Three provider groups include twelve OpenAI models, initially capped at three.
+TENTH_ROUTE = "openai:atlas-10"
 LAST_ROUTE = "openai:atlas-12"
 FILTER_ROUTE = "anthropic:sonnet-review"
 FILTER = "sonnet-review"
 NO_MATCH = "zzzz-no-model-937"
+FILTER_SPEC = "claude-api:sonnet-review"
+LAST_SPEC = "openai-api:atlas-12"
 
 
 def normalized(text):
@@ -214,7 +216,40 @@ def verify(output, env, root):
         wait_frame("model-keyboard-restored", keyboard_restored)
         report["checks"][stage] = True
 
+        stage = "provider-groups-and-three-model-preview"
+        phrase_bounds(words, "Show 9 more models")
+        for route in ["openai:atlas-01", "openai:atlas-02", "openai:atlas-03"]:
+            phrase_bounds(words, route)
+        assert normalized("openai:atlas-04") not in normalized(" ".join(word["text"] for word in words)), "Collapsed group shows a fourth model"
+        report["checks"][stage] = True
+
+        stage = "mouse-expand-provider-without-submitting"
+        x1, y1, x2, y2 = phrase_bounds(words, "Show 9 more models")
+        native("mousemove", round((x1 + x2) / 2), round((y1 + y2) / 2), "click", "1")
+        # Expansion retains the composer and exposes the provider's full list.
+        native("mousemove", dialog[2] - 45, dialog[3] - 70,
+               "click", "--repeat", "12", "--delay", "60", "5")
+        _, _, (_, expanded_words) = wait_frame("model-provider-expanded", lambda image: picker(image, stage, LAST_ROUTE))
+        phrase_bounds(expanded_words, "Show fewer models")
+        report["checks"][stage] = True
+
+        stage = "keyboard-collapse-provider-without-submitting"
+        x1, y1, x2, y2 = phrase_bounds(expanded_words, "Show fewer models")
+        native("mousemove", round((x1 + x2) / 2), round((y1 + y2) / 2))
+        native("key", "Return")
+        _, _, (dialog, words) = wait_frame("model-provider-collapsed", lambda image: picker(image, stage, "Show 9 more models"))
+        assert normalized(LAST_ROUTE) not in normalized(" ".join(word["text"] for word in words)), "Collapse kept hidden models visible"
+        report["checks"][stage] = True
+
+        stage = "keyboard-expand-provider-without-submitting"
+        native("key", "Return")
+        native("mousemove", dialog[2] - 45, dialog[1] + 30,
+               "click", "--repeat", "18", "--delay", "60", "4")
+        _, _, (dialog, words) = wait_frame("model-provider-reexpanded", lambda image: picker(image, stage, "openai:atlas-01"))
+        report["checks"][stage] = True
+
         stage = "keyboard-beyond-eight"
+        native("key", "--clearmodifiers", "--delay", "40", *(["Up"] * 20))
         native("key", "--clearmodifiers", "--delay", "80", *(["Down"] * 9))
         def keyboard_scrolled(image):
             bounds, words = picker(image, stage, TENTH_ROUTE)
@@ -272,8 +307,8 @@ def verify(output, env, root):
             phrase_bounds(words, "Switching model to")
             phrase_bounds(words, route)
             return True
-        wait_frame("model-keyboard-selected", lambda image: selected(image, FILTER_ROUTE))
-        report["checks"][stage] = FILTER_ROUTE
+        wait_frame("model-keyboard-selected", lambda image: selected(image, FILTER_SPEC))
+        report["checks"][stage] = FILTER_SPEC
 
         stage = "mouse-selection"
         open_picker("/model", "model-mouse-open")
@@ -281,8 +316,17 @@ def verify(output, env, root):
         _, _, (_, words) = wait_frame("model-mouse-filter", lambda image: picker(image, stage, LAST_ROUTE))
         x1, y1, x2, y2 = phrase_bounds(words, LAST_ROUTE)
         native("mousemove", round((x1 + x2) / 2), round((y1 + y2) / 2), "click", "1")
-        wait_frame("model-mouse-selected", lambda image: selected(image, LAST_ROUTE))
-        report["checks"][stage] = LAST_ROUTE
+        wait_frame("model-mouse-selected", lambda image: selected(image, LAST_SPEC))
+        report["checks"][stage] = LAST_SPEC
+
+        stage = "search-finds-collapsed-model"
+        _, _, (_, words) = open_picker("/model", "model-search-collapsed-open")
+        # Search must reveal a model outside the initial three choices.
+        type_text(" " + LAST_ROUTE.split(":")[-1])
+        wait_frame("model-search-collapsed-result", lambda image: picker(image, stage, LAST_ROUTE))
+        native("key", "Escape")
+        wait_frame("model-search-collapsed-closed", closed)
+        report["checks"][stage] = True
         report["passed"] = True
     except Exception as error:
         report.update(passed=False, failed_step=stage, error=str(error))
