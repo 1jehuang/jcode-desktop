@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 7dd973912a7acb8792c7d6caf9254270b0dd1b02 # Account login and cancellable desktop OAuth callbacks
+          ref: 91c0bdda3884952bd2eba2e5cfc78fbed1281495 # Desktop 0.2 runtime: voice capture, native panels, and shared SSH transports
           path: jcode
           submodules: recursive
       - name: Validate release target and publication contracts
@@ -279,19 +279,24 @@ jobs:
           pattern: desktop-*
           path: artifacts
           merge-multiple: true
-      - name: Wait for secure macOS workflow and upload to its prerelease
+      - name: Wait for secure macOS workflow and upload to its release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || { echo "Invalid desktop release tag" >&2; exit 1; }
+          PRERELEASE=false
+          [[ "$GITHUB_REF_NAME" != *-beta.* ]] || PRERELEASE=true
           for attempt in {1..90}; do
-            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease' | grep -qx true; then
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease \
+              --jq "(.isDraft == false and .isPrerelease == $PRERELEASE)" | grep -qx true; then
               mapfile -d '' files < <(find artifacts -type f -print0)
               test "${#files[@]}" -gt 0
               gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
               exit 0
             fi
-            echo "Waiting for notarized macOS workflow to create prerelease ($attempt/90)..."
+            echo "Waiting for notarized macOS workflow to publish release ($attempt/90)..."
             sleep 120
           done
-          echo "macOS secure workflow did not create the prerelease" >&2
+          echo "macOS secure workflow did not publish the release" >&2
           exit 1

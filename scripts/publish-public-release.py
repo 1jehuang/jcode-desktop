@@ -30,7 +30,7 @@ def gh(*args, check=True):
 
 
 def release(tag):
-    result = gh("release", "view", tag, "--repo", PUBLIC_REPOSITORY, "--json", "isDraft,assets", check=False)
+    result = gh("release", "view", tag, "--repo", PUBLIC_REPOSITORY, "--json", "isDraft,isPrerelease,assets", check=False)
     if result.returncode:
         # Only treat a genuinely absent release as creation permission. Network
         # and authentication failures must not accidentally overwrite metadata.
@@ -62,6 +62,7 @@ def verify_download(url, expected_hash, expected_size):
 
 def publish(directory, tag):
     manifest = PREPARE.validate(directory, tag)
+    prerelease = f"--prerelease={str(manifest['prerelease']).lower()}"
     manifest_path = directory / "latest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     current = release(tag)
@@ -74,16 +75,21 @@ def publish(directory, tag):
     else:
         if not current:
             gh("release", "create", tag, "--repo", PUBLIC_REPOSITORY,
-               "--target", "main", "--draft", "--prerelease", "--title", manifest["name"],
+               "--target", "main", "--draft", prerelease, "--title", manifest["name"],
                "--notes", "Download at https://jcode.sh/desktop. See the attached macOS, Linux, Windows, and FreeBSD packages for available architectures. macOS packages are signed and notarized. Older Mac betas using the private update URL need a one-time DMG reinstall. Application source is not published here.")
         gh("release", "upload", tag, "--repo", PUBLIC_REPOSITORY, "--clobber", *map(str, files))
-        gh("release", "edit", tag, "--repo", PUBLIC_REPOSITORY, "--draft=false")
+        gh("release", "edit", tag, "--repo", PUBLIC_REPOSITORY, "--draft=false", prerelease)
 
     # Publish only complete versions. Check exact public bytes before promoting
     # the website or updater to this release.
     for asset in manifest["assets"]:
         url = f"https://github.com/{PUBLIC_REPOSITORY}/releases/download/{tag}/{asset['name']}"
         verify_download(url, asset["sha256"], asset["size"])
+
+    # A retry may repair metadata from an older publisher, but only after the
+    # immutable manifest and all publicly served package bytes have matched.
+    if current and not current["isDraft"] and current["isPrerelease"] != manifest["prerelease"]:
+        gh("release", "edit", tag, "--repo", PUBLIC_REPOSITORY, prerelease)
 
     channel = release(CHANNEL)
     if channel:
@@ -95,7 +101,11 @@ def publish(directory, tag):
                     raise RuntimeError("cannot read current channel manifest")
             else:
                 previous = json.loads((Path(temporary) / "latest.json").read_text())
-                if version_key(previous["tag_name"]) > version_key(tag):
+                previous_key = version_key(previous["tag_name"])
+                if previous_key[-1] == float("inf") and manifest["prerelease"]:
+                    print("Stable version already promoted. Leaving current channel unchanged for prerelease.")
+                    return
+                if previous_key > version_key(tag):
                     print("Newer version already published. Leaving current channel unchanged.")
                     return
     else:
