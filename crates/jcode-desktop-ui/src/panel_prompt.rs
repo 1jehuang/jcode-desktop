@@ -168,7 +168,7 @@ impl Panel {
             .flex()
             .flex_col()
             .bg(background)
-            .rounded_md()
+            .rounded_xl()
             .px_2()
             .py_1()
             .text_color(Theme::global().TEXT_USER)
