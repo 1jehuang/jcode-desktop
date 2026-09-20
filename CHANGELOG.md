@@ -1,5 +1,19 @@
 ## What's new
 
+### Jcode Desktop 0.3.0
+
+- Nested swarm navigation with clearer indentation, stable session selection, and bounded sidebar rendering.
+- Improved Markdown and PDF panels, text selection, inline images, and reliable jump-to-latest behavior.
+- Native Thinking Orbs, eagerly streamed tool names and arguments, and clear explanations for interrupted or failed responses.
+- A CLI-style resume panel, numbered prompt cards, compact queued prompts, and Shift+Space to return to the latest output.
+- Workspace-wide version and update status. Development builds retain the intended release version, such as `0.3.0-dev.12`, instead of turning the Git commit count into a misleading patch number.
+- Personal cloud model-access synchronization before connecting, with fresh readiness checks and fail-closed recovery. This remains an experimental Unix-only integration.
+- A resumable, single-command release workflow with verified native builds, signed macOS packages, website downloads, and installation acceptance.
+
+Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
+
+## Previous releases
+
 ### Jcode Desktop 0.2.1
 
 - Native Markdown and PDF document panels with explicit open, update, and close behavior.

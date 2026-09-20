@@ -167,6 +167,7 @@ mod tests {
             ("0.1.0", "0.1.0"),
             ("v1.2.3", "1.2.3"),
             ("0.1.432-dev", "0.1.432-dev"),
+            ("0.3.0-dev.12", "0.3.0 · Dev 12"),
             ("0.1.0-beta.15", "0.1.0 · Beta 15"),
             ("1.0.0-rc.2", "1.0.0 · RC 2"),
             ("1.0.0-alpha", "1.0.0 · Alpha"),
@@ -202,6 +203,10 @@ mod tests {
             footer_label("0.1.0-dev", true, Some(300), 220),
             "Desktop 0.1.0-dev · built just now"
         );
+        assert_eq!(
+            footer_label("0.3.0-dev.12", true, Some(100), 220),
+            "Desktop 0.3.0 · Dev 12 · built 2m ago"
+        );
     }
 
     #[test]
@@ -218,7 +223,10 @@ mod tests {
     #[test]
     fn surfaces_share_the_numbered_build_version() {
         let version = semver::Version::parse(VERSION).expect("valid display version");
-        assert_eq!(version.pre.as_str() == "dev", development());
+        assert_eq!(
+            version.pre.as_str().split('.').next() == Some("dev"),
+            development()
+        );
         assert!(crate::build_version().starts_with(&format!("v{VERSION} (")));
         assert!(label().contains(&version_label(VERSION)));
         assert!(crate::update_notes::build_details().contains(VERSION));

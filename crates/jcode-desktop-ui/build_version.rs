@@ -47,7 +47,7 @@ pub fn resolve(root: &Path, base: &str, explicit: Option<&str>) -> VersionMetada
         let (major, minor, patch) =
             parse_base(base).expect("Cargo package version must have a numeric semver core");
         let offset = commit_offset(root, &format!("{major}.{minor}.{patch}")).unwrap_or(0);
-        format!("{major}.{minor}.{}-dev", patch.saturating_add(offset))
+        format!("{major}.{minor}.{patch}-dev.{offset}")
     });
     VersionMetadata {
         version,
@@ -70,20 +70,26 @@ fn parse_base(base: &str) -> Option<(u32, u32, u32)> {
 }
 
 fn commit_offset(root: &Path, base: &str) -> Option<u32> {
-    // Desktop's stable tag namespace takes precedence over the CLI convention.
-    // Prerelease tags deliberately do not participate: beta releases must not
-    // reset development numbers. An untagged base counts all reachable commits.
-    for tag in [format!("desktop-v{base}"), format!("v{base}")] {
-        let reference = format!("refs/tags/{tag}");
-        if git(
-            root,
-            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
-        )
-        .is_some()
-        {
+    // Keep commit distance in the prerelease component, never the release
+    // patch. Only reachable stable tags at or below the intended package base
+    // can anchor it. This handles a newly bumped minor with no tag of its own
+    // and ignores tags on other branches or for newer release lines.
+    let base = parse_base(base)?;
+    let tags = git(root, &["tag", "--merged", "HEAD"])?;
+    for prefix in ["desktop-v", "v"] {
+        let anchor = tags
+            .lines()
+            .filter_map(|tag| {
+                let version = tag.strip_prefix(prefix)?;
+                let parsed = parse_base(version)?;
+                let canonical = format!("{}.{}.{}", parsed.0, parsed.1, parsed.2);
+                (version == canonical && parsed <= base).then_some((parsed, tag))
+            })
+            .max_by_key(|(version, _)| *version);
+        if let Some((_, tag)) = anchor {
             return git(
                 root,
-                &["rev-list", "--count", &format!("{reference}..HEAD")],
+                &["rev-list", "--count", &format!("refs/tags/{tag}..HEAD")],
             )?
             .parse()
             .ok();
@@ -163,11 +169,11 @@ mod tests {
     #[test]
     fn untagged_history_increases_and_is_repeatable() {
         let repo = Fixture::new();
-        assert_eq!(repo.metadata().display_version, "0.1.1-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.1");
         assert_eq!(repo.metadata(), repo.metadata());
         repo.commit();
         let metadata = repo.metadata();
-        assert_eq!(metadata.display_version, "0.1.2-dev");
+        assert_eq!(metadata.display_version, "0.1.0-dev.2");
         assert_eq!(metadata.version, "0.1.0");
         assert!(metadata.development);
         assert!(!metadata.git_dirty);
@@ -181,10 +187,16 @@ mod tests {
     fn desktop_base_tag_and_nonzero_patch() {
         let repo = Fixture::new();
         repo.run(&["tag", "desktop-v1.2.7"]);
-        assert_eq!(resolve(&repo.0, "1.2.7", None).display_version, "1.2.7-dev");
+        assert_eq!(
+            resolve(&repo.0, "1.2.7", None).display_version,
+            "1.2.7-dev.0"
+        );
         repo.commit();
         repo.commit();
-        assert_eq!(resolve(&repo.0, "1.2.7", None).display_version, "1.2.9-dev");
+        assert_eq!(
+            resolve(&repo.0, "1.2.7", None).display_version,
+            "1.2.7-dev.2"
+        );
     }
 
     #[test]
@@ -192,12 +204,12 @@ mod tests {
         let repo = Fixture::new();
         repo.run(&["tag", "-am", "Base", "v0.1.0"]);
         repo.commit();
-        assert_eq!(repo.metadata().display_version, "0.1.1-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.1");
         repo.run(&["tag", "desktop-v0.1.0"]);
         repo.commit();
-        assert_eq!(repo.metadata().display_version, "0.1.1-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.1");
         repo.run(&["pack-refs", "--all"]);
-        assert_eq!(repo.metadata().display_version, "0.1.1-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.1");
     }
 
     #[test]
@@ -207,7 +219,50 @@ mod tests {
         repo.commit();
         repo.run(&["tag", "desktop-v0.1.0-beta.30"]);
         repo.commit();
-        assert_eq!(repo.metadata().display_version, "0.1.3-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.3");
+    }
+
+    #[test]
+    fn next_minor_uses_latest_reachable_stable_release() {
+        let repo = Fixture::new();
+        repo.run(&["tag", "desktop-v0.2.0"]);
+        repo.commit();
+        repo.run(&["tag", "-am", "Release", "desktop-v0.2.1"]);
+        repo.commit();
+        repo.run(&["tag", "desktop-v0.2.2-beta.1"]);
+        repo.commit();
+        let metadata = resolve(&repo.0, "0.3.0", None);
+        assert_eq!(metadata.version, "0.3.0");
+        assert_eq!(metadata.display_version, "0.3.0-dev.2");
+        repo.run(&["pack-refs", "--all"]);
+        assert_eq!(resolve(&repo.0, "0.3.0", None), metadata);
+    }
+
+    #[test]
+    fn unrelated_and_future_tags_do_not_anchor_development_count() {
+        let repo = Fixture::new();
+        repo.run(&["tag", "desktop-v0.2.0"]);
+        repo.run(&["checkout", "-qb", "future"]);
+        repo.commit();
+        repo.run(&["tag", "desktop-v0.3.0"]);
+        repo.run(&["checkout", "-q", "main"]);
+        repo.commit();
+        repo.run(&["tag", "desktop-v9.0.0"]);
+        repo.run(&["tag", "desktop-v0.2.1+metadata"]);
+        repo.run(&["tag", "desktop-v00.2.1"]);
+        assert_eq!(
+            resolve(&repo.0, "0.3.0", None).display_version,
+            "0.3.0-dev.1"
+        );
+    }
+
+    #[test]
+    fn archive_without_git_retains_intended_release_base() {
+        let repo = Fixture::directory();
+        let metadata = resolve(&repo.0, "0.3.0", None);
+        assert_eq!(metadata.display_version, "0.3.0-dev.0");
+        assert_eq!(metadata.git_hash, "unknown");
+        assert!(metadata.development);
     }
 
     #[test]
@@ -217,12 +272,12 @@ mod tests {
         assert!(repo.metadata().git_dirty); // untracked
         repo.run(&["add", "tracked"]);
         assert!(repo.metadata().git_dirty); // staged
-        assert_eq!(repo.metadata().display_version, "0.1.1-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.1");
         repo.commit();
         assert!(!repo.metadata().git_dirty);
         fs::write(repo.0.join("tracked"), "two").unwrap();
         assert!(repo.metadata().git_dirty); // unstaged
-        assert_eq!(repo.metadata().display_version, "0.1.2-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.2");
     }
 
     #[test]
@@ -243,7 +298,7 @@ mod tests {
         let repo = Fixture::directory();
         repo.run(&["init", "-q"]);
         let metadata = repo.metadata();
-        assert_eq!(metadata.display_version, "0.1.0-dev");
+        assert_eq!(metadata.display_version, "0.1.0-dev.0");
         assert_eq!(metadata.git_hash, "unknown");
         assert!(!metadata.git_dirty);
     }
@@ -273,18 +328,18 @@ mod tests {
         repo.run(&["checkout", "-q", "main"]);
         repo.commit();
         repo.run(&["merge", "--no-ff", "-qm", "Merge fixture", "feature"]);
-        assert_eq!(repo.metadata().display_version, "0.1.3-dev");
+        assert_eq!(repo.metadata().display_version, "0.1.0-dev.3");
     }
 
     #[test]
-    fn numeric_core_and_saturating_patch() {
+    fn numeric_core_preserves_large_patch() {
         assert_eq!(parse_base("1.2.3-beta.1+abc"), Some((1, 2, 3)));
         assert_eq!(parse_base("1.2.3.4"), None);
         assert_eq!(parse_base("bad"), None);
         let repo = Fixture::new();
         assert_eq!(
             resolve(&repo.0, "1.2.4294967295", None).display_version,
-            "1.2.4294967295-dev"
+            "1.2.4294967295-dev.1"
         );
     }
 

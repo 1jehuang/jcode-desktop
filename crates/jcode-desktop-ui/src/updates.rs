@@ -376,6 +376,9 @@ mod tests {
             ("0.1.0", "0.1.0-beta.99", false),
             ("0.1.0+local", "0.1.0", false),
             ("0.2.0", "0.1.0", false),
+            ("0.3.0-dev.9", "0.3.0-dev.10", true),
+            ("0.3.0-dev.10", "0.3.0", true),
+            ("0.3.0-dev.10", "0.2.1", false),
         ] {
             let status = compare_release(running, semver::Version::parse(latest).unwrap()).unwrap();
             assert_eq!(

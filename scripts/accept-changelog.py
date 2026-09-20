@@ -83,7 +83,7 @@ def main():
         parser.error("prebuilt plugin does not exist: " + str(source_plugin))
     build_version = subprocess.check_output(
         [str(source_binary), "--version"], text=True, timeout=15).strip()
-    version_match = re.fullmatch(r"Jcode Desktop (v\d+\.\d+\.\d+-dev) \([^)]+\)", build_version)
+    version_match = re.fullmatch(r"Jcode Desktop (v\d+\.\d+\.\d+-dev(?:\.\d+)?) \([^)]+\)", build_version)
     if not version_match:
         parser.error("changelog development acceptance requires a numbered dev binary: " + build_version)
     root = args.output.resolve()
