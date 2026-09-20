@@ -1,11 +1,22 @@
 use super::*;
 use std::{cell::Cell, rc::Rc};
 
+// The card sits below the row's inter-message gap. The sticky boundary is
+// the card top, not the row top and not the disappearance of its bottom.
+pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct VisibleRows {
+    first: usize,
+    last: usize,
+    first_top: gpui::Pixels,
+}
+
 /// The list's logical offset is an end sentinel while following the tail, not
 /// the first visible row. Observe real painted bounds instead of that offset.
 pub(super) fn visibility_marker(
     row: usize,
-    first_visible: Rc<Cell<Option<(usize, usize)>>>,
+    first_visible: Rc<Cell<Option<VisibleRows>>>,
     list: ListState,
 ) -> gpui::AnyElement {
     gpui::canvas(
@@ -13,11 +24,18 @@ pub(super) fn visibility_marker(
         move |bounds, _, _, _| {
             let viewport = list.viewport_bounds();
             if bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom() {
-                first_visible.set(Some(
-                    first_visible
-                        .get()
-                        .map_or((row, row), |(first, last)| (first.min(row), last.max(row))),
-                ));
+                let top = bounds.top() - viewport.top();
+                let mut visible = first_visible.get().unwrap_or(VisibleRows {
+                    first: row,
+                    last: row,
+                    first_top: top,
+                });
+                if row <= visible.first {
+                    visible.first = row;
+                    visible.first_top = top;
+                }
+                visible.last = visible.last.max(row);
+                first_visible.set(Some(visible));
             }
         },
     )
@@ -28,15 +46,29 @@ pub(super) fn visibility_marker(
     .into_any_element()
 }
 
-/// Pin only the prompt for the turn at the top of the painted viewport.
-/// A prompt that is itself still visible needs no duplicate card.
+/// Use painted row geometry, including partially clipped rows. Logical list
+/// offsets are an end sentinel during tail following and cannot identify this.
 fn prompt_for_viewport(
     prompt_rows: &[(usize, usize)],
-    first_visible: Option<usize>,
+    visible: Option<VisibleRows>,
+    at_live_end: bool,
 ) -> Option<usize> {
-    let first = first_visible?;
-    let &(row, index) = prompt_rows.iter().rev().find(|(row, _)| *row <= first)?;
-    (row < first).then_some(index)
+    let visible = visible?;
+    // A freshly submitted prompt at the live end supersedes the old reminder.
+    // While browsing history, a later prompt entering the bottom must not unpin
+    // the current turn before that later card reaches the top.
+    if at_live_end
+        && prompt_rows
+            .last()
+            .is_some_and(|(row, _)| *row > visible.first && *row <= visible.last)
+    {
+        return None;
+    }
+    let &(row, index) = prompt_rows
+        .iter()
+        .rev()
+        .find(|(row, _)| *row <= visible.first)?;
+    (row < visible.first || visible.first_top + px(PROMPT_TOP_PADDING) <= px(0.)).then_some(index)
 }
 
 pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
@@ -57,14 +89,27 @@ pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
         .any(|prefix| text.starts_with(prefix))
 }
 
+/// Count user turns rather than transcript rows. Tool output, assistant text,
+/// todo snapshots and restored background notices must not age prompt colors.
+fn prompt_distance(items: &[Item], index: usize) -> Option<usize> {
+    items.get(index).filter(|item| is_pinnable_prompt(item))?;
+    Some(
+        items
+            .iter()
+            .skip(index + 1)
+            .filter(|item| is_pinnable_prompt(item))
+            .count(),
+    )
+}
+
 impl Panel {
-    /// Share text, selection, and acknowledgement behavior, but keep the pinned
-    /// reminder unhighlighted against the transcript's normal backdrop.
+    /// Inline and sticky cards use exactly the same content, colors, width,
+    /// padding, selection, and acknowledgement animation. Only placement differs.
     pub(super) fn render_user_prompt(
         &self,
         index: usize,
         text: &str,
-        highlighted: bool,
+        pinned: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -94,7 +139,17 @@ impl Panel {
             .flex_col()
             .ml(px(offset))
             .opacity(opacity)
-            .when(highlighted, |card| card.bg(Theme::global().USER_BG))
+            .bg(
+                prompt_distance(&self.items, index).map_or(Theme::global().USER_BG, |distance| {
+                    Theme::global().prompt_background(distance)
+                }),
+            )
+            // Preserve the virtual row's height and measurement while the same
+            // card is painted at the sticky position. No clipped duplicate may
+            // peek out underneath the pinned copy during a partial-row scroll.
+            .when(!pinned && self.offscreen_prompt == Some(index), |card| {
+                card.invisible()
+            })
             .rounded_md()
             .px_3()
             .py_2()
@@ -145,17 +200,12 @@ impl Panel {
                 .left_0()
                 .w_full()
                 .min_w_0()
-                .max_h(px(
-                    (f32::from(window.viewport_size().height) * 0.2).min(180.)
-                ))
+                .max_h(self.transcript_list.viewport_bounds().size.height)
                 .overflow_y_scroll()
-                .bg(Theme::global().PANEL_BG)
                 .occlude()
                 .px_3()
-                .pt_2p5()
-                .pb_2()
                 .text_size(px(13.5))
-                .child(self.render_user_prompt(index, text, false, window, cx))
+                .child(self.render_user_prompt(index, text, true, window, cx))
                 .into_any_element(),
         )
     }
@@ -165,24 +215,19 @@ impl Panel {
     pub(super) fn prompt_visibility_observer(
         &self,
         prompt_rows: Vec<(usize, usize)>,
-        first_visible: Rc<Cell<Option<(usize, usize)>>>,
+        first_visible: Rc<Cell<Option<VisibleRows>>>,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
         let panel = cx.entity().downgrade();
+        let following_tail = self.stick_to_bottom;
+        let row_count = self.transcript_list.item_count();
         gpui::canvas(
             |_, _, _| (),
             move |_, _, _, cx| {
                 let visible = first_visible.take();
-                let has_visible_prompt = visible.is_some_and(|(first, last)| {
-                    prompt_rows
-                        .iter()
-                        .any(|(row, _)| *row >= first && *row <= last)
-                });
-                let offscreen = if has_visible_prompt {
-                    None
-                } else {
-                    prompt_for_viewport(&prompt_rows, visible.map(|(first, _)| first))
-                };
+                let at_live_end =
+                    following_tail || visible.is_some_and(|rows| rows.last + 1 == row_count);
+                let offscreen = prompt_for_viewport(&prompt_rows, visible, at_live_end);
                 cx.defer(move |cx| {
                     let _ = panel.update(cx, |panel, cx| {
                         if panel.offscreen_prompt != offscreen {
@@ -226,6 +271,40 @@ mod tests {
             percent: Some(35.),
             done: false,
         }));
+    }
+
+    #[test]
+    fn only_real_user_turns_age_prompt_card_backgrounds() {
+        let mut items = vec![Item::User("First prompt".into())];
+        assert_eq!(prompt_distance(&items, 0), Some(0));
+        items.push(Item::Assistant("Response".into()));
+        items.push(Item::Tool {
+            call_id: "call".into(),
+            name: "bash".into(),
+            input: "{}".into(),
+            output: "Done".into(),
+            done: true,
+            error: None,
+        });
+        for notice in BACKGROUND_NOTICES {
+            items.push(Item::User(notice.into()));
+            assert_eq!(prompt_distance(&items, items.len() - 1), None);
+        }
+        items.push(Item::BackgroundTask {
+            task_id: "task".into(),
+            label: "Tests".into(),
+            summary: "Running".into(),
+            percent: None,
+            done: false,
+        });
+        assert_eq!(prompt_distance(&items, 0), Some(0));
+        items.push(Item::User("Second prompt".into()));
+        assert_eq!(prompt_distance(&items, 0), Some(1));
+        assert_eq!(prompt_distance(&items, items.len() - 1), Some(0));
+        items.push(Item::User("Third prompt".into()));
+        assert_eq!(prompt_distance(&items, 0), Some(2));
+        assert_eq!(prompt_distance(&items, items.len() - 1), Some(0));
+        assert_eq!(prompt_distance(&items, items.len()), None);
     }
 
     #[gpui::test]
@@ -275,15 +354,147 @@ mod tests {
         }
     }
 
+    fn visible(first: usize, last: usize, first_top: f32) -> Option<VisibleRows> {
+        Some(VisibleRows {
+            first,
+            last,
+            first_top: px(first_top),
+        })
+    }
+
     #[test]
     fn viewport_prompt_never_comes_from_a_future_turn() {
         let prompts = [(0, 0), (12, 16), (30, 40)];
-        assert_eq!(prompt_for_viewport(&prompts, None), None);
-        assert_eq!(prompt_for_viewport(&prompts, Some(0)), None);
-        assert_eq!(prompt_for_viewport(&prompts, Some(5)), Some(0));
-        assert_eq!(prompt_for_viewport(&prompts, Some(12)), None);
-        assert_eq!(prompt_for_viewport(&prompts, Some(20)), Some(16));
-        assert_eq!(prompt_for_viewport(&prompts, Some(35)), Some(40));
+        assert_eq!(prompt_for_viewport(&prompts, None, false), None);
+        for (first, expected) in [
+            (0, None),
+            (5, Some(0)),
+            (12, None),
+            (20, Some(16)),
+            (35, Some(40)),
+        ] {
+            assert_eq!(
+                prompt_for_viewport(&prompts, visible(first, first + 5, 0.), false),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn pin_threshold_is_the_card_top_even_while_its_row_is_visible() {
+        let prompts = [(0, 0), (12, 16)];
+        for (top, expected) in [
+            (0., None),
+            (-9.99, None),
+            (-10., Some(0)),
+            (-10.01, Some(0)),
+            (-35., Some(0)),
+        ] {
+            assert_eq!(
+                prompt_for_viewport(&prompts, visible(0, 5, top), false),
+                expected
+            );
+        }
+        // A subsequent prompt down-screen does not remove historical context.
+        assert_eq!(
+            prompt_for_viewport(&prompts, visible(3, 12, -5.), false),
+            Some(0)
+        );
+        // At the live end, a newly visible submitted prompt supersedes it.
+        assert_eq!(
+            prompt_for_viewport(&prompts, visible(3, 12, -5.), true),
+            None
+        );
+        assert_eq!(
+            prompt_for_viewport(&prompts, visible(12, 15, -10.), false),
+            Some(16)
+        );
+    }
+
+    #[gpui::test]
+    fn sticky_card_keeps_original_geometry_at_partial_scroll_threshold(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "sticky-geometry".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [600., 320.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
+            for text in [
+                "Hi".to_string(),
+                "A **formatted** prompt that wraps naturally. ".repeat(12),
+            ] {
+                panel.update(vcx, |panel, cx| {
+                    panel.items = vec![Item::User(text.clone())];
+                    for n in 0..40 {
+                        panel
+                            .items
+                            .push(Item::Assistant(format!("Response paragraph {n}")));
+                    }
+                    panel.stick_to_bottom = false;
+                    panel.transcript_list.scroll_to(gpui::ListOffset::default());
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                panel.update(vcx, |panel, cx| {
+                    panel.stick_to_bottom = false;
+                    panel.transcript_list.scroll_to(gpui::ListOffset::default());
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let original = vcx.debug_bounds("user-prompt-0").unwrap();
+                let viewport = vcx.debug_bounds("transcript").unwrap();
+                assert_eq!(original.top(), viewport.top() + px(PROMPT_TOP_PADDING));
+                // Cross in both directions, including an exactly aligned card,
+                // fractional pixel offsets, and a still mostly visible row.
+                for offset in [9.5, 10., 10.5, 15., 10., 9.5, 0.] {
+                    panel.update(vcx, |panel, cx| {
+                        panel.transcript_list.scroll_to(gpui::ListOffset {
+                            item_ix: 0,
+                            offset_in_item: px(offset),
+                        });
+                        cx.notify();
+                    });
+                    vcx.run_until_parked();
+                    let card = vcx
+                        .debug_bounds("user-prompt-0")
+                        .expect("card never disappears");
+                    assert_eq!(
+                        card.size, original.size,
+                        "sticky markdown has identical size at width {width}, offset {offset}"
+                    );
+                    assert_eq!(card.left(), original.left(), "no horizontal jump");
+                    assert_eq!(
+                        card.top(),
+                        (original.top() - px(offset)).max(viewport.top()),
+                        "card clamps exactly to transcript top"
+                    );
+                    assert_eq!(vcx.debug_bounds("transcript").unwrap(), viewport);
+                    assert_eq!(
+                        vcx.debug_bounds("pinned-latest-prompt").is_some(),
+                        offset >= PROMPT_TOP_PADDING
+                    );
+                    if let Some(pinned) = vcx.debug_bounds("pinned-latest-prompt") {
+                        assert_eq!(pinned.top(), card.top(), "no banner padding above the card");
+                        assert_eq!(
+                            pinned.size.height, card.size.height,
+                            "sticky wrapper must neither clip the card to a banner nor add bottom padding"
+                        );
+                    }
+                    assert!(
+                        vcx.debug_bounds("transcript-row-0").is_some(),
+                        "threshold must be reached before the prompt row disappears"
+                    );
+                }
+            }
+        }
     }
 
     #[gpui::test]
@@ -383,10 +594,19 @@ mod tests {
                 vcx.debug_bounds("user-prompt-451"),
             ) {
                 assert!(caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom());
-                assert!(
-                    vcx.debug_bounds("user-prompt-492").is_none(),
-                    "newest prompt must not replace historical context"
-                );
+                panel.read_with(vcx, |panel, _| {
+                    assert_eq!(
+                        panel.offscreen_prompt,
+                        Some(451),
+                        "newest prompt must not replace historical context"
+                    );
+                });
+                if let Some(newer) = vcx.debug_bounds("user-prompt-492") {
+                    assert!(
+                        newer.top() > pinned.bottom(),
+                        "a newer inline prompt can enter below the historical sticky card"
+                    );
+                }
                 found_historical = true;
                 break;
             }
@@ -578,7 +798,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
 
-        // Scrolling back to even part of the original removes the reminder.
+        // A partially scrolled original remains sticky once its card top crosses.
         panel.update(vcx, |panel, cx| {
             panel.stick_to_bottom = false;
             panel.transcript_list.scroll_to(gpui::ListOffset {
@@ -589,7 +809,7 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("transcript-row-0").is_some());
-        assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
+        assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
 
         panel.update(vcx, |panel, cx| {
             panel.stick_to_bottom = true;

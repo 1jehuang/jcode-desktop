@@ -3263,7 +3263,7 @@ impl Panel {
     ) -> gpui::AnyElement {
         match item {
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
-            Item::User(text) => self.render_user_prompt(index, text, true, window, cx),
+            Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
                 if self.image_pane_open {
                     return self.render_image_pane_link(index, image, cx);
@@ -4162,7 +4162,7 @@ impl Render for Panel {
                                 } else if matches!(item, Item::Tool { .. }) && follows_tool {
                                     2.0
                                 } else {
-                                    10.0
+                                    prompt::PROMPT_TOP_PADDING
                                 };
                                 let element = panel.render_item(row.index, item, window, cx);
                                 let element = if matches!(item, Item::Assistant(_)) {

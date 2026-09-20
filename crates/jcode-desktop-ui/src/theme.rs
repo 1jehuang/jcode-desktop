@@ -69,6 +69,19 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// A light wash of the CLI prompt-number rainbow, newest prompt first.
+    /// Match jcode-tui-style's rainbow_prompt_color hue order and exponential
+    /// falloff, but fade back into the palette's card paper rather than gray.
+    /// Backgrounds need much less color than the CLI's small foreground labels.
+    pub fn prompt_background(&self, distance: usize) -> Rgba {
+        const RAINBOW: [u32; 7] = [
+            0xff5050, 0xffa050, 0xffe650, 0x50dc64, 0x50c8dc, 0x648cff, 0xb464ff,
+        ];
+        let tint = rgb(RAINBOW[distance.min(RAINBOW.len() - 1)]);
+        let strength = 0.12 * (-0.4 * distance as f32).exp();
+        self.USER_BG.blend(tint.opacity(strength))
+    }
+
     /// Workspace numbers and selection use the theme's neutral ink, not
     /// per-workspace colors. Numbers provide the stable workspace identity.
     pub fn workspace_accent(&self, _row: usize) -> Rgba {
@@ -775,6 +788,50 @@ mod tests {
                     "{} {role} contrast was {}",
                     preset.id(),
                     contrast(foreground, background)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_age_tints_follow_cli_hues_and_fade_back_to_card_paper() {
+        let mut theme = Theme::defaults();
+        theme.USER_BG = rgb(0x808080);
+        let colors: Vec<_> = (0..7).map(|age| theme.prompt_background(age)).collect();
+        assert!(colors[0].r > colors[0].g && colors[0].g == colors[0].b);
+        assert!(colors[1].r > colors[1].g && colors[1].g > colors[1].b);
+        assert!(colors[2].r > colors[2].g && colors[2].g > colors[2].b);
+        assert!(colors[3].g > colors[3].b && colors[3].b > colors[3].r);
+        assert!(colors[4].b > colors[4].g && colors[4].g > colors[4].r);
+        assert!(colors[5].b > colors[5].g && colors[5].g > colors[5].r);
+        assert!(colors[6].b > colors[6].r && colors[6].r > colors[6].g);
+        let old = theme.prompt_background(32);
+        assert!((old.r - theme.USER_BG.r).abs() < 0.00001);
+        assert!((old.g - theme.USER_BG.g).abs() < 0.00001);
+        assert!((old.b - theme.USER_BG.b).abs() < 0.00001);
+        assert_eq!(theme.prompt_background(usize::MAX), theme.USER_BG);
+    }
+
+    #[test]
+    fn prompt_age_tints_stay_subtle_and_readable_in_every_palette() {
+        for (preset, theme) in ThemePreset::ALL.into_iter().zip(themes()) {
+            for age in 0..40 {
+                let background = theme.prompt_background(age);
+                assert_eq!(background.a, 1.0);
+                let difference = (background.r - theme.USER_BG.r)
+                    .abs()
+                    .max((background.g - theme.USER_BG.g).abs())
+                    .max((background.b - theme.USER_BG.b).abs());
+                assert!(
+                    difference <= 0.12,
+                    "{} age {age}: excessive tint",
+                    preset.id()
+                );
+                assert!(
+                    contrast(theme.TEXT_USER, background) >= 4.5,
+                    "{} age {age}: prompt contrast {}",
+                    preset.id(),
+                    contrast(theme.TEXT_USER, background)
                 );
             }
         }
