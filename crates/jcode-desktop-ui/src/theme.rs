@@ -79,7 +79,11 @@ impl Theme {
         ];
         let tint = rgb(RAINBOW[distance.min(RAINBOW.len() - 1)]);
         let strength = 0.05 * (-0.4 * distance as f32).exp();
-        self.USER_BG.blend(tint.opacity(strength))
+        // Prompt cards cover transcript text, including with custom RGBA themes.
+        // Blend a light tint into opaque paper, never into a translucent layer.
+        let mut paper = self.USER_BG;
+        paper.a = 1.0;
+        paper.blend(tint.opacity(strength))
     }
 
     /// Workspace numbers and selection use the theme's neutral ink, not
@@ -810,6 +814,17 @@ mod tests {
         assert!((old.g - theme.USER_BG.g).abs() < 0.00001);
         assert!((old.b - theme.USER_BG.b).abs() < 0.00001);
         assert_eq!(theme.prompt_background(usize::MAX), theme.USER_BG);
+    }
+
+    #[test]
+    fn prompt_cards_are_opaque_even_with_translucent_custom_paper() {
+        let mut theme = themes()[0].clone();
+        for alpha in [0.0, 0.25, 0.78, 1.0] {
+            theme.USER_BG.a = alpha;
+            for distance in [0, 1, 12, usize::MAX] {
+                assert_eq!(theme.prompt_background(distance).a, 1.0);
+            }
+        }
     }
 
     #[test]

@@ -138,36 +138,33 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let now = Instant::now();
-        let pending = self.pending_users.contains(&index);
-        let (offset, opacity, animating) = self
+        // Animate position only. Fading the whole card exposes transcript text
+        // underneath a sticky prompt during pending/accept acknowledgement.
+        let (offset, animating) = self
             .accepted_users
             .get(&index)
-            .map(|at| crate::ack::motion(*at, now))
-            .unwrap_or((
-                0.0,
-                if pending {
-                    crate::ack::PENDING_TONE
-                } else {
-                    1.0
-                },
-                false,
-            ));
+            .map(|at| {
+                let (offset, _, animating) = crate::ack::motion(*at, now);
+                (offset, animating)
+            })
+            .unwrap_or((0.0, false));
         if animating {
             window.request_animation_frame();
         }
+        let number = prompt_number(&self.items, index);
+        // 10px monospace digits fit in 7px each. The usual single digit uses
+        // the existing 12px padding; only longer numbers need a wider gutter.
+        let number_width = number.map_or(0., |number| number.to_string().len() as f32 * 7.);
         let card = div()
+            .relative()
             .debug_selector(move || format!("user-prompt-{index}").into())
             .max_w_full()
             .flex_none()
             .flex()
             .flex_col()
             .ml(px(offset))
-            .opacity(opacity)
-            .bg(
-                prompt_distance(&self.items, index).map_or(Theme::global().USER_BG, |distance| {
-                    Theme::global().prompt_background(distance)
-                }),
-            )
+            .bg(Theme::global()
+                .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX)))
             // Preserve the virtual row's height and measurement while the same
             // card is painted at the sticky position. No clipped duplicate may
             // peek out underneath the pinned copy during a partial-row scroll.
@@ -176,25 +173,33 @@ impl Panel {
             })
             .rounded_md()
             .px_3()
+            .pr(px((number_width + 5.).max(12.)))
             .py_2()
             .text_color(Theme::global().TEXT_USER)
-            .child(markdown::render_interactive(
-                text,
-                index,
-                &self.transcript_selection,
-                window,
-                cx,
-                false,
-                self.media_preview_handler(cx),
-            ))
-            // A separate footer reserves space even for wrapped markdown or images.
-            // It belongs to the shared card, so sticky placement cannot change size.
-            .when_some(prompt_number(&self.items, index), |card, number| {
+            .child(
+                div()
+                    .debug_selector(move || format!("prompt-content-{index}").into())
+                    .child(markdown::render_interactive(
+                        text,
+                        index,
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                        false,
+                        self.media_preview_handler(cx),
+                    )),
+            )
+            // Occupy the existing corner padding, never a new footer line.
+            .when_some(number, |card, number| {
                 card.child(
                     div()
                         .debug_selector(move || format!("prompt-number-{index}-{number}").into())
-                        .mt(px(3.))
-                        .self_end()
+                        .absolute()
+                        .right(px(4.))
+                        .bottom(px(3.))
+                        .w(px(number_width))
+                        .font_family(Theme::global().FONT_MONO)
+                        .text_right()
                         .text_size(px(10.))
                         .line_height(px(12.))
                         .text_color(Theme::global().TEXT_DIM)
@@ -327,8 +332,23 @@ mod tests {
             .expect("genuine prompt is numbered");
         assert!(number.left() >= card.left());
         assert!(number.top() > card.top());
-        assert_eq!(card.right() - number.right(), px(12.), "right card inset");
-        assert_eq!(card.bottom() - number.bottom(), px(8.), "bottom card inset");
+        assert_eq!(card.right() - number.right(), px(4.), "right card inset");
+        assert_eq!(card.bottom() - number.bottom(), px(3.), "bottom card inset");
+        let content = vcx.debug_bounds("prompt-content-0").unwrap();
+        assert!(
+            number.left() >= content.right(),
+            "number never overlaps prompt content"
+        );
+        assert_eq!(
+            card.size.height,
+            content.size.height + px(16.),
+            "number adds no footer height"
+        );
+        assert_eq!(
+            card.size.width,
+            content.size.width + px(24.),
+            "single digit fits existing padding"
+        );
     }
 
     #[test]
@@ -631,6 +651,66 @@ mod tests {
                     );
                 } else {
                     assert!(card.size.height > px(50.), "long prompt wraps");
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn multi_digit_prompt_numbers_use_only_a_horizontal_gutter(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "prompt-number-gutter".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [600., 320.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
+            for text in [
+                "Hi".to_string(),
+                "A **formatted** prompt with wrapping content. ".repeat(8),
+            ] {
+                for (count, card_selector, content_selector, number_selector) in [
+                    (
+                        99,
+                        "user-prompt-98",
+                        "prompt-content-98",
+                        "prompt-number-98-99",
+                    ),
+                    (
+                        100,
+                        "user-prompt-99",
+                        "prompt-content-99",
+                        "prompt-number-99-100",
+                    ),
+                ] {
+                    panel.update(vcx, |panel, cx| {
+                        panel.items = (1..count).map(|_| Item::User("Earlier".into())).collect();
+                        panel.items.push(Item::User(text.clone()));
+                        panel.stick_to_bottom = true;
+                        panel.transcript_list.scroll_to_end();
+                        cx.notify();
+                    });
+                    vcx.run_until_parked();
+                    let card = vcx.debug_bounds(card_selector).unwrap();
+                    let content = vcx.debug_bounds(content_selector).unwrap();
+                    let number = vcx.debug_bounds(number_selector).unwrap();
+                    assert!(
+                        number.left() >= content.right(),
+                        "multi-digit number never overlaps markdown"
+                    );
+                    assert_eq!(number.right(), card.right() - px(4.));
+                    assert_eq!(number.bottom(), card.bottom() - px(3.));
+                    assert_eq!(
+                        card.size.height,
+                        content.size.height + px(16.),
+                        "no numbered footer"
+                    );
+                    assert!(card.right() <= vcx.debug_bounds("transcript").unwrap().right());
                 }
             }
         }
@@ -1069,9 +1149,27 @@ mod tests {
         let todos = vcx.debug_bounds("pinned-todo-card").unwrap();
         let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
         let transcript = vcx.debug_bounds("transcript").unwrap();
-        assert!(todos.bottom() <= prompt.top());
+        assert_eq!(
+            prompt.top() - todos.bottom(),
+            px(8.),
+            "todo breathing room belongs above the whole viewport"
+        );
         assert_eq!(prompt.top(), transcript.top());
         assert!(prompt.bottom() < transcript.bottom());
+
+        panel.update(vcx, |panel, cx| {
+            panel.pinned_todo_expanded = true;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let todos = vcx.debug_bounds("pinned-todo-card").unwrap();
+        let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
+        assert_eq!(
+            prompt.top() - todos.bottom(),
+            px(8.),
+            "expanded todo has the same gap"
+        );
+        assert_eq!(prompt.top(), vcx.debug_bounds("transcript").unwrap().top());
 
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(1600.)));
         vcx.run_until_parked();

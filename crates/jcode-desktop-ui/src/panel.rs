@@ -4321,6 +4321,7 @@ impl Render for Panel {
                     .flex_none()
                     .px_3()
                     .pt_1()
+                    .mb_2()
                     .cursor_pointer()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
