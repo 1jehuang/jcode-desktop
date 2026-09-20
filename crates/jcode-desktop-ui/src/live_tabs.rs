@@ -12,6 +12,19 @@ const TAB_CLOSE_WIDTH: f32 = 40.0;
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
 
+/// Secondary minimap chrome must leave a usable navigation track. This is
+/// presentation-only: resizing wider restores the user's minimap preference.
+pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
+    canvas_width
+        >= MINIMAP_WIDTH
+            + MINIMAP_RIGHT
+            + 8.0
+            + TAB_STATUS_WIDTH
+            + TAB_NEW_WIDTH
+            + TAB_CLOSE_WIDTH
+            + 64.0
+}
+
 fn group_label_width(available: f32, group_count: usize) -> f32 {
     TAB_GROUP_LABEL_WIDTH.min(available.max(0.0) / (group_count.max(1) as f32 * 4.0))
 }
@@ -313,15 +326,24 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let right = if self.show_minimap && !self.slots.is_empty() && !self.overview {
+        let right = if self.show_minimap
+            && minimap_fits_header(canvas_width)
+            && !self.slots.is_empty()
+            && !self.overview
+        {
             MINIMAP_WIDTH + MINIMAP_RIGHT + 8.0
         } else {
             0.0
         };
+        // Session navigation takes priority over secondary build metadata.
+        // Keep enough room for a useful selected tab before showing the chip.
+        let tab_budget = canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH;
         let version_width = if canvas_width - right >= 800.0 {
             240.0
-        } else {
+        } else if tab_budget >= 184.0 + 208.0 + TAB_GROUP_LABEL_WIDTH {
             184.0
+        } else {
+            0.0
         };
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
@@ -712,7 +734,13 @@ impl Workspace {
                     ),
             )
             .child(tabs)
-            .child(self.render_version_header(version_width, TAB_NEW_WIDTH + TAB_CLOSE_WIDTH, cx))
+            .when(version_width > 0.0, |el| {
+                el.child(self.render_version_header(
+                    version_width,
+                    TAB_NEW_WIDTH + TAB_CLOSE_WIDTH,
+                    cx,
+                ))
+            })
             .children(coach_chip)
             .child(
                 div()
@@ -1706,7 +1734,7 @@ mod tests {
         vcx.run_until_parked();
         assert_eq!(
             vcx.debug_bounds("live-session-tab-11").unwrap().size.width,
-            px(208.)
+            px(TabLayout::grouped(f32::from(track.size.width), &[0; 12], 11)[11].width)
         );
         vcx.simulate_keystrokes("super-u");
         vcx.run_until_parked();

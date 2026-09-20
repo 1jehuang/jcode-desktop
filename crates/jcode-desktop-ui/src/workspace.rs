@@ -7378,6 +7378,7 @@ impl Render for Workspace {
                                     ))
                                     .when(
                                         self.show_minimap
+                                            && live_tabs::minimap_fits_header(canvas_w)
                                             && !self.slots.is_empty()
                                             && overview_progress <= 0.0,
                                         |el| {

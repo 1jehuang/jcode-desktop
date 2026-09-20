@@ -133,14 +133,17 @@ fn scroll_momentum_reduced_motion_is_direct(cx: &mut gpui::TestAppContext) {
         assert!((after.item_ix, after.offset_in_item) < (before.item_ix, before.offset_in_item));
         assert!(panel.transcript_wheel_frame.is_none());
     });
-    // The virtual list's scrollbar estimate may change as new rows are measured.
-    // Assert the actual reading position instead of that estimate.
-    let before = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
+    // Track one measured row through the wheel event. A direct 20px scroll may
+    // cross a row boundary, so logical item indices need not remain identical.
+    let (anchor, before_y) = panel.read_with(vcx, |panel, _| {
+        let anchor = panel.transcript_list.logical_scroll_top().item_ix;
+        let bounds = panel.transcript_list.bounds_for_item(anchor).unwrap();
+        (anchor, bounds.top())
+    });
     wheel(vcx, true, 20.0);
     panel.read_with(vcx, |panel, _| {
-        let after = panel.transcript_list.logical_scroll_top();
-        assert_eq!(before.item_ix, after.item_ix);
-        assert!((f32::from(before.offset_in_item - after.offset_in_item) - 20.0).abs() < 0.1);
+        let after_y = panel.transcript_list.bounds_for_item(anchor).unwrap().top();
+        assert!((f32::from(after_y - before_y) - 20.0).abs() < 0.1);
         assert!(panel.transcript_wheel_frame.is_none());
     });
 }

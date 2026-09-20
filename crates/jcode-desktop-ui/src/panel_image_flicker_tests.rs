@@ -1,4 +1,4 @@
-//! Image keys and fixed-height cards must not flicker when the transcript's
+//! Image keys and aspect-ratio-preserving previews must not flicker when the transcript's
 //! streaming ancestor changes. These tests use the real Panel and image loader.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
@@ -129,7 +129,12 @@ async fn encoded_image_asset_and_geometry_survive_streaming_and_history_reconstr
             assert_eq!(baseline.size(0).height.0, image_height as i32);
             let original_source = panel.read_with(vcx, |panel, _| panel_image(panel));
             let image_bounds = vcx.debug_bounds("transcript-image").unwrap();
-            assert!(image_bounds.size.height >= px(320.));
+            let viewport = vcx.debug_bounds("inline-image-viewport").unwrap();
+            // Small attachments stay at native size rather than being padded
+            // into a 320px card. Both portrait and landscape preserve aspect.
+            assert_eq!(viewport.size.width, px(image_width as f32));
+            assert_eq!(viewport.size.height, px(image_height as f32));
+            assert!(image_bounds.size.height >= viewport.size.height);
 
             for _ in 0..3 {
                 for streaming in [true, false] {

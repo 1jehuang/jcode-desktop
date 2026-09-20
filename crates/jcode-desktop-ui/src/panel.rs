@@ -6674,7 +6674,7 @@ mod tests {
                 );
                 assert_eq!(
                     panel.input.read(cx).command_models(),
-                    &["gpt-5.6-sol"],
+                    &["openai-api:gpt-5.6-sol"],
                     "an unavailable Luna route must not reach the visible picker"
                 );
             });
@@ -7732,14 +7732,16 @@ mod tests {
             bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
             "the footer must occupy real space, got {bounds:?}"
         );
-        let build = vcx.debug_bounds("panel-build").expect("build label paints");
+        assert!(
+            vcx.debug_bounds("panel-build").is_none(),
+            "build metadata belongs in the workspace header, not each panel"
+        );
         let identity = vcx.debug_bounds("panel-identity").expect("identity paints");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
-        assert!((f32::from(build.center().x - bounds.center().x)).abs() < 1.0);
-        assert_eq!(identity.center().y, build.center().y);
-        assert_eq!(status.center().y, build.center().y);
-        assert!(identity.right() <= build.left());
-        assert!(build.right() <= status.left());
+        assert_eq!(identity.center().y, status.center().y);
+        assert!(identity.left() >= bounds.left());
+        assert!(identity.right() <= status.left());
+        assert!(status.right() <= bounds.right());
         assert!(vcx.debug_bounds("panel-status-pulse").is_none());
     }
 
@@ -7928,7 +7930,11 @@ mod tests {
         let avatar = vcx
             .debug_bounds("assistant-avatar")
             .expect("streamed assistant response should have the canonical avatar");
-        assert!(avatar.origin.x + avatar.size.width <= bounds.origin.x);
+        // The avatar indents only the first line. Continuation lines reclaim
+        // the full response width, so the avatar lives inside this container.
+        assert!(avatar.left() >= bounds.left());
+        assert!(avatar.right() <= bounds.right());
+        assert!(avatar.top() >= bounds.top());
         assert!(avatar.origin.y < bounds.origin.y + bounds.size.height);
         assert!(vcx.debug_bounds("role-caption-jcode").is_none());
     }
