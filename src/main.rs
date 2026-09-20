@@ -262,11 +262,48 @@ fn validate_launch_command(
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         mode != LaunchMode::SinglePanel
-            || !args
-                .into_iter()
-                .any(|arg| { arg.as_ref() == "--toggle-voice" || arg.as_ref() == "--reload-ui" }),
-        "--single-panel cannot target an existing window with --toggle-voice or --reload-ui. Use the window's controls or /update instead."
+            || !args.into_iter().any(|arg| {
+                voice_cli_command(arg.as_ref()).is_some() || arg.as_ref() == "--reload-ui"
+            }),
+        "--single-panel cannot target an existing window with --toggle-voice, --voice-press, --voice-release or --reload-ui. Use the window's controls or /update instead."
     );
+    Ok(())
+}
+
+fn voice_cli_command(arg: &std::ffi::OsStr) -> Option<InstanceCommand> {
+    match arg.to_str()? {
+        "--toggle-voice" => Some(InstanceCommand::ToggleVoice),
+        "--voice-press" => Some(InstanceCommand::VoicePress),
+        "--voice-release" => Some(InstanceCommand::VoiceRelease),
+        _ => None,
+    }
+}
+
+fn voice_action(command: InstanceCommand) -> Option<&'static str> {
+    match command {
+        InstanceCommand::ToggleVoice => Some("workspace::ToggleVoice"),
+        InstanceCommand::VoicePress => Some("workspace::BeginVoiceHold"),
+        InstanceCommand::VoiceRelease => Some("workspace::EndVoiceHold"),
+        _ => None,
+    }
+}
+
+fn dispatch_instance_command(
+    command: InstanceCommand,
+    manager: &Rc<RefCell<ReloadManager>>,
+    current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    // Releasing a global chord must not pull focus back from another app or
+    // reopen a closed surface. Suspending the UI cancels its recording.
+    if command != InstanceCommand::VoiceRelease {
+        restore_window(manager, current_window, cx)?;
+    }
+    if let Some(action) = voice_action(command) {
+        if let Some(window) = *current_window.borrow() {
+            dispatch_ui_action(window, action, cx)?;
+        }
+    }
     Ok(())
 }
 
@@ -291,12 +328,10 @@ fn main() {
         std::process::exit(1);
     }
     let instance_name = launch_mode.instance_name(std::process::id());
-    if env::args_os().any(|argument| argument == "--toggle-voice") {
-        if let Err(error) =
-            instance::notify_named(instance_name.as_deref(), InstanceCommand::ToggleVoice)
-        {
+    if let Some(command) = env::args_os().find_map(|argument| voice_cli_command(&argument)) {
+        if let Err(error) = instance::notify_named(instance_name.as_deref(), command) {
             eprintln!(
-                "could not toggle desktop voice: {error}. Start an updated Jcode Desktop host first."
+                "could not send desktop voice command {command:?}: {error}. Start an updated Jcode Desktop host first."
             );
             std::process::exit(1);
         }
@@ -402,14 +437,12 @@ fn main() {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |event, cx| {
-                    restore_window(&manager, &current_window, cx)?;
-                    if event == host::global_shortcut::ShortcutEvent::ToggleVoice {
-                        let window = current_window.borrow().ok_or_else(|| {
-                            anyhow::anyhow!("desktop window unavailable")
-                        })?;
-                        dispatch_ui_action(window, "workspace::ToggleVoice", cx)?;
-                    }
-                    Ok(())
+                    let command = match event {
+                        host::global_shortcut::ShortcutEvent::Activate => InstanceCommand::Show,
+                        host::global_shortcut::ShortcutEvent::VoicePress => InstanceCommand::VoicePress,
+                        host::global_shortcut::ShortcutEvent::VoiceRelease => InstanceCommand::VoiceRelease,
+                    };
+                    dispatch_instance_command(command, &manager, &current_window, cx)
                 }
             }) {
                 eprintln!("could not register global Control+Command+I shortcut: {error:#}");
@@ -460,12 +493,7 @@ fn main() {
                     }
 
                     let result = cx.update(|cx| {
-                        restore_window(&manager, &current_window, cx)?;
-                        if command == InstanceCommand::ToggleVoice {
-                            let window = current_window.borrow().ok_or_else(|| anyhow::anyhow!("desktop window unavailable"))?;
-                            dispatch_ui_action(window, "workspace::ToggleVoice", cx)?;
-                        }
-                        Ok::<_, anyhow::Error>(())
+                        dispatch_instance_command(command, &manager, &current_window, cx)
                     });
                     if let Err(error) = result {
                         eprintln!("failed to restore desktop window: {error:#}");
@@ -570,9 +598,40 @@ mod tests {
     use super::RebuildState;
 
     #[test]
+    fn voice_cli_flags_route_to_distinct_current_ui_actions() {
+        for (flag, command, action) in [
+            (
+                "--toggle-voice",
+                super::InstanceCommand::ToggleVoice,
+                "workspace::ToggleVoice",
+            ),
+            (
+                "--voice-press",
+                super::InstanceCommand::VoicePress,
+                "workspace::BeginVoiceHold",
+            ),
+            (
+                "--voice-release",
+                super::InstanceCommand::VoiceRelease,
+                "workspace::EndVoiceHold",
+            ),
+        ] {
+            assert_eq!(super::voice_cli_command(flag.as_ref()), Some(command));
+            assert_eq!(super::voice_action(command), Some(action));
+        }
+        assert_eq!(super::voice_cli_command("--reload-ui".as_ref()), None);
+        assert_eq!(super::voice_action(super::InstanceCommand::Show), None);
+    }
+
+    #[test]
     fn single_panel_rejects_ambiguous_remote_commands_before_startup() {
         use jcode_desktop_api::LaunchMode;
-        for command in ["--toggle-voice", "--reload-ui"] {
+        for command in [
+            "--toggle-voice",
+            "--voice-press",
+            "--voice-release",
+            "--reload-ui",
+        ] {
             assert!(super::validate_launch_command(LaunchMode::SinglePanel, [command]).is_err());
             assert!(super::validate_launch_command(LaunchMode::Workspace, [command]).is_ok());
             assert!(super::validate_launch_command(LaunchMode::NoSidebar, [command]).is_ok());

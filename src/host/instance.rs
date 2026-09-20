@@ -19,6 +19,8 @@ mod platform {
     const SHOW: u8 = b'S';
     const RELOAD: u8 = b'R';
     const TOGGLE_VOICE: u8 = b'V';
+    const VOICE_PRESS: u8 = b'P';
+    const VOICE_RELEASE: u8 = b'U';
     const OK: &[u8] = b"ok\n";
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +28,8 @@ mod platform {
         Show,
         Reload,
         ToggleVoice,
+        VoicePress,
+        VoiceRelease,
     }
 
     pub enum Instance {
@@ -117,6 +121,8 @@ mod platform {
             Command::Show => SHOW,
             Command::Reload => RELOAD,
             Command::ToggleVoice => TOGGLE_VOICE,
+            Command::VoicePress => VOICE_PRESS,
+            Command::VoiceRelease => VOICE_RELEASE,
         }])?;
         let mut response = [0; 3];
         stream.read_exact(&mut response)?;
@@ -141,6 +147,8 @@ mod platform {
                     SHOW => Command::Show,
                     RELOAD => Command::Reload,
                     TOGGLE_VOICE => Command::ToggleVoice,
+                    VOICE_PRESS => Command::VoicePress,
+                    VOICE_RELEASE => Command::VoiceRelease,
                     _ => continue,
                 };
                 if commands.send(command).is_ok() {
@@ -293,19 +301,60 @@ mod platform {
         }
 
         #[test]
+        fn voice_hold_lifecycle_is_forwarded_in_order_without_startup_replay() {
+            let (_root, path) = path("hold.sock");
+            for command in [Command::VoicePress, Command::VoiceRelease] {
+                assert!(notify(&path, command).is_err());
+                assert!(!path.exists(), "explicit edges must not start a host");
+            }
+            let primary = acquire_at(path.clone(), Command::Show).unwrap();
+            let Instance::Primary { commands, .. } = &primary else {
+                panic!()
+            };
+            assert!(commands.try_recv().is_err());
+            // IPC preserves edges, including repeats. The UI owns hold idempotency.
+            for command in [
+                Command::VoicePress,
+                Command::VoicePress,
+                Command::VoiceRelease,
+                Command::VoiceRelease,
+                Command::VoicePress,
+                Command::VoiceRelease,
+                Command::ToggleVoice,
+            ] {
+                notify(&path, command).unwrap();
+                assert_eq!(
+                    commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+                    command
+                );
+            }
+            assert!(commands.try_recv().is_err());
+            drop(primary);
+            assert!(!path.exists());
+            assert!(notify(&path, Command::VoiceRelease).is_err());
+            assert!(!path.exists());
+        }
+
+        #[test]
         fn unsupported_voice_request_preserves_live_old_host_socket() {
-            let (_root, path) = path("old-host.sock");
-            let listener = UnixListener::bind(&path).unwrap();
-            let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                assert_eq!(byte, [TOGGLE_VOICE]);
-                // Old hosts simply close an unknown command connection.
-            });
-            assert!(notify(&path, Command::ToggleVoice).is_err());
-            server.join().unwrap();
-            assert!(path.exists(), "do not unlink an unsupported host's socket");
+            for (command, expected_byte) in [
+                (Command::ToggleVoice, TOGGLE_VOICE),
+                (Command::VoicePress, VOICE_PRESS),
+                (Command::VoiceRelease, VOICE_RELEASE),
+            ] {
+                let (_root, path) = path("old-host.sock");
+                let listener = UnixListener::bind(&path).unwrap();
+                let server = thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    assert_eq!(byte, [expected_byte]);
+                    // Old hosts simply close an unknown command connection.
+                });
+                assert!(notify(&path, command).is_err());
+                server.join().unwrap();
+                assert!(path.exists(), "do not unlink an unsupported host's socket");
+            }
         }
     }
 } // unix platform
@@ -327,6 +376,8 @@ mod platform {
         Show,
         Reload,
         ToggleVoice,
+        VoicePress,
+        VoiceRelease,
     }
 
     pub enum Instance {

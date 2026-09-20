@@ -202,3 +202,29 @@ fn closing_an_unrelated_window_preserves_the_tracked_workspace(cx: &mut TestAppC
         .unwrap();
     assert_eq!(cx.windows().len(), 1);
 }
+
+#[gpui::test]
+fn voice_release_does_not_restore_a_closed_window(cx: &mut TestAppContext) {
+    let (manager, current) = setup(cx);
+    let handle = current.borrow().unwrap();
+    assert!(VisualTestContext::from_window(handle, cx).simulate_close());
+    handle
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    assert!(current.borrow().is_none());
+    for _ in 0..3 {
+        cx.update(|cx| {
+            dispatch_instance_command(InstanceCommand::VoiceRelease, &manager, &current, cx)
+        })
+        .unwrap();
+        assert!(current.borrow().is_none());
+        assert!(
+            cx.windows().is_empty(),
+            "release must not create or activate a window"
+        );
+    }
+    // The release did not disturb the suspended workspace's later restoration.
+    cx.update(|cx| restore_window(&manager, &current, cx))
+        .unwrap();
+    assert_eq!(cx.windows().len(), 1);
+}

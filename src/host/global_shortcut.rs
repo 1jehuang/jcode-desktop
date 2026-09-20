@@ -13,7 +13,8 @@ use std::sync::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShortcutEvent {
     Activate,
-    ToggleVoice,
+    VoicePress,
+    VoiceRelease,
 }
 
 fn activation_hotkey() -> HotKey {
@@ -25,13 +26,13 @@ fn voice_hotkey() -> HotKey {
 }
 
 fn shortcut_event(event: GlobalHotKeyEvent) -> Option<ShortcutEvent> {
-    if event.state != HotKeyState::Pressed {
-        return None;
-    }
-    if event.id == activation_hotkey().id() {
+    if event.id == voice_hotkey().id() {
+        Some(match event.state {
+            HotKeyState::Pressed => ShortcutEvent::VoicePress,
+            HotKeyState::Released => ShortcutEvent::VoiceRelease,
+        })
+    } else if event.id == activation_hotkey().id() && event.state == HotKeyState::Pressed {
         Some(ShortcutEvent::Activate)
-    } else if event.id == voice_hotkey().id() {
-        Some(ShortcutEvent::ToggleVoice)
     } else {
         None
     }
@@ -48,20 +49,19 @@ fn forward_shortcut(
     sender: &async_channel::Sender<ShortcutEvent>,
     state: &ShortcutState,
 ) {
-    // Carbon delivers key-up separately. Latch the physical chord so holding
-    // it cannot start then immediately stop recording via auto-repeat.
-    if event.id == voice_hotkey().id() && event.state == HotKeyState::Released {
-        state.voice_pressed.store(false, Ordering::Relaxed);
-        return;
-    }
     let Some(event) = shortcut_event(event) else {
         return;
     };
-    if event == ShortcutEvent::ToggleVoice && state.voice_pressed.swap(true, Ordering::Relaxed) {
-        return;
+    // Carbon delivers key-up separately. Emit one edge per physical hold,
+    // ignoring both auto-repeat presses and duplicate/unmatched releases.
+    match event {
+        ShortcutEvent::VoicePress if state.voice_pressed.swap(true, Ordering::Relaxed) => return,
+        ShortcutEvent::VoiceRelease if !state.voice_pressed.swap(false, Ordering::Relaxed) => {
+            return;
+        }
+        _ => {}
     }
-    // Coalesce redundant shows, but never coalesce toggles: two voice presses
-    // must start then stop, even when GPUI has not processed the first yet.
+    // Coalesce redundant shows, but preserve ordered voice hold edges.
     if event == ShortcutEvent::Activate && state.activation_pending.swap(true, Ordering::Relaxed) {
         return;
     }
@@ -99,7 +99,7 @@ pub fn install(
         .register(activation_hotkey())
         .context("register Control+Command+I (another app may already own it)")?;
     // Carbon consumes registered hotkeys, so the matching in-app key binding
-    // does not also toggle voice when this registration succeeds.
+    // does not also start voice when this registration succeeds.
     // A voice shortcut conflict must not disable the established app shortcut.
     if let Err(error) = manager.register(voice_hotkey()) {
         eprintln!(
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_toggles_are_not_dropped_or_coalesced_with_pending_activation() {
+    fn voice_edges_are_not_dropped_or_coalesced_with_pending_activation() {
         let (sender, receiver) = async_channel::unbounded();
         let pending = ShortcutState::default();
         for hotkey in [
@@ -212,8 +212,10 @@ mod tests {
             );
         }
         assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::Activate));
-        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::ToggleVoice));
-        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::ToggleVoice));
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoicePress));
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoiceRelease));
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoicePress));
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoiceRelease));
         assert!(receiver.try_recv().is_err());
         drop(receiver);
         forward_shortcut(
@@ -227,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn held_voice_chord_toggles_once_until_its_own_release() {
+    fn held_voice_chord_emits_one_press_and_one_release() {
         let (sender, receiver) = async_channel::unbounded();
         let state = ShortcutState::default();
         let press = GlobalHotKeyEvent {
@@ -235,7 +237,7 @@ mod tests {
             state: HotKeyState::Pressed,
         };
         forward_shortcut(press, &sender, &state);
-        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::ToggleVoice));
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoicePress));
         for _ in 0..3 {
             forward_shortcut(press, &sender, &state);
         }
@@ -257,9 +259,20 @@ mod tests {
             &sender,
             &state,
         );
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoiceRelease));
+        for _ in 0..3 {
+            forward_shortcut(
+                GlobalHotKeyEvent {
+                    state: HotKeyState::Released,
+                    ..press
+                },
+                &sender,
+                &state,
+            );
+        }
         assert!(receiver.try_recv().is_err());
         forward_shortcut(press, &sender, &state);
-        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::ToggleVoice));
+        assert_eq!(receiver.try_recv(), Ok(ShortcutEvent::VoicePress));
         assert!(receiver.try_recv().is_err());
     }
 }
