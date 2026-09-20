@@ -4961,7 +4961,6 @@ impl Workspace {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
-                                    .when(is_open, |el| el.ml(px(40.0)))
                                     .mr_2()
                                     .mb_1()
                                     .relative()
@@ -9392,8 +9391,9 @@ mod tests {
         let lower = vcx.debug_bounds("sidebar-workspace-group-1").unwrap();
         let first = vcx.debug_bounds("sidebar-session-0").unwrap();
         assert!(upper.top() < first.top());
-        assert!(upper.bottom() > first.top(), "marker sits beside the card, not in a separate heading row");
-        assert!(upper.right() <= first.left());
+        assert!(upper.bottom() <= first.top(), "workspace marker must not overlap the session row");
+        assert_eq!(upper.left(), first.left(), "sessions must not reserve a left gutter for workspace markers");
+        assert_eq!(first.left(), vcx.debug_bounds("sidebar-session-1").unwrap().left());
         assert!(vcx.debug_bounds("sidebar-session-1").unwrap().bottom() <= lower.top());
         assert!(vcx.debug_bounds("sidebar-session-2").is_none(), "inactive workspace starts collapsed");
         vcx.simulate_click(lower.center(), gpui::Modifiers::default());

@@ -133,6 +133,7 @@ impl Workspace {
                 Theme::global().TEXT_DIM
             };
             let state = state.to_owned();
+            let selected = active_id == Some(id.as_str());
             let edits = session.edit_stats.as_ref().map(|stats| {
                 super::sidebar_edits::render(
                     &session.session_id,
@@ -153,9 +154,9 @@ impl Workspace {
                     .px_1()
                     .rounded_sm()
                     .ml(px((child.depth.saturating_sub(1).min(3) * 8) as f32))
-                    .when(active_id == Some(id.as_str()), |el| {
-                        el.bg(Theme::global().ACCENT_DIM)
-                    })
+                    // Working or open agents are not selected. Only the viewed
+                    // conversation gets a fill; all other rows inherit the sidebar.
+                    .when(selected, |el| el.bg(Theme::global().ACCENT_DIM))
                     .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .cursor_pointer()
                     .on_mouse_down(

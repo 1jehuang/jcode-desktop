@@ -45,9 +45,9 @@ impl Workspace {
         div()
             .id(("sidebar-workspace-group", row))
             .debug_selector(move || format!("sidebar-workspace-group-{row}"))
-            .absolute()
-            .left(px(5.0))
-            .top_0()
+            // A compact header above the sessions, not a reserved left gutter.
+            .ml_2()
+            .mb_1()
             .w(px(32.0))
             .h(px(26.0))
             .flex()
