@@ -137,6 +137,16 @@ impl Render for ImageView {
                     } else {
                         CursorStyle::PointingHand
                     })
+                    .capture_pinch(cx.listener(|this, event: &PinchEvent, _, _| {
+                        // Terminal events must release ownership even if the
+                        // pointer has left this viewport. Capture is not hover-gated.
+                        if matches!(
+                            event.phase,
+                            gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
+                        ) {
+                            this.pinch_active = false;
+                        }
+                    }))
                     .on_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
                         match event.phase {
                             gpui::TouchPhase::Started => this.pinch_active = true,
@@ -395,6 +405,42 @@ mod tests {
     fn assert_near(a: Point<Pixels>, b: Point<Pixels>) {
         assert!((a.x - b.x).abs() < px(1.0), "x: {a:?} != {b:?}");
         assert!((a.y - b.y).abs() < px(1.0), "y: {a:?} != {b:?}");
+    }
+
+    #[gpui::test]
+    fn inline_image_pinch_end_outside_releases_ownership(cx: &mut TestAppContext) {
+        for phase in [TouchPhase::Ended, TouchPhase::Cancelled] {
+            let (_, vcx) = setup(cx);
+            vcx.run_until_parked();
+            let before = bounds(vcx);
+            let anchor = before.center();
+            vcx.simulate_event(PinchEvent {
+                position: anchor,
+                phase: TouchPhase::Started,
+                ..Default::default()
+            });
+            vcx.run_until_parked();
+            let outside = before.bottom_right() + point(px(40.0), px(40.0));
+            vcx.simulate_event(MouseMoveEvent {
+                position: outside,
+                ..Default::default()
+            });
+            vcx.simulate_event(PinchEvent {
+                position: outside,
+                phase,
+                ..Default::default()
+            });
+            vcx.run_until_parked();
+            vcx.simulate_event(MouseMoveEvent {
+                position: anchor,
+                ..Default::default()
+            });
+            wheel(vcx, anchor, 0.0, 10.0, true);
+            assert!(
+                bounds(vcx).size.width > before.size.width,
+                "outside {phase:?} must not leave Ctrl-wheel trapped as pan"
+            );
+        }
     }
 
     #[gpui::test]
