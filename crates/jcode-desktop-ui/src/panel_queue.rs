@@ -160,6 +160,10 @@ impl Panel {
                 .id("prompt-queue")
                 .debug_selector(|| "prompt-queue".into())
                 .flex_none()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .min_w_0()
                 .mx_2()
                 .p_2()
                 .rounded_md()
@@ -181,7 +185,11 @@ impl Panel {
                 .child(
                     div()
                         .id("prompt-queue-items")
-                        .max_h(px(100.))
+                        .debug_selector(|| "prompt-queue-items".into())
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .max_h(px(144.))
                         .overflow_y_scroll()
                         .children(self.prompt_queue.prompts.iter().enumerate().map(
                             |(index, prompt)| {
@@ -191,13 +199,28 @@ impl Panel {
                                     format!("{} · {} image(s)", prompt.content, prompt.images.len())
                                 };
                                 div()
+                                    .debug_selector(move || format!("queued-prompt-{index}").into())
                                     .flex()
+                                    .flex_none()
+                                    .min_w_0()
                                     .items_center()
                                     .gap_2()
+                                    .py_1()
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .min_w(px(20.))
+                                            .text_color(theme.TEXT_DIM)
+                                            .child(format!("{}.", index + 1)),
+                                    )
                                     .child(div().flex_1().min_w_0().truncate().child(label))
                                     .child(
                                         div()
                                             .id(("remove-queued-prompt", index))
+                                            .debug_selector(move || {
+                                                format!("remove-queued-prompt-{index}").into()
+                                            })
+                                            .flex_none()
                                             .cursor_pointer()
                                             .px_2()
                                             .text_color(theme.TEXT_DIM)

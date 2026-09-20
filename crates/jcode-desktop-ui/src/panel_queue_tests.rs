@@ -352,3 +352,73 @@ fn queue_stays_above_input_in_startup_and_resumed_layouts(cx: &mut gpui::TestApp
         }
     }
 }
+
+#[gpui::test]
+fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut p = Panel::new(
+            "queue-stack".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        p.history_loaded = true;
+        p.status = "running".into();
+        p.items.push(Item::User("First request".into()));
+        for index in 0..12 {
+            p.submit_or_queue(
+                format!("Follow-up {index}: {}", "long prompt ".repeat(20)),
+                vec![],
+                true,
+                cx,
+            );
+        }
+        p
+    });
+    vcx.run_until_parked();
+    let queue = vcx.debug_bounds("prompt-queue").unwrap();
+    let items = vcx.debug_bounds("prompt-queue-items").unwrap();
+    let input = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(items.size.height <= px(144.));
+    assert!(queue.bottom() <= input.top());
+    let first = vcx.debug_bounds("queued-prompt-0").unwrap();
+    let second = vcx.debug_bounds("queued-prompt-1").unwrap();
+    assert!(first.bottom() < second.top(), "rows need breathing room");
+    assert!(
+        first.size.height >= px(24.),
+        "rows must not shrink to fit the stack"
+    );
+    let remove = vcx.debug_bounds("remove-queued-prompt-0").unwrap();
+    assert!(
+        remove.right() <= items.right(),
+        "long text must not push Remove out"
+    );
+    vcx.simulate_click(remove.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    panel.read_with(vcx, |p, _| {
+        assert_eq!(p.prompt_queue.prompts.len(), 11);
+        assert!(
+            p.prompt_queue.prompts[0]
+                .content
+                .starts_with("Follow-up 1:")
+        );
+    });
+    vcx.simulate_event(gpui::ScrollWheelEvent {
+        position: items.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-1000.))),
+        modifiers: gpui::Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Started,
+    });
+    vcx.run_until_parked();
+    let last = vcx.debug_bounds("queued-prompt-10").unwrap();
+    assert!(
+        last.top() >= items.top() && last.bottom() <= items.bottom() + px(1.),
+        "last row must be reachable: {last:?}, {items:?}"
+    );
+    assert_eq!(
+        vcx.debug_bounds("prompt-input"),
+        Some(input),
+        "queue scrolling must not move the input"
+    );
+}
