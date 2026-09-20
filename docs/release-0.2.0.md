@@ -87,3 +87,26 @@ remaining unpublishable 0.2.0 workflows were cancelled at 10:07 UTC to avoid
 wasting runner time and unblock the serialized macOS recovery build. The old
 tag and draft were preserved. The 0.2.1 workflows must independently satisfy
 every native publication gate. Public availability has not yet been verified.
+
+## FreeBSD dependency compatibility recovery
+
+The 0.2.1 Linux ARM64 job passed packaging and both native X11/Wayland launch
+checks. FreeBSD job `106060890220` then failed in the pinned upstream GPUI
+dependency: its queue module and public exports omit FreeBSD from their cfgs,
+although `gpui_linux` requires those exports on FreeBSD.
+
+The separately reviewed `freebsd-0.2.1-recovery.yml` keeps Desktop source
+`4c5495f85a03671b20a00a108f10e6dbe041584d` and the runtime pin unchanged. It
+uses a new, private-to-the-build Cargo home and the exact two-cfg compatibility
+overlay documented in [FreeBSD GPUI compatibility](freebsd-gpui-compatibility.md).
+Both pristine and patched dependency file hashes are pinned. No shared cache or
+tagged application source is edited, and post-build verification rejects any
+other tracked dependency change.
+
+Recovery retains package verification, CLI launch, dynamic dependency checks,
+and the full native FreeBSD graphical smoke. Upload refuses to overwrite assets
+and redownloads them to compare exact bytes. Publication additionally requires
+the original, exact macOS workflow and all four Linux/Windows matrix jobs to
+succeed, plus full asset validation. The original known FreeBSD failure is the
+only replaced gate. Release notes record the exact recovery recipe commit and
+workflow run. Successful recovery is still required before public promotion.
