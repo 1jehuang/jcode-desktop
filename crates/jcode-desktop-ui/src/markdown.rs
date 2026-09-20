@@ -328,7 +328,6 @@ fn inline_spans_impl<const BULK_TEXT: bool>(source: &str) -> Inline {
 
     let code_style = HighlightStyle {
         color: Some(to_hsla(Theme::global().CODE_TEXT)),
-        background_color: Some(to_hsla(Theme::global().INLINE_CODE_BG)),
         ..Default::default()
     };
 
@@ -904,6 +903,7 @@ fn styled_line(
             })
             .into_any_element()
     };
+    let child = crate::markdown_inline_code::wrap(child, layout.clone(), inline.code_ranges);
     text_selection::selectable(selection.clone(), key, inline.plain, layout, child, cx)
 }
 
