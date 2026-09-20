@@ -24,6 +24,9 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[path = "panel_background_task.rs"]
+mod background_task;
+
 #[path = "panel_activity.rs"]
 mod activity;
 #[path = "panel_scroll_motion.rs"]
@@ -3416,76 +3419,7 @@ impl Panel {
                 percent,
                 done,
             } => {
-                let progress = percent.map(|value| (value / 100.0).clamp(0.0, 1.0));
-                div()
-                    .id(("background-task", index))
-                    .debug_selector(|| "background-task-card".into())
-                    .flex()
-                    .flex_none()
-                    .flex_col()
-                    .gap_1p5()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(Theme::global().TOOL_BORDER)
-                    .bg(Theme::global().TOOL_BG)
-                    .px_2p5()
-                    .py_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if *done {
-                                        Theme::global().OK
-                                    } else {
-                                        Theme::global().WARN
-                                    })
-                                    .child(if *done { "✓" } else { "●" }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(Theme::global().TOOL_TEXT)
-                                    .child(label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_family(Theme::global().FONT_MONO)
-                                    .text_size(px(10.0))
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .child(if *done { "finished" } else { "background" }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(summary.clone()),
-                    )
-                    .when_some(progress, |el, progress| {
-                        el.child(
-                            div()
-                                .w_full()
-                                .h(px(4.0))
-                                .rounded_full()
-                                .bg(Theme::global().TOOL_BORDER)
-                                .child(div().h_full().w(relative(progress)).rounded_full().bg(
-                                    if *done {
-                                        Theme::global().OK
-                                    } else {
-                                        Theme::global().ACCENT
-                                    },
-                                )),
-                        )
-                    })
-                    .into_any_element()
+                background_task::render(index, label, summary, *percent, *done).into_any_element()
             }
             Item::Tool {
                 call_id,
@@ -5227,6 +5161,8 @@ fn render_pinned_todo_summary(
     label: &Entity<task_label::TypeInLabel>,
     cx: &mut Context<Panel>,
 ) -> impl IntoElement {
+    let theme = Theme::global();
+    let paper = theme.prompt_background(0);
     let summary = pinned_todo_summary(payload);
     let task = pinned_todo_label(payload, &summary);
 
@@ -5237,25 +5173,38 @@ fn render_pinned_todo_summary(
         .flex()
         .w_full()
         .min_w_0()
-        .h(px(30.0))
+        .h(px(32.0))
         .items_center()
-        .gap_2()
-        .rounded_md()
-        .border_1()
-        .border_color(Theme::global().TOOL_BORDER)
-        .bg(Theme::global().TOOL_BG)
-        .px_2()
+        .gap(px(6.0))
         .text_size(px(12.0))
-        .child(crate::tool_icon::render("todo"))
+        // Like prompt turn numbers, the marker lives outside the paper card.
+        .child(
+            div()
+                .debug_selector(|| "pinned-todo-badge".into())
+                .flex_none()
+                .size(px(20.0))
+                .rounded_full()
+                .bg(paper)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::tool_icon::render("todo")),
+        )
         .child(
             div()
                 .debug_selector(|| "pinned-todo-task".into())
                 .flex_1()
                 .min_w_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .px_2()
+                .rounded(px(8.0))
+                .bg(paper)
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_color(Theme::global().TEXT)
+                .text_color(theme.TEXT_USER)
                 .child(label.clone()),
         )
         .child(
@@ -5265,6 +5214,16 @@ fn render_pinned_todo_summary(
                 .flex_none()
                 .items_center()
                 .gap(px(4.0))
+                .px_1()
+                .child(
+                    div()
+                        .debug_selector(|| "pinned-todo-count".into())
+                        .mr_1()
+                        .font_family(theme.FONT_MONO)
+                        .text_size(px(10.0))
+                        .text_color(theme.TEXT_DIM)
+                        .child(format!("{}/{}", summary.completed, summary.total)),
+                )
                 .children(summary.dots.iter().enumerate().map(|(index, completed)| {
                     div()
                         .debug_selector(move || format!("pinned-todo-dot-{index}"))
@@ -5273,18 +5232,18 @@ fn render_pinned_todo_summary(
                         .rounded_full()
                         .border_1()
                         .border_color(if *completed {
-                            Theme::global().OK
+                            theme.ACCENT_MUTED
                         } else {
-                            Theme::global().TEXT_FAINT
+                            theme.TEXT_FAINT
                         })
-                        .when(*completed, |dot| dot.bg(Theme::global().OK))
+                        .when(*completed, |dot| dot.bg(theme.ACCENT_MUTED))
                 }))
                 .when(summary.total > summary.dots.len(), |row| {
                     row.child(
                         div()
                             .debug_selector(|| "pinned-todo-overflow".into())
                             .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_DIM)
+                            .text_color(theme.TEXT_DIM)
                             .child(format!("+{}", summary.total - summary.dots.len())),
                     )
                 }),
@@ -5292,7 +5251,7 @@ fn render_pinned_todo_summary(
         .child(
             div()
                 .flex_none()
-                .text_color(Theme::global().TEXT_FAINT)
+                .text_color(theme.TEXT_FAINT)
                 .child("⌄"),
         )
 }
@@ -6932,9 +6891,7 @@ mod tests {
         assert_eq!(copied, "fn main() {\n    println!(\"hi\");\n}");
     }
 
-    /// The acceptance path for tool rows: the size hint paints on a collapsed
-    /// finished call, a real click expands the detail (ANSI-clean, head and
-    /// tail both present), and a second click collapses it again.
+    /// Progress updates reuse a compact row, including long and multiline output.
     #[gpui::test]
     fn background_progress_updates_one_native_card(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -6951,6 +6908,7 @@ mod tests {
 
         for (percent, summary, done) in [
             (Some(35.0), "35% · Running tests", false),
+            (None, "Compiling dependencies and waiting for the linker to finish a very long build\nAdditional output stays in the tooltip", false),
             (None, "✓ completed · 8.2s · exit 0", true),
         ] {
             panel.update(vcx, |panel, cx| {
@@ -6967,6 +6925,13 @@ mod tests {
                 );
             });
             vcx.run_until_parked();
+            let row = vcx
+                .debug_bounds("background-task-card")
+                .expect("task row paints");
+            assert!(
+                row.size.height <= px(28.0),
+                "background tasks stay one compact row: {row:?}"
+            );
         }
 
         assert!(vcx.debug_bounds("background-task-card").is_some());
@@ -8492,7 +8457,11 @@ Goals: []"#,
         );
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
         assert!(pinned.bottom() <= transcript.top());
-        assert_eq!(summary.size.height, px(30.0));
+        assert_eq!(summary.size.height, px(32.0));
+        let badge = vcx.debug_bounds("pinned-todo-badge").expect("prompt-style badge");
+        assert_eq!(badge.size, gpui::size(px(20.0), px(20.0)));
+        let count = vcx.debug_bounds("pinned-todo-count").expect("readable progress count");
+        assert!(count.right() <= summary.right());
         let icon = vcx.debug_bounds("tool-type-icon").expect("pinned task icon paints");
         assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
         let task = vcx.debug_bounds("pinned-todo-task").expect("task label");
@@ -8565,6 +8534,34 @@ Goals: []"#,
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("background-tasks")
+    {
+        return vec![
+            Item::User("Run the checks in the background".into()),
+            Item::BackgroundTask {
+                task_id: "running".into(),
+                label: "Workspace tests".into(),
+                summary: "35% · Running integration tests".into(),
+                percent: Some(35.0),
+                done: false,
+            },
+            Item::BackgroundTask {
+                task_id: "waiting".into(),
+                label: "Release build".into(),
+                summary: "Compiling dependencies and waiting for the linker to finish".into(),
+                percent: None,
+                done: false,
+            },
+            Item::BackgroundTask {
+                task_id: "done".into(),
+                label: "Formatting".into(),
+                summary: "✓ completed · 8.2s · exit 0".into(),
+                percent: None,
+                done: true,
+            },
+        ];
+    }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos-completed")
     {
