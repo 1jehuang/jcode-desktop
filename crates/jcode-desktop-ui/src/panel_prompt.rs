@@ -249,22 +249,13 @@ impl Panel {
             div()
                 .id("pinned-latest-prompt")
                 .debug_selector(|| "pinned-latest-prompt".into())
-                .absolute()
-                .top_0()
-                .left_0()
+                .relative()
                 .w_full()
                 .min_w_0()
-                // A solid reading surface masks transcript ink in the badge
-                // gutter and around line-shaped prompt backgrounds. Feather
-                // its lower edge instead of adding a hard banner boundary.
+                // Mask transcript ink behind the prompt. The separate fade
+                // below starts fully opaque, avoiding the hard edge where a
+                // solid backdrop used to meet a partially transparent shadow.
                 .bg(Theme::global().PANEL_BG)
-                .shadow(vec![gpui::BoxShadow {
-                    inset: false,
-                    color: Theme::global().PANEL_BG.into(),
-                    offset: gpui::point(px(0.), px(6.)),
-                    blur_radius: px(12.),
-                    spread_radius: px(2.),
-                }])
                 .max_h(
                     self.offscreen_prompt_clip
                         .map(|top| (top - px(6.)).max(px(0.)))
@@ -284,6 +275,40 @@ impl Panel {
                 .px_3()
                 .text_size(px(13.5))
                 .child(self.render_user_prompt(index, text, true, window, cx))
+                .map(|prompt| {
+                    let background = Theme::global().PANEL_BG;
+                    let transparent = gpui::Rgba {
+                        a: 0.,
+                        ..background
+                    };
+                    let fade_height = if self.offscreen_prompt_clip.is_some() {
+                        6.
+                    } else {
+                        18.
+                    };
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .child(prompt)
+                        // Outside the prompt's scroll clip so the soft edge
+                        // remains visible without changing transcript layout.
+                        .child(
+                            div()
+                                .debug_selector(|| "pinned-prompt-fade".into())
+                                .absolute()
+                                .left_0()
+                                .bottom(px(-fade_height))
+                                .w_full()
+                                .h(px(fade_height))
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(background, 0.),
+                                    gpui::linear_color_stop(transparent, 1.),
+                                )),
+                        )
+                })
                 .into_any_element(),
         )
     }
@@ -1195,6 +1220,14 @@ mod tests {
         );
         assert_eq!(prompt.top(), transcript.top());
         assert!(prompt.bottom() < transcript.bottom());
+        let fade = vcx.debug_bounds("pinned-prompt-fade").unwrap();
+        assert_eq!(
+            fade.top(),
+            prompt.bottom(),
+            "fade must meet the opaque backdrop without a seam"
+        );
+        assert_eq!(fade.size.width, prompt.size.width);
+        assert_eq!(fade.size.height, px(18.));
 
         panel.update(vcx, |panel, cx| {
             panel.pinned_todo_expanded = true;
@@ -1214,6 +1247,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
         assert!(vcx.debug_bounds("pinned-todo-card").is_some());
+        assert!(vcx.debug_bounds("pinned-prompt-fade").is_none());
         panel.update(vcx, |panel, cx| {
             panel.items.retain(|item| !matches!(item, Item::Todos(_)));
             cx.notify();
