@@ -4143,8 +4143,8 @@ impl Render for Panel {
                                     10.0
                                 };
                                 let element = panel.render_item(row.index, item, window, cx);
-                                let element = if row.show_label && !matches!(item, Item::User(_)) {
-                                    role_caption(row.role.unwrap_or(""), element)
+                                let element = if matches!(item, Item::Assistant(_)) {
+                                    assistant_response_row(element, row.show_label)
                                 } else {
                                     element
                                 };
@@ -4707,28 +4707,31 @@ fn role_of(item: &Item) -> Option<&'static str> {
     }
 }
 
-/// A labelled role row: a small caption above the message body, so a long
-/// transcript stays scannable without heavyweight avatars.
-fn role_caption(label: impl Into<SharedString>, body: gpui::AnyElement) -> gpui::AnyElement {
-    let label = label.into();
-    let selector = format!("role-caption-{label}");
+/// Keep every assistant segment aligned, including streaming continuations.
+/// The canonical mark replaces the old caption at the start of a speaker group.
+fn assistant_response_row(body: gpui::AnyElement, show_avatar: bool) -> gpui::AnyElement {
     div()
         .flex()
-        // Restored history alternates labelled user and assistant rows. If
-        // these wrappers may shrink, flex layout compresses the whole history
-        // into the viewport and leaves the transcript with nothing to scroll.
+        // Virtualized transcript rows must retain their natural content height.
         .flex_none()
-        .flex_col()
-        .gap_1()
+        .items_start()
+        .gap_2()
         .child(
             div()
-                .debug_selector(move || selector.clone().into())
-                .text_size(px(10.0))
-                .text_color(Theme::global().TEXT_FAINT)
-                .font_family(Theme::global().FONT_MONO)
-                .child(label),
+                .flex_none()
+                .w(px(24.0))
+                .pt(px(2.0))
+                .when(show_avatar, |el| {
+                    el.child(
+                        gpui::svg()
+                            .debug_selector(|| "assistant-avatar".into())
+                            .data(crate::accounts::logo("jcode").expect("vendored Jcode logo"))
+                            .size(px(24.0))
+                            .text_color(Theme::global().TEXT),
+                    )
+                }),
         )
-        .child(body)
+        .child(div().flex_1().min_w_0().child(body))
         .into_any_element()
 }
 
@@ -7703,6 +7706,12 @@ mod tests {
             .debug_bounds("assistant-response")
             .expect("streamed assistant response should paint");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        let avatar = vcx
+            .debug_bounds("assistant-avatar")
+            .expect("streamed assistant response should have the canonical avatar");
+        assert!(avatar.origin.x + avatar.size.width <= bounds.origin.x);
+        assert!(avatar.origin.y < bounds.origin.y + bounds.size.height);
+        assert!(vcx.debug_bounds("role-caption-jcode").is_none());
     }
 
     #[gpui::test]
