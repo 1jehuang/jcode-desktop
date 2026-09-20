@@ -5,6 +5,10 @@ use gpui::{Bounds, Pixels, TextAlign, TextLayout, canvas, div, point, prelude::*
 
 use crate::theme::Theme;
 
+// A small visual inset leaves breathing room without inserting characters into
+// selectable/copyable code or changing the paragraph's native wrap positions.
+const HORIZONTAL_PADDING: f32 = 3.0;
+
 pub(super) fn wrap(
     child: gpui::AnyElement,
     layout: TextLayout,
@@ -73,8 +77,11 @@ fn backgrounds(
                 let right = unwrapped.x_for_index(hi - offset) - start_x;
                 if right > left {
                     result.push(Bounds::new(
-                        point(origin.x + alignment + left, origin.y),
-                        size(right - left, height),
+                        point(
+                            origin.x + alignment + left - px(HORIZONTAL_PADDING),
+                            origin.y,
+                        ),
+                        size(right - left + px(2.0 * HORIZONTAL_PADDING), height),
                     ));
                 }
             }
@@ -147,9 +154,22 @@ mod tests {
             for rect in painted.iter() {
                 assert_eq!(rect.size.height, px(22.));
                 assert!(rect.size.width > px(0.));
-                assert!(rect.left() >= text.left() && rect.right() <= text.right() + px(1.));
+                assert!(rect.left() >= text.left() - px(HORIZONTAL_PADDING));
+                assert!(rect.right() <= text.right() + px(HORIZONTAL_PADDING + 1.));
                 assert!(rect.top() >= text.top() && rect.bottom() <= text.bottom() + px(1.));
             }
+            // Verify the fill leaves exactly three pixels on either side of
+            // the shaped glyphs, while keeping the existing vertical geometry.
+            let padded = backgrounds(&view.layout, &[0..6], TextAlign::Left);
+            assert_eq!(padded.len(), 1);
+            let lines = view.layout.line_layouts();
+            let line = &lines[0].unwrapped_layout;
+            assert_eq!(padded[0].left(), text.left() + line.x_for_index(0) - px(3.));
+            assert_eq!(
+                padded[0].right(),
+                text.left() + line.x_for_index(6) + px(3.)
+            );
+            assert_eq!(padded[0].top(), text.top());
             assert!(backgrounds(&view.layout, &[], TextAlign::Left).is_empty());
             assert!(backgrounds(&view.layout, &[7..7], TextAlign::Left).is_empty());
         });
