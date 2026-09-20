@@ -42,6 +42,8 @@ mod image_pane;
 mod image_pane_tests;
 #[path = "panel_latest.rs"]
 mod latest;
+#[path = "panel_shortcuts.rs"]
+pub(crate) mod shortcuts;
 #[path = "panel_login.rs"]
 mod login;
 #[path = "panel_preview.rs"]
@@ -4326,6 +4328,9 @@ impl Render for Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .key_context("ChatPanel")
+            .on_action(cx.listener(|panel, _: &shortcuts::JumpToLatest, _, cx| {
+                panel.jump_to_latest(cx);
+            }))
             .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
                 panel.toggle_voice(cx);
             }))
@@ -4512,11 +4517,7 @@ impl Render for Panel {
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.cancel_transcript_momentum();
-                                        this.release_startup_preview();
-                                        this.stick_to_bottom = true;
-                                        this.transcript_list.scroll_to_end();
-                                        cx.notify();
+                                        this.jump_to_latest(cx);
                                     }),
                                 )
                                 .child("↓ latest"),
