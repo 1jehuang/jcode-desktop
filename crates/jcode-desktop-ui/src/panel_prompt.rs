@@ -39,15 +39,6 @@ fn prompt_for_viewport(
     (row < first).then_some(index)
 }
 
-pub(super) fn user_prompt_label(items: &[Item], index: usize) -> String {
-    let number = items
-        .iter()
-        .take(index.saturating_add(1))
-        .filter(|item| matches!(item, Item::User(_)))
-        .count();
-    format!("you, {number}")
-}
-
 pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
     let Item::User(text) = item else {
         return false;
@@ -96,6 +87,9 @@ impl Panel {
             window.request_animation_frame();
         }
         let card = div()
+            .debug_selector(move || format!("user-prompt-{index}").into())
+            .max_w_full()
+            .flex_none()
             .flex()
             .flex_col()
             .ml(px(offset))
@@ -115,7 +109,15 @@ impl Panel {
                 self.media_preview_handler(cx),
             ))
             .into_any_element();
-        role_caption(prompt::user_prompt_label(&self.items, index), card)
+        // Keep the row full width, but let its card use its intrinsic text width.
+        // The maximum width still constrains long prompts and rich markdown.
+        div()
+            .flex()
+            .flex_none()
+            .flex_col()
+            .items_start()
+            .child(card)
+            .into_any_element()
     }
 
     /// Keep the reminder out of flex layout. Inserting it above the list moves
@@ -284,21 +286,52 @@ mod tests {
         assert_eq!(prompt_for_viewport(&prompts, Some(35)), Some(40));
     }
 
-    #[test]
-    fn user_cards_are_numbered_including_consecutive_prompts() {
-        let items = vec![
-            Item::User("first".into()),
-            Item::Assistant("reply".into()),
-            Item::User("second".into()),
-            Item::User("third".into()),
-        ];
-        assert_eq!(user_prompt_label(&items, 0), "you, 1");
-        assert_eq!(user_prompt_label(&items, 2), "you, 2");
-        assert_eq!(user_prompt_label(&items, 3), "you, 3");
+    #[gpui::test]
+    fn prompt_cards_fit_content_without_captions(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "compact-prompts".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(800.)));
+        for width in [600., 320.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
+            for text in [
+                "Hi".to_string(),
+                "A longer prompt with **formatted text** that should wrap naturally. ".repeat(5),
+            ] {
+                panel.update(vcx, |panel, cx| {
+                    panel.items = vec![Item::User(text.clone())];
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                let card = vcx.debug_bounds("user-prompt-0").expect("prompt paints");
+                let viewport = vcx.debug_bounds("transcript").unwrap();
+                assert!(card.left() >= viewport.left());
+                assert!(
+                    card.right() <= viewport.right(),
+                    "prompt stays within chat width"
+                );
+                assert!(vcx.debug_bounds("role-caption-you, 1").is_none());
+                if text == "Hi" {
+                    assert!(
+                        card.size.width < px(100.),
+                        "short prompt hugs its content: {card:?}"
+                    );
+                } else {
+                    assert!(card.size.height > px(50.), "long prompt wraps");
+                }
+            }
+        }
     }
 
     #[gpui::test]
-    fn native_scroll_paints_historical_numbered_prompt_cards(cx: &mut gpui::TestAppContext) {
+    fn native_scroll_paints_historical_prompt_cards(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
                 "native-prompt-acceptance".into(),
@@ -328,10 +361,10 @@ mod tests {
             .debug_bounds("pinned-latest-prompt")
             .expect("tail prompt paints");
         let caption = vcx
-            .debug_bounds("role-caption-you, 13")
-            .expect("exact requested numbered label paints");
+            .debug_bounds("user-prompt-492")
+            .expect("prompt card paints");
         assert!(caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom());
-        println!("ACCEPTANCE: live-end pinned card paints you, 13");
+        println!("ACCEPTANCE: live-end pinned card paints prompt 13");
 
         // Enter through the actual scroll event handler, not ListState mutation.
         let mut found_historical = false;
@@ -347,11 +380,11 @@ mod tests {
             scroll_momentum_tests::settle(vcx);
             if let (Some(pinned), Some(caption)) = (
                 vcx.debug_bounds("pinned-latest-prompt"),
-                vcx.debug_bounds("role-caption-you, 12"),
+                vcx.debug_bounds("user-prompt-451"),
             ) {
                 assert!(caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom());
                 assert!(
-                    vcx.debug_bounds("role-caption-you, 13").is_none(),
+                    vcx.debug_bounds("user-prompt-492").is_none(),
                     "newest prompt must not replace historical context"
                 );
                 found_historical = true;
@@ -362,7 +395,7 @@ mod tests {
             found_historical,
             "native upward scrolling must paint the twelfth prompt"
         );
-        println!("ACCEPTANCE: native upward scrolling replaces pinned you, 13 with you, 12");
+        println!("ACCEPTANCE: native upward scrolling replaces pinned prompt 13 with prompt 12");
         panel.update(vcx, |panel, cx| {
             assert!(!panel.stick_to_bottom);
             panel
@@ -371,13 +404,10 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("role-caption-you, 12").is_some());
-        assert!(vcx.debug_bounds("role-caption-you, 14").is_none());
+        assert!(vcx.debug_bounds("user-prompt-451").is_some());
+        assert!(vcx.debug_bounds("user-prompt-533").is_none());
         println!("ACCEPTANCE: arrival of prompt 14 leaves viewed prompt 12 pinned");
-        for (delta, label) in [
-            (180., "role-caption-you, 1"),
-            (-180., "role-caption-you, 14"),
-        ] {
+        for (delta, label) in [(180., "user-prompt-0"), (-180., "user-prompt-533")] {
             for _ in 0..250 {
                 let position = vcx.debug_bounds("transcript").unwrap().center();
                 vcx.simulate_event(gpui::ScrollWheelEvent {
@@ -396,7 +426,7 @@ mod tests {
             }
             assert!(
                 vcx.debug_bounds(label).is_some(),
-                "numbered transcript card {label} paints"
+                "transcript card {label} paints"
             );
             assert!(
                 vcx.debug_bounds("pinned-latest-prompt").is_none(),
@@ -404,7 +434,7 @@ mod tests {
             );
         }
         println!(
-            "ACCEPTANCE: native top/bottom scrolling paints you, 1 and you, 14 without duplicate pinned cards"
+            "ACCEPTANCE: native top/bottom scrolling paints prompt 1 and prompt 14 without duplicate pinned cards"
         );
     }
 
