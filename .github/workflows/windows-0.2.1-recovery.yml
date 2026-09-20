@@ -169,7 +169,9 @@ jobs:
           files=("jcode-desktop/dist/windows/Jcode-0.2.1-windows-$RELEASE_ARCH.zip"
                  "jcode-desktop/dist/windows/$RELEASE_CHECKSUMS")
           for file in "${files[@]}"; do test -s "$file"; done
-          (cd jcode-desktop/dist/windows && sha256sum -c "$RELEASE_CHECKSUMS")
+          # PowerShell emits CRLF. Normalize only the verification stream, never
+          # the original manifest bytes uploaded and compared below.
+          (cd jcode-desktop/dist/windows && sed 's/\r$//' "$RELEASE_CHECKSUMS" | sha256sum -c -)
           remote_dir=$(mktemp -d)
           trap 'rm -rf "$remote_dir"' EXIT
           # Existing assets must match byte-for-byte. Never clobber a prior upload.
@@ -197,6 +199,6 @@ jobs:
             gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$remote_dir/after" --pattern "$name"
             test "$(sha256sum "$file" | cut -d ' ' -f 1)" = "$(sha256sum "$remote_dir/after/$name" | cut -d ' ' -f 1)"
           done
-          (cd "$remote_dir/after" && sha256sum -c "$RELEASE_CHECKSUMS")
+          (cd "$remote_dir/after" && sed 's/\r$//' "$RELEASE_CHECKSUMS" | sha256sum -c -)
           require_source
           require_draft

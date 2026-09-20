@@ -154,11 +154,13 @@ class TransportTests(unittest.TestCase):
         self.body = script(workflow_step(WORKFLOW, UPLOAD))
         self.assets('x86_64')
 
-    def assets(self, arch):
+    def assets(self, arch, newline=b"\n"):
         self.zip = self.dist / f'Jcode-0.2.1-windows-{arch}.zip'
         self.zip.write_bytes(b'native-tested-package-' + arch.encode())
         self.checksum = self.dist / ('SHA256SUMS-windows' + ('-aarch64' if arch == 'aarch64' else ''))
-        self.checksum.write_text(hashlib.sha256(self.zip.read_bytes()).hexdigest() + '  ' + self.zip.name + '\n')
+        # Explicit bytes avoid platform-dependent newline translation in fixtures.
+        self.checksum.write_bytes((hashlib.sha256(self.zip.read_bytes()).hexdigest() +
+                                   '  ' + self.zip.name).encode() + newline)
         self.env.update(RELEASE_ARCH=arch, RELEASE_CHECKSUMS=self.checksum.name)
 
     def run_shell(self, body=None, stub=STUB, **env):
@@ -169,15 +171,49 @@ class TransportTests(unittest.TestCase):
 
     def test_fresh_upload_and_round_trip_for_both_native_architectures(self):
         for arch in ('x86_64', 'aarch64'):
-            with self.subTest(arch=arch):
-                self.assets(arch)
-                result, calls = self.run_shell(Platform='ARM64')
+            for newline in (b'\n', b'\r\n'):
+                with self.subTest(arch=arch, newline=newline):
+                    for p in self.remote.iterdir():
+                        p.unlink()
+                    self.assets(arch, newline)
+                    original = self.checksum.read_bytes()
+                    result, calls = self.run_shell(Platform='ARM64')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((self.remote / self.zip.name).read_bytes(), self.zip.read_bytes())
+                    self.assertEqual(self.checksum.read_bytes(), original)
+                    self.assertEqual((self.remote / self.checksum.name).read_bytes(), original)
+                    # Both local and redownloaded checksum verification executed.
+                    self.assertEqual(result.stdout.count(self.zip.name + ': OK'), 2)
+                    self.assertEqual(calls.count('release upload '), 1)
+                    self.assertEqual(calls.count('release download '), 2)
+                    self.assertEqual(calls.count('--json tagName,isDraft,isPrerelease'), 3)
+                    self.assertTrue(calls.splitlines()[-1].startswith('release view '))
+
+    def test_both_verification_streams_are_lf_even_on_linux(self):
+        # Newer Linux coreutils accepts CRLF itself, unlike the failing Git Bash
+        # version. Inspect stdin as well as running the real checksum utility so
+        # Linux cannot silently mask a missing normalization at either call site.
+        stub = STUB + r'''
+sha256sum() {
+  if [[ "${1:-}" == -c ]]; then
+    [[ "$2" == - ]] || return 91
+    manifest=$(cat)
+    [[ "$manifest" != *$'\r'* ]] || return 92
+    printf '%s\n' "$manifest" | command sha256sum "$@" || return
+    echo verified-lf-stream
+  else
+    command sha256sum "$@"
+  fi
+}
+'''
+        for newline in (b'\n', b'\r\n'):
+            with self.subTest(newline=newline):
+                for p in self.remote.iterdir():
+                    p.unlink()
+                self.assets('x86_64', newline)
+                result, _ = self.run_shell(stub=stub)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual((self.remote / self.zip.name).read_bytes(), self.zip.read_bytes())
-                self.assertEqual(calls.count('release upload '), 1)
-                self.assertEqual(calls.count('release download '), 2)
-                self.assertEqual(calls.count('--json tagName,isDraft,isPrerelease'), 3)
-                self.assertTrue(calls.splitlines()[-1].startswith('release view '))
+                self.assertEqual(result.stdout.count('verified-lf-stream'), 2)
 
     def test_partial_or_complete_existing_assets_never_clobbered(self):
         for existing in ((self.zip,), (self.checksum,), (self.zip, self.checksum)):
