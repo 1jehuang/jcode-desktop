@@ -10,6 +10,9 @@ mod account_sign_in;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
+#[path = "workspace_resume.rs"]
+pub(crate) mod resume;
+
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
 
@@ -158,6 +161,7 @@ actions!(
         CycleTheme,
         NewHelpSession,
         OpenChangelog,
+        OpenResume,
         CycleWidth,
         MaximizeWidth,
         WidthPreset1,
@@ -637,6 +641,7 @@ pub struct Workspace {
     host: HostHandle,
     /// Launch-only presentation, independent of persisted workspace preferences.
     single_panel: bool,
+    resume: Option<resume::State>,
     show_sidebar: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     show_beta_notice: bool,
@@ -890,6 +895,7 @@ impl Workspace {
             bridge,
             host,
             single_panel,
+            resume: None,
             show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
             show_minimap: false,
@@ -1054,6 +1060,7 @@ impl Workspace {
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
             workspace.init_worktree_fixture();
+            workspace.init_resume_fixture();
             if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
                 for (index, (label, status)) in [
                     ("API reviewer", "working"),
@@ -1192,6 +1199,7 @@ impl Workspace {
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
+            resume: None,
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
             show_sidebar: true,
@@ -1602,6 +1610,10 @@ impl Workspace {
     }
 
     pub fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = &self.resume {
+            window.focus(&state.search.focus_handle(cx), cx);
+            return;
+        }
         if self.account_sign_in.visible
             || self.show_beta_notice
             || self.onboarding_simulator.is_some()
@@ -6986,6 +6998,10 @@ impl Render for Workspace {
             let content = self.render_account_sign_in(cx);
             return self.voice_modal_root(content, cx);
         }
+        if self.resume.is_some() {
+            self.dump_state(window, cx);
+            return self.render_resume(cx);
+        }
         if self.single_panel {
             return self.render_single_panel(window, cx);
         }
@@ -7299,6 +7315,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::open_changelog))
+            .on_action(cx.listener(Self::open_resume))
             .on_action(cx.listener(Self::cycle_width))
             .on_action(cx.listener(Self::maximize_width))
             .on_action(cx.listener(|this, _: &WidthPreset1, _w, cx| this.set_width(0.25, cx)))

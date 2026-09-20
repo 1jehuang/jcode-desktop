@@ -147,6 +147,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("alt-9", workspace::ToggleOnboardingSimulator, None),
         KeyBinding::new("super-shift-s", ToggleShowcase, None),
         KeyBinding::new("super-shift-t", CycleTheme, None),
+        KeyBinding::new("alt-r", workspace::OpenResume, None),
         KeyBinding::new("ctrl-shift-e", ToggleSidebar, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("super-b", ToggleSidebar, None),

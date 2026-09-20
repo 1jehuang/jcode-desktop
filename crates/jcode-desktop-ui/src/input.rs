@@ -648,6 +648,8 @@ impl PromptInput {
         if self.pending_session
             && self.command_completion
             && self.content.trim_start().starts_with('/')
+            && !(self.attachments.is_empty()
+                && crate::workspace::resume::is_resume_command(&self.content))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
             cx.notify();

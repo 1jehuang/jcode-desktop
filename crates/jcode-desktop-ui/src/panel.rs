@@ -2170,6 +2170,12 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
+                        if images.is_empty()
+                            && crate::workspace::resume::is_resume_command(&content)
+                        {
+                            _window.dispatch_action(Box::new(crate::workspace::OpenResume), app);
+                            return;
+                        }
                         // A draft has no runtime identity yet. The editor
                         // retains slash commands while ordinary prompts queue.
                         if let Some(panel) = weak.upgrade()

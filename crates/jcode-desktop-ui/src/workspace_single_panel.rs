@@ -99,6 +99,7 @@ impl Workspace {
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_changelog))
+            .on_action(cx.listener(Self::open_resume))
             .on_action(cx.listener(Self::open_change_review))
             .on_action(cx.listener(Self::close_change_review))
             .when(back, |root| {
