@@ -105,8 +105,43 @@ other tracked dependency change.
 
 Recovery retains package verification, CLI launch, dynamic dependency checks,
 and the full native FreeBSD graphical smoke. Upload refuses to overwrite assets
-and redownloads them to compare exact bytes. Publication additionally requires
-the original, exact macOS workflow and all four Linux/Windows matrix jobs to
-succeed, plus full asset validation. The original known FreeBSD failure is the
-only replaced gate. Release notes record the exact recovery recipe commit and
+and redownloads them to compare exact bytes. The first recovery recipe required the original macOS and four Linux/Windows
+matrix jobs. The later Windows transport failure requires the separate native
+Windows replacement described below, while macOS and both Linux gates remain
+mandatory. Release notes record the exact recovery recipe commit and
 workflow run. Successful recovery is still required before public promotion.
+
+### Final native-only recovery attempts
+
+The first FreeBSD recovery (`35505409432`, recipe `78e10ac`) applied the exact
+GPUI overlay successfully but stopped before compilation: the VM's root user
+did not trust the host-owned Git checkouts copied by rsync. The exact exit-129
+failure was reproduced with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`. The corrected
+recipe trusts only the two explicit checkout directories inside the disposable
+VM, then rechecks both source SHAs and tracked cleanliness.
+
+- FreeBSD native recovery: https://github.com/1jehuang/jcode-desktop/actions/runs/35505649315
+  at recipe `b7292323a8c9b138e71998a32b17fa8f3e106173`.
+- Windows x86_64/ARM64 native recovery: https://github.com/1jehuang/jcode-desktop/actions/runs/35505943861
+  at recipe `7461bb2ce1faeba5e5891881d90b3cc5160e1b1a`.
+
+The first Windows recovery (`35505698540`, recipe `757152d`) failed its
+pre-build transport regression checks: Git Bash interpreted CRLF checksum
+manifest lines with a trailing carriage return in the filename. The corrected
+recipe normalizes only the verification stream for both local and downloaded
+checksums, preserving every original uploaded byte. Explicit LF and CRLF
+regressions cover both architectures and both verification sites.
+
+The original Windows ARM64 job passed compilation, package validation, CLI
+launch, and the eight-second graphical launch smoke. Only its upload step
+failed: MSVC's case-insensitive `Platform` environment key collided with the
+generic `PLATFORM` upload variable, leaving Bash's uppercase variable unset.
+The future pipeline uses `RELEASE_PLATFORM`. Recovery builds both Windows
+architectures from the unchanged tag, repeats every native gate, and uses
+collision-safe transport with exact remote-byte verification.
+
+Both current recovery workflows are native-only: neither can publish a release.
+The separate final publication workflow requires both entire recovery runs to
+succeed, the exact macOS signing workflow to succeed, and both original Linux
+jobs to succeed, before complete asset validation and public publication. Failed
+or superseded recovery runs are never accepted as successful native evidence.

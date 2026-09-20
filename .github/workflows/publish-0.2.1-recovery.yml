@@ -1,0 +1,69 @@
+name: Publish verified Desktop 0.2.1 recovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: desktop-recovery-publication-0.2.1
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: desktop-v0.2.1
+
+jobs:
+  publish-recovered:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 195
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate recovery gate tests
+        run: |
+          test -f tests/test_verify_0_2_1_recovery_gates.py
+          python3 -m unittest discover -s tests -p test_verify_0_2_1_recovery_gates.py -v
+          python3 -m unittest discover -s tests -v
+      - name: Require exact successful macOS, Linux, FreeBSD and Windows native gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/verify-0.2.1-recovery-gates.py --timeout-minutes 180
+      - name: Validate complete draft and publish recovered source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)
+          remote_commit=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$remote_tag" --jq .object.sha)
+          test "$remote_commit" = 4c5495f85a03671b20a00a108f10e6dbe041584d
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease \
+            --jq '(.tagName == "desktop-v0.2.1" and .isDraft == true and .isPrerelease == false)' | grep -qx true
+          mkdir -p artifacts
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir artifacts \
+            --pattern 'Jcode-*.dmg' --pattern 'Jcode-*.zip' \
+            --pattern 'Jcode-*.tar.gz' --pattern 'Jcode-*.deb' \
+            --pattern 'SHA256SUMS*' --pattern appcast.xml
+          python3 scripts/prepare-public-release.py artifacts "$RELEASE_TAG" --manifest artifacts/latest.json
+          # No source tag or package is overwritten. Keep the compatibility
+          # recipe publicly auditable at the exact workflow commit.
+          {
+            cat CHANGELOG.md
+            printf '\n## FreeBSD build provenance\n\n'
+            printf 'The Desktop source remains immutable `%s`. FreeBSD uses only the pinned GPUI queue-export compatibility overlay documented at https://github.com/%s/blob/%s/docs/freebsd-gpui-compatibility.md.\n' \
+              "$remote_commit" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+            printf 'Native recovery and all original platform gates: https://github.com/%s/actions/runs/%s.\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > release-notes.md
+          gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber artifacts/appcast.xml
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease=false --notes-file release-notes.md
+      - name: Dispatch full public binary publication and website verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-public-release.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
