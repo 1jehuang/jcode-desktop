@@ -5,6 +5,16 @@ use std::{cell::Cell, rc::Rc};
 // the card top, not the row top and not the disappearance of its bottom.
 pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
 
+pub(super) fn fixture_items() -> Vec<Item> {
+    vec![
+        Item::User("A longer first line with a short second line\nShort second line.".into()),
+        Item::User("Short first.\nA much longer second line that grows the rounded outline outward.".into()),
+        Item::User("Please make this naturally wrapped prompt fit closely around every rendered line, keeping **bold text**, `inline code`, and [links](https://example.com) selectable without filling the unused space after the final words. Fin.".into()),
+        Item::User("Unicode stays aligned: café 日本語 🦀\nSmall.\nA longer third line to exercise both inward and outward curves.".into()),
+        Item::User("A separate paragraph stays separate.\n\nTiny.".into()),
+    ]
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct VisibleRows {
     first: usize,
@@ -167,22 +177,20 @@ impl Panel {
             .flex_shrink_1()
             .flex()
             .flex_col()
-            .bg(background)
-            .rounded_xl()
             .px_2()
             .py_1()
             .text_color(Theme::global().TEXT_USER)
             .child(
                 div()
                     .debug_selector(move || format!("prompt-content-{index}").into())
-                    .child(markdown::render_interactive(
+                    .child(markdown::render_prompt(
                         text,
                         index,
                         &self.transcript_selection,
                         window,
                         cx,
-                        false,
                         self.media_preview_handler(cx),
+                        background,
                     )),
             )
             .into_any_element();

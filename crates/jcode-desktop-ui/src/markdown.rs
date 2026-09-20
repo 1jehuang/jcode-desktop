@@ -55,6 +55,10 @@ fn indent_depth(line: &str) -> usize {
 }
 
 fn parse(source: &str) -> Vec<Block> {
+    parse_with_line_breaks(source, false)
+}
+
+fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut lines = source.lines().peekable();
     let mut paragraph = String::new();
@@ -223,7 +227,7 @@ fn parse(source: &str) -> Vec<Block> {
             flush(&mut paragraph, &mut blocks);
         } else {
             if !paragraph.is_empty() {
-                paragraph.push(' ');
+                paragraph.push(if preserve_line_breaks { '\n' } else { ' ' });
             }
             paragraph.push_str(trimmed);
         }
@@ -867,6 +871,17 @@ fn styled_line(
     _window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui::AnyElement {
+    styled_line_layout(source, selection, key, _window, cx).0
+}
+
+/// Keep the native layout for line-fitting prompt backgrounds.
+fn styled_line_layout(
+    source: &str,
+    selection: &gpui::Entity<TextSelection>,
+    key: SharedString,
+    _window: &gpui::Window,
+    cx: &gpui::App,
+) -> (gpui::AnyElement, gpui::TextLayout) {
     let inline = inline_spans(source);
     let mut highlights = inline.highlights.clone();
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
@@ -904,7 +919,8 @@ fn styled_line(
             .into_any_element()
     };
     let child = crate::markdown_inline_code::wrap(child, layout.clone(), inline.code_ranges);
-    text_selection::selectable(selection.clone(), key, inline.plain, layout, child, cx)
+    let child = text_selection::selectable(selection.clone(), key, inline.plain, layout.clone(), child, cx);
+    (child, layout)
 }
 
 fn hash(text: &str) -> u64 {
@@ -1393,6 +1409,29 @@ pub fn render(
     render_with_style(source, row, selection, window, cx, false, None)
 }
 
+/// Render user prose with preserved newlines and a rounded, line-fitting fill.
+pub(crate) fn render_prompt(
+    source: &str,
+    row: usize,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    on_preview: MediaPreviewHandler,
+    background: gpui::Rgba,
+) -> gpui::AnyElement {
+    render_document_with_prompt_background(
+        source,
+        row,
+        &row.to_string(),
+        selection,
+        window,
+        cx,
+        false,
+        Some(on_preview),
+        Some(background),
+    )
+}
+
 /// Render transcript media with a panel-owned lightbox callback.
 pub(crate) fn render_interactive(
     source: &str,
@@ -1445,7 +1484,27 @@ fn render_document(
     reasoning: bool,
     on_preview: Option<MediaPreviewHandler>,
 ) -> gpui::AnyElement {
-    let blocks = parse(source);
+    render_document_with_prompt_background(
+        source, row, key_prefix, selection, window, cx, reasoning, on_preview, None,
+    )
+}
+
+fn render_document_with_prompt_background(
+    source: &str,
+    row: usize,
+    key_prefix: &str,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    reasoning: bool,
+    on_preview: Option<MediaPreviewHandler>,
+    prompt_background: Option<gpui::Rgba>,
+) -> gpui::AnyElement {
+    let blocks = if prompt_background.is_some() {
+        parse_with_line_breaks(source, true)
+    } else {
+        parse(source)
+    };
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
 
@@ -1455,6 +1514,17 @@ fn render_document(
         let tight = is_list && previous_was_list;
         previous_was_list = is_list;
 
+        let fitted_background = matches!(
+            &block,
+            Block::Heading(..) | Block::Paragraph(..) | Block::Reasoning(..)
+        );
+        let inline_text = |text: &str| {
+            let (child, layout) = styled_line_layout(text, selection, text_key(), window, cx);
+            match prompt_background {
+                Some(color) => crate::prompt_background::wrap(child, layout, color),
+                None => child,
+            }
+        };
         let element = match block {
             Block::Heading(level, text) => {
                 let (size, weight) = match level {
@@ -1479,7 +1549,7 @@ fn render_document(
                                 Theme::global().HEADING
                             })
                             .line_height(relative(1.35))
-                            .child(styled_line(&text, selection, text_key(), window, cx)),
+                            .child(inline_text(&text)),
                     )
                     .when(!reasoning && level <= 2, |el| {
                         el.child(div().h(px(1.0)).w_full().bg(Theme::global().PANEL_BORDER))
@@ -1491,7 +1561,7 @@ fn render_document(
                 .text_size(px(12.0))
                 .text_color(Theme::global().REASONING)
                 .line_height(relative(1.55))
-                .child(render_document(
+                .child(render_document_with_prompt_background(
                     &text,
                     row,
                     &format!("{key_prefix}-{block_index}"),
@@ -1500,11 +1570,12 @@ fn render_document(
                     cx,
                     true,
                     on_preview.clone(),
+                    prompt_background,
                 ))
                 .into_any_element(),
             Block::Paragraph(text) => div()
                 .line_height(relative(1.55))
-                .child(styled_line(&text, selection, text_key(), window, cx))
+                .child(inline_text(&text))
                 .into_any_element(),
             Block::Bullet { depth, text, task } => {
                 let marker = match task {
@@ -1613,7 +1684,11 @@ fn render_document(
                 .bg(Theme::global().PANEL_BORDER)
                 .into_any_element(),
         };
-        children.push(element);
+        // Structured blocks retain their native rectangular geometry.
+        children.push(match prompt_background {
+            Some(color) if !fitted_background => crate::prompt_background::wrap_block(element, color),
+            _ => element,
+        });
     }
 
     div()
@@ -1731,6 +1806,19 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_line_breaks_are_preserved_without_changing_assistant_markdown() {
+        let source = "A longer first line\nShort.\n\nAnother paragraph.";
+        assert_eq!(parse_with_line_breaks(source, true), vec![
+            Block::Paragraph("A longer first line\nShort.".into()),
+            Block::Paragraph("Another paragraph.".into()),
+        ]);
+        assert_eq!(parse(source), vec![
+            Block::Paragraph("A longer first line Short.".into()),
+            Block::Paragraph("Another paragraph.".into()),
+        ]);
+    }
 
     #[test]
     fn bulk_inline_matches_scalar_at_every_streaming_boundary() {

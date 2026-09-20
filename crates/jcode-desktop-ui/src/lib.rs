@@ -33,6 +33,7 @@ mod performance;
 mod platform;
 mod preview_control;
 pub mod preview_state;
+mod prompt_background;
 mod remote_targets;
 mod scrollbar;
 mod sound_events;

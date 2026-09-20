@@ -8482,6 +8482,11 @@ Goals: []"#,
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
     if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("prompts")
+    {
+        return prompt::fixture_items();
+    }
+    if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-icons")
     {
         return [
