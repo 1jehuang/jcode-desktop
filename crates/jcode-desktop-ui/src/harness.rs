@@ -1550,7 +1550,7 @@ fn session_worker_with_connector(
                     event: namespace_event(event, &address),
                 });
             } else if client.is_closed() {
-                lost("runtime reloading; reconnecting".into());
+                lost("runtime connection closed; reconnecting".into());
                 break;
             } else if event_wait_started.elapsed() < Duration::from_millis(10) {
                 // `EventStream::next_timeout` also returns `None` when its
