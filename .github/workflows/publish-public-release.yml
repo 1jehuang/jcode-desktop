@@ -60,6 +60,7 @@ jobs:
           test -n "$GH_TOKEN" || { echo 'Missing public distribution token'; exit 1; }
           python3 scripts/publish-public-release.py artifacts "$RELEASE_TAG"
       - name: Verify the website download routes
+        id: website_verification
         run: |
           python3 - "$RELEASE_TAG" <<'PY'
           import hashlib, json, sys, urllib.request
@@ -82,3 +83,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run macos-public-release-verify.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
+      - name: Dispatch verified public Desktop Discord announcement
+        id: discord_dispatch
+        if: ${{ !cancelled() && steps.website_verification.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run discord-release.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
+      - name: Warn when Discord dispatch failed
+        if: ${{ !cancelled() && steps.discord_dispatch.outcome == 'failure' }}
+        run: echo '::warning::Public Desktop release succeeded, but Discord dispatch failed. Rerun discord-release.yml manually after checking the public website.'

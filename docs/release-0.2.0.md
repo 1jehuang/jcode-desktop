@@ -145,3 +145,19 @@ The separate final publication workflow requires both entire recovery runs to
 succeed, the exact macOS signing workflow to succeed, and both original Linux
 jobs to succeed, before complete asset validation and public publication. Failed
 or superseded recovery runs are never accepted as successful native evidence.
+
+## Desktop Discord announcements
+
+Desktop announcements use a dedicated `jcode-desktop-releases` incoming webhook
+in the existing Jcode `#release-notes` channel, alongside the CLI bot. The
+existing bot-owned CLI webhook and its secret were not changed. The Desktop
+webhook is stored only as the encrypted `DISCORD_RELEASE_WEBHOOK` repository
+secret. No announcement was sent during setup.
+
+The public publisher queues a separate announcement workflow after website
+download verification. The sender checks published source/public release
+identity, live and immutable manifests, and all website asset bytes. It suppresses
+mentions and records a source-release marker to avoid duplicates on ordinary
+retries. Announcement failures do not block package publication. A successful
+Discord post followed by a marker-write failure requires manual reconciliation
+before retrying, since the two services cannot provide an atomic transaction.

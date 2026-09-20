@@ -1,0 +1,37 @@
+name: Announce public Desktop release on Discord
+
+on:
+  # Source publication precedes public website hash verification. Never trigger
+  # on release:published. The public publisher dispatches only after verification.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Verified public Desktop tag to announce (desktop-vVERSION)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-discord-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Announce only verified live public downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_RELEASE_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/post_discord_release.py --tag "$RELEASE_TAG"
+      - name: Surface announcement failure
+        if: failure()
+        run: echo '::warning::Desktop Discord announcement failed. Release publication is unaffected. Inspect verification and credentials before retrying.'
