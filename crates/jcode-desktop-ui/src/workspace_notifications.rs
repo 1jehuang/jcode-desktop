@@ -5,6 +5,81 @@ use super::*;
 const SHOWCASE_PRESS: Duration = Duration::from_millis(160);
 pub(super) const SHOWCASE_FADE: Duration = Duration::from_millis(280);
 
+/// Embedded pictograms keep showcase feedback compact and independent of font
+/// glyph coverage. Focus uses arrows, while moving includes the panel outline.
+fn showcase_action_icon(action: &str) -> &'static [u8] {
+    macro_rules! icon {
+        ($paths:literal) => {
+            concat!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">"#,
+                $paths,
+                "</svg>"
+            ).as_bytes()
+        };
+    }
+    match action {
+        "Focus left" => icon!(r#"<path d="M20 12H4m6-6-6 6 6 6"/>"#),
+        "Focus right" => icon!(r#"<path d="M4 12h16m-6-6 6 6-6 6"/>"#),
+        "Focus strip above" => icon!(r#"<path d="M12 20V4m-6 6 6-6 6 6"/>"#),
+        "Focus strip below" => icon!(r#"<path d="M12 4v16m-6-6 6 6 6-6"/>"#),
+        "Focus first panel" => icon!(r#"<path d="M4 5v14m16-7H8m6-6-6 6 6 6"/>"#),
+        "Focus last panel" => icon!(r#"<path d="M20 5v14M4 12h12m-6-6 6 6-6 6"/>"#),
+        "Return to previous panel" => icon!(r#"<path d="m8 4-5 5 5 5M3 9h11a5 5 0 0 1 0 10h-3"/>"#),
+        "Move panel left" => icon!(
+            r#"<rect x="12" y="4" width="9" height="16" rx="2"/><path d="M16 12H3m4-4-4 4 4 4"/>"#
+        ),
+        "Move panel right" => icon!(
+            r#"<rect x="3" y="4" width="9" height="16" rx="2"/><path d="M8 12h13m-4-4 4 4-4 4"/>"#
+        ),
+        "Move panel up" => icon!(
+            r#"<rect x="4" y="12" width="16" height="9" rx="2"/><path d="M12 16V3m-4 4 4-4 4 4"/>"#
+        ),
+        "Move panel down" => icon!(
+            r#"<rect x="4" y="3" width="16" height="9" rx="2"/><path d="M12 8v13m-4-4 4 4 4-4"/>"#
+        ),
+        "Move panel to start" => icon!(
+            r#"<rect x="14" y="4" width="7" height="16" rx="2"/><path d="M3 5v14m14-7H7m4-4-4 4 4 4"/>"#
+        ),
+        "Move panel to end" => icon!(
+            r#"<rect x="3" y="4" width="7" height="16" rx="2"/><path d="M21 5v14M7 12h10m-4-4 4 4-4 4"/>"#
+        ),
+        "New session" => icon!(
+            r#"<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 12h10m-5-5v10"/>"#
+        ),
+        "Close panel" => icon!(
+            r#"<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8 8 8 8m0-8-8 8"/>"#
+        ),
+        "Toggle overview" => icon!(
+            r#"<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>"#
+        ),
+        "Show all shortcuts" => icon!(
+            r#"<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h1m4 0h1m4 0h1M6 12h1m4 0h1m4 0h1M7 16h10"/>"#
+        ),
+        "Panel width 25%" => icon!(
+            r#"<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 4v16M3 8h3m-3 4h3m-3 4h3"/>"#
+        ),
+        "Panel width 50%" => icon!(
+            r#"<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 4v16M3 8h8m-8 4h8m-8 4h8"/>"#
+        ),
+        "Panel width 75%" => icon!(
+            r#"<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M17 4v16M3 8h13m-13 4h13m-13 4h13"/>"#
+        ),
+        "Panel width 100%" => icon!(
+            r#"<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M3 8h18M3 12h18M3 16h18"/>"#
+        ),
+        "Cycle panel width" => {
+            icon!(r#"<path d="M8 3H3v18h5m8-18h5v18h-5M6 12h12m-9-3-3 3 3 3m6-6 3 3-3 3"/>"#)
+        }
+        "Maximize or restore panel" => icon!(
+            r#"<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M3 3l6 6m12-6-6 6M3 21l6-6m12 6-6-6"/>"#
+        ),
+        // Showcase enabled, and a neutral visual for future actions.
+        _ => icon!(
+            r#"<rect x="3" y="3" width="18" height="14" rx="2"/><path d="m10 7 5 3-5 3V7m2 10v4m-4 0h8"/>"#
+        ),
+    }
+}
+
 /// A short press acknowledgement, a quiet reading interval, then a soft exit.
 /// The pulse restarts even when the same shortcut is pressed repeatedly.
 fn showcase_motion(elapsed: Duration, reduce_motion: bool) -> (f32, f32, bool) {
@@ -312,9 +387,15 @@ impl Workspace {
                         div()
                             .id("showcase-action")
                             .debug_selector(|| "showcase-action".into())
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT)
-                            .child(cue.action),
+                            .size(px(24.0))
+                            .flex_shrink_0()
+                            .child(
+                                gpui::svg()
+                                    .debug_selector(|| "showcase-action-icon".into())
+                                    .data(showcase_action_icon(cue.action))
+                                    .size(px(24.0))
+                                    .text_color(theme.TEXT),
+                            ),
                     )
                     .child(
                         div()
@@ -330,6 +411,61 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn showcase_actions_have_distinct_text_free_icons() {
+        let actions = [
+            "Focus left",
+            "Focus right",
+            "Focus strip above",
+            "Focus strip below",
+            "Focus first panel",
+            "Focus last panel",
+            "Return to previous panel",
+            "Move panel left",
+            "Move panel right",
+            "Move panel up",
+            "Move panel down",
+            "Move panel to start",
+            "Move panel to end",
+            "New session",
+            "Close panel",
+            "Toggle overview",
+            "Show all shortcuts",
+            "Panel width 25%",
+            "Panel width 50%",
+            "Panel width 75%",
+            "Panel width 100%",
+            "Cycle panel width",
+            "Maximize or restore panel",
+            "Showcase mode on",
+        ];
+        let mut icons = std::collections::HashSet::new();
+        for action in actions {
+            let data = showcase_action_icon(action);
+            let svg = std::str::from_utf8(data).unwrap();
+            assert!(
+                svg.starts_with("<svg ") && svg.ends_with("</svg>"),
+                "{action}"
+            );
+            assert!(!svg.contains("<text") && !svg.contains(action), "{action}");
+            assert!(
+                icons.insert(data),
+                "{action} must have a distinct pictogram"
+            );
+        }
+        let source = include_str!("workspace_notifications.rs");
+        let renderer = source
+            .split("pub(super) fn render_showcase_cue(")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(renderer.contains("showcase_action_icon(cue.action)"));
+        assert!(renderer.contains("shortcut_keys(&cue.shortcut)"));
+        assert!(!renderer.contains(".child(cue.action)"));
+    }
 
     #[test]
     fn showcase_press_settles_then_fades_without_animating_the_hold() {
