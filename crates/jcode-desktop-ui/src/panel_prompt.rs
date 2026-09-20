@@ -152,28 +152,24 @@ impl Panel {
             window.request_animation_frame();
         }
         let number = prompt_number(&self.items, index);
-        // 10px monospace digits fit in 7px each. The usual single digit uses
-        // the existing 12px padding; only longer numbers need a wider gutter.
-        let number_width = number.map_or(0., |number| number.to_string().len() as f32 * 7.);
+        // Keep the number outside the card in a compact circular badge. Wider
+        // turn numbers grow into a pill without taking space from card padding.
+        let number_width = number.map_or(0., |number| {
+            (number.to_string().len() as f32 * 7. + 8.).max(20.)
+        });
+        let background = Theme::global()
+            .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX));
         let card = div()
             .relative()
             .debug_selector(move || format!("user-prompt-{index}").into())
             .max_w_full()
-            .flex_none()
+            .min_w_0()
+            .flex_shrink_1()
             .flex()
             .flex_col()
-            .ml(px(offset))
-            .bg(Theme::global()
-                .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX)))
-            // Preserve the virtual row's height and measurement while the same
-            // card is painted at the sticky position. No clipped duplicate may
-            // peek out underneath the pinned copy during a partial-row scroll.
-            .when(!pinned && self.offscreen_prompt == Some(index), |card| {
-                card.invisible()
-            })
+            .bg(background)
             .rounded_md()
             .px_3()
-            .pr(px((number_width + 5.).max(12.)))
             .py_2()
             .text_color(Theme::global().TEXT_USER)
             .child(
@@ -189,31 +185,38 @@ impl Panel {
                         self.media_preview_handler(cx),
                     )),
             )
-            // Occupy the existing corner padding, never a new footer line.
-            .when_some(number, |card, number| {
-                card.child(
+            .into_any_element();
+        // Animate and hide the complete row so inline and sticky badges always
+        // travel with their cards. Shrink only the card when markdown wraps.
+        div()
+            .flex()
+            .flex_none()
+            .w_full()
+            .min_w_0()
+            .items_start()
+            .relative()
+            .left(px(offset))
+            .when(!pinned && self.offscreen_prompt == Some(index), |row| {
+                row.invisible()
+            })
+            .when_some(number, |row, number| {
+                row.gap(px(6.)).child(
                     div()
                         .debug_selector(move || format!("prompt-number-{index}-{number}").into())
-                        .absolute()
-                        .right(px(4.))
-                        .bottom(px(3.))
+                        .flex_none()
+                        .mt(px(8.))
                         .w(px(number_width))
+                        .h(px(20.))
+                        .rounded_full()
+                        .bg(background)
                         .font_family(Theme::global().FONT_MONO)
-                        .text_right()
+                        .text_center()
                         .text_size(px(10.))
-                        .line_height(px(12.))
+                        .line_height(px(20.))
                         .text_color(Theme::global().TEXT_DIM)
                         .child(number.to_string()),
                 )
             })
-            .into_any_element();
-        // Keep the row full width, but let its card use its intrinsic text width.
-        // The maximum width still constrains long prompts and rich markdown.
-        div()
-            .flex()
-            .flex_none()
-            .flex_col()
-            .items_start()
             .child(card)
             .into_any_element()
     }
@@ -330,13 +333,17 @@ mod tests {
         let number = vcx
             .debug_bounds("prompt-number-0-1")
             .expect("genuine prompt is numbered");
-        assert!(number.left() >= card.left());
-        assert!(number.top() > card.top());
-        assert_eq!(card.right() - number.right(), px(4.), "right card inset");
-        assert_eq!(card.bottom() - number.bottom(), px(3.), "bottom card inset");
+        assert_eq!(
+            card.left() - number.right(),
+            px(6.),
+            "badge sits left of card"
+        );
+        assert_eq!(number.top(), card.top() + px(8.));
+        assert_eq!(number.size, gpui::size(px(20.), px(20.)));
+        assert!(number.left() >= vcx.debug_bounds("transcript").unwrap().left());
         let content = vcx.debug_bounds("prompt-content-0").unwrap();
         assert!(
-            number.left() >= content.right(),
+            number.right() < content.left(),
             "number never overlaps prompt content"
         );
         assert_eq!(
@@ -347,7 +354,7 @@ mod tests {
         assert_eq!(
             card.size.width,
             content.size.width + px(24.),
-            "single digit fits existing padding"
+            "number does not change card padding"
         );
     }
 
@@ -657,7 +664,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn multi_digit_prompt_numbers_use_only_a_horizontal_gutter(cx: &mut gpui::TestAppContext) {
+    fn multi_digit_prompt_numbers_stay_in_left_badges(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
                 "prompt-number-gutter".into(),
@@ -700,11 +707,14 @@ mod tests {
                     let content = vcx.debug_bounds(content_selector).unwrap();
                     let number = vcx.debug_bounds(number_selector).unwrap();
                     assert!(
-                        number.left() >= content.right(),
+                        number.right() < content.left(),
                         "multi-digit number never overlaps markdown"
                     );
-                    assert_eq!(number.right(), card.right() - px(4.));
-                    assert_eq!(number.bottom(), card.bottom() - px(3.));
+                    assert_eq!(number.right() + px(6.), card.left());
+                    assert_eq!(number.top(), card.top() + px(8.));
+                    assert_eq!(number.size.width, px(if count == 99 { 22. } else { 29. }));
+                    assert!(number.left() >= vcx.debug_bounds("transcript").unwrap().left());
+                    assert_eq!(card.size.width, content.size.width + px(24.));
                     assert_eq!(
                         card.size.height,
                         content.size.height + px(16.),
