@@ -312,5 +312,25 @@ mod tests {
             assert!(!label.reveal.active());
             assert!(label.tick.is_none());
         });
+        panel.update(vcx, |panel, cx| {
+            panel.items = vec![Item::Tool {
+                call_id: "completed-label-todo".into(),
+                name: "todo".into(),
+                input: "{}".into(),
+                output: r#"[{"content":"Keep the task animation moving","status":"completed","group":"Todo group header"}]"#.into(),
+                done: true,
+                error: None,
+            }];
+            cx.notify();
+        });
+        for _ in 0..20 {
+            vcx.run_until_parked();
+            vcx.executor().advance_clock(TICK);
+        }
+        vcx.run_until_parked();
+        label.read_with(vcx, |label, _| {
+            assert_eq!(label.reveal.visible(), "Todo group header");
+            assert!(!label.reveal.active());
+        });
     }
 }

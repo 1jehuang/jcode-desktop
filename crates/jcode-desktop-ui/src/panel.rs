@@ -5171,19 +5171,62 @@ fn pinned_todo_summary(payload: &TodoCardPayload) -> PinnedTodoSummary {
     }
 }
 
+fn pinned_todo_label(payload: &TodoCardPayload, summary: &PinnedTodoSummary) -> String {
+    if let Some(current) = &summary.current {
+        return current.clone();
+    }
+    if summary.total == 0 || summary.completed != summary.total {
+        return "No active task".into();
+    }
+
+    // Completion is already conveyed by the dots. Keep the work's identity in
+    // the label, including every distinct group when a plan spans several.
+    let mut groups = Vec::new();
+    for todo in payload
+        .todos
+        .iter()
+        .filter(|todo| todo.status != "cancelled")
+    {
+        if let Some(group) = todo
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+    }
+    if !groups.is_empty() {
+        return groups.join(" · ");
+    }
+    payload
+        .plan
+        .user_intention
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            payload
+                .todos
+                .iter()
+                .rev()
+                .filter(|todo| todo.status == "completed")
+                .map(|todo| todo.content.trim())
+                .find(|s| !s.is_empty())
+        })
+        .unwrap_or("Tasks")
+        .to_owned()
+}
+
 fn render_pinned_todo_summary(
     payload: &TodoCardPayload,
     label: &Entity<task_label::TypeInLabel>,
     cx: &mut Context<Panel>,
 ) -> impl IntoElement {
     let summary = pinned_todo_summary(payload);
-    let task = summary.current.unwrap_or_else(|| {
-        if summary.total > 0 && summary.completed == summary.total {
-            "All tasks complete".into()
-        } else {
-            "No active task".into()
-        }
-    });
+    let task = pinned_todo_label(payload, &summary);
 
     label.update(cx, |label, cx| label.set_text(task, cx));
 
@@ -8296,6 +8339,36 @@ Goals: []"#,
     }
 
     #[test]
+    fn pinned_todo_completed_label_preserves_group_and_has_meaningful_fallbacks() {
+        let mut payload = parse_todo_tool_output(r#"[
+            {"content":"Build header","status":"completed","group":" Desktop "},
+            {"content":"Test header","status":"completed","group":"Desktop"},
+            {"content":"Document behavior","status":"completed","group":"Docs"},
+            {"content":"Discarded work","status":"cancelled","group":"Ignored"}
+        ]
+        Plan: {"user_intention":"Keep task context visible"}"#).unwrap();
+        let label = |payload: &TodoCardPayload| pinned_todo_label(payload, &pinned_todo_summary(payload));
+        assert_eq!(label(&payload), "Desktop · Docs");
+        payload.todos[2].group = Some("Desktop".into());
+        assert_eq!(label(&payload), "Desktop");
+        for todo in &mut payload.todos {
+            todo.group = Some("  ".into());
+        }
+        assert_eq!(label(&payload), "Keep task context visible");
+        payload.plan.user_intention = Some("  ".into());
+        assert_eq!(label(&payload), "Document behavior");
+        payload.todos[0].status = "in_progress".into();
+        assert_eq!(label(&payload), "Build header");
+        payload.todos[0].status = "pending".into();
+        assert_eq!(label(&payload), "Build header");
+        for todo in &mut payload.todos {
+            todo.status = "cancelled".into();
+        }
+        assert_eq!(label(&payload), "No active task");
+        assert_eq!(label(&TodoCardPayload::default()), "No active task");
+    }
+
+    #[test]
     fn pinned_todo_summary_excludes_cancelled_and_prefers_in_progress() {
         let item = |content: &str, status: &str| TodoCardItem {
             content: content.into(),
@@ -8484,6 +8557,26 @@ Goals: []"#,
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
 fn demo_items() -> Vec<Item> {
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos-completed")
+    {
+        return vec![
+            Item::User("Keep the task group visible after the work finishes".into()),
+            Item::Todos(TodoCardPayload {
+                todos: ["Use the todo group name", "Verify the completed header"]
+                    .into_iter()
+                    .map(|content| TodoCardItem {
+                        content: content.into(),
+                        status: "completed".into(),
+                        group: Some("Todo group header".into()),
+                        blocked_by: vec![],
+                    })
+                    .collect(),
+                plan: TodoCardPlan::default(),
+            }),
+            Item::Assistant("The completed header now keeps the task group name. The green dots show that both tasks are complete.".into()),
+        ];
+    }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("prompts")
     {
