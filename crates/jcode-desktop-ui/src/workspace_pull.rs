@@ -192,10 +192,11 @@ mod tests {
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_sidebar = false;
-            w.push_test_panel("source", cx);
             w.active_row = 1;
-            w.push_test_panel("destination", cx);
+            w.push_test_panel("source", cx);
             w.active_row = 0;
+            w.push_test_panel("destination", cx);
+            w.active_row = 1;
             w.active = 0;
             w
         });
@@ -212,7 +213,7 @@ mod tests {
             cx.run_until_parked();
         };
         scroll(cx, -40.0, 0.0, gpui::TouchPhase::Started);
-        scroll(cx, 0.0, -26.0, gpui::TouchPhase::Moved);
+        scroll(cx, 0.0, 26.0, gpui::TouchPhase::Moved);
         let active = cx
             .debug_bounds("row-pull-active")
             .expect("preview starts at one tenth of the threshold");
@@ -223,26 +224,26 @@ mod tests {
         let preview = workspace.read_with(cx, |w, _| {
             assert_eq!(
                 (w.active_row, w.active),
-                (0, 0),
+                (1, 0),
                 "preview must not change focus"
             );
             assert!(w.outgoing_row.is_none());
             w.workspace_pull.value
         });
-        assert!((preview - 0.01).abs() < 0.0001);
-        assert!(cx.debug_bounds("panel-0").unwrap().origin.y < panel.origin.y);
-        assert!((f32::from(neighbor.origin.y - active.origin.y - active.size.height)).abs() < 1.0);
+        assert!((preview + 0.01).abs() < 0.0001);
+        assert!(cx.debug_bounds("panel-0").unwrap().origin.y > panel.origin.y);
+        assert!((f32::from(active.origin.y - neighbor.origin.y - active.size.height)).abs() < 1.0);
         // The moving row must not drag the dot in the opposite direction.
         let resting_center =
             f32::from(active.origin.y) + (0.5 + preview) * f32::from(active.size.height);
         let dot_travel = f32::from(reticle.center().y) - resting_center;
-        assert!((dot_travel - 26.0 * PULL_RESISTANCE).abs() < 1.0);
-        assert!(dot_travel > 0.0 && dot_travel < 26.0 * 0.35);
-        scroll(cx, 0.0, -(STRIP_BREAK - 26.0), gpui::TouchPhase::Moved);
+        assert!((dot_travel + 26.0 * PULL_RESISTANCE).abs() < 1.0);
+        assert!(dot_travel < 0.0 && dot_travel > -26.0 * 0.35);
+        scroll(cx, 0.0, STRIP_BREAK - 26.0, gpui::TouchPhase::Moved);
         workspace.update(cx, |w, cx| {
-            assert_eq!(w.active_row, 1);
+            assert_eq!(w.active_row, 0);
             assert!(
-                (w.row_origin.1 - preview).abs() < 0.0001,
+                (w.row_origin.1 - (1.0 + preview)).abs() < 0.0001,
                 "commit begins at the displayed preview, not at rest"
             );
             assert_eq!(w.workspace_pull.value, 0.0);
@@ -265,11 +266,12 @@ mod tests {
         let (workspace, cx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_sidebar = false;
+            w.active_row = 1;
             w.push_test_panel("empty-source", cx);
             w.slots[0].panel.update(cx, |p, _| p.items.clear());
-            w.active_row = 1;
-            w.push_test_panel("populated-destination", cx);
             w.active_row = 0;
+            w.push_test_panel("populated-destination", cx);
+            w.active_row = 1;
             w.active = 0;
             w
         });
@@ -277,23 +279,23 @@ mod tests {
         let target = cx.debug_bounds("panel-0").unwrap().center();
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: target,
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-STRIP_BREAK * 0.5))),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(STRIP_BREAK * 0.5))),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Started,
         });
         cx.run_until_parked();
         let neighbor = cx.debug_bounds("row-pull-neighbor").unwrap();
-        let exposed = gpui::point(neighbor.center().x, neighbor.origin.y + px(2.0));
+        let exposed = gpui::point(neighbor.center().x, neighbor.bottom() - px(2.0));
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: exposed,
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-STRIP_BREAK * 0.5))),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(STRIP_BREAK * 0.5))),
             modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });
         cx.run_until_parked();
         assert_eq!(
             workspace.read_with(cx, |w, _| w.active_row),
-            1,
+            0,
             "the original pull must still complete when the pointer enters the revealed row"
         );
     }

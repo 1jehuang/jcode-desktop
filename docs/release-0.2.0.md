@@ -22,4 +22,15 @@ macOS workflow run numbers were checked before release: the last macOS build was
 
 Preparation is not publication. Final delivery requires successful platform workflows, public release promotion, `https://jcode.sh/desktop/latest.json` reporting `desktop-v0.2.0`, exact website-served asset hashes, and the public macOS installation acceptance workflow.
 
-Validation results and workflow links will be appended after they are observed.
+## Local preflight completed
+
+- Full locked Rust workspace suite: 1,211 passed, 9 ignored, zero failed (40 host, 1 version integration, 8 API, 6 motion, and 1,156 UI tests).
+- Release publication/packaging Python suite: 65 passed, 5 skipped because local Linux package tooling is absent. CI retains real package verification.
+- macOS voice entitlement and microphone usage metadata: 2 tests passed.
+- Exact pinned runtime: locked `cargo check` passed for the CLI and harness bridge binaries.
+- Exact corrected Desktop app and reloadable UI built successfully with the explicit `0.2.0` version. The real app passed private-Xvfb responsive acceptance: four resizes, three sidebar drawers, six tab selections, preserved identities, widths, and focus. Wide and narrow screenshots were inspected.
+- Packaging shell syntax and `git diff --check` passed. Workspace formatting check still reports pre-existing formatting differences in Desktop and adjacent runtime sources; these were not folded into the release change.
+
+The first full suite exposed a real unfinished-work card click panic caused by re-entering a borrowed Panel. The card now calls its captured workspace opener without a Panel update lease, and routes through the common activation method. The unchanged original regression and a new existing-session/focus regression pass. Stale gesture tests now exercise supported upward navigation and explicitly verify that downward swipes cannot navigate. Sidebar/resize acceptance uses the current compact controls.
+
+Platform workflow links and public download evidence will be appended after they are observed.

@@ -1,4 +1,6 @@
-## Jcode Desktop 0.2.0
+## What's new
+
+### Jcode Desktop 0.2.0
 
 - Native Markdown and PDF document panels with explicit open, update, and close behavior.
 - An integrated Handterm terminal with text selection, clipboard support, image scrollback, and Desktop theme colors.
