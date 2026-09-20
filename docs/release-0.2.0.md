@@ -14,7 +14,7 @@ The release was prepared in an isolated clone. Uncommitted and untracked work in
 
 Recent beta.33 builds failed before compilation because the old runtime pin lacked the `voice-capture` feature required by Desktop. All native platform workflows now use the same current committed runtime.
 
-The stable release must be marked non-prerelease in both the private build repository and the public binaries-only repository. The release stays draft until Linux/Windows/FreeBSD gates and the macOS workflow for the exact same tag and commit have succeeded, followed by complete asset validation. A later beta must not displace a promoted stable website channel.
+The stable release must be marked non-prerelease in both the source/build repository and the public binaries-only repository. The release stays draft until Linux/Windows/FreeBSD gates and the macOS workflow for the exact same tag and commit have succeeded, followed by complete asset validation. A later beta must not displace a promoted stable website channel.
 
 macOS workflow run numbers were checked before release: the last macOS build was 52, while the live signed beta.28 feed is build 47. The next normal run therefore remains newer for Sparkle updates. Signing, notarization, package verification, native smoke checks, complete platform assets, and anonymous download hash checks remain required.
 
@@ -47,3 +47,31 @@ On September 20, 2026 at 09:44 UTC, `desktop-v0.2.0` was pushed at immutable com
 
 The build release was observed as a draft with `isPrerelease: false`. It had no
 assets yet. This is evidence of release initiation, not public availability.
+
+## Native gate failure and 0.2.1 recovery
+
+The Windows ARM64 build failed at 09:57 UTC before packaging. The experimental
+cloud helper used Unix process groups and `waitid` unconditionally, which do not
+compile on Windows. The publication gate correctly kept 0.2.0 draft and left the
+website on the last verified release.
+
+The original `desktop-v0.2.0` tag is retained unchanged. The corrected stable
+candidate is 0.2.1, still in the requested 0.2 series, rather than rewriting an
+already pushed source tag. All platform gates and website verification must run
+again for that exact new tag before it is considered released.
+
+The helper now retains Unix process-tree cleanup only on Unix. Other platforms
+return an explicit unsupported error and never start a cloud session. The Unix
+`waitid` call converts the child PID to `libc::id_t`, also fixing FreeBSD's wider
+argument type. All 31 focused Unix cloud tests pass. The stable changelog UI test
+now verifies that development-only build details are absent, while retaining
+both stable and development keyboard/click navigation checks.
+
+Recovery preflight passed with explicit `JCODE_DESKTOP_VERSION=0.2.1`: the full
+locked workspace suite passed all 1,222 tests with 9 ignored, using
+`--test-threads=1` to isolate wall-clock UI animation assertions. The initial
+parallel run exposed the stable/development changelog fixture assumption and
+six timing-sensitive animation failures. Those animation assertions passed
+unchanged in the serial suite. Both explicit stable and unset-version changelog
+test runs passed. The release Python suite again passed 70 tests with 5 local
+package-tooling skips.

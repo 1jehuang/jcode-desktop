@@ -1,6 +1,6 @@
 ## What's new
 
-### Jcode Desktop 0.2.0
+### Jcode Desktop 0.2.1
 
 - Native Markdown and PDF document panels with explicit open, update, and close behavior.
 - An integrated Handterm terminal with text selection, clipboard support, image scrollback, and Desktop theme colors.
@@ -9,7 +9,7 @@
 - Swarm and Git worktree sidebar workflows, compact session navigation, and tab actions beside titles.
 - Independent single-panel windows, session image panes, numbered collapsible workspace groups, and contextual edit previews.
 - Startup prompts can queue while connecting. Remote panels show connection progress and recovery actions without stealing local focus.
-- Personal cloud alpha panels show startup checks, runtime allowance, and bounded readiness refreshes. The cloud integration remains experimental.
+- Personal cloud alpha panels show startup checks, runtime allowance, and bounded readiness refreshes. The cloud integration remains experimental and its local helper requires Unix.
 - Clearer version labels and update history, new Graphite, Slate, Paper, and Silver themes, and improved transcript and footer layout.
 
 Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.

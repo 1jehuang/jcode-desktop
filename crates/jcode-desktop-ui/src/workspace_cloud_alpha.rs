@@ -1,9 +1,10 @@
 //! Personal alpha only. The fixed local helper owns AWS policy and readiness.
 use super::{Command, harness};
 use serde::Deserialize;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::{
     io::Read,
-    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant, SystemTime},
@@ -379,7 +380,9 @@ fn send_progress(sender: &mpsc::SyncSender<String>, line: &mut Vec<u8>) {
 
 // Keep the leader unreaped until group cancellation. Reaping it first could
 // allow PID/PGID reuse while descendants still hold output pipes open.
+#[cfg(unix)]
 struct HelperGroup(Option<std::process::Child>);
+#[cfg(unix)]
 impl HelperGroup {
     fn exited(&self) -> std::io::Result<bool> {
         let child = self.0.as_ref().expect("owned helper");
@@ -387,7 +390,7 @@ impl HelperGroup {
         let result = unsafe {
             libc::waitid(
                 libc::P_PID,
-                child.id(),
+                child.id() as libc::id_t,
                 &mut info,
                 libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
             )
@@ -406,6 +409,7 @@ impl HelperGroup {
         child.wait()
     }
 }
+#[cfg(unix)]
 impl Drop for HelperGroup {
     fn drop(&mut self) {
         if self.0.is_some() {
@@ -421,11 +425,30 @@ fn run_helper(action: &'static str) -> Result<String, String> {
 
 fn run_helper_with_progress(
     action: &'static str,
-    mut progress: impl FnMut(String),
+    progress: impl FnMut(String),
 ) -> Result<String, String> {
     if harness::screenshot_mode() || cfg!(test) {
         return Err("Cloud operations are disabled in offline tests and screenshots.".into());
     }
+    run_platform_helper(action, progress)
+}
+
+// The installed helper is an executable Python symlink with Unix process-tree
+// cancellation. Do not substitute a shell or child-only kill on Windows: that
+// could leave AWS/SSH descendants running after a timeout.
+#[cfg(not(unix))]
+fn run_platform_helper(
+    _action: &'static str,
+    _progress: impl FnMut(String),
+) -> Result<String, String> {
+    Err("Personal cloud alpha is unsupported on this platform: the helper requires Unix process-group cancellation. No cloud helper or session was started.".into())
+}
+
+#[cfg(unix)]
+fn run_platform_helper(
+    action: &'static str,
+    mut progress: impl FnMut(String),
+) -> Result<String, String> {
     let home = std::env::var_os("HOME").ok_or("Cannot find home directory")?;
     let helper = helper_paths(Path::new(&home))?;
     let mut child = std::process::Command::new(helper)
@@ -509,7 +532,7 @@ fn wake_then_connect(
 }
 
 fn runtime_identity() -> Option<LocalIdentity> {
-    if harness::screenshot_mode() || cfg!(test) {
+    if !cfg!(unix) || harness::screenshot_mode() || cfg!(test) {
         return None;
     }
     let home = std::env::var_os("HOME")?;
@@ -1082,6 +1105,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cloud_helper_group_cleanup_closes_descendant_pipes() {
         let mut child = std::process::Command::new("/bin/sh")
@@ -1149,6 +1173,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cloud_exited_helper_retains_group_ownership_until_descendant_cleanup() {
         let unrelated = std::process::Command::new("/bin/sh")
@@ -1538,6 +1563,7 @@ mod tests {
         assert!(LocalIdentity::read(home.path()).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn cloud_progress_is_streamed_before_eof() {
         use std::io::Write;
@@ -1601,6 +1627,23 @@ mod tests {
                 .contains("disabled")
         );
         assert!(run_helper("status").unwrap_err().contains("disabled"));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn cloud_unsupported_platform_never_reports_success_or_creates_session() {
+        let (bridge, commands) = harness::spawn_recording();
+        for action in ["status", "wake", "wake-ready", "check-ready", "sync-models"] {
+            let error = wake_then_connect(&bridge, Some("unsupported".into()), || {
+                run_platform_helper(action, |_| panic!("unsupported helper emitted progress"))
+                    .map(|_| ())
+            })
+            .unwrap_err();
+            assert!(error.contains("unsupported on this platform"));
+            assert!(error.contains("Unix process-group cancellation"));
+            assert!(commands.try_recv().is_err());
+        }
+        assert!(runtime_identity().is_none());
     }
 
     #[test]
