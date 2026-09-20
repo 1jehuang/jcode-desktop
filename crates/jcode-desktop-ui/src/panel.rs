@@ -272,6 +272,8 @@ pub struct Panel {
     activity_spinner: Entity<activity::Spinner>,
     tab_emoji: Entity<tab_emoji::TabEmoji>,
     sidebar_spinner: Entity<activity::Spinner>,
+    /// Selected workspace surface, independent of temporary keyboard focus.
+    surface_focused: bool,
     pub input: Entity<PromptInput>,
     voice: voice::VoiceState,
     image_pane_open: bool,
@@ -788,6 +790,7 @@ impl Panel {
             activity_spinner: cx.new(activity::Spinner::new),
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
             sidebar_spinner: cx.new(activity::Spinner::new),
+            surface_focused: true,
             input,
             voice: voice::VoiceState::default(),
             image_pane_open: false,
@@ -3709,7 +3712,11 @@ impl Panel {
     }
 
     /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
-    pub(crate) fn set_terminal_surface_focused(&self, focused: bool, cx: &mut App) {
+    pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
+        if self.surface_focused != focused {
+            self.surface_focused = focused;
+            cx.notify();
+        }
         if let Some(terminal) = &self.terminal {
             terminal.update(cx, |terminal, cx| terminal.set_surface_focused(focused, cx));
         }

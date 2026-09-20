@@ -245,6 +245,7 @@ impl Panel {
         let Item::User(text) = &item else {
             return None;
         };
+        let background = Theme::global().panel_background(self.surface_focused);
         Some(
             div()
                 .id("pinned-latest-prompt")
@@ -255,7 +256,7 @@ impl Panel {
                 // Mask transcript ink behind the prompt. The separate fade
                 // below starts fully opaque, avoiding the hard edge where a
                 // solid backdrop used to meet a partially transparent shadow.
-                .bg(Theme::global().PANEL_BG)
+                .bg(background)
                 .max_h(
                     self.offscreen_prompt_clip
                         .map(|top| (top - px(6.)).max(px(0.)))
@@ -276,7 +277,6 @@ impl Panel {
                 .text_size(px(13.5))
                 .child(self.render_user_prompt(index, text, true, window, cx))
                 .map(|prompt| {
-                    let background = Theme::global().PANEL_BG;
                     let transparent = gpui::Rgba {
                         a: 0.,
                         ..background
@@ -1228,6 +1228,16 @@ mod tests {
         );
         assert_eq!(fade.size.width, prompt.size.width);
         assert_eq!(fade.size.height, px(18.));
+
+        // Workspace selection, not keyboard focus, chooses the reading surface.
+        // Switching it must invalidate cached rendering without moving the card.
+        for focused in [false, true] {
+            panel.update(vcx, |panel, cx| panel.set_surface_focused(focused, cx));
+            vcx.run_until_parked();
+            panel.update(vcx, |panel, _| assert_eq!(panel.surface_focused, focused));
+            assert_eq!(vcx.debug_bounds("pinned-latest-prompt").unwrap(), prompt);
+            assert_eq!(vcx.debug_bounds("pinned-prompt-fade").unwrap(), fade);
+        }
 
         panel.update(vcx, |panel, cx| {
             panel.pinned_todo_expanded = true;

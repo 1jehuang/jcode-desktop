@@ -3876,7 +3876,7 @@ impl Workspace {
             let focused = index == self.active;
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
             slot.panel.update(cx, |panel, cx| {
-                panel.set_terminal_surface_focused(focused, cx);
+                panel.set_surface_focused(focused, cx);
             });
             let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
