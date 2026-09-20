@@ -62,6 +62,7 @@ impl RenderOnce for InlineImage {
             fit_scroll: self.fit_scroll.clone(),
             on_gesture: self.on_gesture.clone(),
             zoom: 1.0,
+            pinch_active: false,
             scroll: ScrollHandle::new(),
             drag: None,
             dragged: false,
@@ -82,6 +83,7 @@ struct ImageView {
     fit_scroll: Option<FitScroll>,
     on_gesture: Option<OpenImage>,
     zoom: f32,
+    pinch_active: bool,
     scroll: ScrollHandle,
     drag: Option<(Point<Pixels>, Point<Pixels>)>,
     dragged: bool,
@@ -136,6 +138,13 @@ impl Render for ImageView {
                         CursorStyle::PointingHand
                     })
                     .on_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
+                        match event.phase {
+                            gpui::TouchPhase::Started => this.pinch_active = true,
+                            gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {
+                                this.pinch_active = false;
+                            }
+                            gpui::TouchPhase::Moved => {}
+                        }
                         if let Some(begin) = &this.on_gesture {
                             begin(window, cx);
                         }
@@ -144,13 +153,19 @@ impl Render for ImageView {
                         cx.stop_propagation();
                     }))
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
-                        if event.modifiers.control || this.zoom > 1.0 {
+                        if this.pinch_active || event.modifiers.control || this.zoom > 1.0 {
                             if let Some(begin) = &this.on_gesture {
                                 begin(window, cx);
                             }
                         }
                         let delta = event.delta.pixel_delta(px(20.0));
-                        if event.modifiers.control {
+                        if this.pinch_active {
+                            // Linux forwards native pinch translation as precise
+                            // scroll after the scale event. It remains a pan even
+                            // with Ctrl held or when zoom has reached Fit.
+                            this.pan_to(this.scroll.offset() + delta);
+                            cx.notify();
+                        } else if event.modifiers.control {
                             let factor = (f32::from(delta.y) * 0.01).clamp(-1.0, 1.0).exp();
                             this.zoom_at(this.zoom * factor, event.position, cx);
                         } else if this.zoom > 1.0 {
@@ -380,6 +395,83 @@ mod tests {
     fn assert_near(a: Point<Pixels>, b: Point<Pixels>) {
         assert!((a.x - b.x).abs() < px(1.0), "x: {a:?} != {b:?}");
         assert!((a.y - b.y).abs() < px(1.0), "y: {a:?} != {b:?}");
+    }
+
+    #[gpui::test]
+    fn inline_image_pans_during_continuous_pinch(cx: &mut TestAppContext) {
+        let (transcript, cx) = setup(cx);
+        cx.run_until_parked();
+        let anchor = cx.debug_bounds("inline-image-viewport").unwrap().center();
+        cx.simulate_event(PinchEvent {
+            position: anchor,
+            phase: TouchPhase::Started,
+            ..Default::default()
+        });
+        // Native Linux delivers scale then translation for each update, with
+        // no intervening frame or finger lift. Zero-scale updates still pan.
+        for (delta, x, y, control) in [
+            (1.0, 15.0, -12.0, false),
+            (0.0, -8.0, 9.0, true),
+            (0.5, 12.0, -5.0, false),
+            (0.0, -7.0, 8.0, false),
+        ] {
+            let before = bounds(cx);
+            cx.simulate_event(PinchEvent {
+                position: anchor,
+                delta,
+                phase: TouchPhase::Moved,
+                ..Default::default()
+            });
+            wheel(cx, anchor, x, y, control);
+            let after = bounds(cx);
+            assert!((after.size.width - before.size.width * (1.0 + delta)).abs() < px(1.0));
+            assert_near(
+                after.origin,
+                anchor + (before.origin - anchor) * (1.0 + delta) + point(px(x), px(y)),
+            );
+            assert_eq!(
+                transcript.read_with(cx, |t, _| t.scroll.offset()),
+                Point::default()
+            );
+            assert_eq!(transcript.read_with(cx, |t, _| t.opens.get()), 0);
+        }
+        cx.simulate_event(PinchEvent {
+            position: anchor,
+            phase: TouchPhase::Ended,
+            ..Default::default()
+        });
+        let before = bounds(cx);
+        wheel(cx, anchor, 0.0, 10.0, true);
+        assert!(
+            bounds(cx).size.width > before.size.width,
+            "Ctrl-wheel zoom resumes after pinch ends"
+        );
+    }
+
+    #[gpui::test]
+    fn inline_image_pinch_translation_at_fit_never_scrolls_chat(cx: &mut TestAppContext) {
+        let (transcript, cx) = setup(cx);
+        cx.run_until_parked();
+        let before = bounds(cx);
+        let anchor = before.center();
+        cx.simulate_event(PinchEvent {
+            position: anchor,
+            phase: TouchPhase::Started,
+            ..Default::default()
+        });
+        wheel(cx, anchor, -20.0, -40.0, false);
+        assert_eq!(bounds(cx), before);
+        assert_eq!(
+            transcript.read_with(cx, |t, _| t.scroll.offset()),
+            Point::default()
+        );
+        cx.simulate_event(PinchEvent {
+            position: anchor,
+            phase: TouchPhase::Ended,
+            ..Default::default()
+        });
+        wheel(cx, anchor, 0.0, -40.0, false);
+        assert!(transcript.read_with(cx, |t, _| t.scroll.offset().y) < px(0.0));
     }
 
     #[gpui::test]

@@ -17,6 +17,11 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bc538def
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
+[patch."https://github.com/zed-industries/zed"]
+# Preserve native pinch translation without changing the shared GPUI event ABI.
+# This fork's platform crate depends on the original upstream GPUI revision.
+gpui_linux = { git = "https://github.com/1jehuang/zed", rev = "a659883259f2b490714b58e3ab6ff05d26d08a3a" }
+
 [package]
 name = "jcode-desktop"
 version = "0.1.0"

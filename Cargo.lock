@@ -3261,7 +3261,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=bc538def4545534201bbfcac4e95ac34ea6501b6#bc538def4545534201bbfcac4e95ac34ea6501b6"
+source = "git+https://github.com/1jehuang/zed?rev=a659883259f2b490714b58e3ab6ff05d26d08a3a#a659883259f2b490714b58e3ab6ff05d26d08a3a"
 dependencies = [
  "accesskit",
  "accesskit_unix",
