@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operate one configured personal alpha. Never creates infrastructure or exports credentials."""
+"""Operate one configured personal alpha with explicitly allowlisted model sync."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+
+import model_sync
 
 CONFIG = Path.home() / ".config/jcode/cloud-alpha.json"
 
@@ -73,7 +75,14 @@ def check_guard(config):
     return checked
 
 
-def wake(config, *, verify_identity=False, progress_only=False):
+def synchronize_models(config):
+    print("Synchronizing personal-cloud model access...", file=sys.stderr, flush=True)
+    return model_sync.sync_personal_alpha(config)
+
+
+def wake(config, *, verify_identity=False, progress_only=False, sync_models=False):
+    # The direct readiness-only API remains safe for the read-only benchmark.
+    # User-facing wake/SSH/session entry points explicitly request model sync.
     if verify_identity:
         print("Checking AWS sign-in and cloud safety...", file=sys.stderr, flush=True)
     else:
@@ -130,6 +139,8 @@ def wake(config, *, verify_identity=False, progress_only=False):
         except subprocess.TimeoutExpired:
             ready = False
         if ready:
+            if sync_models:
+                synchronize_models(config)
             if cold:
                 print("Shared cloud VM is running. SSH bootstrap ready.", file=sys.stderr, flush=True)
             output = sys.stderr if progress_only else sys.stdout
@@ -185,12 +196,12 @@ def check_ready(config, now=None):
             "launch_time": host["LaunchTime"], "lease_deadline": int(deadline.timestamp()),
             "lease_remaining_seconds": remaining,
             "allowance_remaining_minutes": budget - consumed,
-            "observed_at": int(now.timestamp())}
+            "observed_at": int(now.timestamp()), "model_sync_supported": True}
 
 
 def wake_ready(config):
     """Explicit wake plus a fresh full safety proof after bootstrap succeeds."""
-    wake(config, verify_identity=True, progress_only=True)
+    wake(config, verify_identity=True, progress_only=True, sync_models=True)
     print("Confirming cloud safety checks...", file=sys.stderr, flush=True)
     return check_ready(config)
 
@@ -222,11 +233,14 @@ def status(config, now=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["status", "wake", "stop", "ssh", "proxy", "check-ready", "wake-ready"])
+    parser.add_argument("action", choices=["status", "wake", "stop", "ssh", "proxy", "check-ready", "wake-ready", "sync-models"])
     args = parser.parse_args()
     config = json.loads(CONFIG.read_text())
     # Ensure the AWS CLI can find the user-installed Session Manager plugin.
     os.environ["PATH"] = str(Path.home() / ".local/bin") + os.pathsep + os.environ.get("PATH", "")
+    if args.action == "sync-models":
+        synchronize_models(config)
+        return
     if args.action in ("wake", "ssh", "wake-ready"):
         print("Checking AWS sign-in...", file=sys.stderr, flush=True)
     if args.action == "check-ready":
@@ -236,7 +250,7 @@ def main():
         print(json.dumps(wake_ready(config), indent=2))
         return
     if args.action in ("wake", "ssh"):
-        wake(config, verify_identity=True)
+        wake(config, verify_identity=True, sync_models=True)
         if args.action == "ssh":
             os.execvp("ssh", ["ssh", "jcode-cloud-alpha"])
         return

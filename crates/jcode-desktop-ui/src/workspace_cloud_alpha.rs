@@ -549,12 +549,21 @@ impl Lifecycle {
     fn sync_reused_ready(
         &self,
         reused: bool,
+        identity: impl FnOnce() -> Option<LocalIdentity>,
         sync: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         if reused {
             if let Err(error) = sync() {
                 self.invalidate_ready();
                 return Err(error);
+            }
+            // A changed snapshot can take longer than the cached safety proof.
+            // Never create a session using an expired lease or changed target.
+            let identity = identity();
+            let mut state = self.state.lock().unwrap();
+            if !state.recently_ready(identity.as_ref(), Instant::now()) {
+                state.invalidate_ready();
+                return Err("Cloud readiness expired or changed during model synchronization. Retry Connect.".into());
             }
         }
         Ok(())
@@ -669,13 +678,9 @@ impl Lifecycle {
                     .ready
                     .as_ref()
                     .is_some_and(|ready| ready.model_sync_supported);
-                if reused && sync_supported {
-                    if let Err(error) = run_helper("sync-models") {
-                        lifecycle.invalidate_ready();
-                        return Err(error);
-                    }
-                }
-                Ok(())
+                lifecycle.sync_reused_ready(reused && sync_supported, runtime_identity, || {
+                    run_helper("sync-models").map(|_| ())
+                })
             });
             let mut state = lifecycle.state.lock().unwrap();
             let (message, failed) = match result {
@@ -876,6 +881,11 @@ mod tests {
     fn cloud_receipt_capability_defaults_off_and_numeric_fields_are_strict() {
         let json = r#"{"instance_id":"i-test","state":"running","launch_time":"boot-1","lease_deadline":1600,"lease_remaining_seconds":600,"allowance_remaining_minutes":100,"observed_at":1000,"valid_for_seconds":30}"#;
         assert!(!Receipt::parse(json).unwrap().model_sync_supported);
+        let supported = json.replace(
+            "\"valid_for_seconds\":30",
+            "\"valid_for_seconds\":30,\"model_sync_supported\":true",
+        );
+        assert!(Receipt::parse(&supported).unwrap().model_sync_supported);
         for invalid in [
             json.replace("\"observed_at\":1000", "\"observed_at\":1000.5"),
             json.replace("\"valid_for_seconds\":30", "\"valid_for_seconds\":-1"),
@@ -1285,7 +1295,11 @@ mod tests {
             .unwrap();
         let (bridge, commands) = harness::spawn_recording();
         let result = wake_then_connect(&bridge, Some("sync-failure".into()), || {
-            lifecycle.sync_reused_ready(true, || Err("model sync failed".into()))
+            lifecycle.sync_reused_ready(
+                true,
+                || Some(test_identity()),
+                || Err("model sync failed".into()),
+            )
         });
         assert_eq!(result.unwrap_err(), "model sync failed");
         assert!(commands.try_recv().is_err());
@@ -1296,16 +1310,60 @@ mod tests {
     fn cloud_cold_wake_does_not_duplicate_model_sync() {
         let lifecycle = Lifecycle::default();
         lifecycle
-            .sync_reused_ready(false, || panic!("cold wake already synchronizes"))
+            .sync_reused_ready(
+                false,
+                || panic!("cold wake has its own proof"),
+                || panic!("cold wake already synchronizes"),
+            )
+            .unwrap();
+        lifecycle
+            .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(test_receipt()))
             .unwrap();
         let calls = std::cell::Cell::new(0);
         lifecycle
-            .sync_reused_ready(true, || {
-                calls.set(calls.get() + 1);
-                Ok(())
-            })
+            .sync_reused_ready(
+                true,
+                || Some(test_identity()),
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+            )
             .unwrap();
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn cloud_warm_sync_cannot_create_after_readiness_expires_or_identity_changes() {
+        for changed_identity in [false, true] {
+            let lifecycle = Lifecycle::default();
+            lifecycle
+                .ensure_ready(|| Some(test_identity()), |_| {}, |_| Ok(test_receipt()))
+                .unwrap();
+            let (bridge, commands) = harness::spawn_recording();
+            let result = wake_then_connect(&bridge, None, || {
+                lifecycle.sync_reused_ready(
+                    true,
+                    || (!changed_identity).then(test_identity),
+                    || {
+                        if !changed_identity {
+                            lifecycle
+                                .state
+                                .lock()
+                                .unwrap()
+                                .ready
+                                .as_mut()
+                                .unwrap()
+                                .expires_at = Instant::now();
+                        }
+                        Ok(())
+                    },
+                )
+            });
+            assert!(result.unwrap_err().contains("expired or changed"));
+            assert!(commands.try_recv().is_err());
+            assert!(lifecycle.state.lock().unwrap().ready.is_none());
+        }
     }
 
     #[test]

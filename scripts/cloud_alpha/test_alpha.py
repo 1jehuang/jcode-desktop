@@ -351,6 +351,7 @@ class ReadinessTests(unittest.TestCase):
 
     def check(self):
         with patch.object(control, 'aws', side_effect=self.api) as api, \
+                patch.object(control.model_sync, 'sync_personal_alpha') as sync, \
                 patch.object(control.subprocess, 'run') as subprocess, \
                 patch.object(control.os, 'execvp') as execvp, \
                 patch.object(control.Path, 'read_text') as file_read:
@@ -358,6 +359,7 @@ class ReadinessTests(unittest.TestCase):
                 return control.check_ready(self.config, self.now)
             finally:
                 self.assertEqual(api.call_count, 6)
+                sync.assert_not_called()
                 subprocess.assert_not_called()
                 execvp.assert_not_called()
                 file_read.assert_not_called()
@@ -370,7 +372,8 @@ class ReadinessTests(unittest.TestCase):
             'launch_time': self.host['LaunchTime'],
             'lease_deadline': int((self.now + timedelta(minutes=90)).timestamp()),
             'lease_remaining_seconds': 5400, 'allowance_remaining_minutes': 2990,
-            'observed_at': int(self.now.timestamp()), 'valid_for_seconds': 30})
+            'observed_at': int(self.now.timestamp()), 'valid_for_seconds': 30,
+            'model_sync_supported': True})
 
     def test_validity_is_bounded_by_guard_freshness_and_lease(self):
         self.checked = (self.now - timedelta(seconds=170)).isoformat()
@@ -466,13 +469,14 @@ class WakeReadyTests(unittest.TestCase):
     api = ReadinessTests.api
 
     # Exercise the real wake and final proof with an allowlisted fake AWS API.
-    def run_cli(self, action='wake-ready', after_boot=None, initial_failure=None):
+    def run_cli(self, action='wake-ready', after_boot=None, initial_failure=None, sync_failure=None):
         import io
         from contextlib import redirect_stdout, redirect_stderr
         self.stdout, self.stderr = io.StringIO(), io.StringIO()
         self.starts = 0
         self.reads = []
         self.booted = False
+        self.sync_calls = 0
         self.preflight_barrier = threading.Barrier(6, timeout=3)
         lock = threading.Lock()
 
@@ -501,17 +505,32 @@ class WakeReadyTests(unittest.TestCase):
                 after_boot()
             return SimpleNamespace(returncode=0, stdout='SECRET', stderr='SECRET')
 
+        def synchronize(config):
+            self.assertTrue(self.booted, 'never transfer credentials before bootstrap')
+            self.assertEqual(len(self.reads), 6, 'final safety receipt must follow synchronization')
+            self.assertEqual(config, self.config)
+            self.assertEqual(self.stdout.getvalue(), '', 'never report ready before synchronization')
+            self.sync_calls += 1
+            if sync_failure:
+                raise sync_failure
+
+        def interactive_ssh(*args):
+            self.assertEqual(self.sync_calls, 1, 'SSH shell requires successful model sync')
+
         if initial_failure:
             initial_failure()
         with patch.object(control.sys, 'argv', ['control.py', action]), \
                 patch.object(control.Path, 'read_text', return_value=control.json.dumps(self.config)), \
                 patch.object(control, 'aws', side_effect=api), \
+                patch.object(control.model_sync, 'sync_personal_alpha', side_effect=synchronize), \
+                patch.object(control.os, 'execvp', side_effect=interactive_ssh) as shell, \
                 patch.object(control.subprocess, 'run', side_effect=ssh) as process, \
                 redirect_stdout(self.stdout), redirect_stderr(self.stderr):
             try:
                 control.main()
             finally:
                 self.ssh_calls = process.call_count
+                self.shell_calls = shell.call_count
                 self.assertNotIn('SECRET', self.stdout.getvalue() + self.stderr.getvalue())
 
     def test_wake_ready_json_and_fresh_six_read_proof_without_extra_start(self):
@@ -525,6 +544,8 @@ class WakeReadyTests(unittest.TestCase):
                 self.assertEqual(len(self.reads), 12)
                 self.assertEqual(self.starts, int(state == 'stopped'))
                 self.assertEqual(self.ssh_calls, 1)
+                self.assertEqual(self.sync_calls, 1)
+                self.assertTrue(result['model_sync_supported'])
                 self.assertTrue(0 < result['valid_for_seconds'] <= 30)
                 self.assertIsInstance(result['observed_at'], int)
                 self.assertIsInstance(result['lease_deadline'], int)
@@ -539,6 +560,23 @@ class WakeReadyTests(unittest.TestCase):
         self.run_cli(action='wake')
         self.assertIn('Ready. Desktop', self.stdout.getvalue())
         self.assertEqual(len(self.reads), 6)
+        self.assertEqual(self.sync_calls, 1)
+
+    def test_ssh_synchronizes_before_opening_interactive_shell(self):
+        self.run_cli(action='ssh')
+        self.assertEqual(self.sync_calls, 1)
+        self.assertEqual(self.shell_calls, 1)
+
+    def test_sync_failure_blocks_ready_receipt_and_interactive_shell(self):
+        for action in ('wake', 'ssh', 'wake-ready'):
+            with self.subTest(action=action):
+                self.setUp()
+                with self.assertRaisesRegex(control.model_sync.SyncError, 'model sync failed'):
+                    self.run_cli(action=action, sync_failure=control.model_sync.SyncError('model sync failed'))
+                self.assertEqual(self.sync_calls, 1)
+                self.assertEqual(self.shell_calls, 0)
+                self.assertEqual(self.stdout.getvalue(), '')
+                self.assertEqual(len(self.reads), 6)
 
     def test_final_proof_fails_closed_after_long_boot(self):
         for attr, value in (
@@ -580,7 +618,41 @@ class WakeReadyTests(unittest.TestCase):
                     self.run_cli(initial_failure=lambda: setattr(self, attr, value))
                 self.assertEqual(self.starts, 0)
                 self.assertEqual(self.ssh_calls, 0)
+                self.assertEqual(self.sync_calls, 0)
                 self.assertEqual(self.stdout.getvalue(), '')
+
+
+class ModelSyncCommandTests(unittest.TestCase):
+    def test_explicit_sync_models_does_not_wake_or_duplicate_identity_checks(self):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        config = ReadinessTests.config
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(control.sys, 'argv', ['control.py', 'sync-models']), \
+                patch.object(control.Path, 'read_text', return_value=control.json.dumps(config)), \
+                patch.object(control.model_sync, 'sync_personal_alpha', return_value=False) as sync, \
+                patch.object(control, 'wake') as wake, \
+                patch.object(control, 'aws') as aws, \
+                patch.object(control.os, 'execvp') as shell, \
+                redirect_stdout(out), redirect_stderr(err):
+            control.main()
+        sync.assert_called_once_with(config)
+        wake.assert_not_called()
+        aws.assert_not_called()
+        shell.assert_not_called()
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('Synchronizing personal-cloud model access', err.getvalue())
+
+    def test_explicit_sync_models_propagates_failure(self):
+        config = ReadinessTests.config
+        with patch.object(control.sys, 'argv', ['control.py', 'sync-models']), \
+                patch.object(control.Path, 'read_text', return_value=control.json.dumps(config)), \
+                patch.object(control.model_sync, 'sync_personal_alpha',
+                             side_effect=control.model_sync.SyncError('sync failed')), \
+                patch.object(control, 'wake') as wake:
+            with self.assertRaisesRegex(control.model_sync.SyncError, 'sync failed'):
+                control.main()
+        wake.assert_not_called()
 
 
 if __name__ == '__main__':
