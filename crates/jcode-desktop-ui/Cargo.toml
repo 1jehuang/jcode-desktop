@@ -16,6 +16,8 @@ jcode-desktop-motion.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-render-core = { path = "../../../jcode/crates/jcode-render-core" }
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 anyhow = "1"
 flate2 = "1"
 tar = "0.4"

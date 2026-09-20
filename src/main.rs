@@ -11,6 +11,8 @@ mod host {
 }
 mod diagnostics;
 #[cfg(test)]
+mod voice_command_tests;
+#[cfg(test)]
 mod window_controls_tests;
 #[cfg(test)]
 mod window_lifecycle_tests;
@@ -29,6 +31,7 @@ use gpui::{
     actions, div, prelude::*, px, size,
 };
 use gpui_platform::application;
+use jcode_desktop_api::LaunchMode;
 
 use host::{
     instance::{self, Command as InstanceCommand, Instance},
@@ -179,7 +182,8 @@ fn restore_window(
         }
     }
 
-    let bounds = Bounds::centered(None, size(px(1500.0), px(950.0)), cx);
+    let (width, height) = LaunchMode::from_args(env::args_os()).initial_window_size();
+    let bounds = Bounds::centered(None, size(px(width as f32), px(height as f32)), cx);
     let replacement = cx.open_window(
         WindowOptions {
             app_id: Some(jcode_desktop_ui::APP_ID.into()),
@@ -252,9 +256,50 @@ fn quit_mode(screenshot: bool, macos_lifecycle_fixture: bool) -> gpui::QuitMode 
     }
 }
 
+fn validate_launch_command(
+    mode: LaunchMode,
+    args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        mode != LaunchMode::SinglePanel
+            || !args
+                .into_iter()
+                .any(|arg| { arg.as_ref() == "--toggle-voice" || arg.as_ref() == "--reload-ui" }),
+        "--single-panel cannot target an existing window with --toggle-voice or --reload-ui. Use the window's controls or /update instead."
+    );
+    Ok(())
+}
+
+fn launch_quit_mode(mode: LaunchMode, screenshot: bool, lifecycle: bool) -> gpui::QuitMode {
+    if mode == LaunchMode::SinglePanel {
+        gpui::QuitMode::Default
+    } else {
+        quit_mode(screenshot, lifecycle)
+    }
+}
+
 fn main() {
     if env::args_os().any(|argument| argument == "--version" || argument == "-V") {
         println!("Jcode Desktop {}", jcode_desktop_ui::build_version());
+        return;
+    }
+    // Global compositor shortcuts forward only. A missing or older host must
+    // never turn a keypress into a fresh application or recovered microphone.
+    let launch_mode = LaunchMode::from_args(env::args_os());
+    if let Err(error) = validate_launch_command(launch_mode, env::args_os()) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+    let instance_name = launch_mode.instance_name(std::process::id());
+    if env::args_os().any(|argument| argument == "--toggle-voice") {
+        if let Err(error) =
+            instance::notify_named(instance_name.as_deref(), InstanceCommand::ToggleVoice)
+        {
+            eprintln!(
+                "could not toggle desktop voice: {error}. Start an updated Jcode Desktop host first."
+            );
+            std::process::exit(1);
+        }
         return;
     }
     let diagnostics_path = diagnostics::install().unwrap_or_else(|error| {
@@ -264,26 +309,26 @@ fn main() {
     if !diagnostics_path.as_os_str().is_empty() {
         eprintln!("desktop diagnostics: {}", diagnostics_path.display());
     }
-    // Sidebar-free windows are intentionally independent from the main window.
+    // Single-panel launches have a per-process identity. Sidebar-free windows
+    // retain their shared identity, independent from the main window.
     // Otherwise a shortcut for `--no-sidebar` only wakes the already-running
     // main instance, which silently ignores the new process's launch flags.
-    let instance_name = env::args_os()
-        .any(|argument| argument == "--no-sidebar" || argument == "--workspace")
-        .then_some("no-sidebar");
     let requested_command = if env::args_os().any(|argument| argument == "--reload-ui") {
         InstanceCommand::Reload
     } else {
         InstanceCommand::Show
     };
     let (commands, instance_socket) =
-        match instance::acquire_named(instance_name, requested_command)
+        match instance::acquire_named(instance_name.as_deref(), requested_command)
             .expect("initialize Jcode Desktop instance socket")
         {
             Instance::Primary { commands, _socket } => (commands, _socket),
             Instance::Secondary => return,
         };
+    let instance_socket = Rc::new(instance_socket);
     let plugin_path = host::reload_config::plugin_path();
-    let app = application().with_quit_mode(quit_mode(
+    let app = application().with_quit_mode(launch_quit_mode(
+        launch_mode,
         env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1"),
         env::var("JCODE_DESKTOP_SCREENSHOT_MACOS_LIFECYCLE").as_deref() == Ok("1"),
     ));
@@ -306,6 +351,12 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        let quit_socket = instance_socket.clone();
+        cx.on_app_quit(move |_| {
+            quit_socket.cleanup();
+            std::future::ready(())
+        })
+        .detach();
         cx.bind_keys([
             // Ctrl+R must always activate code built from the current checkout,
             // rather than silently reloading a stale cdylib from an earlier build.
@@ -314,7 +365,8 @@ fn main() {
             KeyBinding::new("f6", RollbackUi, None),
         ]);
 
-        let bounds = Bounds::centered(None, size(px(1500.0), px(950.0)), cx);
+        let (width, height) = launch_mode.initial_window_size();
+        let bounds = Bounds::centered(None, size(px(width as f32), px(height as f32)), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -398,7 +450,14 @@ fn main() {
                         continue;
                     }
 
-                    let result = cx.update(|cx| restore_window(&manager, &current_window, cx));
+                    let result = cx.update(|cx| {
+                        restore_window(&manager, &current_window, cx)?;
+                        if command == InstanceCommand::ToggleVoice {
+                            let window = current_window.borrow().ok_or_else(|| anyhow::anyhow!("desktop window unavailable"))?;
+                            dispatch_ui_action(window, "workspace::ToggleVoice", cx)?;
+                        }
+                        Ok::<_, anyhow::Error>(())
+                    });
                     if let Err(error) = result {
                         eprintln!("failed to restore desktop window: {error:#}");
                     }
@@ -469,9 +528,62 @@ fn main() {
     });
 }
 
+/// Resolve against the current UI generation, not a statically linked Rust
+/// action TypeId. No host/plugin ABI or persisted-state changes are needed.
+fn dispatch_ui_action(
+    window: gpui::AnyWindowHandle,
+    name: &str,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    window.update(cx, |_, window, cx| {
+        // A restored root may not have mounted its listeners yet. Prepare its
+        // dispatch tree now, just as GPUI does before a native key event. Do
+        // not wait for a compositor frame: background activation can be denied.
+        window.draw(cx).clear(cx);
+        let action = cx.build_action(name, None)?;
+        if !window.is_action_available(action.as_ref(), cx) {
+            // A removed picker may leave no mounted focus target. The UI
+            // supplies its workspace as a tab stop for this bounded repair.
+            window.focus_next(cx);
+        }
+        anyhow::ensure!(
+            window.is_action_available(action.as_ref(), cx),
+            "current UI cannot handle {name}"
+        );
+        window.dispatch_action(action, cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::RebuildState;
+
+    #[test]
+    fn single_panel_rejects_ambiguous_remote_commands_before_startup() {
+        use jcode_desktop_api::LaunchMode;
+        for command in ["--toggle-voice", "--reload-ui"] {
+            assert!(super::validate_launch_command(LaunchMode::SinglePanel, [command]).is_err());
+            assert!(super::validate_launch_command(LaunchMode::Workspace, [command]).is_ok());
+            assert!(super::validate_launch_command(LaunchMode::NoSidebar, [command]).is_ok());
+        }
+        assert!(super::validate_launch_command(LaunchMode::SinglePanel, ["--hot-reload"]).is_ok());
+    }
+
+    #[test]
+    fn single_panel_quits_after_its_only_window_closes() {
+        for (screenshot, lifecycle) in [(false, false), (true, true)] {
+            assert!(matches!(
+                super::launch_quit_mode(
+                    jcode_desktop_api::LaunchMode::SinglePanel,
+                    screenshot,
+                    lifecycle
+                ),
+                gpui::QuitMode::Default
+            ));
+        }
+    }
 
     #[test]
     fn rebuild_state_allows_only_one_start_until_finished() {

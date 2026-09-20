@@ -544,6 +544,7 @@ mod tests {
             });
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "diagram-session".into(),
                     text: "```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```".into(),
                 },

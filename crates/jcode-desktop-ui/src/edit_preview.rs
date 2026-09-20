@@ -15,6 +15,9 @@ use timer::{EditPreviewState, EditPreviewTimer};
 mod header;
 pub(super) use header::PreviewHeader;
 
+#[path = "edit_preview_highlight.rs"]
+mod syntax;
+
 const LINE_HEIGHT: f32 = 22.;
 const MAX_HEIGHT: f32 = 352.;
 
@@ -65,6 +68,8 @@ pub(crate) struct TimedPreview {
     index: usize,
     rows: Vec<DiffRow>,
     indent: usize,
+    syntax: Vec<syntax::StyledLine>,
+    syntax_theme: usize,
     gutter_width: f32,
     timer: EditPreviewTimer,
     done: bool,
@@ -79,6 +84,8 @@ impl TimedPreview {
             index,
             rows: Vec::new(),
             indent: 0,
+            syntax: Vec::new(),
+            syntax_theme: 0,
             gutter_width: 32.,
             timer: EditPreviewTimer::new(),
             done,
@@ -92,8 +99,12 @@ impl TimedPreview {
 
     fn prepare_rows(&mut self) {
         let file = &self.files[self.index];
+        self.syntax.clear();
         self.indent = common_indent(&file.lines);
         self.rows = numbered_rows(&file.lines);
+        // Parse hunk boundaries before hiding them so numbering still resets
+        // correctly, without reserving a row for hunk-position headers.
+        self.rows.retain(|row| !row.text.starts_with("@@"));
         self.gutter_width = self
             .rows
             .iter()
@@ -122,7 +133,6 @@ impl TimedPreview {
         let theme = Theme::global();
         let row = &self.rows[index];
         let line = &row.text;
-        let file = &self.files[self.index];
         let base = div()
             .debug_selector(move || format!("edit-preview-line-{index}").into())
             .h(px(LINE_HEIGHT))
@@ -134,9 +144,7 @@ impl TimedPreview {
             .text_size(px(12.5))
             .line_height(px(LINE_HEIGHT));
         if line.starts_with("@@") || line.starts_with('\\') {
-            let label = if line.contains("snippet-relative") {
-                "Snippet lines · not file positions".to_owned()
-            } else if line.starts_with("@@") && line.matches('@').count() == 2 {
+            let label = if line.starts_with("@@") && line.matches('@').count() == 2 {
                 "Change".to_owned()
             } else {
                 line.trim_start_matches("\\ ").to_owned()
@@ -147,19 +155,17 @@ impl TimedPreview {
                 .text_color(theme.TEXT_DIM)
                 .child(label);
         }
-        let (marker, text, tint) = if let Some(text) = line.strip_prefix('+') {
+        let (marker, _text, tint) = if let Some(text) = line.strip_prefix('+') {
             ("+", text, Some(theme.OK))
         } else if let Some(text) = line.strip_prefix('-') {
             ("−", text, Some(theme.ERROR))
         } else {
             ("", line.strip_prefix(' ').unwrap_or(line), None)
         };
-        let visible = compact_code(text, self.indent);
-        let lang = file.path.rsplit('.').next().unwrap_or("text");
-        let (plain, highlights) = crate::markdown::highlight_code(&visible, lang);
-        let gutter = |number: &str, side: &'static str| {
+        let (plain, highlights) = &self.syntax[index];
+        let gutter = |number: &str| {
             div()
-                .debug_selector(move || format!("edit-preview-{side}-number-{index}").into())
+                .debug_selector(move || format!("edit-preview-number-{index}").into())
                 .w(px(self.gutter_width))
                 .flex_none()
                 .text_right()
@@ -169,8 +175,11 @@ impl TimedPreview {
                 .child(number.to_owned())
         };
         base.when_some(tint, |el, color| el.bg(to_hsla(color).opacity(0.09)))
-            .child(gutter(&row.old, "old"))
-            .child(gutter(&row.new, "new"))
+            .child(gutter(if row.new.is_empty() {
+                &row.old
+            } else {
+                &row.new
+            }))
             .child(
                 div()
                     .w(px(22.))
@@ -185,8 +194,10 @@ impl TimedPreview {
                     .min_w_0()
                     .pr_3()
                     .truncate()
-                    .text_color(theme.TEXT)
-                    .child(gpui::StyledText::new(plain).with_highlights(highlights)),
+                    .text_color(theme.CODE_TEXT)
+                    .child(
+                        gpui::StyledText::new(plain.clone()).with_highlights(highlights.clone()),
+                    ),
             )
     }
 }
@@ -204,6 +215,17 @@ impl Render for TimedPreview {
             });
         }
         let theme = Theme::global();
+        let theme_key = theme as *const Theme as usize;
+        if self.syntax.is_empty() || self.syntax_theme != theme_key {
+            let file = &self.files[self.index];
+            self.syntax = syntax::prepare(&file.lines, &file.path, self.indent)
+                .into_iter()
+                .zip(&file.lines)
+                .filter(|(_, line)| !line.starts_with("@@"))
+                .map(|(styled, _)| styled)
+                .collect();
+            self.syntax_theme = theme_key;
+        }
         let expansion = self.timer.expansion_fraction();
         let countdown = self.timer.state() == EditPreviewState::Countdown;
         let open = expansion > 0.;
@@ -220,19 +242,21 @@ impl Render for TimedPreview {
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(self.render_header())
-            .child(
-                div().h(px(2.)).w_full().bg(theme.CODE_HEADER_BG).child(
-                    div()
-                        .debug_selector(|| "edit-countdown-bar".into())
-                        .h_full()
-                        .w(relative(if countdown {
-                            self.timer.remaining_fraction()
-                        } else {
-                            0.
-                        }))
-                        .bg(theme.ACCENT),
-                ),
-            );
+            .when(open, |el| {
+                el.child(
+                    div().h(px(2.)).w_full().bg(theme.CODE_HEADER_BG).child(
+                        div()
+                            .debug_selector(|| "edit-countdown-bar".into())
+                            .h_full()
+                            .w(relative(if countdown {
+                                self.timer.remaining_fraction()
+                            } else {
+                                0.
+                            }))
+                            .bg(theme.ACCENT),
+                    ),
+                )
+            });
         if open && !self.rows.is_empty() {
             let height = (self.rows.len() as f32 * LINE_HEIGHT).min(MAX_HEIGHT);
             body = body.child(
@@ -266,7 +290,12 @@ impl Render for TimedPreview {
                     .child("No changed lines to preview."),
             );
         }
-        body
+        // GPUI clips overflow to a rectangle. Only an expanded diff needs
+        // clearance below its rectangular line fills for the rounded corners.
+        // A collapsed card ends at the metadata row itself, with no footer.
+        body.when(open && !self.header.review.failed, |el| {
+            el.child(div().h(px(8.)).rounded_b_lg().bg(theme.CODE_BG))
+        })
     }
 }
 
@@ -292,6 +321,7 @@ fn common_indent(lines: &[String]) -> usize {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn compact_code(text: &str, indent: usize) -> String {
     let mut result = String::new();
     let mut column = 0;
@@ -343,6 +373,7 @@ mod tests {
             intent: Some("Clarify navigation".into()),
             review: crate::workspace::change_review::OpenChangeReview {
                 source: cx.entity_id(),
+                output: String::new(),
                 name: "edit".into(),
                 input: "{}".into(),
                 selected: 0,
@@ -400,6 +431,15 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("edit-expanded-body").is_none());
+        let preview = vcx.debug_bounds("edit-timed-preview").unwrap();
+        let metadata = vcx.debug_bounds("edit-preview-metadata-0").unwrap();
+        assert_eq!(
+            preview.bottom(),
+            metadata.bottom(),
+            "no third row below a collapsed edit"
+        );
+        assert_eq!(preview.size.height, px(52.));
+        assert!(vcx.debug_bounds("edit-countdown-bar").is_none());
         host.update(vcx, |host, cx| {
             host.visible = false;
             cx.notify();
@@ -425,7 +465,7 @@ mod tests {
         vcx.run_until_parked();
         let width = vcx.debug_bounds("edit-countdown-bar").unwrap().size.width;
         let height = vcx.debug_bounds("edit-expanded-body").unwrap().size.height;
-        assert!(vcx.debug_bounds("edit-preview-old-number-1").is_some());
+        assert!(vcx.debug_bounds("edit-preview-number-1").is_some());
         view.update(vcx, |view, cx| {
             view.timer.update(true, Duration::from_millis(2500));
             view.last_frame = Instant::now();

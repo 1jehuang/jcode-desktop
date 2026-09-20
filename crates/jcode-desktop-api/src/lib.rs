@@ -6,7 +6,9 @@
 use std::ffi::c_void;
 
 mod image_ids;
+mod launch;
 pub use image_ids::ImageIds;
+pub use launch::LaunchMode;
 
 pub const ABI_VERSION: u32 = 3;
 pub const STATE_SCHEMA_VERSION: u32 = 1;

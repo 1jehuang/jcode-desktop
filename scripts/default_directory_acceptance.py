@@ -10,6 +10,7 @@ No daemon or provider is contacted. Per-step PNG/OCR, TOML, navigation, logs, an
 an acceptance JSON report survive the harness's temporary-directory cleanup.
 """
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import time
@@ -178,18 +179,28 @@ def verify(output, env, root):
         assert button[1] > image.height * .8, "Picker footer must be at the workspace bottom"
         return [word for word in words if word["y"] < footer_top] + footer
 
+    def directory_button(image, label):
+        # The launcher is now the destination's path beside the three machine
+        # icons, not a separate "Default directory" label. Inspect only the path
+        # area so an icon or a session heading cannot impersonate the launcher.
+        directory = pinned()
+        title = Path(directory).name.split()[0] if directory else "home"
+        return phrase_bounds(ui.words(image, (112, 52, 252, 92), label, psm=7), title)
+
     def closed(image):
         assert not any(panel["session"] == DEFAULT_DIRECTORY_SESSION
                        for panel in panels(navigation())), "Utility slot stayed open"
         # The launcher remains visible after the utility slot is removed.
-        phrase_bounds(ui.words(image, (0, 48, 264, 110), stage + "-sidebar"), "Default directory")
+        directory_button(image, stage + "-sidebar")
         words = ui.words(image, (276, 48, image.width - 12, image.height - 16), stage + "-closed")
         assert "defaultdirectory" not in normalized(" ".join(w["text"] for w in words)), "Picker stayed rendered"
 
     def open_picker(label):
-        bounds = ui.wait_frame(label + "-button", lambda image: phrase_bounds(
-            ui.words(image, (0, 48, 264, 110), label + "-button"), "Default directory"))
+        # Dismiss the path tooltip before reading or re-clicking the launcher.
+        ui.native("mousemove", 800, 400)
+        bounds = ui.wait_frame(label + "-button", lambda image: directory_button(image, label + "-button"))
         ui.click(bounds)
+        ui.native("mousemove", 800, 400)
         def opened(image):
             state = navigation()
             panel = default_panel(state)
@@ -419,17 +430,18 @@ def verify(output, env, root):
             ui.native("key", "--clearmodifiers", "super+f")
 
         def draft_path(image):
-            words = ui.words(image, (276, 48, image.width - 12, 80), "draft-path", psm=7)
-            # Panel headers compact the isolated HOME to ~/. Require the path
-            # prefix so the adjacent "Custom Directory" title cannot pass.
+            words = ui.words(image, (276, image.height - 120, image.width - 12,
+                                     image.height - 60), "draft-path", psm=6)
+            # The composer status row shows the draft's working directory.
+            # Require the path prefix so the session title cannot pass.
             starts = [index for index, word in enumerate(words) if word["text"].startswith("~/")]
-            assert len(starts) == 1, "Draft header has no unambiguous home-relative path"
+            assert len(starts) == 1, "Draft status has no unambiguous home-relative path"
             phrase_bounds(words[starts[0]:], "~/Custom Directory")
         ui.wait_frame("draft-created", draft_path)
         assert pinned() == str(custom), "Draft creation changed the preference"
         report["checks"][stage] = {"panel": added[0], "path": str(custom),
                                   "rendered_path": "~/Custom Directory", "isolated_home": env["HOME"],
-                                  "path_evidence": "rendered header OCR with explicit ~/ prefix"}
+                                  "path_evidence": "rendered composer status OCR with explicit ~/ prefix"}
         stage = "all-native-checks"
         assert not report["failures"], json.dumps(report["failures"])
         report["passed"] = True

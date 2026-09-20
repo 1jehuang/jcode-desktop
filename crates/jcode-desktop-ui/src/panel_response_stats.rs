@@ -253,6 +253,7 @@ mod tests {
             panel.response_stats.started = Some(Instant::now() - Duration::from_secs(84));
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "stats".into(),
                     text: "Completed answer.".into(),
                 },
@@ -429,6 +430,7 @@ mod tests {
         assert_eq!(tracker.finish().unwrap().input_tokens, Some(2_000));
         tracker.observe(
             &ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "stats".into(),
                 text: "Hi".into(),
             },

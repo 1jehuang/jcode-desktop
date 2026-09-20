@@ -29,13 +29,20 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn filename(mode: jcode_desktop_api::LaunchMode) -> Option<&'static str> {
+    // Standalone invocations are always fresh. They must neither consume nor
+    // overwrite the main workspace's checkpoint (or another standalone's).
+    // In-process Ctrl+R snapshots remain available without a recovery file.
+    match mode {
+        jcode_desktop_api::LaunchMode::SinglePanel => None,
+        jcode_desktop_api::LaunchMode::NoSidebar => Some("crash-recovery-no-sidebar.json"),
+        jcode_desktop_api::LaunchMode::Workspace => Some("crash-recovery.json"),
+    }
+}
+
 fn path() -> Option<PathBuf> {
-    let separate = std::env::args_os().any(|arg| arg == "--no-sidebar" || arg == "--workspace");
-    Some(crate::learning::state_path()?.with_file_name(if separate {
-        "crash-recovery-no-sidebar.json"
-    } else {
-        "crash-recovery.json"
-    }))
+    let name = filename(jcode_desktop_api::LaunchMode::from_args(std::env::args_os()))?;
+    Some(crate::learning::state_path()?.with_file_name(name))
 }
 
 fn process_alive(pid: u32) -> bool {
@@ -251,6 +258,14 @@ mod tests {
 
     fn snapshot() -> WorkspaceSnapshot {
         WorkspaceSnapshot::decode(br#"{"format_version":1,"slots":[],"active":0,"active_row":0,"row_focus":[null,null,null,null],"previous":null,"camera_x":[0,0,0,0],"camera_target":[0,0,0,0],"overview":false,"hints_overlay":false,"folder_picker_dir":null,"folder_picker_error":null,"folder_search":null,"focus":"Workspace"}"#).unwrap()
+    }
+
+    #[test]
+    fn single_panel_never_consumes_or_overwrites_workspace_recovery() {
+        use jcode_desktop_api::LaunchMode;
+        assert_eq!(filename(LaunchMode::SinglePanel), None);
+        assert_eq!(filename(LaunchMode::Workspace), Some("crash-recovery.json"));
+        assert_eq!(filename(LaunchMode::NoSidebar), Some("crash-recovery-no-sidebar.json"));
     }
 
     #[test]

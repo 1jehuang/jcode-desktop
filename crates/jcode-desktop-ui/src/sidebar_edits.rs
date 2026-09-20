@@ -103,6 +103,7 @@ mod tests {
             session_id: "session".into()
         }));
         assert!(!super::refresh_after(&jcode_sdk::ApiEvent::TextDelta {
+            message_id: None,
             session_id: "session".into(),
             text: "writing".into()
         }));

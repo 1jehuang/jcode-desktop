@@ -35,6 +35,11 @@ mod diff_review;
 mod flicker;
 #[path = "panel_image_preview.rs"]
 mod image_preview;
+#[path = "panel_image_pane.rs"]
+mod image_pane;
+#[cfg(test)]
+#[path = "panel_image_pane_tests.rs"]
+mod image_pane_tests;
 #[path = "panel_latest.rs"]
 mod latest;
 #[path = "panel_login.rs"]
@@ -207,6 +212,8 @@ impl TranscriptImage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default)]
+    pub image_pane_open: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_document: Option<SideDocumentSnapshot>,
     #[serde(default)]
@@ -260,6 +267,10 @@ pub struct Panel {
     sidebar_spinner: Entity<activity::Spinner>,
     pub input: Entity<PromptInput>,
     voice: voice::VoiceState,
+    image_pane_open: bool,
+    image_pane_selected: Option<usize>,
+    image_pane_scroll: ScrollHandle,
+    image_pane_stacked: bool,
     image_preview: Option<TranscriptImage>,
     diff_review: Option<diff_review::DiffReview>,
     edit_previews: diff_review::EditPreviews,
@@ -768,6 +779,10 @@ impl Panel {
             sidebar_spinner: cx.new(activity::Spinner::new),
             input,
             voice: voice::VoiceState::default(),
+            image_pane_open: false,
+            image_pane_selected: None,
+            image_pane_scroll: ScrollHandle::new(),
+            image_pane_stacked: false,
             image_preview: None,
             diff_review: None,
             edit_previews: diff_review::EditPreviews::default(),
@@ -2079,6 +2094,7 @@ impl Panel {
             .document_scroll_offset(cx)
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
+            image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
             prompt_queue: self.prompt_queue.clone(),
             session_id: self.session_id.clone(),
@@ -2107,6 +2123,8 @@ impl Panel {
         if self.restore_side_document_snapshot(&snapshot, cx) {
             return;
         }
+        self.image_pane_open = snapshot.image_pane_open;
+        self.image_pane_selected = None;
         self.prompt_queue = snapshot.prompt_queue;
         self.title = snapshot.title.into();
         self.working_dir = snapshot.working_dir;
@@ -2379,6 +2397,7 @@ impl Panel {
                 }
                 "/cls" | "/clear-view" => {
                     self.startup_layout = None;
+                    self.image_pane_selected = None;
                     self.items.clear();
                     self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
@@ -2684,6 +2703,7 @@ impl Panel {
             .map(|(index, at)| (index + history_len, at))
             .collect();
         items.append(&mut existing);
+        self.image_pane_selected = None;
         self.items = items;
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
@@ -3015,6 +3035,11 @@ impl Panel {
             .into_iter()
             .map(|(index, at)| (index + usize::from(index >= insertion), at))
             .collect();
+        if let Some(selected) = &mut self.image_pane_selected {
+            if *selected >= insertion {
+                *selected += 1;
+            }
+        }
         self.items.insert(
             insertion,
             Item::Image(TranscriptImage::from_rendered(image)),
@@ -3238,48 +3263,11 @@ impl Panel {
     ) -> gpui::AnyElement {
         match item {
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
-            Item::User(text) => {
-                let now = Instant::now();
-                let pending = self.pending_users.contains(&index);
-                let (offset, opacity, animating) = self
-                    .accepted_users
-                    .get(&index)
-                    .map(|at| crate::ack::motion(*at, now))
-                    .unwrap_or((
-                        0.0,
-                        if pending {
-                            crate::ack::PENDING_TONE
-                        } else {
-                            1.0
-                        },
-                        false,
-                    ));
-                if animating {
-                    window.request_animation_frame();
-                }
-                let card = div()
-                    .flex()
-                    .flex_col()
-                    .ml(px(offset))
-                    .opacity(opacity)
-                    .bg(Theme::global().USER_BG)
-                    .rounded_md()
-                    .px_3()
-                    .py_2()
-                    .text_color(Theme::global().TEXT_USER)
-                    .child(markdown::render_interactive(
-                        text,
-                        index,
-                        &self.transcript_selection,
-                        window,
-                        cx,
-                        false,
-                        self.media_preview_handler(cx),
-                    ))
-                    .into_any_element();
-                role_caption(prompt::user_prompt_label(&self.items, index), card)
-            }
+            Item::User(text) => self.render_user_prompt(index, text, true, window, cx),
             Item::Image(image) => {
+                if self.image_pane_open {
+                    return self.render_image_pane_link(index, image, cx);
+                }
                 let preview_image = image.clone();
                 let label = image
                     .label
@@ -3481,7 +3469,7 @@ impl Panel {
                         .into_any_element();
                 }
                 if let Some(preview) =
-                    self.render_edit_metadata(call_id, name, input, *done, error.as_deref(), cx)
+                    self.render_edit_metadata(call_id, name, input, output, *done, error.as_deref(), cx)
                 {
                     return div()
                         .id(("tool", index))
@@ -4257,10 +4245,14 @@ impl Render for Panel {
 
         let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
 
-        div()
+        let chat = div()
             .flex()
             .flex_col()
             .size_full()
+            .when(self.image_pane_open, |el| {
+                el.flex_1().min_w_0().min_h_0()
+                    .when(self.image_pane_stacked, |el| el.h_auto())
+            })
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
@@ -4558,10 +4550,11 @@ impl Render for Panel {
                             .gap_2()
                             .overflow_hidden()
                             .children(usage_meters)
+                            .child(self.render_image_pane_toggle(cx))
                             .child(self.render_voice_controls(status_line, cx)),
                     ),
             )
-            .children(self.render_voice_status(cx))
+            .children(self.render_voice_overlay(window, cx))
             .children(self.render_preview_badge(cx))
             .children(self.render_prompt_queue(cx))
             // Input
@@ -4599,6 +4592,21 @@ impl Render for Panel {
             .children(self.render_image_preview(window, cx))
             .children(self.render_diff_review(cx))
             .children(self.render_login_picker(window, cx))
+            .into_any_element();
+
+        // Inline mode retains the existing chat layout and event ancestry.
+        if !self.image_pane_open {
+            return chat;
+        }
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .when(self.image_pane_stacked, |el| el.flex_col())
+            .overflow_hidden()
+            .child(self.image_pane_layout_observer(cx))
+            .child(chat)
+            .children(self.render_image_pane(cx))
             .into_any_element()
     }
 }
@@ -6719,6 +6727,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: "more streamed text".into(),
                 },
@@ -7088,7 +7097,9 @@ mod tests {
                     "edit-preview-footer-0",
                     "tool-error",
                 ] {
-                    if selector == "tool-error" && error.is_none() {
+                    if matches!(selector, "tool-error" | "edit-preview-footer-0") && error.is_none()
+                    {
+                        assert!(vcx.debug_bounds(selector).is_none());
                         continue;
                     }
                     let content = vcx.debug_bounds(selector).expect("card content paints");
@@ -7679,6 +7690,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: "hello back".into(),
                 },
@@ -7757,6 +7769,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: crash_shaped.into(),
                 },
@@ -7792,6 +7805,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "session-a".into(),
                     text: "```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```".into(),
                 },

@@ -59,6 +59,9 @@ impl Panel {
         );
         match state {
             PreviewState::Empty => {}
+            PreviewState::VoiceConnecting | PreviewState::VoiceListening => {
+                self.seed_voice_preview(state);
+            }
             PreviewState::Streaming => {
                 self.apply(
                     &ApiEvent::SessionStatus {
@@ -67,7 +70,7 @@ impl Panel {
                     },
                     cx,
                 );
-                self.apply(&ApiEvent::TextDelta { session_id: self.session_id.clone(), text: "I’m reviewing the implementation.\n\nThis **streaming preview** uses the real transcript renderer.".into() }, cx);
+                self.apply(&ApiEvent::TextDelta { message_id: None, session_id: self.session_id.clone(), text: "I’m reviewing the implementation.\n\nThis **streaming preview** uses the real transcript renderer.".into() }, cx);
             }
             PreviewState::LoginDialogError => {
                 self.open_login_picker(cx);

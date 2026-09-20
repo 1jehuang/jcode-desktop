@@ -1,0 +1,119 @@
+# Single-panel windows
+
+```sh
+jcode-desktop --single-panel
+```
+
+Each invocation starts an independent process and native window. The visible
+panel fills the window without the workspace sidebar, tab strip, overview, or
+map. Starting another single-panel window does not reuse, replace, or change an
+existing normal, `--no-sidebar`, or single-panel window.
+
+This is different from `--no-sidebar` (also called `--workspace`), which keeps
+the workspace and its navigation while initially hiding the sidebar. Normal
+launches still reuse the normal instance, and `--no-sidebar` launches still
+reuse their own named instance.
+
+## Interaction
+
+- One panel is visible at a time. Chat retains its usual input and controls.
+- Utility views such as review or login may temporarily fill the window.
+  Use **Back to chat** to return to the chat rather than creating another
+  workspace pane.
+- **Super+Q** closes the chat window and its standalone process. While a utility
+  view is open, it closes that view and returns to the conversation. Other
+  windows continue running.
+- Each launch starts a fresh chat, without reading or overwriting workspace
+  crash-recovery files. Normal session history still belongs to Jcode.
+- **Ctrl+R** and `/update` in a source hot-reload build target this window's
+  host and preserve its chat state. `--single-panel --reload-ui` and
+  `--single-panel --toggle-voice` are rejected because they cannot identify
+  which existing standalone window to target.
+- Existing workspace shortcuts for sidebar toggling, overview, creating or
+  moving panels, changing strips, and panel widths are disabled. This mode
+  cannot be converted into a workspace with a keyboard shortcut.
+
+On Unix, each standalone instance owns
+`$XDG_RUNTIME_DIR/jcode-desktop-single-panel-<pid>.sock`. Normal and no-sidebar
+instances retain `jcode-desktop.sock` and `jcode-desktop-no-sidebar.sock`.
+Standalone sockets are removed when their process closes normally. Do not
+use the normal instance socket to control an unrelated standalone window.
+
+## Isolated acceptance
+
+Use an already-built host containing the current linked UI:
+
+```sh
+python3 scripts/accept-single-panel.py target/accept-single-panel \
+  --binary target/debug/jcode-desktop
+```
+
+The output directory must not exist. The script **never builds or reloads**.
+Build the current host/UI separately before running it. It needs Python 3,
+Xvfb, Openbox, xdotool, ImageMagick `import`, and Mesa lavapipe.
+
+The harness imports the environment allowlist from `scripts/screenshot.py`.
+It creates a private Xvfb display, private Openbox, offline screenshot fixture,
+and temporary home/config/runtime directories under `target/`. It does not
+inherit desktop sockets, credentials, app settings, or the live display. All
+four processes share the same private `XDG_RUNTIME_DIR`, but receive distinct
+`JCODE_DESKTOP_STATE` paths. It uses `--no-hot-reload` to avoid startup builds.
+
+Checks include:
+
+1. Normal, no-sidebar, and two standalone launches remain alive with four
+   distinct PIDs, native X11 window IDs, and listening socket inodes.
+2. Normal and no-sidebar window IDs, socket identities, and workspace state
+   remain unchanged after each standalone launch and interaction sequence.
+3. Standalone navigation reports `single_panel: true`, `visible_panels: 1`,
+   `sidebar_visible: false`, no overview/map/tab targets, exactly one panel,
+   and canvas width equal to the 1440-pixel viewport width.
+4. Native workspace shortcut aliases cannot change strips, add panels, reveal
+   the sidebar/overview, resize the panel, or mutate either workspace window.
+5. Super+Q exits one standalone process, removes its window and socket, and
+   leaves the other three windows, PIDs, sockets, and workspace state intact.
+
+`results.json`, separate process logs, and final state dumps are retained even
+on failure. `single-a.png` and `single-b.png` capture the actual standalone
+windows for visual review. Review these images for full-height panel content
+and absence of workspace chrome. The state checks establish width and mode
+invariants, not pixel-perfect rendering. Dedicated GPUI layout tests check the
+`single-panel-root` / `single-panel-surface` bounds and absence of mounted
+workspace content. This script does not inspect the GPUI element tree or test
+live provider authentication. Login/review return-to-chat behavior should also
+be checked with the utility-view tests.
+
+### Recorded acceptance: 2026-09-19
+
+The release-binary run passed:
+
+```sh
+python3 scripts/accept-single-panel.py target/accept-single-panel-release \
+  --binary target/release/jcode-desktop
+```
+
+`target/accept-single-panel-release/results.json` records success for all four
+independent windows, disabled workspace shortcuts, unchanged normal/no-sidebar
+instances, and standalone close isolation. Native Super+Q exited the selected
+process with status 0, removed its window **and per-PID socket**, and left the
+other three instances unchanged. Earlier debug runs exposed a stale socket
+file after exit. This release run verifies the host cleanup fix.
+
+Both retained 1440×1000 screenshots, `single-a.png` and `single-b.png`, were
+visually reviewed. Each shows full-window chat without workspace tabs, sidebar,
+or map. Logs and state dumps are in the same evidence directory. This is a
+focused native acceptance result, not a claim that the full UI test suite is
+passing.
+
+Additional checks on the implementation:
+
+- Seven focused standalone UI/reload/recovery tests passed, including draft
+  retention, login/review return, and disabled detached-focus navigation.
+- All 40 host tests, three launch-mode tests and six Linux updater tests passed.
+- The paired release host/UI build passed. The normal-workspace screenshot at
+  `target/ui-review-single-panel-regression.png` was also rendered and reviewed.
+- The full serial UI suite was **not green**: 1,069 passed, eight failed and
+  nine were ignored. Failures covered a sidebar selector, an unfinished-work
+  entity borrow, and workspace swipe/pull behavior. These broader failures
+  are recorded in `target/single-panel-full-tests.log`, not counted as passing
+  acceptance evidence for this mode.

@@ -60,6 +60,9 @@ impl Workspace {
         };
         serde_json::json!({
             "version": 1,
+            "single_panel": self.single_panel,
+            "visible_panels": if self.single_panel { usize::from(!self.slots.is_empty()) } else { self.row_indices(self.active_row).count() },
+            "sidebar_visible": self.show_sidebar && !self.single_panel,
             "viewport": [f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)],
             "compact_sidebar": self.show_sidebar && responsive::is_compact(f32::from(window.viewport_size().width)),
             "sidebar_overlay": self.compact_sidebar_open,

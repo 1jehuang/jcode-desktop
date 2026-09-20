@@ -60,6 +60,7 @@ fn panel_cache_preserves_streaming_and_resize(cx: &mut gpui::TestAppContext) {
     panel.update(vcx, |panel, cx| {
         panel.apply(
             &jcode_sdk::ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "cache-stream".into(),
                 text: "A visible streaming response".into(),
             },

@@ -164,6 +164,7 @@ mod tests {
                     text: "Checking the result".into(),
                 },
                 ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "tail-test".into(),
                     text: "Here is the result".into(),
                 },
@@ -341,6 +342,7 @@ mod tests {
             assert_eq!(panel.status_line(), "Thinking");
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: "activity-test".into(),
                     text: "Here is the result".into(),
                 },

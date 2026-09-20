@@ -53,17 +53,20 @@ pub(super) fn settle(vcx: &mut gpui::VisualTestContext) {
 #[gpui::test]
 fn scroll_momentum_coasts_on_frames_then_stops_requesting_frames(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = fixture(cx);
-    let before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+    // Measuring newly visible rows can change scrollbar estimates even when
+    // the reading position moves correctly. Compare logical positions instead.
+    let position = |panel: &Panel, _: &App| {
+        let top = panel.transcript_list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    };
+    let before = panel.read_with(vcx, position);
     wheel(vcx, false, 3.0);
-    assert_eq!(
-        before,
-        panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y())
-    );
+    assert_eq!(before, panel.read_with(vcx, position));
     frame(vcx, 16);
-    let first = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
-    assert!(first > before);
+    let first = panel.read_with(vcx, position);
+    assert!(first < before);
     frame(vcx, 16);
-    assert!(panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()) > first);
+    assert!(panel.read_with(vcx, position) < first);
     for _ in 0..60 {
         frame(vcx, 16);
     }
@@ -122,10 +125,12 @@ fn scroll_momentum_stops_at_edges_and_discards_suspended_frames(cx: &mut gpui::T
 fn scroll_momentum_reduced_motion_is_direct(cx: &mut gpui::TestAppContext) {
     let (panel, vcx) = fixture(cx);
     vcx.update(|_, cx| cx.set_reduce_motion(true));
-    let before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+    // Scrollbar estimates can grow as this first wheel reveals unmeasured rows.
+    let before = panel.read_with(vcx, |panel, _| panel.transcript_list.logical_scroll_top());
     wheel(vcx, false, 3.0);
     panel.read_with(vcx, |panel, _| {
-        assert!(panel.test_scroll_offset_y() > before);
+        let after = panel.transcript_list.logical_scroll_top();
+        assert!((after.item_ix, after.offset_in_item) < (before.item_ix, before.offset_in_item));
         assert!(panel.transcript_wheel_frame.is_none());
     });
     // The virtual list's scrollbar estimate may change as new rows are measured.

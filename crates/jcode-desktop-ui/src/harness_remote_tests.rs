@@ -255,6 +255,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         images: vec![],
     });
     server.event(ApiEvent::TextDelta {
+        message_id: None,
         session_id: "same-id".into(),
         text: "answer".into(),
     });

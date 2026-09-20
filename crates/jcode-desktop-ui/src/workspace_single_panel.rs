@@ -1,0 +1,334 @@
+//! Standalone windows reuse the chat and its utilities, never the spatial canvas.
+//! Utility views temporarily occupy the same surface. The conversation stays
+//! alive underneath, with an explicit way back instead of hidden workspace tabs.
+use super::*;
+
+impl Workspace {
+    pub(super) fn single_panel_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active == 0 {
+            return;
+        }
+        let panel = self.slots[self.active].panel.clone();
+        if panel.read(cx).is_accounts_panel() {
+            let source = self.slots[0].panel.clone();
+            self.close_accounts(&panel, &source, false, window, cx);
+        } else {
+            self.close_panel(&ClosePanel, window, cx);
+        }
+        self.set_active(0, cx);
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn render_single_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        // Layout preferences and hot-reload snapshots cannot turn this window
+        // back into a workspace. No strip router is mounted, so touchpad motion
+        // belongs entirely to the transcript and its controls.
+        self.show_sidebar = false;
+        self.show_minimap = false;
+        self.overview = false;
+        self.hints_overlay = false;
+        self.onboarding_simulator = None;
+        self.active_row = 0;
+        self.outgoing_row = None;
+        self.camera_x.fill(0.0);
+        self.camera_target.fill(0.0);
+        self.camera_started.fill(None);
+        self.last_canvas_width = Some(f32::from(window.viewport_size().width));
+        for slot in &mut self.slots {
+            slot.row = 0;
+            slot.width_fraction = 1.0;
+            slot.animated_width = AnimatedValue::new(1.0, Duration::ZERO);
+            slot.order_offset = AnimatedValue::new(0.0, Duration::ZERO);
+            if slot.closing {
+                slot.close_progress = AnimatedValue::new(0.0, Duration::ZERO);
+            }
+        }
+        self.remove_finished_closing_panels(Instant::now(), window, cx);
+        if self.focus_pending {
+            self.focus_pending = false;
+            self.focus_active(window, cx);
+        }
+        let content = self.slots.get(self.active).map(|slot| {
+            if slot.panel.read(cx).is_pending_session() {
+                self.render_pending_session(self.active, cx)
+            } else if slot.panel.read(cx).is_default_directory() {
+                self.render_folder_picker(cx)
+            } else {
+                slot.panel
+                    .clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
+            }
+        });
+        let back = self.active != 0;
+        let inset = content_top_inset(false, window.is_fullscreen());
+        let root = div()
+            .debug_selector(|| "single-panel-root".into())
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .pt(px(inset))
+            .bg(Theme::global().PANEL_BG)
+            .font_family(Theme::global().FONT_UI)
+            .text_size(px(14.0 * crate::config::get().appearance.text_scale))
+            .text_color(Theme::global().TEXT)
+            .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(Self::toggle_voice))
+            .capture_action(cx.listener(Self::toggle_panel_voice))
+            .capture_key_down(cx.listener(Self::copilot_key_down))
+            .capture_key_up(cx.listener(Self::copilot_key_up))
+            .capture_action(cx.listener(Self::rename_session))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.rename_editor.is_some() && event.keystroke.key == "escape" {
+                    this.close_rename_editor(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            // Deliberately omit new/move/resize/overview/sidebar/workspace
+            // actions. The host still handles Ctrl+R, and the panel owns chat,
+            // model, login, clipboard, image and transcript shortcuts.
+            .on_action(cx.listener(Self::close_panel))
+            .on_action(cx.listener(Self::cycle_theme))
+            .on_action(cx.listener(Self::open_accounts))
+            .on_action(cx.listener(Self::open_changelog))
+            .on_action(cx.listener(Self::open_change_review))
+            .on_action(cx.listener(Self::close_change_review))
+            .when(back, |root| {
+                root.child(
+                    div()
+                        .id("single-panel-back")
+                        .debug_selector(|| "single-panel-back".into())
+                        .flex_none()
+                        .px_3()
+                        .py_2()
+                        .text_size(px(12.0))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.single_panel_back(window, cx);
+                        }))
+                        .child("‹ Back to chat"),
+                )
+            })
+            .child(
+                div()
+                    .debug_selector(|| "single-panel-surface".into())
+                    .relative()
+                    .flex_1()
+                    .w_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .children(content),
+            )
+            .when(self.rename_editor.is_some(), |root| {
+                root.child(self.render_rename_editor(cx))
+            })
+            .when_some(self.render_update_chip(cx), |root, chip| root.child(chip));
+        if Theme::is_transitioning() {
+            cx.refresh_windows();
+            window.request_animation_frame();
+        }
+        self.dump_state(window, cx);
+        root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn standalone(cx: &mut Context<Workspace>) -> Workspace {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.single_panel = true;
+        workspace.open_startup_draft(cx);
+        workspace
+    }
+
+    #[gpui::test]
+    fn single_panel_fills_window_without_workspace_chrome(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| standalone(cx));
+        vcx.run_until_parked();
+        let root = vcx.debug_bounds("single-panel-root").unwrap();
+        let surface = vcx.debug_bounds("single-panel-surface").unwrap();
+        assert_eq!(root.size.width, surface.size.width);
+        assert_eq!(root.bottom(), surface.bottom());
+        if !cfg!(target_os = "macos") {
+            assert_eq!(root, surface);
+        }
+        for selector in [
+            "workspace-body",
+            "workspace-canvas",
+            "sidebar",
+            "empty-strip-hint",
+            "single-panel-back",
+        ] {
+            assert!(
+                vcx.debug_bounds(selector).is_none(),
+                "{selector} must not be mounted"
+            );
+        }
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.len(), 1);
+            assert!(!w.show_sidebar);
+            assert_eq!(w.slots[0].width_fraction, 1.0);
+        });
+    }
+
+    #[gpui::test]
+    fn single_panel_workspace_shortcuts_and_fallback_cannot_escape(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let w = standalone(cx);
+            w.focus_active(window, cx);
+            w
+        });
+        vcx.run_until_parked();
+        vcx.simulate_input("keep my draft");
+        for detached in [false, true] {
+            if detached {
+                vcx.update(|window, _| window.blur());
+            }
+            for chord in [
+                "super-j",
+                "super-k",
+                "super-h",
+                "super-l",
+                "super-enter",
+                "super-t",
+                "super-o",
+                "super-b",
+                "super-1",
+                "super-shift-j",
+            ] {
+                vcx.simulate_keystrokes(chord);
+                vcx.run_until_parked();
+                workspace.read_with(vcx, |w, cx| {
+                    assert_eq!(w.slots.len(), 1, "{chord}");
+                    assert_eq!(w.active_row, 0, "{chord}");
+                    assert_eq!(w.slots[0].width_fraction, 1.0, "{chord}");
+                    assert!(!w.overview && !w.show_sidebar, "{chord}");
+                    assert_eq!(
+                        w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                        "keep my draft"
+                    );
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn single_panel_reload_preserves_draft_and_presentation(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let w = standalone(cx);
+            w.focus_active(window, cx);
+            w
+        });
+        vcx.run_until_parked();
+        vcx.simulate_input("survive the reload");
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                let snapshot = w.snapshot(window, cx).unwrap();
+                w.apply_snapshot(snapshot, cx);
+                w.restore_focus(window, cx);
+                cx.notify();
+            })
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("single-panel-root").is_some());
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 1);
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "survive the reload"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn single_panel_accounts_back_preserves_chat(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| standalone(cx));
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        source.update(vcx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("login must not replace this".into(), cx);
+            });
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.open_accounts(
+                    &OpenAccounts {
+                        source: source.entity_id(),
+                        login_command: None,
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.slots[w.active].panel.read(cx).is_accounts_panel());
+        });
+        let back = vcx.debug_bounds("single-panel-back").unwrap();
+        vcx.simulate_click(back.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 1);
+            assert_eq!(w.slots[w.active].panel, source);
+            assert_eq!(
+                source.read(cx).input.read(cx).content.as_ref(),
+                "login must not replace this"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn single_panel_review_is_one_surface_and_back_preserves_chat(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| standalone(cx));
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        source.update(vcx, |panel, cx| {
+            panel.input.update(cx, |input, cx| {
+                input.set_content("do not lose my draft".into(), cx);
+            })
+        });
+        let request = change_review::OpenChangeReview {
+            source: source.entity_id(),
+            output: String::new(),
+            name: "write".into(),
+            input: serde_json::json!({"file_path":"example.rs","content":"hello\n"}).to_string(),
+            selected: 0,
+            done: true,
+            failed: false,
+        };
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.open_change_review(&request, window, cx);
+            })
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("single-panel-surface").is_some());
+        assert!(vcx.debug_bounds("workspace-canvas").is_none());
+        workspace.read_with(vcx, |w, cx| {
+            assert!(w.slots[w.active].panel.read(cx).is_change_review());
+        });
+        let back = vcx.debug_bounds("single-panel-back").unwrap();
+        vcx.simulate_click(back.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("single-panel-back").is_none());
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 1);
+            assert_eq!(w.slots[0].panel, source);
+            assert_eq!(
+                source.read(cx).input.read(cx).content.as_ref(),
+                "do not lose my draft"
+            );
+        });
+    }
+}

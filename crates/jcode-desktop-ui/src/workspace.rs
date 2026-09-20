@@ -10,6 +10,9 @@ mod account_sign_in;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
+#[path = "workspace_single_panel.rs"]
+mod single_panel;
+
 #[path = "workspace_preview.rs"]
 mod preview;
 
@@ -37,6 +40,8 @@ mod sidebar_swarm;
 mod sidebar_workspaces;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
+#[path = "sidebar_workspace_groups.rs"]
+mod sidebar_workspace_groups;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -94,6 +99,8 @@ mod remotes;
 mod super_action_behavior_tests;
 #[path = "window_navigation.rs"]
 mod window_navigation;
+#[path = "workspace_voice.rs"]
+mod voice;
 #[cfg(test)]
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
@@ -145,6 +152,7 @@ actions!(
         ToggleOnboardingSimulator,
         ToggleShowcase,
         ToggleSidebar,
+        ToggleVoice,
         CycleTheme,
         NewHelpSession,
         OpenChangelog,
@@ -265,7 +273,7 @@ const SIDEBAR_WIDTH: f32 = 264.0;
 // Center the 4px thumb in the gap between the session tabs and main sheet.
 // The normal layout has no connector gap, so its gutter stays inside the sidebar.
 const SIDEBAR_SCROLLBAR_OUTSET: f32 = 8.0;
-const ACCOUNT_ROW_HEIGHT: f32 = 44.0;
+const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
 /// room at the top or it renders underneath the traffic lights.
@@ -566,6 +574,8 @@ pub struct WorkspaceSnapshot {
     active_row: usize,
     row_focus: [Option<usize>; STRIP_COUNT],
     previous: Option<usize>,
+    #[serde(default)]
+    last_voice_chat: Option<usize>,
     camera_x: [f32; STRIP_COUNT],
     camera_target: [f32; STRIP_COUNT],
     overview: bool,
@@ -614,12 +624,17 @@ impl WorkspaceSnapshot {
 }
 
 pub struct Workspace {
+    voice_key: voice::CopilotLatch,
+    last_voice_chat: Option<gpui::EntityId>,
+    _voice_activation: Option<gpui::Subscription>,
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
+    /// Launch-only presentation, independent of persisted workspace preferences.
+    single_panel: bool,
     show_sidebar: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     show_beta_notice: bool,
@@ -698,6 +713,7 @@ pub struct Workspace {
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
+    sidebar_workspace_groups: sidebar_workspace_groups::State,
     expanded_swarms: HashSet<String>,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
@@ -745,6 +761,8 @@ impl Workspace {
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let performance_enabled = crate::performance::enabled(std::env::args_os());
+        let single_panel = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
+            == jcode_desktop_api::LaunchMode::SinglePanel;
 
         // Wake immediately when a bridge update arrives rather than polling an
         // empty channel at the display refresh rate.
@@ -854,12 +872,20 @@ impl Workspace {
 
         let _ = window;
         let mut workspace = Self {
+            voice_key: Default::default(),
+            last_voice_chat: None,
+            _voice_activation: Some(cx.observe_window_activation(window, |this, window, _| {
+                if !window.is_window_active() {
+                    this.voice_key = Default::default();
+                }
+            })),
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
             bridge,
             host,
-            show_beta_notice: snapshot.is_none(),
+            single_panel,
+            show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
@@ -919,11 +945,12 @@ impl Workspace {
             accounts_layout_pending: true,
             status: "starting...".into(),
             connected: false,
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             _navigation_fallback: Self::install_navigation_fallback(cx),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_workspace_groups: Default::default(),
             expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
@@ -1049,6 +1076,7 @@ impl Workspace {
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(1)
                 .clamp(1, 6);
+            let panel_count = if single_panel { 1 } else { panel_count };
             for index in 1..panel_count {
                 let mut session = workspace.sessions[0].clone();
                 session.session_id = format!("screenshot-fixture-{index}");
@@ -1150,11 +1178,15 @@ impl Workspace {
     pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
         crate::input::bind_keys(cx);
         Self {
+            voice_key: Default::default(),
+            last_voice_chat: None,
+            _voice_activation: None,
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
+            single_panel: false,
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
             show_sidebar: true,
@@ -1212,11 +1244,12 @@ impl Workspace {
             accounts_layout_pending: true,
             status: "test".into(),
             connected: true,
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             _navigation_fallback: Self::install_navigation_fallback(cx),
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_workspace_groups: Default::default(),
             expanded_swarms: HashSet::new(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
@@ -1328,6 +1361,7 @@ impl Workspace {
             },
             row_focus: self.row_focus.map(|id| id.and_then(index_for_id)),
             previous: self.previous.and_then(index_for_id),
+            last_voice_chat: self.last_voice_chat.and_then(index_for_id),
             camera_x: self.camera_x,
             camera_target: self.camera_target,
             overview: self.overview,
@@ -1500,6 +1534,8 @@ impl Workspace {
         });
         self.previous = snapshot
             .previous
+            .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
+        self.last_voice_chat = snapshot.last_voice_chat
             .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
         self.camera_x = snapshot.camera_x;
         self.camera_target = snapshot.camera_target;
@@ -2120,6 +2156,16 @@ impl Workspace {
     fn set_active(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.slots.len() {
             return;
+        }
+        // Preserve the most recent chat when moving through several utility
+        // panels, rather than relying on only the immediately previous slot.
+        if let Some(slot) = self.slots.get(self.active)
+            && slot.panel.read(cx).supports_voice()
+        {
+            self.last_voice_chat = Some(slot.panel.entity_id());
+        }
+        if self.slots[index].panel.read(cx).supports_voice() {
+            self.last_voice_chat = Some(self.slots[index].panel.entity_id());
         }
         let outgoing = self
             .slots
@@ -3179,6 +3225,11 @@ impl Workspace {
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.single_panel && self.active == 0 {
+            // A standalone chat has no empty workspace to return to.
+            window.remove_window();
+            return;
+        }
         self.tutorial_cue("Q", "Close panel", "close", cx);
         if self
             .slots
@@ -3229,7 +3280,11 @@ impl Workspace {
             // on the next key repeat.
             .filter(|&index| !self.slots[index].closing)
             .collect();
-        self.active = focus_after_close(closed, &remaining);
+        self.active = if self.single_panel {
+            0
+        } else {
+            focus_after_close(closed, &remaining)
+        };
         self.row_focus[self.active_row] = self
             .slots
             .get(self.active)
@@ -4683,12 +4738,6 @@ impl Workspace {
                 .iter()
                 .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id)
         });
-        let selection_order = open_sessions
-            .iter()
-            .map(|s| s.session_id.clone())
-            .collect::<Vec<_>>();
-        self.sidebar_selection.retain(&selection_order);
-        let open_session_count = open_sessions.len();
         let session_workspaces = self
             .slots
             .iter()
@@ -4700,7 +4749,20 @@ impl Workspace {
                 *workspace_counts.entry(*row).or_default() += 1;
             }
         }
-        let active_row = self.active_row;
+        self.sidebar_workspace_groups.sync_focus(self.active_row);
+        let mut seen_workspaces = HashSet::new();
+        // Retain one representative for each collapsed group so its disclosure
+        // remains a real virtual-list row, without painting any hidden sessions.
+        open_sessions.retain(|session| {
+            let row = session_workspaces[&session.session_id];
+            let first = seen_workspaces.insert(row);
+            first || self.sidebar_workspace_groups.expanded(row)
+        });
+        let selection_order = open_sessions.iter()
+            .filter(|session| self.sidebar_workspace_groups.expanded(session_workspaces[&session.session_id]))
+            .map(|session| session.session_id.clone())
+            .collect::<Vec<_>>();
+        self.sidebar_selection.retain(&selection_order);
         let other_session_count = other_sessions.len();
         let ordered_sessions = open_sessions
             .into_iter()
@@ -4716,6 +4778,8 @@ impl Workspace {
                 session_id: session.session_id.clone(),
                 open: *is_open,
                 workspace_row: session_workspaces.get(&session.session_id).copied(),
+                collapsed: *is_open && session_workspaces.get(&session.session_id)
+                    .is_some_and(|row| !self.sidebar_workspace_groups.expanded(*row)),
                 selected: active_id.as_deref() == Some(session.session_id.as_str()),
                 saved: session.saved,
                 swarm_rows: swarm
@@ -4815,86 +4879,30 @@ impl Workspace {
                                 .w_full()
                                 .flex()
                                 .flex_col()
-                                .when(sidebar_index == 0, |el| el.pt_2())
+                                .relative()
+                                .when(!is_open && sidebar_index == 0, |el| el.pt_2())
                                 .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
-                            if previous_section != Some(is_open) {
-                                let (id, label, count) = if is_open {
-                                    (
-                                        "sidebar-open-panels-heading",
-                                        "Active sessions",
-                                        open_session_count,
-                                    )
-                                } else {
-                                    (
-                                        "sidebar-other-sessions-heading",
-                                        "Session history",
-                                        other_session_count,
-                                    )
-                                };
+                            if !is_open && previous_section != Some(false) {
                                 list = list.child(
                                     div()
-                                        .id(id)
-                                        .debug_selector(move || id.into())
-                                        .mx_2()
-                                        .mt(if is_open { px(4.0) } else { px(12.0) })
-                                        .mb_2()
-                                        .px_2()
-                                        .pt(if is_open { px(4.0) } else { px(10.0) })
-                                        .when(!is_open, |heading| {
-                                            heading
-                                                .border_t_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .text_size(px(10.0))
-                                        .text_color(Theme::global().TEXT_DIM)
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                .child(label),
-                                        )
-                                        .child(
-                                            div()
-                                                .min_w(px(18.0))
-                                                .px_1()
-                                                .rounded_full()
-                                                .bg(Theme::global().HEADER_BG)
-                                                .text_center()
-                                                .text_size(px(9.0))
-                                                .child(count.to_string()),
-                                        ),
+                                        .id("sidebar-other-sessions-heading")
+                                        .debug_selector(|| "sidebar-other-sessions-heading".into())
+                                        .mx_2().mt_3().mb_2().px_2().pt_2()
+                                        .border_t_1().border_color(Theme::global().PANEL_BORDER)
+                                        .flex().items_center().gap_2()
+                                        .text_size(px(10.0)).text_color(Theme::global().TEXT_DIM)
+                                        .child(div().flex_1().font_weight(gpui::FontWeight::MEDIUM)
+                                            .child("Session history"))
+                                        .child(other_session_count.to_string()),
                                 );
                             }
-                            if is_open && workspace_row != previous_workspace
-                                && let Some(row) = workspace_row
-                            {
-                                let count = workspace_counts[&row];
-                                let accent = Theme::global().workspace_accent(row);
-                                list = list.child(
-                                    div()
-                                        .id(("sidebar-workspace-heading", row))
-                                        .debug_selector(move || format!("sidebar-workspace-heading-{row}"))
-                                        .mx_2().mt_1().mb_1().px_2().py_1()
-                                        .flex().items_center().gap_2()
-                                        .rounded_md().cursor_pointer()
-                                        .text_size(px(10.0))
-                                        .text_color(accent)
-                                        .when(row == active_row, |el| el.bg(Theme::global().HEADER_BG))
-                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                            window.prevent_default();
-                                            cx.stop_propagation();
-                                            let position = this.active_position_in_row();
-                                            this.select_row(row, position);
-                                            this.focus_active(window, cx);
-                                            cx.notify();
-                                        }))
-                                        .child(div().flex_1().font_weight(gpui::FontWeight::MEDIUM)
-                                            .child(format!("Workspace {}", row + 1)))
-                                        .child(count.to_string()),
-                                );
+                            if is_open && let Some(row) = workspace_row {
+                                if workspace_row != previous_workspace {
+                                    list = list.pt_2().child(this.render_workspace_group_marker(row, workspace_counts[&row], cx));
+                                }
+                                if !this.sidebar_workspace_groups.expanded(row) {
+                                    return list.h(px(32.0)).into_any_element();
+                                }
                             }
                             if !is_open && previous_section == Some(is_open)
                                 && previous_saved == Some(true)
@@ -4953,7 +4961,7 @@ impl Workspace {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
-                                    .when(is_open, |el| el.ml_4())
+                                    .when(is_open, |el| el.ml(px(40.0)))
                                     .mr_2()
                                     .mb_1()
                                     .relative()
@@ -5100,7 +5108,8 @@ impl Workspace {
             .relative()
             .when(!folders, |el| el.bg(Theme::global().HEADER_BG))
             // Folder mode leaves this transparent: the native path owns its tab.
-            .child(if folders {
+            .child({
+                let navigation = if folders {
                 self.render_sidebar_roller(fullscreen, cx)
             } else {
                 div()
@@ -5447,12 +5456,17 @@ impl Workspace {
                             ),
                     )
                     .into_any_element()
+                };
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(navigation))
+                    .when(self.sidebar_view == SidebarView::Sessions, |el| {
+                        el.child(self.render_workflow_switch(cx))
+                    })
             })
-            .child(self.render_default_directory_button(cx))
             .child(self.render_machine_switcher(cx))
-            .when(self.sidebar_view == SidebarView::Sessions, |el| {
-                el.child(self.render_workflow_switch(cx))
-            })
             .child(
                 div()
                     .flex_1()
@@ -5625,16 +5639,41 @@ impl Workspace {
             )
             .flex()
             .flex_col();
+        let mut previous_availability = None;
         for (index, account) in
             accounts::ordered(&self.accounts, active.as_deref(), &self.recent_accounts)
                 .into_iter()
                 .enumerate()
         {
             let available = account.available();
+            if previous_availability != Some(available) {
+                list = list.child(
+                    div()
+                        .debug_selector(move || {
+                            if available {
+                                "accounts-connected-heading".into()
+                            } else {
+                                "accounts-disconnected-heading".into()
+                            }
+                        })
+                        .flex_none()
+                        .px_4()
+                        .pt_2()
+                        .pb_1()
+                        .text_size(px(10.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(if available {
+                            "Connected"
+                        } else {
+                            "Not connected"
+                        }),
+                );
+                previous_availability = Some(available);
+            }
             let ink = if available {
                 Theme::global().TEXT
             } else {
-                Theme::global().TEXT_FAINT
+                Theme::global().TEXT_DIM
             };
 
             let logo: gpui::AnyElement = match accounts::logo(&account.id) {
@@ -5658,36 +5697,49 @@ impl Workspace {
                     .into_any_element(),
             };
 
-            let mut details = div().flex().flex_col().flex_1().min_w_0().child(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(16.0))
-                    .line_height(px(16.0))
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_size(px(11.0))
-                            .text_color(ink)
-                            .child(account.display_name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(9.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(if available {
-                                account.auth_kind.clone()
-                            } else {
-                                format!("{} · expired", account.auth_kind)
-                            }),
-                    ),
-            );
+            let mut details = div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(16.0))
+                        .line_height(px(16.0))
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(ink)
+                                .child(account.display_name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(9.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child(account.auth_kind.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| format!("account-{}-status", account.id))
+                        .text_size(px(9.0))
+                        .line_height(px(13.0))
+                        .text_color(if account.status == "expired" {
+                            Theme::global().WARN
+                        } else {
+                            Theme::global().TEXT_DIM
+                        })
+                        .child(account.status_label()),
+                );
 
-            if !account.limits.is_empty() {
+            if available && !account.limits.is_empty() {
                 // A single two-column quota row retains the useful summary
                 // without letting one account grow into a card.
                 let limit_count = if account.id == "antigravity" {
@@ -5845,6 +5897,8 @@ impl Workspace {
                             .rounded_full()
                             .bg(if available {
                                 Theme::global().OK
+                            } else if account.status == "expired" {
+                                Theme::global().WARN
                             } else {
                                 Theme::global().TEXT_FAINT
                             }),
@@ -6919,12 +6973,22 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(slot) = self.slots.get(self.active)
+            && !slot.closing && slot.panel.read(cx).supports_voice()
+        {
+            self.last_voice_chat = Some(slot.panel.entity_id());
+        }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
-            return self.render_account_sign_in(cx);
+            let content = self.render_account_sign_in(cx);
+            return self.voice_modal_root(content, cx);
+        }
+        if self.single_panel {
+            return self.render_single_panel(window, cx);
         }
         if self.onboarding_simulator.is_some() {
-            return self.render_onboarding_simulator(cx);
+            let content = self.render_onboarding_simulator(cx);
+            return self.voice_modal_root(content, cx);
         }
         self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar
@@ -7152,6 +7216,10 @@ impl Render for Workspace {
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(Self::toggle_voice))
+            .capture_action(cx.listener(Self::toggle_panel_voice))
+            .capture_key_down(cx.listener(Self::copilot_key_down))
+            .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 if this.show_beta_notice {
                     this.dismiss_beta_notice(window, cx);
@@ -7352,10 +7420,8 @@ fn sidebar_enabled(
     configured_default: bool,
 ) -> bool {
     configured_default
-        && !arguments.into_iter().any(|argument| {
-            let argument = argument.as_ref();
-            argument == "--no-sidebar" || argument == "--workspace"
-        })
+        && jcode_desktop_api::LaunchMode::from_args(arguments)
+            == jcode_desktop_api::LaunchMode::Workspace
 }
 
 fn default_working_dir() -> Option<String> {
@@ -7519,6 +7585,7 @@ struct SidebarSessionLayout {
     session_id: String,
     open: bool,
     workspace_row: Option<usize>,
+    collapsed: bool,
     selected: bool,
     saved: bool,
     details: bool,
@@ -8231,6 +8298,7 @@ mod tests {
         assert!(!sidebar_enabled(["jcode-desktop"], false));
         assert!(!sidebar_enabled(["jcode-desktop", "--no-sidebar"], true));
         assert!(!sidebar_enabled(["jcode-desktop", "--workspace"], true));
+        assert!(!sidebar_enabled(["jcode-desktop", "--single-panel"], true));
     }
 
     #[test]
@@ -8260,6 +8328,7 @@ mod tests {
             onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    image_pane_open: false,
                     side_document: None,
                     prompt_queue: Default::default(),
                     session_id: "terminal".into(),
@@ -8281,6 +8350,7 @@ mod tests {
             active_row: 2,
             row_focus: [None, None, Some(0), None],
             previous: Some(0),
+            last_voice_chat: Some(0),
             camera_x: [0.0, 10.0, 20.0, 30.0],
             camera_target: [1.0, 11.0, 21.0, 31.0],
             overview: true,
@@ -8463,6 +8533,7 @@ mod tests {
                     onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            image_pane_open: false,
                             side_document: None,
                             prompt_queue: Default::default(),
                             session_id: "session_fox_1234567890000_deadbeef".into(),
@@ -8493,6 +8564,7 @@ mod tests {
                     active_row: 0,
                     row_focus: [Some(0), None, None, None],
                     previous: None,
+                    last_voice_chat: None,
                     camera_x: [0.0; STRIP_COUNT],
                     camera_target: [0.0; STRIP_COUNT],
                     overview: false,
@@ -8569,6 +8641,7 @@ mod tests {
                 Update::Event {
                     session_id: "session_fox_1234567890000_deadbeef".into(),
                     event: jcode_sdk::ApiEvent::TextDelta {
+                        message_id: None,
                         session_id: "session_fox_1234567890000_deadbeef".into(),
                         text: "working".into(),
                     },
@@ -8659,6 +8732,7 @@ mod tests {
                 text: "Thinking".into(),
             },
             jcode_sdk::ApiEvent::TextDelta {
+                message_id: None,
                 session_id: "sidebar-activity".into(),
                 text: "Responding".into(),
             },
@@ -9055,9 +9129,10 @@ mod tests {
         vcx.run_until_parked();
 
         assert!(
-            vcx.debug_bounds("sidebar-open-panels-heading").is_some(),
-            "sessions represented by a visible panel should have their own section"
+            vcx.debug_bounds("sidebar-open-panels-heading").is_none(),
+            "numbered workspace markers replace the redundant active-sessions row"
         );
+        assert!(vcx.debug_bounds("sidebar-workspace-group-0").is_some());
         assert!(
             vcx.debug_bounds("sidebar-other-sessions-heading").is_some(),
             "sessions without a panel should have their own section"
@@ -9166,7 +9241,7 @@ mod tests {
                 });
                 vcx.run_until_parked();
                 let directory = vcx.debug_bounds("default-directory-button").unwrap();
-                let machines = vcx.debug_bounds("machines-picker-button").unwrap();
+                let machines = vcx.debug_bounds("machine-destination-switcher").unwrap();
                 let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 assert!(gutter.top() >= directory.bottom());
@@ -9245,7 +9320,7 @@ mod tests {
                     directory
                 );
                 assert_eq!(
-                    vcx.debug_bounds("machines-picker-button").unwrap(),
+                    vcx.debug_bounds("machine-destination-switcher").unwrap(),
                     machines
                 );
             }
@@ -9313,14 +9388,18 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        let upper = vcx.debug_bounds("sidebar-workspace-heading-0").unwrap();
-        let lower = vcx.debug_bounds("sidebar-workspace-heading-1").unwrap();
-        assert!(upper.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
+        let upper = vcx.debug_bounds("sidebar-workspace-group-0").unwrap();
+        let lower = vcx.debug_bounds("sidebar-workspace-group-1").unwrap();
+        let first = vcx.debug_bounds("sidebar-session-0").unwrap();
+        assert!(upper.top() < first.top());
+        assert!(upper.bottom() > first.top(), "marker sits beside the card, not in a separate heading row");
+        assert!(upper.right() <= first.left());
         assert!(vcx.debug_bounds("sidebar-session-1").unwrap().bottom() <= lower.top());
-        assert!(lower.bottom() <= vcx.debug_bounds("sidebar-session-2").unwrap().top());
-        assert!(vcx.debug_bounds("sidebar-session-0").unwrap().left() > upper.left());
+        assert!(vcx.debug_bounds("sidebar-session-2").is_none(), "inactive workspace starts collapsed");
         vcx.simulate_click(lower.center(), gpui::Modifiers::default());
-        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 1));
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 0));
+        assert!(vcx.debug_bounds("sidebar-session-2").is_some(), "manual expansion does not navigate");
 
         for (selector, expected_session) in [
             ("sidebar-session-0", "session_owl_upper_left"),
@@ -9340,6 +9419,10 @@ mod tests {
             });
         }
 
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-0").is_none(), "focus on workspace 2 collapses workspace 1");
+        assert!(vcx.debug_bounds("sidebar-session-1").is_some(), "workspace 2 stays expanded");
+
         // A move can change heading boundaries without changing session order.
         // The virtual list must invalidate its cached row heights in that case.
         let order = workspace.read_with(vcx, |workspace, _| {
@@ -9355,8 +9438,8 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-1").is_none());
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-2").is_some());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-1").is_none());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-2").is_some());
         workspace.read_with(vcx, |workspace, _| {
             assert_eq!(
                 workspace
@@ -9381,8 +9464,8 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-0").is_some());
-        assert!(vcx.debug_bounds("sidebar-workspace-heading-1").is_none());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-workspace-group-1").is_none());
         workspace.read_with(vcx, |workspace, _| {
             assert!(
                 workspace
@@ -9711,11 +9794,11 @@ mod tests {
             assert_eq!(workspace.read_with(vcx, |w, _| w.sidebar_view), view);
             let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
             let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
-            let directory = vcx.debug_bounds("default-directory-button").unwrap();
+            let destinations = vcx.debug_bounds("machine-destination-switcher").unwrap();
             assert_eq!(
                 header.bottom(),
-                directory.top(),
-                "header must touch the fixed preference rows"
+                destinations.top(),
+                "header must touch the combined destination and directory row"
             );
             assert_eq!(header.size.height, px(TITLEBAR_HEIGHT));
             assert!(trigger.left() >= header.left() && trigger.right() <= header.right());
@@ -9781,6 +9864,50 @@ mod tests {
         assert!(frame.selected_tab.is_some());
         assert!(frame.active_panel.is_some());
         assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 0);
+    }
+
+    #[gpui::test]
+    fn accounts_sidebar_groups_all_supported_states_and_refreshes(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            w.accounts = accounts::parse(r#"{"providers":[
+                {"id":"openai","display_name":"OpenAI","status":"not_configured","auth_kind":"OAuth"},
+                {"id":"claude","display_name":"Claude","status":"expired","auth_kind":"OAuth"},
+                {"id":"openrouter","display_name":"OpenRouter","status":"available","auth_kind":"API key"}
+            ]}"#).unwrap();
+            w.recent_accounts = vec!["openai".into()];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let connected = vcx.debug_bounds("accounts-connected-heading").unwrap();
+        let disconnected = vcx.debug_bounds("accounts-disconnected-heading").unwrap();
+        let ready = vcx.debug_bounds("account-openrouter").unwrap();
+        let signed_out = vcx.debug_bounds("account-openai").unwrap();
+        assert!(connected.bottom() <= ready.top());
+        assert!(ready.bottom() <= disconnected.top());
+        assert!(disconnected.bottom() <= signed_out.top());
+        assert!(vcx.debug_bounds("account-openai-history").is_none());
+        for id in ["openai", "claude", "openrouter"] {
+            let row = vcx
+                .debug_bounds(Box::leak(format!("account-{id}").into_boxed_str()))
+                .unwrap();
+            let status = vcx
+                .debug_bounds(Box::leak(format!("account-{id}-status").into_boxed_str()))
+                .unwrap();
+            assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
+        }
+        workspace.update(vcx, |w, cx| {
+            for account in &mut w.accounts {
+                account.status = "not_configured".into();
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("accounts-connected-heading").is_none());
+        assert!(vcx.debug_bounds("accounts-disconnected-heading").is_some());
+        assert!(vcx.debug_bounds("account-openrouter-status").is_some());
     }
 
     #[gpui::test]
@@ -9885,7 +10012,7 @@ mod tests {
                 let list = vcx.debug_bounds("accounts-list").unwrap();
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 let section = vcx.debug_bounds("accounts-section").unwrap();
-                let machine_switcher = vcx.debug_bounds("machines-picker-button").unwrap();
+                let machine_switcher = vcx.debug_bounds("machine-destination-switcher").unwrap();
                 assert_eq!(section.origin.y, machine_switcher.bottom());
                 assert_eq!(section.bottom(), body.bottom());
                 assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
@@ -9954,7 +10081,7 @@ mod tests {
         assert!(list.size.height > px(ACCOUNT_ROW_HEIGHT * 3.0));
         let section = vcx.debug_bounds("accounts-section").unwrap();
         let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-        let machine_switcher = vcx.debug_bounds("machines-picker-button").unwrap();
+        let machine_switcher = vcx.debug_bounds("machine-destination-switcher").unwrap();
         assert_eq!(section.origin.y, machine_switcher.bottom());
         assert_eq!(section.bottom(), body.bottom());
         assert!(

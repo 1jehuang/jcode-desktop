@@ -550,6 +550,7 @@ mod tests {
             assert_eq!(restored.read(cx).side_document_page_id(), Some("notes"));
             panel.apply(
                 &ApiEvent::TextDelta {
+                    message_id: None,
                     session_id: panel.session_id.clone(),
                     text: "must not become chat".into(),
                 },

@@ -29,6 +29,15 @@ fn numbered_rows(lines: &[String]) -> Vec<DiffRow> {
         .iter()
         .map(|text| {
             if text.starts_with("@@") {
+                if text.contains("snippet-relative") {
+                    old = None;
+                    new = None;
+                    return DiffRow {
+                        old: String::new(),
+                        new: String::new(),
+                        text: text.clone(),
+                    };
+                }
                 let mut parts = text.split_whitespace();
                 parts.next();
                 old = parts
@@ -128,7 +137,7 @@ fn source_label(done: bool, failed: bool) -> &'static str {
     }
 }
 
-type PreviewCacheEntry = (String, String, Arc<Vec<FileDiff>>);
+type PreviewCacheEntry = (String, String, String, Arc<Vec<FileDiff>>);
 
 thread_local! {
     // Transcript repainting must not rerun snippet comparison. Cache data only,
@@ -138,26 +147,32 @@ thread_local! {
     };
 }
 
+#[cfg(test)]
 fn inline_files(name: &str, input: &str) -> Arc<Vec<FileDiff>> {
+    inline_result_files(name, input, "")
+}
+
+fn inline_result_files(name: &str, input: &str, output: &str) -> Arc<Vec<FileDiff>> {
     PREVIEW_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some((_, _, files)) = cache
-            .iter()
-            .find(|(tool, arguments, _)| tool == name && arguments == input)
-        {
+        if let Some((_, _, _, files)) = cache.iter().find(|(tool, arguments, result, _)| {
+            tool == name && arguments == input && result == output
+        }) {
             return files.clone();
         }
         let mut files = tool_diffs(name, input);
         // Keep file identity/order aligned with the full-review action while
         // using the same minimal snippet comparison as the detailed viewer.
-        if let Some(preview) = crate::diff_model::from_tool(name, input).filter(|preview| {
-            preview.files.len() == files.len()
-                && preview
-                    .files
-                    .iter()
-                    .zip(&files)
-                    .all(|(a, b)| a.path == b.path)
-        }) {
+        if let Some(preview) =
+            crate::diff_model::from_tool_result(name, input, output).filter(|preview| {
+                preview.files.len() == files.len()
+                    && preview
+                        .files
+                        .iter()
+                        .zip(&files)
+                        .all(|(a, b)| a.path == b.path)
+            })
+        {
             use crate::diff_model::LineKind;
             for (file, rich) in files.iter_mut().zip(preview.files) {
                 file.lines = rich
@@ -210,12 +225,22 @@ fn inline_files(name: &str, input: &str) -> Arc<Vec<FileDiff>> {
         // its already-resident transcript arguments until another tool arrives.
         while !cache.is_empty()
             && (cache.len() >= 8
-                || cache.iter().map(|(_, input, _)| input.len()).sum::<usize>() + input.len()
+                || cache
+                    .iter()
+                    .map(|(_, input, output, _)| input.len() + output.len())
+                    .sum::<usize>()
+                    + input.len()
+                    + output.len()
                     > 1024 * 1024)
         {
             cache.pop_front();
         }
-        cache.push_back((name.to_owned(), input.to_owned(), files.clone()));
+        cache.push_back((
+            name.to_owned(),
+            input.to_owned(),
+            output.to_owned(),
+            files.clone(),
+        ));
         files
     })
 }
@@ -226,11 +251,12 @@ impl Panel {
         call_id: &str,
         name: &str,
         input: &str,
+        output: &str,
         done: bool,
         error: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let files = inline_files(name, input);
+        let files = inline_result_files(name, input, if error.is_none() { output } else { "" });
         if files.is_empty() {
             return None;
         }
@@ -252,6 +278,7 @@ impl Panel {
                     source: cx.entity_id(),
                     name: name.to_owned(),
                     input: input.to_owned(),
+                    output: output.to_owned(),
                     selected: index,
                     done,
                     failed,
@@ -275,39 +302,38 @@ impl Panel {
                     .overflow_hidden()
                     .bg(Theme::global().CODE_BG)
                     .child(preview)
-                    // GPUI clips overflow to a rectangle, not the rounded
-                    // outline. Keep diff fills above a self-rounded footer.
-                    .child(
-                        div()
-                            .id(("edit-preview-footer", index))
-                            .debug_selector(move || format!("edit-preview-footer-{index}").into())
-                            .cursor_pointer()
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(move |_, _, cx| {
-                                footer_preview.update(cx, |view, cx| view.toggle_inline(cx));
-                                cx.stop_propagation();
-                            })
-                            .rounded_b_lg()
-                            .bg(Theme::global().CODE_BG)
-                            .px_3()
-                            // Reserve the full 8px corner radius below any
-                            // rectangular metadata, progress, or diff fill.
-                            .h(px(8.))
-                            .when(error.is_some(), |el| el.h_auto().py_1())
-                            .text_size(px(10.))
-                            .when_some(error, |el, message| {
-                                el.child(
+                    .when_some(error, |el, message| {
+                        el.child(
+                            div()
+                                .id(("edit-preview-footer", index))
+                                .debug_selector(move || {
+                                    format!("edit-preview-footer-{index}").into()
+                                })
+                                .cursor_pointer()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_click(move |_, _, cx| {
+                                    footer_preview.update(cx, |view, cx| view.toggle_inline(cx));
+                                    cx.stop_propagation();
+                                })
+                                .rounded_b_lg()
+                                .bg(Theme::global().CODE_BG)
+                                .px_3()
+                                .py_1()
+                                .text_size(px(10.))
+                                .child(
                                     div()
                                         .debug_selector(|| "tool-error".into())
                                         .pt_1()
                                         .text_color(Theme::global().ERROR)
                                         .child(message.to_owned()),
-                                )
-                            }),
-                    ),
+                                ),
+                        )
+                    }),
             );
         }
         Some(card.into_any_element())
@@ -340,7 +366,12 @@ impl Panel {
         request: &crate::workspace::change_review::OpenChangeReview,
         cx: &mut Context<Self>,
     ) {
-        let files = Arc::new(tool_diffs(&request.name, &request.input));
+        let output = if request.failed { "" } else { &request.output };
+        let files = if output.is_empty() {
+            Arc::new(tool_diffs(&request.name, &request.input))
+        } else {
+            inline_result_files(&request.name, &request.input, output)
+        };
         let source = format!(
             "{} · {}",
             request.name,
@@ -349,14 +380,16 @@ impl Panel {
         let mut review = DiffReview::new(files.clone(), request.selected, source);
         // Parse structured comparisons only on open and never pair mismatched files.
         if let Some(preview) =
-            crate::diff_model::from_tool(&request.name, &request.input).filter(|preview| {
-                preview.files.len() == files.len()
-                    && preview
-                        .files
-                        .iter()
-                        .zip(files.iter())
-                        .all(|(new, old)| new.path == old.path)
-            })
+            crate::diff_model::from_tool_result(&request.name, &request.input, output).filter(
+                |preview| {
+                    preview.files.len() == files.len()
+                        && preview
+                            .files
+                            .iter()
+                            .zip(files.iter())
+                            .all(|(new, old)| new.path == old.path)
+                },
+            )
         {
             review.rich = Some(crate::diff_review_content::ReviewContent::new(
                 preview,
@@ -565,7 +598,7 @@ impl Panel {
                             .child(diff_list).child(crate::scrollbar::vertical_list(&review.scroll, "diff-scrollbar")))
                         .when_some(review.rich.as_ref(), |el, rich| el.child(rich.render())))
                     .child(div().flex_none().px_3().py_2().text_size(px(10.)).text_color(theme.TEXT_FAINT)
-                        .child("Tool input snapshot, not a working-tree diff. Line numbers appear when supplied."))))
+                        .child("Recorded tool change, not a live working-tree diff."))))
             .into_any_element())
     }
 }
@@ -599,7 +632,7 @@ pub(super) fn fixture_items() -> Vec<Item> {
         Item::Tool {
             call_id: "diff-fixture".into(), name: "apply_patch".into(),
             input: serde_json::json!({"intent": "Improve navigation labels", "patch_text": "*** Begin Patch\n*** Update File: src/navigation.rs\n@@\n fn label() -> &'static str {\n-    \"Go\"\n+    \"Continue\"\n }\n*** Add File: tests/navigation.rs\n+#[test]\n+fn navigation_label_is_clear() {\n+    assert_eq!(label(), \"Continue\");\n+}\n*** End Patch"}).to_string(),
-            output: "Updated src/navigation.rs and added tests/navigation.rs".into(), done: true, error: None,
+            output: "Updated src/navigation.rs and added tests/navigation.rs\n\nFile diff:\n```diff\n--- a/src/navigation.rs\n+++ b/src/navigation.rs\n@@ -42,3 +42,3 @@\n fn label() -> &'static str {\n-    \"Go\"\n+    \"Continue\"\n }\n--- /dev/null\n+++ b/tests/navigation.rs\n@@ -0,0 +1,4 @@\n+#[test]\n+fn navigation_label_is_clear() {\n+    assert_eq!(label(), \"Continue\");\n+}\n```\n".into(), done: true, error: None,
         },
     ]
 }
@@ -607,6 +640,47 @@ pub(super) fn fixture_items() -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_replaces_snippet_offsets_with_file_positions_and_refreshes_cache() {
+        let input = serde_json::json!({"file_path":"src/demo.rs", "old_string":"old();\n", "new_string":"new();\n"}).to_string();
+        let pending = inline_result_files("edit", &input, "");
+        assert!(
+            numbered_rows(&pending[0].lines)
+                .iter()
+                .all(|row| row.old.is_empty() && row.new.is_empty())
+        );
+        let output = "Done\n\nFile diff:\n```diff\n--- a/src/demo.rs\n+++ b/src/demo.rs\n@@ -142 +142 @@\n-old();\n+new();\n```\n";
+        let done = inline_result_files("edit", &input, output);
+        assert!(!Arc::ptr_eq(&pending, &done));
+        assert!(Arc::ptr_eq(
+            &done,
+            &inline_result_files("edit", &input, output)
+        ));
+        let rows = numbered_rows(&done[0].lines);
+        assert_eq!(rows[1].old, "142");
+        assert_eq!(rows[2].new, "142");
+        assert!(
+            !done[0]
+                .lines
+                .iter()
+                .any(|line| line.contains("snippet-relative"))
+        );
+    }
+
+    #[test]
+    fn snippet_headers_reset_unknown_positions_between_real_hunks() {
+        let lines = [
+            "@@ -42 +42 @@",
+            "+known",
+            "@@ -1 +1 @@ (snippet-relative lines)",
+            "+unknown",
+        ]
+        .map(str::to_owned);
+        let rows = numbered_rows(&lines);
+        assert_eq!(rows[1].new, "42");
+        assert!(rows[3].new.is_empty());
+    }
 
     #[test]
     fn inline_preview_minimizes_unchanged_code_and_reuses_parsing() {
@@ -688,7 +762,7 @@ mod tests {
             assert!(line.size.width <= card.size.width);
         }
         assert!(vcx.debug_bounds("edit-countdown-bar").is_some());
-        assert!(vcx.debug_bounds("edit-preview-old-number-1").is_some());
+        assert!(vcx.debug_bounds("edit-preview-number-1").is_some());
         assert!(
             card.size.width < px(1000.),
             "long paths and code must not widen the panel"
