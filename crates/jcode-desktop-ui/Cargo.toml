@@ -10,6 +10,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 gpui.workspace = true
+gpui-thinking-orbs = { git = "https://github.com/FrancoEscob/gpui-thinking-orbs", rev = "8bb92031040688bfd24e4d6bd96c76b61ed86ad1" }
 gpui_platform.workspace = true
 jcode-desktop-api.workspace = true
 jcode-desktop-motion.workspace = true

@@ -3236,6 +3236,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-thinking-orbs"
+version = "0.1.0"
+source = "git+https://github.com/FrancoEscob/gpui-thinking-orbs?rev=8bb92031040688bfd24e4d6bd96c76b61ed86ad1#8bb92031040688bfd24e4d6bd96c76b61ed86ad1"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
 name = "gpui_apple"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed?rev=bc538def4545534201bbfcac4e95ac34ea6501b6#bc538def4545534201bbfcac4e95ac34ea6501b6"
@@ -4319,6 +4327,7 @@ dependencies = [
  "base64",
  "flate2",
  "gpui",
+ "gpui-thinking-orbs",
  "gpui_platform",
  "handterm-common",
  "hdrhistogram",

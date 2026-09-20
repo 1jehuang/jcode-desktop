@@ -22,6 +22,10 @@ jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 # This fork's platform crate depends on the original upstream GPUI revision.
 gpui_linux = { git = "https://github.com/1jehuang/zed", rev = "a659883259f2b490714b58e3ab6ff05d26d08a3a" }
 
+[patch.crates-io]
+# Keep the orb library on the exact GPUI instance used by host and UI.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
+
 [package]
 name = "jcode-desktop"
 version = "0.1.0"

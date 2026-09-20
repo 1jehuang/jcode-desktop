@@ -1,147 +1,166 @@
-//! A small activity clock, armed only when its spinner is actually painted.
-//!
-//! Never request a display-rate animation for a long-running agent. Eight steps
-//! per second are enough for this cached native torus. A clipped/hidden spinner
-//! stops rearming, and reduced motion keeps the same static activity marker.
+//! Upstream Working + Inline thinking orb, with a paint-only animation lease.
+//! A timer invalidates geometry once, never rearms itself. Clipped/hidden views
+//! therefore stop after at most one pending tick without visibility bookkeeping.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{Context, Render, Task, Window, canvas, div, prelude::*, px};
+use gpui_thinking_orbs::{Frame, OrbSize, OrbState, Resolved, draw_mode_into, resolve_preset};
 
 use crate::theme::Theme;
 
-#[path = "panel_activity_donut.rs"]
-mod donut;
-
-const TICK: Duration = Duration::from_millis(125);
+const TICK: Duration = Duration::from_nanos(33_333_334);
+const SIZE: f32 = 20.0;
 
 pub(super) struct Spinner {
-    step: usize,
+    elapsed: Duration,
+    lease_started: Option<Instant>,
+    resolved: Resolved,
+    frame: Frame,
+    geometry_dirty: bool,
+    reduced_motion: Option<bool>,
     tick: Option<Task<()>>,
 }
 
 impl Spinner {
     pub(super) fn new(_: &mut Context<Self>) -> Self {
         Self {
-            step: 0,
+            elapsed: Duration::ZERO,
+            lease_started: None,
+            resolved: resolve_preset(OrbState::Working, OrbSize::Inline),
+            frame: Frame::new(),
+            geometry_dirty: true,
+            reduced_motion: None,
             tick: None,
+        }
+    }
+
+    fn prepare(&mut self, reduce_motion: bool) {
+        if self.geometry_dirty || self.reduced_motion != Some(reduce_motion) {
+            draw_mode_into(
+                self.resolved.mode,
+                SIZE,
+                animation_time(self.elapsed, self.resolved.speed, reduce_motion),
+                &self.resolved.opts,
+                &mut self.frame,
+            );
+            self.geometry_dirty = false;
+            self.reduced_motion = Some(reduce_motion);
+        }
+    }
+
+    fn finish_lease(&mut self, now: Instant) {
+        if let Some(started) = self.lease_started.take() {
+            // Actual monotonic time, not +TICK or a frame index. Idle/reduced
+            // intervals have no lease and cannot age or jump the animation.
+            self.elapsed += now.saturating_duration_since(started);
         }
     }
 
     fn arm(&mut self, reduce_motion: bool, cx: &mut Context<Self>) {
         if reduce_motion {
+            self.finish_lease(Instant::now());
             self.tick = None;
             return;
         }
         if self.tick.is_some() {
             return;
         }
+        self.lease_started = Some(Instant::now());
         self.tick = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(TICK).await;
             let _ = this.update(cx, |spinner, cx| {
+                spinner.finish_lease(Instant::now());
                 spinner.tick = None;
-                spinner.step = (spinner.step + 1) % donut::FRAME_COUNT;
+                spinner.geometry_dirty = true;
                 cx.notify();
             });
         }));
     }
 }
 
-fn visible_step(step: usize, reduce_motion: bool) -> usize {
-    if reduce_motion { 0 } else { step }
-}
-
-// Filled triangles need only XY in the cache. The other 24 bytes in a GPUI
-// vertex are the same ST coordinate and default content mask for every vertex.
-struct DonutPath {
-    bounds: gpui::Bounds<gpui::Pixels>,
-    vertices: Box<[gpui::Point<gpui::Pixels>]>,
-}
-
-impl DonutPath {
-    fn at(&self, origin: gpui::Point<gpui::Pixels>) -> gpui::Path<gpui::Pixels> {
-        let mut path = gpui::Path::new(origin);
-        path.bounds = self.bounds;
-        path.bounds.origin += origin;
-        path.vertices = self
-            .vertices
-            .iter()
-            .map(|&position| gpui::PathVertex {
-                xy_position: position + origin,
-                st_position: gpui::point(0.0, 1.0),
-                content_mask: Default::default(),
-            })
-            .collect();
-        path
+fn animation_time(elapsed: Duration, speed: f32, reduce_motion: bool) -> f32 {
+    // Match upstream's representative pose, which is not multiplied by speed.
+    // Never derive phase from delivered ticks: slow paints must not slow motion.
+    if reduce_motion {
+        0.6
+    } else {
+        (elapsed.as_secs_f64() * speed as f64) as f32
     }
 }
 
-// Cache each frame lazily, so the first paint does not build the whole cycle.
-// A single fractional-coordinate path avoids paint_quad's device-pixel snapping
-// and batches the entire halftone into one native primitive.
-fn donut_path(step: usize) -> &'static DonutPath {
-    use std::sync::OnceLock;
-    static PATHS: [OnceLock<DonutPath>; donut::FRAME_COUNT] =
-        [const { OnceLock::new() }; donut::FRAME_COUNT];
-    let step = step % donut::FRAME_COUNT;
-    PATHS[step].get_or_init(|| build_donut_path(step))
+fn ink_color(white: f32, alpha: f32, theme: &Theme) -> gpui::Rgba {
+    let w = white.clamp(0.0, 1.0);
+    let ink = theme.TEXT;
+    let paper = theme.PANEL_BG;
+    gpui::Rgba {
+        r: ink.r + (paper.r - ink.r) * w,
+        g: ink.g + (paper.g - ink.g) * w,
+        b: ink.b + (paper.b - ink.b) * w,
+        a: alpha.clamp(0.0, 1.0),
+    }
 }
 
-fn build_donut_path(step: usize) -> DonutPath {
+// Geometry stays upstream. Theme ink is mapped above, and the native circle
+// adapter replaces upstream's rounded quads.
+// paint_quad snaps bounds to device pixels, visibly jittering these small dots.
+// Keep fractional centers/radii, exact per-dot ink/alpha and back-to-front order.
+// Do NOT merge contours: that changes GPUI's overlap compositing.
+fn dot_path(
+    dot: &gpui_thinking_orbs::Dot,
+    r_min: f32,
+    origin: gpui::Point<gpui::Pixels>,
+) -> gpui::Path<gpui::Pixels> {
     let mut builder = gpui::PathBuilder::fill().with_style(gpui::PathStyle::Fill(
-        gpui::FillOptions::default()
-            .with_fill_rule(gpui::FillRule::NonZero)
-            .with_tolerance(0.01),
+        gpui::FillOptions::default().with_tolerance(0.005),
     ));
-    for dot in donut::frame(step) {
-        let p = |x: f32, y: f32| gpui::point(px(dot.x + x), px(dot.y + y));
-        let r = dot.radius;
-        let k = r * 0.552_284_8;
-        builder.move_to(p(r, 0.0));
-        builder.cubic_bezier_to(p(0.0, r), p(r, k), p(k, r));
-        builder.cubic_bezier_to(p(-r, 0.0), p(-k, r), p(-r, k));
-        builder.cubic_bezier_to(p(0.0, -r), p(-r, -k), p(-k, -r));
-        builder.cubic_bezier_to(p(r, 0.0), p(k, -r), p(r, -k));
-        builder.close();
-    }
-    let path = builder
+    let r = dot.r.max(r_min);
+    let k = r * 0.552_284_8;
+    let p = |x: f32, y: f32| origin + gpui::point(px(dot.x + x), px(dot.y + y));
+    builder.move_to(p(r, 0.0));
+    builder.cubic_bezier_to(p(0.0, r), p(r, k), p(k, r));
+    builder.cubic_bezier_to(p(-r, 0.0), p(-k, r), p(-r, k));
+    builder.cubic_bezier_to(p(0.0, -r), p(-r, -k), p(-k, -r));
+    builder.cubic_bezier_to(p(r, 0.0), p(k, -r), p(r, -k));
+    builder.close();
+    builder
         .build()
-        .expect("finite bounded donut circles tessellate");
-    DonutPath {
-        bounds: path.bounds,
-        vertices: path
-            .vertices
-            .into_iter()
-            .map(|vertex| {
-                debug_assert_eq!(vertex.st_position, gpui::point(0.0, 1.0));
-                debug_assert_eq!(vertex.content_mask, Default::default());
-                vertex.xy_position
-            })
-            .collect(),
-    }
+        .expect("bounded upstream orb circle tessellates")
 }
 
 impl Render for Spinner {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let spinner = cx.entity().downgrade();
-        let step = self.step;
         div()
             .debug_selector(|| "panel-activity-spinner".into())
             .relative()
             .flex_none()
-            .size(px(14.0))
+            .size(px(SIZE))
+            .overflow_hidden()
             .child(
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
                         if bounds.intersects(&window.content_mask().bounds) {
                             let reduce_motion = crate::config::get().appearance.reduce_motion;
-                            let color = Theme::global().ACCENT;
-                            let path =
-                                donut_path(visible_step(step, reduce_motion)).at(bounds.origin);
-                            window.paint_path(path, color);
-                            let _ =
-                                spinner.update(cx, |spinner, cx| spinner.arm(reduce_motion, cx));
+                            let _ = spinner.update(cx, |spinner, cx| {
+                                spinner.prepare(reduce_motion);
+                                let theme = Theme::global();
+                                let r_min = spinner.resolved.opts.r_min.unwrap_or(0.3);
+                                // Working is dot-only. Geometry, detail and sorting stay upstream.
+                                debug_assert!(spinner.frame.lines.is_empty());
+                                window.paint_layer(bounds, |window| {
+                                    for dot in &spinner.frame.dots {
+                                        if dot.a >= 0.02 {
+                                            window.paint_path(
+                                                dot_path(dot, r_min, bounds.origin),
+                                                ink_color(dot.white, dot.a, &theme),
+                                            );
+                                        }
+                                    }
+                                });
+                                spinner.arm(reduce_motion, cx);
+                            });
                         }
                     },
                 )
@@ -166,6 +185,7 @@ mod tests {
             label.left() > spinner.right(),
             "status sits to the right of the spinner"
         );
+        assert_eq!(spinner.size, gpui::size(px(SIZE), px(SIZE)));
         assert!(
             f32::from(label.center().y - spinner.center().y).abs() < 1.0,
             "status and spinner are vertically centered"
@@ -177,100 +197,159 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_always_shows_canonical_pose() {
-        for step in 0..donut::FRAME_COUNT {
-            assert_eq!(visible_step(step, true), 0);
-            assert_eq!(visible_step(step, false), step);
-        }
-    }
-
-    #[test]
-    fn compact_path_restores_fill_vertices_at_translated_origin() {
-        let origin = gpui::point(px(123.25), px(456.5));
-        for step in 0..donut::FRAME_COUNT {
-            let cached = donut_path(step);
-            let path = cached.at(origin);
-            assert_eq!(path.bounds.origin, cached.bounds.origin + origin);
-            assert_eq!(path.bounds.size, cached.bounds.size);
-            assert_eq!(path.vertices.len(), cached.vertices.len());
-            for (vertex, position) in path.vertices.iter().zip(&cached.vertices) {
-                assert_eq!(vertex.xy_position, *position + origin);
-                assert_eq!(vertex.st_position, gpui::point(0.0, 1.0));
-                assert_eq!(vertex.content_mask, Default::default());
+    fn upstream_inline_detail_and_retained_buffer_budget() {
+        let preset = resolve_preset(OrbState::Working, OrbSize::Inline);
+        assert_eq!(preset.mode, gpui_thinking_orbs::ModeKey::Orbits);
+        assert_eq!(OrbSize::Inline.pixels(), SIZE);
+        assert_eq!(preset.speed, 3.9);
+        let mut frame = Frame::new();
+        draw_mode_into(preset.mode, SIZE, 0.6, &preset.opts, &mut frame);
+        let capacity = frame.dots.capacity();
+        let buffer = frame.dots.as_ptr();
+        let first = frame.dots.clone();
+        for i in 0..300 {
+            draw_mode_into(preset.mode, SIZE, i as f32 / 30.0, &preset.opts, &mut frame);
+            assert_eq!(frame.dots.capacity(), capacity);
+            assert_eq!(frame.dots.as_ptr(), buffer);
+            assert!(frame.lines.is_empty());
+            assert_eq!(frame.dots.len(), 39, "upstream inline sparse detail");
+            assert!(frame.dots.windows(2).all(|d| d[0].z <= d[1].z));
+            for d in &frame.dots {
+                assert!(
+                    [d.x, d.y, d.z, d.r, d.white, d.a]
+                        .iter()
+                        .all(|x| x.is_finite())
+                );
+                let r = d.r.max(preset.opts.r_min.unwrap_or(0.3));
+                assert!(
+                    r > 0.0
+                        && d.x - r >= 0.0
+                        && d.x + r <= SIZE
+                        && d.y - r >= 0.0
+                        && d.y + r <= SIZE,
+                    "upstream dot exceeds inline footprint: {d:?}"
+                );
             }
         }
-    }
-
-    #[test]
-    fn native_paths_are_cached_finite_and_bounded() {
-        let start = std::time::Instant::now();
-        let mut vertices = 0;
-        for step in 0..donut::FRAME_COUNT {
-            let path = donut_path(step);
-            assert!(std::ptr::eq(path, donut_path(step + donut::FRAME_COUNT)));
-            assert!(!path.vertices.is_empty());
-            for vertex in &path.vertices {
-                let x = f32::from(vertex.x);
-                let y = f32::from(vertex.y);
-                assert!(x.is_finite() && y.is_finite());
-                assert!((0.0..=14.0).contains(&x) && (0.0..=14.0).contains(&y));
-            }
-            vertices += path.vertices.len();
-        }
-        // A finite shared cache, independent of spinner count and run duration.
-        assert!(vertices * std::mem::size_of::<gpui::Point<gpui::Pixels>>() <= 3 * 1024 * 1024);
-        eprintln!(
-            "32 native paths: {:?}, {vertices} vertices, {} vertex bytes",
-            start.elapsed(),
-            vertices * std::mem::size_of::<gpui::Point<gpui::Pixels>>()
+        assert!(
+            first
+                .iter()
+                .zip(&frame.dots)
+                .any(|(a, b)| a.x != b.x || a.y != b.y)
         );
+        assert!(capacity * std::mem::size_of::<gpui_thinking_orbs::Dot>() <= 4096);
     }
 
     #[test]
-    #[ignore = "manual cold native mesh timing without machine-dependent assertions"]
-    fn benchmark_cold_native_meshes() {
-        let start = std::time::Instant::now();
-        let mut slowest = Duration::ZERO;
-        let mut bytes = 0;
-        for step in 0..donut::FRAME_COUNT {
-            let frame_start = std::time::Instant::now();
-            let path = std::hint::black_box(build_donut_path(step));
-            slowest = slowest.max(frame_start.elapsed());
-            bytes += path.vertices.len() * std::mem::size_of::<gpui::Point<gpui::Pixels>>();
-        }
-        eprintln!(
-            "cold32 native meshes: {:?}, slowest frame {slowest:?}, {bytes} compact vertex bytes",
-            start.elapsed()
-        );
-    }
-
-    #[test]
-    #[ignore = "manual native paint-preparation timing without machine-dependent assertions"]
-    fn benchmark_hot_native_paint_preparation() {
-        let mut bytes = 0;
+    #[ignore = "manual upstream geometry and native paint-preparation timing"]
+    fn benchmark_upstream_geometry_and_fractional_dot_paths() {
+        let preset = resolve_preset(OrbState::Working, OrbSize::Inline);
+        let mut frame = Frame::new();
+        let origin = gpui::point(px(100.25), px(200.125));
+        let start = Instant::now();
         let mut max_vertices = 0;
-        for step in 0..donut::FRAME_COUNT {
-            let vertices = donut_path(step).vertices.len();
-            bytes += vertices * std::mem::size_of::<gpui::Point<gpui::Pixels>>();
+        for i in 0..3_000 {
+            draw_mode_into(
+                preset.mode,
+                SIZE,
+                i as f32 / 30.0 * preset.speed,
+                &preset.opts,
+                &mut frame,
+            );
+            let mut vertices = 0;
+            for dot in &frame.dots {
+                let path = dot_path(dot, preset.opts.r_min.unwrap_or(0.3), origin);
+                vertices += path.vertices.len();
+                // Include GPUI's final device-scale path allocation/map.
+                std::hint::black_box(path.scale(2.0));
+            }
             max_vertices = max_vertices.max(vertices);
         }
-        let start = std::time::Instant::now();
-        for step in 0..10_000 {
-            let origin = gpui::point(px(100.25), px(200.5));
-            let path = donut_path(step).at(origin);
-            // paint_path performs this final device-scale allocation/map.
-            std::hint::black_box(path.scale(2.0));
-        }
         eprintln!(
-            "10k native paint preparations: {:.3} us/frame, {bytes} cached vertex bytes, max {max_vertices} vertices/frame, one path primitive",
-            start.elapsed().as_secs_f64() * 1_000_000.0 / 10_000.0,
+            "3k upstream Working/Inline geometry + 39 fractional paths: {:.3} us/frame, max {max_vertices} vertices/frame, {} retained geometry bytes",
+            start.elapsed().as_secs_f64() * 1_000_000.0 / 3_000.0,
+            frame.dots.capacity() * std::mem::size_of::<gpui_thinking_orbs::Dot>()
         );
+    }
+
+    #[test]
+    fn fractional_circles_preserve_upstream_radius_and_subpixel_translation() {
+        let dot = gpui_thinking_orbs::Dot::new(10.0, 10.0, 0.0, 0.1, 0.4);
+        let origin = gpui::point(px(123.25), px(456.125));
+        let path = dot_path(&dot, 0.3, origin);
+        assert!(!path.vertices.is_empty());
+        for vertex in &path.vertices {
+            let x = f32::from(vertex.xy_position.x - origin.x);
+            let y = f32::from(vertex.xy_position.y - origin.y);
+            assert!(x.is_finite() && y.is_finite());
+            assert!((9.699..=10.301).contains(&x));
+            assert!((9.699..=10.301).contains(&y));
+        }
+        let moved = dot_path(&dot, 0.3, origin + gpui::point(px(0.125), px(0.25)));
+        assert_eq!(path.vertices.len(), moved.vertices.len());
+        for (a, b) in path.vertices.iter().zip(&moved.vertices) {
+            assert!((f32::from(b.xy_position.x - a.xy_position.x) - 0.125).abs() < 0.0001);
+            assert!((f32::from(b.xy_position.y - a.xy_position.y) - 0.25).abs() < 0.0001);
+        }
+        assert!((f32::from(path.bounds.size.width) - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn theme_ink_preserves_shading_and_alpha() {
+        let theme = Theme::global();
+        let ink = ink_color(-1.0, 2.0, theme);
+        assert_eq!(
+            (ink.r, ink.g, ink.b, ink.a),
+            (theme.TEXT.r, theme.TEXT.g, theme.TEXT.b, 1.0)
+        );
+        let paper = ink_color(2.0, -1.0, theme);
+        assert!((paper.r - theme.PANEL_BG.r).abs() < 1e-6);
+        assert!((paper.g - theme.PANEL_BG.g).abs() < 1e-6);
+        assert!((paper.b - theme.PANEL_BG.b).abs() < 1e-6);
+        assert_eq!(paper.a, 0.0);
+        let middle = ink_color(0.5, 0.37, theme);
+        assert_eq!(middle.a, 0.37);
+        assert!((middle.r - (theme.TEXT.r + theme.PANEL_BG.r) * 0.5).abs() < 1e-6);
+    }
+
+    #[gpui::test]
+    fn lease_clock_counts_actual_elapsed_once_and_excludes_idle(cx: &mut gpui::TestAppContext) {
+        let spinner = cx.new(Spinner::new);
+        spinner.update(cx, |spinner, _| {
+            let start = Instant::now();
+            spinner.lease_started = Some(start);
+            spinner.finish_lease(start + Duration::from_millis(47));
+            assert_eq!(spinner.elapsed, Duration::from_millis(47));
+            spinner.finish_lease(start + Duration::from_secs(3600));
+            assert_eq!(spinner.elapsed, Duration::from_millis(47));
+            spinner.lease_started = Some(start + Duration::from_secs(3600));
+            spinner.finish_lease(start + Duration::from_secs(3600) + Duration::from_millis(41));
+            assert_eq!(spinner.elapsed, Duration::from_millis(88));
+        });
+    }
+
+    #[test]
+    fn cadence_elapsed_time_and_reduced_motion_match_upstream() {
+        assert!((TICK.as_secs_f64() - 1.0 / 30.0).abs() < 1e-9);
+        for elapsed in [
+            Duration::ZERO,
+            Duration::from_millis(17),
+            Duration::from_secs(3600),
+        ] {
+            assert_eq!(animation_time(elapsed, 3.9, true), 0.6);
+            assert_eq!(
+                animation_time(elapsed, 3.9, false),
+                (elapsed.as_secs_f64() * 3.9_f32 as f64) as f32
+            );
+        }
+        assert!(animation_time(Duration::from_millis(17), 3.9, false) > 0.0);
     }
 
     #[gpui::test]
     fn activity_clock_is_bounded_and_respects_reduced_motion(cx: &mut gpui::TestAppContext) {
         let spinner = cx.new(Spinner::new);
         spinner.update(cx, |spinner, cx| {
+            spinner.prepare(false);
             spinner.arm(true, cx);
             assert!(spinner.tick.is_none());
             spinner.arm(false, cx);
@@ -278,45 +357,50 @@ mod tests {
             assert!(spinner.tick.is_some());
         });
         cx.run_until_parked();
-        cx.executor().advance_clock(TICK);
+        cx.executor().advance_clock(TICK - Duration::from_nanos(1));
         cx.run_until_parked();
-        spinner.read_with(cx, |spinner, _| {
-            assert_eq!(spinner.step, 1, "only one timer may be armed");
+        spinner.read_with(cx, |spinner, _| assert!(!spinner.geometry_dirty));
+        cx.executor().advance_clock(Duration::from_nanos(1));
+        cx.run_until_parked();
+        spinner.update(cx, |spinner, _| {
+            assert!(spinner.geometry_dirty);
             assert!(spinner.tick.is_none());
+            spinner.prepare(false);
         });
         // No paint means no new timer, even after a long hidden interval.
         cx.executor().advance_clock(Duration::from_secs(5));
         cx.run_until_parked();
-        spinner.read_with(cx, |spinner, _| assert_eq!(spinner.step, 1));
+        spinner.read_with(cx, |spinner, _| assert!(!spinner.geometry_dirty));
     }
 
     #[gpui::test]
-    fn activity_clock_wraps_and_cancels_when_motion_is_reduced(cx: &mut gpui::TestAppContext) {
+    fn activity_clock_cancels_and_retains_reduced_motion_frame(cx: &mut gpui::TestAppContext) {
         let spinner = cx.new(Spinner::new);
-        spinner.update(cx, |spinner, cx| {
-            spinner.step = donut::FRAME_COUNT - 1;
-            spinner.arm(false, cx);
-        });
-        cx.run_until_parked();
-        cx.executor().advance_clock(TICK - Duration::from_millis(1));
-        cx.run_until_parked();
-        spinner.read_with(cx, |spinner, _| {
-            assert_eq!(spinner.step, donut::FRAME_COUNT - 1)
-        });
-        cx.executor().advance_clock(Duration::from_millis(1));
+        spinner.update(cx, |spinner, cx| spinner.arm(false, cx));
         cx.run_until_parked();
         spinner.update(cx, |spinner, cx| {
-            assert_eq!(spinner.step, 0);
-            spinner.arm(false, cx);
-        });
-        cx.run_until_parked();
-        spinner.update(cx, |spinner, cx| {
+            spinner.prepare(true);
             spinner.arm(true, cx);
             assert!(spinner.tick.is_none());
+            let representative = gpui_thinking_orbs::draw_mode(
+                spinner.resolved.mode,
+                SIZE,
+                0.6,
+                &spinner.resolved.opts,
+            );
+            for (a, b) in spinner.frame.dots.iter().zip(&representative.dots) {
+                assert_eq!(
+                    (a.x, a.y, a.z, a.r, a.white, a.a),
+                    (b.x, b.y, b.z, b.r, b.white, b.a)
+                );
+            }
         });
         cx.executor().advance_clock(TICK);
         cx.run_until_parked();
-        spinner.read_with(cx, |spinner, _| assert_eq!(spinner.step, 0));
+        spinner.read_with(cx, |spinner, _| {
+            assert!(!spinner.geometry_dirty);
+            assert!(spinner.tick.is_none());
+        });
     }
 
     #[gpui::test]
