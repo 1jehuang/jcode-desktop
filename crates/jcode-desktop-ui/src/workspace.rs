@@ -4736,7 +4736,38 @@ impl Workspace {
         // is an invitation to open another panel, so keep those two actions in
         // visibly separate sections. Preserve the TUI saved/recency ordering
         // within each section.
-        let ordered_sessions = sidebar_session_order(&self.sessions);
+        // Live panels are authoritative, including sessions still waiting for
+        // creation/catalog acknowledgement. Never wait for a server refresh to
+        // make a newly opened neighbor reachable in the sidebar.
+        let mut catalog = self.sessions.clone();
+        let mut known = catalog
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect::<HashSet<_>>();
+        for slot in self.slots.iter().filter(|slot| !slot.closing) {
+            let panel = slot.panel.read(cx);
+            if (panel.supports_voice() || panel.session_id.starts_with("ssh://"))
+                && known.insert(panel.session_id.clone())
+            {
+                catalog.push(jcode_sdk::SessionInfo {
+                    session_id: panel.session_id.clone(),
+                    working_dir: panel.working_dir.clone(),
+                    title: Some(panel.title.to_string()),
+                    status: "active".into(),
+                    transcript_bytes: None,
+                    saved: false,
+                    updated_at_ms: None,
+                    last_active_at_ms: None,
+                    archived: false,
+                    archived_at_ms: None,
+                    parent_session_id: None,
+                    agent_label: None,
+                    swarm_status: None,
+                    edit_stats: None,
+                });
+            }
+        }
+        let ordered_sessions = sidebar_session_order(&catalog);
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
@@ -4818,20 +4849,30 @@ impl Workspace {
                     .children
                     .get(&session.session_id)
                     .is_some_and(|children| children.len() > sidebar_swarm::PREVIEW),
-                details: session
+                details: (!*is_open || active_id.as_deref() == Some(session.session_id.as_str())
+                    || session_workspaces.get(&session.session_id).is_none_or(|row| workspace_counts[row] < 2))
+                    && (session
                     .working_dir
                     .as_deref()
                     .is_some_and(|dir| !dir.trim().is_empty())
                     || sidebar_session_created_ms(&session.session_id).is_some()
                     || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
-                    || session.edit_stats.is_some(),
+                    || session.edit_stats.is_some()),
             })
             .collect::<Vec<_>>();
+        let newly_opened_active = layout.iter().position(|row| {
+            row.open && row.selected
+                && !self.sidebar_session_layout.iter()
+                    .any(|old| old.open && old.session_id == row.session_id)
+        });
         sync_sidebar_session_layout(
             &self.sidebar_sessions_list,
             &mut self.sidebar_session_layout,
             layout,
         );
+        if let Some(index) = newly_opened_active {
+            self.sidebar_sessions_list.scroll_to_reveal_item(index);
+        }
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         let folder_frame = self.folder_frame.clone();
         let workspace = cx.entity();
@@ -4942,6 +4983,8 @@ impl Workspace {
                             }
                             let selected =
                                 active_id.as_deref() == Some(session.session_id.as_str());
+                            let compact = is_open && !selected
+                                && workspace_row.is_some_and(|row| workspace_counts[&row] > 1);
                             let (icon, title) = sidebar_session_title_with_open_title(
                                 session,
                                 open_titles.get(&session.session_id).map(String::as_str),
@@ -5080,7 +5123,7 @@ impl Workspace {
                                                 )
                                             }),
                                     )
-                                    .when(details.is_some() || edits.is_some(), |row| {
+                                    .when(!compact && (details.is_some() || edits.is_some()), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
@@ -5104,7 +5147,7 @@ impl Workspace {
             );
         }
 
-        if self.sessions.is_empty() {
+        if self.sidebar_session_layout.is_empty() {
             list = list.child(
                 div()
                     .p_4()

@@ -48,7 +48,7 @@ impl Workspace {
             // A compact header above the sessions, not a reserved left gutter.
             .ml_2()
             .mb_1()
-            .w(px(32.0))
+            .w(px(64.0))
             .h(px(26.0))
             .flex()
             .items_center()
@@ -92,6 +92,13 @@ impl Workspace {
                     .text_color(theme.TEXT_DIM)
                     .child(if expanded { "⌄" } else { "›" }),
             )
+            .child(
+                div()
+                    .ml_1()
+                    .text_size(px(10.0))
+                    .text_color(theme.TEXT_DIM)
+                    .child(count.to_string()),
+            )
             .into_any_element()
     }
 }
@@ -113,5 +120,143 @@ mod tests {
         assert_eq!(state.expanded, [true, false, false, false]);
         state.sync_focus(2);
         assert_eq!(state.expanded, [false, false, true, false]);
+    }
+
+    #[gpui::test]
+    fn live_slots_without_catalog_entries_appear_immediately_in_map_order(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            // Creation order deliberately differs from the map's row-major order.
+            workspace.active_row = 1;
+            workspace.push_test_panel("session_fox_lower", cx);
+            workspace.active_row = 0;
+            workspace.push_test_panel("session_owl_upper_left", cx);
+            workspace.push_test_panel("session_hare_upper_right", cx);
+            workspace.active = 1;
+            assert!(workspace.sessions.is_empty());
+            workspace
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| {
+            assert!(
+                workspace.sessions.is_empty(),
+                "rendering must not populate the catalog"
+            );
+            assert_eq!(
+                workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .map(|item| item.session_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "session_owl_upper_left",
+                    "session_hare_upper_right",
+                    "session_fox_lower"
+                ],
+                "live slots must not wait for a Sessions update"
+            );
+        });
+        let first = vcx
+            .debug_bounds("sidebar-session-0")
+            .expect("first live slot paints immediately");
+        let second = vcx
+            .debug_bounds("sidebar-session-1")
+            .expect("second live slot paints immediately");
+        let lower = vcx
+            .debug_bounds("sidebar-workspace-group-1")
+            .expect("uncatalogued workspace has a disclosure");
+        assert!(first.bottom() <= second.top());
+        assert!(second.bottom() <= lower.top());
+        assert!(vcx.debug_bounds("sidebar-session-2").is_none());
+        vcx.simulate_click(lower.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-2").is_some());
+        for (selector, expected) in [
+            ("sidebar-session-0", "session_owl_upper_left"),
+            ("sidebar-session-1", "session_hare_upper_right"),
+            ("sidebar-session-2", "session_fox_lower"),
+        ] {
+            let bounds = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, cx| {
+                assert_eq!(
+                    workspace.slots.len(),
+                    3,
+                    "clicking a live row must not open a duplicate"
+                );
+                assert_eq!(
+                    workspace.slots[workspace.active].panel.read(cx).session_id,
+                    expected
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn uncatalogued_inactive_live_rows_are_compact_and_remeasure_on_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in [
+                "session_fox_first",
+                "session_owl_second",
+                "session_hare_third",
+            ] {
+                workspace.push_test_panel(name, cx);
+            }
+            for slot in &workspace.slots {
+                slot.panel.update(cx, |panel, _| {
+                    panel.working_dir = Some("/project/live-work".into());
+                });
+            }
+            workspace.active = 0;
+            assert!(workspace.sessions.is_empty());
+            workspace
+        });
+        vcx.run_until_parked();
+        for active in [0, 1, 2, 0] {
+            workspace.update(vcx, |workspace, cx| {
+                workspace.active = active;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, _| {
+                assert!(workspace.sessions.is_empty());
+                assert_eq!(workspace.sidebar_session_layout.len(), 3);
+                for (index, item) in workspace.sidebar_session_layout.iter().enumerate() {
+                    assert_eq!(
+                        item.details,
+                        index == active,
+                        "virtual-list measurements must track the visible detail row"
+                    );
+                }
+            });
+            for (index, selector) in [
+                "sidebar-session-0",
+                "sidebar-session-1",
+                "sidebar-session-2",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let bounds = vcx.debug_bounds(selector).unwrap();
+                if index == active {
+                    assert!(
+                        bounds.size.height > px(24.0),
+                        "active row retains working-directory details"
+                    );
+                } else {
+                    assert_eq!(
+                        bounds.size.height,
+                        px(24.0),
+                        "inactive live rows stay single-line compact"
+                    );
+                }
+            }
+        }
     }
 }
