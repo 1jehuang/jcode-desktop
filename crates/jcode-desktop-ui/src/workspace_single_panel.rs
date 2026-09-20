@@ -81,6 +81,8 @@ impl Workspace {
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
+            .capture_action(cx.listener(Self::begin_voice_hold))
+            .capture_action(cx.listener(Self::end_voice_hold))
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(Self::rename_session))
@@ -149,6 +151,37 @@ mod tests {
         workspace.single_panel = true;
         workspace.open_startup_draft(cx);
         workspace
+    }
+
+    #[gpui::test]
+    fn single_panel_voice_hold_press_and_release_reach_focused_chat(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = standalone(cx);
+            workspace.slots[0].panel = cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
+            workspace
+        });
+        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
+            workspace.focus_active(window, cx);
+        }));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("single-panel-root").is_some());
+        vcx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("super-shift-xf86assistant").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        workspace.update(vcx, |workspace, cx| {
+            assert!(workspace.voice_key.is_down());
+            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
+        });
+        vcx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("xf86touchpadoff").unwrap(),
+        });
+        workspace.read_with(vcx, |workspace, cx| {
+            assert!(!workspace.voice_key.is_down());
+            assert!(!workspace.slots[0].panel.read(cx).voice_active());
+            assert_eq!(workspace.slots.len(), 1);
+        });
     }
 
     #[gpui::test]

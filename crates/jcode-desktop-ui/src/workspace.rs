@@ -153,6 +153,8 @@ actions!(
         ToggleShowcase,
         ToggleSidebar,
         ToggleVoice,
+        BeginVoiceHold,
+        EndVoiceHold,
         CycleTheme,
         NewHelpSession,
         OpenChangelog,
@@ -874,8 +876,11 @@ impl Workspace {
         let mut workspace = Self {
             voice_key: Default::default(),
             last_voice_chat: None,
-            _voice_activation: Some(cx.observe_window_activation(window, |this, window, _| {
+            _voice_activation: Some(cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
+                    if this.voice_key.is_down() {
+                        this.end_voice_hold(&EndVoiceHold, window, cx);
+                    }
                     this.voice_key = Default::default();
                 }
             })),
@@ -7217,6 +7222,8 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
+            .capture_action(cx.listener(Self::begin_voice_hold))
+            .capture_action(cx.listener(Self::end_voice_hold))
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {

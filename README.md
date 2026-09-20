@@ -16,19 +16,24 @@ See [single-panel mode](docs/single-panel.md) for controls and details.
 
 ## Voice input
 
-Click the microphone icon beside the composer, or hover over it to see the
-platform shortcut. Press again to stop recording or cancel a pending request.
+Hover over the microphone icon beside the composer to see the platform shortcut.
+Hold the voice key to transcribe live, then release it to finish into an editable
+draft. Releasing while the microphone is still connecting cancels that attempt.
 
-- **Copilot keyboards:** the physical Copilot key toggles voice. On Linux,
-  global activation requires a compositor binding from `Super+Shift+F23` to
-  `jcode-desktop --toggle-voice` with key repeat disabled.
-- **macOS:** **Command+Shift+M** toggles voice, including from another app when
-  the native global shortcut is available. The in-app shortcut remains available
-  if global registration conflicts with another app.
-- **Composer fallback:** **Ctrl+Shift+V**.
+- **Copilot keyboards:** hold the physical Copilot key in the focused Jcode
+  window, including standalone chat windows. On Linux, leave the key unbound in
+  the compositor so both press and release reach that window. Losing focus ends
+  local capture safely. A spawn-only global toggle binding cannot implement
+  push-to-talk and may target the wrong window.
+- **macOS:** hold **Command+Shift+M**. The native global shortcut forwards both
+  edges when available. If another app owns it, the focused-window handler remains.
+- **Click or composer fallback:** click the microphone or press **Ctrl+Shift+V**
+  to start/stop recording without holding a key.
 
-Audio streams to Nari. Recognized requests can open a recent session. Other
-speech becomes an editable draft and is never sent automatically.
+Audio streams to Nari. Hold-to-talk always produces dictation, never navigation
+or automatic sending. Click recording can also recognize requests to open a
+recent session. Explicit `--voice-press` and `--voice-release` commands are
+available for integrations that can deliver both edges to an existing main host.
 
 ## Development
 

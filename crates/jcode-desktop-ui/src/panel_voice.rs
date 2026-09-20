@@ -12,8 +12,6 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
         ToggleVoice,
         Some("ChatPanel"),
     )]);
-    #[cfg(target_os = "macos")]
-    cx.bind_keys([gpui::KeyBinding::new("cmd-shift-m", ToggleVoice, None)]);
 }
 
 #[path = "panel_voice_overlay.rs"]
@@ -25,7 +23,9 @@ const VOICE_SHORTCUT: &str = "Copilot key";
 const VOICE_SHORTCUT: &str = "⌘⇧M (Command+Shift+M)";
 
 fn voice_tooltip(action: &str, status: &str) -> String {
-    format!("{action} · {VOICE_SHORTCUT}\n{status}. Ctrl+Shift+V also works in the composer. Audio streams to Nari. Jev checks the transcript against your last 20 sessions to recognize requests to open one. Other speech becomes a draft, never sent automatically.")
+    format!(
+        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. Held speech always becomes a draft, never sent automatically. Click recording can also recognize requests to open a recent session."
+    )
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -41,6 +41,8 @@ enum Phase {
 #[derive(Default)]
 pub(super) struct VoiceState {
     phase: Phase,
+    // Attempt ownership persists through final transcription, even after key release.
+    hold_capture: bool,
     recording: Option<NariRecording>,
     live_transcript: String,
     transcript_scroll: gpui::ScrollHandle,
@@ -69,8 +71,14 @@ impl Drop for VoiceState {
 struct VoiceTooltip(String);
 impl Render for VoiceTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().debug_selector(|| "voice-shortcut-tooltip".into()).max_w(px(300.)).p_2().rounded_md().bg(Theme::global().HEADER_BG)
-            .text_size(px(12.)).text_color(Theme::global().TEXT)
+        div()
+            .debug_selector(|| "voice-shortcut-tooltip".into())
+            .max_w(px(300.))
+            .p_2()
+            .rounded_md()
+            .bg(Theme::global().HEADER_BG)
+            .text_size(px(12.))
+            .text_color(Theme::global().TEXT)
             .child(self.0.clone())
     }
 }
@@ -104,6 +112,11 @@ impl Panel {
         self.voice.phase = Phase::Checking;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_voice_hold_checking_for_test(&mut self) {
+        self.prepare_voice_attempt(true);
+    }
+
     pub(crate) fn supports_voice(&self) -> bool {
         (!self.session_id.contains("://")
             || self.is_pending_session()
@@ -120,6 +133,23 @@ impl Panel {
         self.voice.phase != Phase::Idle
     }
 
+    pub(crate) fn begin_voice_hold(&mut self, cx: &mut Context<Self>) {
+        if self.supports_voice() && self.voice.phase == Phase::Idle {
+            self.start_voice_with_hold(true, cx);
+        }
+    }
+
+    pub(crate) fn end_voice_hold(&mut self, cx: &mut Context<Self>) {
+        if !self.voice.hold_capture {
+            return;
+        }
+        match self.voice.phase {
+            Phase::Checking => self.cancel_voice(cx),
+            Phase::Recording => self.stop_voice(cx),
+            Phase::Idle | Phase::Transcribing | Phase::Routing => {}
+        }
+    }
+
     pub(crate) fn toggle_voice(&mut self, cx: &mut Context<Self>) {
         if !self.supports_voice() {
             return;
@@ -132,11 +162,30 @@ impl Panel {
     }
 
     fn cancel_voice(&mut self, cx: &mut Context<Self>) {
-        self.voice = VoiceState::default();
+        self.reset_voice_attempt();
         cx.notify();
     }
 
+    fn reset_voice_attempt(&mut self) {
+        // Session configuration belongs to the panel, not an individual capture.
+        let sessions = self.voice.sessions.take();
+        let navigation = self.voice.navigation.take();
+        self.voice = VoiceState::default();
+        self.voice.sessions = sessions;
+        self.voice.navigation = navigation;
+    }
+
+    fn prepare_voice_attempt(&mut self, hold_capture: bool) {
+        self.reset_voice_attempt();
+        self.voice.phase = Phase::Checking;
+        self.voice.hold_capture = hold_capture;
+    }
+
     fn start_voice(&mut self, cx: &mut Context<Self>) {
+        self.start_voice_with_hold(false, cx);
+    }
+
+    fn start_voice_with_hold(&mut self, hold_capture: bool, cx: &mut Context<Self>) {
         if self.preview_state.is_some() || crate::harness::screenshot_mode() {
             self.voice.error = Some("Microphone access is disabled in offline previews.".into());
             cx.notify();
@@ -145,8 +194,7 @@ impl Panel {
         if self.voice.phase != Phase::Idle {
             return;
         }
-        self.voice = VoiceState::default();
-        self.voice.phase = Phase::Checking;
+        self.prepare_voice_attempt(hold_capture);
         let token = self.voice.canceled.clone();
         let attempt = token.clone();
         let work = cx.background_executor().spawn(async move {
@@ -156,24 +204,38 @@ impl Panel {
         self.voice.task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |panel, cx| {
-                if !Arc::ptr_eq(&attempt, &panel.voice.canceled) {
-                    return;
-                }
-                match result {
-                    Ok(recording) => {
-                        panel.voice.phase = Phase::Recording;
-                        panel.voice.recording = Some(recording);
-                        panel.voice.started = Some(Instant::now());
-                        panel.tick_voice(cx);
-                    }
-                    Err(error) => {
-                        panel.voice.phase = Phase::Idle;
-                        panel.voice.error = Some(error.to_string());
-                    }
-                }
-                cx.notify();
+                panel.finish_voice_startup(&attempt, result, cx);
             });
         }));
+        cx.notify();
+    }
+
+    fn finish_voice_startup(
+        &mut self,
+        attempt: &Arc<AtomicBool>,
+        result: Result<NariRecording, VoiceError>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Arc::ptr_eq(attempt, &self.voice.canceled)
+            || attempt.load(Ordering::SeqCst)
+            || self.voice.phase != Phase::Checking
+        {
+            // Dropping a late successful recording cancels its native worker.
+            return;
+        }
+        match result {
+            Ok(recording) => {
+                self.voice.phase = Phase::Recording;
+                self.voice.recording = Some(recording);
+                self.voice.started = Some(Instant::now());
+                self.tick_voice(cx);
+            }
+            Err(error) => {
+                self.voice.phase = Phase::Idle;
+                self.voice.hold_capture = false;
+                self.voice.error = Some(error.to_string());
+            }
+        }
         cx.notify();
     }
 
@@ -259,13 +321,14 @@ impl Panel {
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
+        let dictation_only = std::mem::take(&mut self.voice.hold_capture);
         self.voice.phase = Phase::Idle;
         self.voice.started = None;
         self.voice.recording = None;
         self.voice.live_transcript.clear();
         match result {
             Ok(text) if !text.trim().is_empty() => {
-                if self.voice.sessions.is_some() {
+                if !dictation_only && self.voice.sessions.is_some() {
                     self.route_voice(text, cx);
                     return;
                 }
@@ -423,10 +486,17 @@ impl Panel {
                         div()
                             .debug_selector(|| "voice-microphone-icon".into())
                             .size(px(16.))
-                            .child(gpui::svg()
-                                .data(include_bytes!("../../../assets/icons/microphone.svg") as &'static [u8])
-                                .text_color(if phase != Phase::Idle { theme.ACCENT } else { theme.TEXT_DIM })
-                                .size(px(16.))),
+                            .child(
+                                gpui::svg()
+                                    .data(include_bytes!("../../../assets/icons/microphone.svg")
+                                        as &'static [u8])
+                                    .text_color(if phase != Phase::Idle {
+                                        theme.ACCENT
+                                    } else {
+                                        theme.TEXT_DIM
+                                    })
+                                    .size(px(16.)),
+                            ),
                     ),
             )
             .into_any_element()
@@ -436,6 +506,151 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn voice_hold_repeat_and_early_release_cancel_only_owned_startup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("keep".into(), cx));
+            panel.voice.sessions = Some(Vec::new());
+            // Seed the same state as production after its offline-preview guard.
+            panel.prepare_voice_attempt(true);
+            let attempt = panel.voice.canceled.clone();
+            panel.begin_voice_hold(cx);
+            panel.begin_voice_hold(cx);
+            assert!(Arc::ptr_eq(&attempt, &panel.voice.canceled));
+            assert!(panel.voice.phase == Phase::Checking);
+            assert!(panel.voice.error.is_none());
+            panel.end_voice_hold(cx);
+            panel.end_voice_hold(cx);
+            assert!(attempt.load(Ordering::SeqCst));
+            assert!(panel.voice.phase == Phase::Idle);
+            assert!(!panel.voice.hold_capture);
+            assert!(panel.voice.sessions.is_some());
+            assert_eq!(panel.input.read(cx).content.as_ref(), "keep");
+
+            // Late startup completion cannot resurrect a canceled capture or
+            // change a newer attempt. No recording or microphone is constructed.
+            panel.finish_voice_startup(&attempt, Err(VoiceError::Cancelled), cx);
+            assert!(panel.voice.phase == Phase::Idle);
+            assert!(panel.voice.error.is_none());
+            panel.prepare_voice_attempt(true);
+            let current = panel.voice.canceled.clone();
+            panel.finish_voice_startup(&attempt, Err(VoiceError::Network), cx);
+            assert!(Arc::ptr_eq(&current, &panel.voice.canceled));
+            assert!(panel.voice.phase == Phase::Checking);
+            assert!(panel.voice.error.is_none());
+            current.store(true, Ordering::SeqCst);
+            panel.finish_voice_startup(&current, Err(VoiceError::Network), cx);
+            assert!(panel.voice.phase == Phase::Checking);
+            assert!(panel.voice.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn voice_hold_does_not_take_over_click_recording_or_routing(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            for phase in [
+                Phase::Checking,
+                Phase::Recording,
+                Phase::Transcribing,
+                Phase::Routing,
+            ] {
+                panel.voice.phase = phase;
+                panel.voice.hold_capture = false;
+                panel.voice.live_transcript = "existing click request".into();
+                let attempt = panel.voice.canceled.clone();
+                panel.begin_voice_hold(cx);
+                panel.end_voice_hold(cx);
+                assert!(panel.voice.phase == phase);
+                assert!(Arc::ptr_eq(&attempt, &panel.voice.canceled));
+                assert!(!attempt.load(Ordering::SeqCst));
+                assert_eq!(panel.voice.live_transcript, "existing click request");
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn voice_hold_streams_then_appends_dictation_without_navigation_or_sending(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.voice.sessions = Some(vec![
+                serde_json::from_value(serde_json::json!({
+                    "session_id": "target", "status": "idle", "title": "PDF renderer"
+                }))
+                .unwrap(),
+            ]);
+            panel.prepare_voice_attempt(true);
+            panel.voice.phase = Phase::Recording;
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("typed draft".into(), cx));
+            panel.apply_voice_event(NariEvent::Transcript("open PDF".into()), cx);
+            panel.apply_voice_event(NariEvent::Transcript("open PDF renderer".into()), cx);
+            assert_eq!(panel.voice.live_transcript, "open PDF renderer");
+            assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
+            assert!(
+                !serde_json::to_string(&panel.snapshot(cx))
+                    .unwrap()
+                    .contains("open PDF renderer")
+            );
+            let attempt = panel.voice.canceled.clone();
+            panel.begin_voice_hold(cx);
+            assert!(Arc::ptr_eq(&attempt, &panel.voice.canceled));
+            // Model stop_voice's post-stop phase without opening a live mic.
+            panel.voice.phase = Phase::Transcribing;
+            panel.end_voice_hold(cx);
+            panel.end_voice_hold(cx);
+            assert!(panel.voice.hold_capture);
+            assert!(!attempt.load(Ordering::SeqCst));
+            let before = panel.items.len();
+            panel.apply_voice_event(NariEvent::Finished(Ok("open PDF renderer".into())), cx);
+            assert!(
+                panel.voice.phase == Phase::Idle,
+                "must not enter voice routing"
+            );
+            assert!(!panel.voice.hold_capture);
+            assert!(panel.voice.task.is_none(), "must not start a classifier");
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "typed draft open PDF renderer"
+            );
+            assert_eq!(panel.items.len(), before, "never sends");
+            assert!(panel.voice.live_transcript.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn voice_hold_rejects_unsupported_and_offline_panels(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.session_id = "terminal://1".into();
+            panel.begin_voice_hold(cx);
+            assert!(!panel.voice_active());
+            assert!(panel.voice.error.is_none());
+            panel.session_id = "preview://chat".into();
+            panel.begin_voice_hold(cx);
+            assert!(!panel.voice_active());
+            assert!(!panel.voice.hold_capture);
+            assert!(
+                panel
+                    .voice
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("offline previews")
+            );
+            assert!(panel.voice.recording.is_none());
+            assert!(panel.voice.task.is_none());
+        });
+    }
 
     #[gpui::test]
     fn voice_microphone_hover_shows_platform_shortcut(cx: &mut gpui::TestAppContext) {
@@ -449,7 +664,10 @@ mod tests {
         assert!(vcx.debug_bounds("voice-shortcut-tooltip").is_some());
         let text = voice_tooltip("Start voice", "Ready");
         assert!(text.starts_with(&format!("Start voice · {VOICE_SHORTCUT}")));
-        assert!(text.contains("Ctrl+Shift+V"));
+        assert!(text.contains("Ctrl+Shift+V toggles"));
+        assert!(text.contains(&format!(
+            "Hold {VOICE_SHORTCUT} to transcribe, release to finish"
+        )));
         #[cfg(target_os = "macos")]
         assert!(text.contains("Command+Shift+M") && !text.contains("Copilot"));
         #[cfg(not(target_os = "macos"))]

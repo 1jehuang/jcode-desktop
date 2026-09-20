@@ -20,7 +20,10 @@ impl Panel {
             Phase::Routing => "Understanding your request…",
         };
         let detail = self.voice.error.clone().unwrap_or_else(|| match phase {
-            Phase::Recording => "Audio streams to Nari · Copilot to stop".into(),
+            Phase::Recording if self.voice.hold_capture => {
+                format!("Audio streams to Nari · Release {VOICE_SHORTCUT} to finish transcription")
+            }
+            Phase::Recording => "Audio streams to Nari · Click Stop to finish".into(),
             Phase::Checking => "Connecting to Nari and checking microphone access".into(),
             Phase::Transcribing => "Your words will not be sent automatically".into(),
             Phase::Routing => "Jev is checking your last 20 sessions".into(),

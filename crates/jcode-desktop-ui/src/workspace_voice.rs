@@ -39,12 +39,24 @@ fn is_copilot(stroke: &gpui::Keystroke) -> bool {
     }
 }
 
+fn is_voice_hold(stroke: &gpui::Keystroke) -> bool {
+    #[cfg(target_os = "macos")]
+    if stroke.key == "m" && stroke.modifiers.platform && stroke.modifiers.shift
+        && !stroke.modifiers.control && !stroke.modifiers.alt && !stroke.modifiers.function {
+        return true;
+    }
+    is_copilot(stroke)
+}
+
 impl CopilotLatch {
+    pub(super) fn is_down(&self) -> bool {
+        self.down
+    }
     /// Return Some for a consumed Copilot event, true only on the first down.
     /// X11 in our pinned GPUI reports repeats with is_held=false, so the latch
     /// is necessary even though Wayland supplies a reliable is_held flag.
     fn press(&mut self, event: &gpui::KeyDownEvent) -> Option<bool> {
-        if !is_copilot(&event.keystroke) {
+        if !is_voice_hold(&event.keystroke) {
             return None;
         }
         let first = !self.down && !event.is_held;
@@ -55,7 +67,9 @@ impl CopilotLatch {
     fn release(&mut self, key: &str) -> bool {
         // XKB can resolve the release to level 1 if the hardware releases its
         // synthetic modifiers first. Never bind TouchpadOff as a press.
-        if self.down && matches!(key, "f23" | "xf86assistant" | "xf86touchpadoff") {
+        let released = matches!(key, "f23" | "xf86assistant" | "xf86touchpadoff")
+            || (cfg!(target_os = "macos") && key == "m");
+        if self.down && released {
             self.down = false;
             true
         } else {
@@ -76,6 +90,8 @@ impl Workspace {
             .size_full()
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
+            .capture_action(cx.listener(Self::begin_voice_hold))
+            .capture_action(cx.listener(Self::end_voice_hold))
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .child(content)
@@ -175,6 +191,44 @@ impl Workspace {
         self.toggle_voice(&ToggleVoice, window, cx);
     }
 
+    pub(super) fn begin_voice_hold(
+        &mut self,
+        _: &BeginVoiceHold,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        if self.show_beta_notice || self.account_sign_in.visible || self.onboarding_simulator.is_some() {
+            return;
+        }
+        let Some(index) = self.voice_target(cx) else { return };
+        let panel = self.slots[index].panel.clone();
+        // A hold never toggles or takes ownership of an existing click recording.
+        if panel.read(cx).voice_active() { return; }
+        self.set_active(index, cx);
+        if self.overview {
+            self.overview = false;
+            self.overview_progress.set(0.0, Instant::now());
+        }
+        self.focus_active(window, cx);
+        panel.update(cx, |panel, cx| panel.begin_voice_hold(cx));
+        cx.notify();
+    }
+
+    pub(super) fn end_voice_hold(
+        &mut self,
+        _: &EndVoiceHold,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        // Find the original owner even after changing tabs. Never refocus on release.
+        for slot in &self.slots {
+            slot.panel.update(cx, |panel, cx| panel.end_voice_hold(cx));
+        }
+        cx.notify();
+    }
+
     pub(super) fn copilot_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -184,7 +238,7 @@ impl Workspace {
         if let Some(first) = self.voice_key.press(event) {
             cx.stop_propagation();
             if first {
-                self.toggle_voice(&ToggleVoice, window, cx);
+                self.begin_voice_hold(&BeginVoiceHold, window, cx);
             }
         }
     }
@@ -192,11 +246,11 @@ impl Workspace {
     pub(super) fn copilot_key_up(
         &mut self,
         event: &gpui::KeyUpEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.voice_key.release(&event.keystroke.key) {
-            cx.stop_propagation();
+            self.end_voice_hold(&EndVoiceHold, window, cx);
         }
     }
 }
@@ -380,7 +434,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn native_copilot_events_cancel_owner_once_until_release(cx: &mut gpui::TestAppContext) {
+    fn native_copilot_hold_releases_original_owner_without_toggling(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("recording-owner", cx);
@@ -388,44 +442,81 @@ mod tests {
             disable_test_microphones(&mut workspace, cx);
             workspace
         });
-        vcx.update(|window, cx| {
-            workspace.update(cx, |workspace, cx| {
-                workspace.slots[0]
-                    .panel
-                    .update(cx, |panel, _| panel.set_voice_checking_for_test());
-                workspace.set_active(1, cx);
-                workspace.focus_active(window, cx);
-                assert_eq!(workspace.voice_target(cx), Some(0));
-            });
-        });
+        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
+            workspace.set_active(0, cx);
+            workspace.focus_active(window, cx);
+        }));
         vcx.run_until_parked();
-        vcx.simulate_event(down("super-shift-f23", false));
-        workspace.read_with(vcx, |workspace, cx| {
-            assert_eq!(workspace.active, 0);
-            assert!(!workspace.slots[0].panel.read(cx).voice_active());
-            assert!(!workspace.slots[1].panel.read(cx).voice_active());
+        vcx.simulate_event(down("super-shift-xf86assistant", false));
+        workspace.read_with(vcx, |workspace, _| assert!(workspace.voice_key.is_down()));
+        // Offline windows cannot capture audio. Install only the held connecting
+        // state after real key-down, then exercise repeat and key-up routing.
+        workspace.update(vcx, |workspace, cx| {
+            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
         });
         for held in [true, false, true, false] {
-            workspace.update(vcx, |workspace, cx| {
-                workspace.slots[0]
-                    .panel
-                    .update(cx, |panel, _| panel.set_voice_checking_for_test());
-            });
-            vcx.simulate_event(down("super-shift-f23", held));
+            vcx.simulate_event(down("super-shift-xf86assistant", held));
             workspace.read_with(vcx, |workspace, cx| {
-                assert!(
-                    workspace.slots[0].panel.read(cx).voice_active(),
-                    "repeat must not cancel"
-                );
+                assert!(workspace.slots[0].panel.read(cx).voice_active(), "repeat must not stop capture");
             });
         }
+        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
+            workspace.set_active(1, cx);
+            workspace.focus_active(window, cx);
+        }));
         vcx.simulate_event(gpui::KeyUpEvent {
-            keystroke: gpui::Keystroke::parse("f23").unwrap(),
+            keystroke: gpui::Keystroke::parse("xf86touchpadoff").unwrap(),
         });
-        vcx.simulate_event(down("super-shift-f23", false));
         workspace.read_with(vcx, |workspace, cx| {
             assert!(!workspace.slots[0].panel.read(cx).voice_active());
+            assert!(!workspace.voice_key.is_down());
+            assert_eq!(workspace.active, 1, "release must not steal focus");
         });
+    }
+
+    #[gpui::test]
+    fn copilot_hold_does_not_cancel_click_recording(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("click-owner", cx);
+            disable_test_microphones(&mut workspace, cx);
+            workspace
+        });
+        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
+            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_checking_for_test());
+            workspace.focus_active(window, cx);
+        }));
+        vcx.run_until_parked();
+        vcx.simulate_event(down("super-shift-f23", false));
+        vcx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("f23").unwrap() });
+        workspace.read_with(vcx, |workspace, cx| assert!(workspace.slots[0].panel.read(cx).voice_active()));
+    }
+
+    #[gpui::test]
+    fn host_hold_release_action_stops_original_owner(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("hold-owner", cx);
+            disable_test_microphones(&mut workspace, cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let start = cx.build_action("workspace::BeginVoiceHold", None).unwrap();
+            window.focus_next(cx);
+            assert!(window.is_action_available(start.as_ref(), cx));
+            window.dispatch_action(start, cx);
+        });
+        workspace.update(vcx, |workspace, cx| {
+            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
+        });
+        vcx.update(|window, cx| {
+            let stop = cx.build_action("workspace::EndVoiceHold", None).unwrap();
+            assert!(window.is_action_available(stop.as_ref(), cx));
+            window.dispatch_action(stop, cx);
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| assert!(!workspace.slots[0].panel.read(cx).voice_active()));
     }
 
     #[gpui::test]
