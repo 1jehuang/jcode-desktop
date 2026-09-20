@@ -3556,13 +3556,15 @@ impl Panel {
                             .items_center()
                             .px_1()
                             .py(px(2.0))
-                            .text_size(px(11.5))
+                            .text_size(px(14.0))
+                            // Match the token pill's 14px line plus 2px padding per side.
+                            .line_height(px(18.0))
                             .child(status)
                             .child(
                                 div()
+                                    .debug_selector(|| "tool-name".into())
                                     .flex_none()
                                     .font_family(Theme::global().FONT_MONO)
-                                    .text_size(px(10.0))
                                     .text_color(Theme::global().TEXT_FAINT)
                                     .child(name.clone()),
                             )
@@ -3583,7 +3585,6 @@ impl Panel {
                                 el.child(
                                     div()
                                         .flex_none()
-                                        .text_size(px(10.0))
                                         .text_color(Theme::global().TEXT_FAINT)
                                         .child("running"),
                                 )
@@ -6932,6 +6933,17 @@ mod tests {
             let button = vcx
                 .debug_bounds("tool-output-size")
                 .expect("running and finished tools expose their output toggle");
+            for selector in ["tool-name", "tool-summary"] {
+                let text = vcx.debug_bounds(selector).expect("tool label paints");
+                assert_eq!(
+                    text.size.height, button.size.height,
+                    "{selector} fills the pill height"
+                );
+                assert_eq!(
+                    text.origin.y, button.origin.y,
+                    "{selector} aligns with the pill"
+                );
+            }
             vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("tool-detail").is_some());
