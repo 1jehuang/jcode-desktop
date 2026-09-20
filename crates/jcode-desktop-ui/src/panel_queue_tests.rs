@@ -29,7 +29,12 @@ fn ctrl_enter_queues_until_completion_and_enter_still_sends(cx: &mut gpui::TestA
         commands.try_recv().is_err(),
         "queue must not steer the active turn"
     );
-    assert!(vcx.debug_bounds("prompt-queue").is_some());
+    let queue = vcx.debug_bounds("prompt-queue").unwrap();
+    let input = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        queue.bottom() <= input.top(),
+        "queue must be above the input"
+    );
     panel.read_with(vcx, |p, cx| {
         assert_eq!(p.prompt_queue.prompts.len(), 2);
         assert!(p.input.read(cx).content.is_empty());
@@ -302,4 +307,48 @@ fn removing_all_startup_prompts_clears_waiting_state_when_ready(cx: &mut gpui::T
         if session_id == "session-ready" && content == "send normally")
     );
     assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn queue_stays_above_input_in_startup_and_resumed_layouts(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new(
+            "queue-layout".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    panel.update(vcx, |p, cx| {
+        assert!(p.startup_layout.is_some());
+        p.history_loaded = true;
+        p.status = "running".into();
+        p.items.push(Item::User("First request".into()));
+        p.submit_or_queue("Queued follow-up".into(), vec![], true, cx);
+    });
+    for startup in [true, false] {
+        if !startup {
+            panel.update(vcx, |p, cx| {
+                p.startup_layout = None;
+                cx.notify();
+            });
+        }
+        vcx.run_until_parked();
+        let queue = vcx.debug_bounds("prompt-queue").unwrap();
+        let input = vcx.debug_bounds("prompt-input").unwrap();
+        assert!(
+            queue.bottom() <= input.top(),
+            "queue below input in startup={startup}: {queue:?}, {input:?}"
+        );
+        assert!(queue.left() >= input.left() && queue.right() <= input.right());
+        let footer = vcx.debug_bounds("panel-status").unwrap();
+        if startup {
+            assert!(
+                input.bottom() <= footer.top(),
+                "composer must fit above footer"
+            );
+        }
+    }
 }

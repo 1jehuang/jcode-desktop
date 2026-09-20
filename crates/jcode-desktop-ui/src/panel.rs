@@ -4175,6 +4175,10 @@ impl Render for Panel {
                         .child(
                             div()
                                 .relative()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .children(self.render_prompt_queue(cx))
                                 .child(self.input.clone())
                                 .child(startup::input_marker(input_bounds.clone())),
                         ),
@@ -4285,6 +4289,10 @@ impl Render for Panel {
                                     .w_full()
                                     .max_w(px(760.))
                                     .relative()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .children(self.render_prompt_queue(cx))
                                     .child(self.input.clone())
                                     .child(startup::input_marker(input_bounds.clone())),
                             ),
@@ -4639,13 +4647,16 @@ impl Render for Panel {
             )
             .children(self.render_voice_overlay(window, cx))
             .children(self.render_preview_badge(cx))
-            .children(self.render_prompt_queue(cx))
             // Input
             .when(!fresh_session && self.startup_layout.is_none(), |el| {
                 el.child(
                     div().flex_none().min_w_0().px_2().py_2().child(
                         div()
                             .relative()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(self.render_prompt_queue(cx))
                             .child(self.input.clone())
                             .child(startup::input_marker(input_bounds.clone())),
                     ),
