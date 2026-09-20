@@ -246,12 +246,32 @@ impl Panel {
                 .left_0()
                 .w_full()
                 .min_w_0()
+                // A solid reading surface masks transcript ink in the badge
+                // gutter and around line-shaped prompt backgrounds. Feather
+                // its lower edge instead of adding a hard banner boundary.
+                .bg(Theme::global().PANEL_BG)
+                .shadow(vec![gpui::BoxShadow {
+                    inset: false,
+                    color: Theme::global().PANEL_BG.into(),
+                    offset: gpui::point(px(0.), px(6.)),
+                    blur_radius: px(12.),
+                    spread_radius: px(2.),
+                }])
                 .max_h(
                     self.offscreen_prompt_clip
+                        .map(|top| (top - px(6.)).max(px(0.)))
                         .unwrap_or(self.transcript_list.viewport_bounds().size.height)
                         .min(self.transcript_list.viewport_bounds().size.height),
                 )
-                .overflow_y_scroll()
+                .when(self.offscreen_prompt_clip.is_some(), |overlay| {
+                    // Bottom alignment moves the intact outgoing card upward
+                    // as the next one approaches, rather than cutting through
+                    // stationary text. Keep a visible gap between both cards.
+                    overlay.flex().flex_col().justify_end().overflow_hidden()
+                })
+                .when(self.offscreen_prompt_clip.is_none(), |overlay| {
+                    overlay.overflow_y_scroll()
+                })
                 .occlude()
                 .px_3()
                 .text_size(px(13.5))
@@ -278,8 +298,8 @@ impl Panel {
                 let at_live_end =
                     following_tail || visible.is_some_and(|rows| rows.last + 1 == row_count);
                 let offscreen = prompt_for_viewport(&prompt_rows, visible, at_live_end);
-                // The next card slides in front of the old reminder. Clip only
-                // the old overlay, never the list or either card's layout.
+                // The next card pushes the old reminder above the viewport.
+                // Constrain only the overlay, never either card's layout.
                 let clip = offscreen.and_then(|_| visible?.next_prompt_top.map(|(_, top)| top));
                 cx.defer(move |cx| {
                     let _ = panel.update(cx, |panel, cx| {
@@ -727,9 +747,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn newer_prompt_slides_over_old_sticky_card_before_taking_its_place(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn newer_prompt_pushes_old_sticky_card_without_overlap(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
                 "prompt-stack".into(),
@@ -761,7 +779,7 @@ mod tests {
         vcx.run_until_parked();
         let old_size = vcx.debug_bounds("user-prompt-0").unwrap().size;
         let new_size = vcx.debug_bounds("user-prompt-2").unwrap().size;
-        let mut overlapped = false;
+        let mut pushed_off = false;
         let mut switched = false;
         for _ in 0..150 {
             let viewport = vcx.debug_bounds("transcript").unwrap();
@@ -774,7 +792,7 @@ mod tests {
             vcx.run_until_parked();
             scroll_momentum_tests::settle(vcx);
             let pinned_index = panel.read_with(vcx, |panel, _| panel.offscreen_prompt);
-            if overlapped {
+            if pushed_off {
                 assert!(
                     pinned_index.is_some(),
                     "no missing reminder at the incoming row padding"
@@ -785,13 +803,14 @@ mod tests {
                 let newer = vcx.debug_bounds("user-prompt-2").unwrap();
                 assert_eq!(old.size, old_size, "clipping never resizes old content");
                 assert_eq!(newer.size, new_size);
-                if newer.top() < old.bottom() {
-                    overlapped = true;
+                assert!(old.bottom() <= newer.top(), "prompt cards never overlap");
+                if old.top() < viewport.top() {
+                    pushed_off = true;
                     let overlay = vcx.debug_bounds("pinned-latest-prompt").unwrap();
                     assert_eq!(
                         overlay.bottom(),
-                        newer.top(),
-                        "old overlay stops at incoming card"
+                        (newer.top() - px(6.)).max(viewport.top()),
+                        "outgoing card keeps a gap before the incoming card"
                     );
                     assert!(
                         newer.top() > viewport.top(),
@@ -800,8 +819,8 @@ mod tests {
                 }
             } else if pinned_index == Some(2) {
                 assert!(
-                    overlapped,
-                    "incoming prompt passes in front before switching"
+                    pushed_off,
+                    "incoming prompt pushes the old card upward before switching"
                 );
                 let newer = vcx.debug_bounds("user-prompt-2").unwrap();
                 assert_eq!(newer.top(), viewport.top());
@@ -811,8 +830,8 @@ mod tests {
             }
         }
         assert!(
-            overlapped && switched,
-            "native scroll exercises overlap and handoff"
+            pushed_off && switched,
+            "native scroll exercises push-off and handoff"
         );
         let mut restored = false;
         for _ in 0..100 {
@@ -830,10 +849,12 @@ mod tests {
                 let newer = vcx.debug_bounds("user-prompt-2").unwrap();
                 assert_eq!(old.size, old_size);
                 assert_eq!(newer.size, new_size);
-                assert!(newer.top() > viewport.top() && newer.top() < old.bottom());
+                assert!(newer.top() > viewport.top());
+                assert!(old.top() < viewport.top());
+                assert!(old.bottom() <= newer.top(), "reverse scroll never overlaps");
                 assert_eq!(
                     vcx.debug_bounds("pinned-latest-prompt").unwrap().bottom(),
-                    newer.top()
+                    (newer.top() - px(6.)).max(viewport.top())
                 );
                 restored = true;
                 break;
@@ -841,7 +862,7 @@ mod tests {
         }
         assert!(
             restored,
-            "reverse native scroll restores old card behind newer card"
+            "reverse native scroll restores the pushed-off card without overlap"
         );
     }
 
@@ -1185,5 +1206,15 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-latest-prompt").is_none());
         assert!(vcx.debug_bounds("pinned-todo-card").is_some());
+        panel.update(vcx, |panel, cx| {
+            panel.items.retain(|item| !matches!(item, Item::Todos(_)));
+            cx.notify();
+        });
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(400.)));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-card").is_none());
+        let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
+        assert_eq!(prompt.top(), px(8.), "no-todo prompt keeps a top gap");
+        assert_eq!(prompt.top(), vcx.debug_bounds("transcript").unwrap().top());
     }
 }

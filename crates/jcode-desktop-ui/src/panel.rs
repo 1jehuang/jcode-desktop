@@ -4045,6 +4045,7 @@ impl Render for Panel {
         let pinned_todo = self
             .latest_todo_payload()
             .filter(|payload| !payload.todos.is_empty());
+        let has_pinned_todo = pinned_todo.is_some();
         let rows = Arc::new(self.transcript_render_rows());
         let prompt_rows: Vec<(usize, usize)> = rows
             .iter()
@@ -4402,6 +4403,7 @@ impl Render for Panel {
                     .flex_1()
                     .min_h_0()
                     .relative()
+                    .when(!has_pinned_todo, |body| body.mt_2())
                     // Pace both wheel and touchpad movement on display frames.
                     // Precise deltas use a much shorter smoothing window so
                     // native gesture control stays responsive.
