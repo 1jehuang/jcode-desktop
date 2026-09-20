@@ -12,12 +12,21 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
         ToggleVoice,
         Some("ChatPanel"),
     )]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([gpui::KeyBinding::new("cmd-shift-m", ToggleVoice, None)]);
 }
 
 #[path = "panel_voice_overlay.rs"]
 mod overlay;
 
-const VOICE_SHORTCUT: &str = "Copilot";
+#[cfg(not(target_os = "macos"))]
+const VOICE_SHORTCUT: &str = "Copilot key";
+#[cfg(target_os = "macos")]
+const VOICE_SHORTCUT: &str = "⌘⇧M (Command+Shift+M)";
+
+fn voice_tooltip(action: &str, status: &str) -> String {
+    format!("{action} · {VOICE_SHORTCUT}\n{status}. Ctrl+Shift+V also works in the composer. Audio streams to Nari. Jev checks the transcript against your last 20 sessions to recognize requests to open one. Other speech becomes a draft, never sent automatically.")
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -60,9 +69,9 @@ impl Drop for VoiceState {
 struct VoiceTooltip(String);
 impl Render for VoiceTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().max_w(px(300.)).p_2().rounded_md().bg(Theme::global().HEADER_BG)
+        div().debug_selector(|| "voice-shortcut-tooltip".into()).max_w(px(300.)).p_2().rounded_md().bg(Theme::global().HEADER_BG)
             .text_size(px(12.)).text_color(Theme::global().TEXT)
-            .child(format!("{} · {VOICE_SHORTCUT} starts/stops voice (or cancels a pending request). Ctrl+Shift+V also works in the composer. Audio streams to Nari. Jev checks the transcript against your last 20 sessions to recognize requests to open one. Other speech becomes a draft, never sent automatically.", self.0))
+            .child(self.0.clone())
     }
 }
 
@@ -349,13 +358,13 @@ impl Panel {
         let theme = Theme::global();
         let phase = self.voice.phase;
         let label = match phase {
-            Phase::Idle => "Voice",
-            Phase::Checking => "Cancel",
-            Phase::Recording => "Stop",
-            Phase::Transcribing | Phase::Routing => "Cancel",
+            Phase::Idle => "Start voice",
+            Phase::Checking => "Cancel microphone connection",
+            Phase::Recording => "Stop voice",
+            Phase::Transcribing | Phase::Routing => "Cancel voice request",
         };
         let active = self.activity_active();
-        let tooltip_status = status.clone();
+        let tooltip_status = voice_tooltip(label, &status);
         div()
             .debug_selector(move || {
                 if active {
@@ -388,14 +397,14 @@ impl Panel {
                     .debug_selector(|| "voice-toggle".into())
                     .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
                     .flex_none()
-                    .px_2()
+                    .w(px(28.))
                     .h(px(22.))
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .justify_center()
                     .rounded_md()
                     .bg(theme.HEADER_BG)
-                    .text_color(if phase == Phase::Recording {
+                    .text_color(if phase != Phase::Idle {
                         theme.ACCENT
                     } else {
                         theme.TEXT_DIM
@@ -410,12 +419,14 @@ impl Panel {
                         window.dispatch_action(Box::new(ToggleVoice), cx);
                         cx.stop_propagation();
                     }))
-                    .child(label)
                     .child(
                         div()
-                            .debug_selector(|| "voice-shortcut".into())
-                            .text_size(px(10.))
-                            .child(VOICE_SHORTCUT),
+                            .debug_selector(|| "voice-microphone-icon".into())
+                            .size(px(16.))
+                            .child(gpui::svg()
+                                .data(include_bytes!("../../../assets/icons/microphone.svg") as &'static [u8])
+                                .text_color(if phase != Phase::Idle { theme.ACCENT } else { theme.TEXT_DIM })
+                                .size(px(16.))),
                     ),
             )
             .into_any_element()
@@ -425,6 +436,25 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn voice_microphone_hover_shows_platform_shortcut(cx: &mut gpui::TestAppContext) {
+        let (_panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        vcx.run_until_parked();
+        let button = vcx.debug_bounds("voice-toggle").unwrap();
+        vcx.update(|window, cx| window.simulate_mouse_move(button.center(), cx));
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_secs(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-shortcut-tooltip").is_some());
+        let text = voice_tooltip("Start voice", "Ready");
+        assert!(text.starts_with(&format!("Start voice · {VOICE_SHORTCUT}")));
+        assert!(text.contains("Ctrl+Shift+V"));
+        #[cfg(target_os = "macos")]
+        assert!(text.contains("Command+Shift+M") && !text.contains("Copilot"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(text.contains("Copilot key"));
+    }
 
     #[gpui::test]
     fn voice_routing_non_navigation_retains_draft_and_never_sends(cx: &mut gpui::TestAppContext) {
@@ -630,7 +660,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_footer_keeps_shortcut_and_spacing_at_all_widths(cx: &mut gpui::TestAppContext) {
+    fn voice_footer_keeps_microphone_and_spacing_at_all_widths(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [240., 320., 480., 800., 1440.] {
@@ -650,18 +680,17 @@ mod tests {
                 vcx.run_until_parked();
                 let footer = vcx.debug_bounds("panel-meta").unwrap();
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
-                let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
+                let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
+                assert!(vcx.debug_bounds("voice-shortcut").is_none());
                 let status = vcx.debug_bounds("voice-ready-status").unwrap();
                 assert!(
                     button.left() >= footer.left() && button.right() <= footer.right(),
                     "voice at {width}: {button:?} outside {footer:?}"
                 );
                 assert!(button.top() >= footer.top() && button.bottom() <= footer.bottom());
-                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
-                assert!(
-                    shortcut.size.width > px(30.),
-                    "shortcut must not be clipped"
-                );
+                assert!(icon.left() >= button.left() && icon.right() <= button.right());
+                assert_eq!(icon.size.width, px(16.));
+                assert_eq!(button.size.width, px(28.));
                 assert!(
                     button.left() - status.right() >= px(7.),
                     "Ready needs breathing room"
