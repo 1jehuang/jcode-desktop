@@ -17,6 +17,8 @@ fn reconnect_turn_completion_reconciles_idle_and_active_history(cx: &mut gpui::T
             panel.connection_phase = "streaming".into();
             panel.status = "lost: reconnecting".into();
             panel.load_history(vec![jcode_sdk::HistoryMessage {
+                response_stats: None, role: "user".into(), content: "hello".into(),
+            }, jcode_sdk::HistoryMessage {
                 response_stats: None,
                 role: "assistant".into(), content: "partial response".into(),
             }], vec![], cx);

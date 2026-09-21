@@ -2,9 +2,9 @@
 use super::*;
 use jcode_sdk::TurnStopReason;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StopNotice {
-    pub(super) title: &'static str,
+    pub(super) title: String,
     pub(super) detail: String,
     provider_stop_reason: Option<String>,
     failure: bool,
@@ -26,7 +26,7 @@ impl StopNotice {
             _ => "Response stopped",
         };
         Self {
-            title,
+            title: title.into(),
             detail: message.to_owned(),
             provider_stop_reason: provider.map(str::to_owned),
             failure: *reason != TurnStopReason::Interrupted,
@@ -36,7 +36,7 @@ impl StopNotice {
 
     pub(super) fn cancel_requested() -> Self {
         Self {
-            title: "Stop requested by you",
+            title: "Stop requested by you".into(),
             detail:
                 "You interrupted this response. Waiting for the runtime to confirm cancellation."
                     .into(),
@@ -100,7 +100,7 @@ impl Panel {
     pub(crate) fn connection_lost(&mut self, reason: &str, cx: &mut Context<Self>) {
         if self.activity_active() || !self.pending_users.is_empty() {
             self.record_stop(StopNotice {
-                title: "Connection lost: response outcome unknown",
+                title: "Connection lost: response outcome unknown".into(),
                 detail: format!("{reason}. Reconnecting. The session may still be running, so this is not a confirmed crash."),
                 provider_stop_reason: None,
                 failure: false,
@@ -133,7 +133,7 @@ impl Panel {
                 div()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(Theme::global().TEXT)
-                    .child(notice.title),
+                    .child(notice.title.clone()),
             )
             .when(notice.failure, |el| {
                 el.child(self.render_recovery_error(index, &notice.detail, window, cx))

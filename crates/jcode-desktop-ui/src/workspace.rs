@@ -1282,6 +1282,19 @@ impl Workspace {
     }
 
     pub fn snapshot(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
+        self.snapshot_inner(window, cx, false)
+    }
+
+    pub fn snapshot_for_reload(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
+        self.snapshot_inner(window, cx, true)
+    }
+
+    fn snapshot_inner(
+        &self,
+        window: &Window,
+        cx: &App,
+        for_reload: bool,
+    ) -> anyhow::Result<WorkspaceSnapshot> {
         // Closing slots and transient tool snapshots must not be restored as
         // server sessions. All saved indices refer to persisted slots only.
         let slots: Vec<_> = self
@@ -1350,7 +1363,11 @@ impl Workspace {
             slots: slots
                 .iter()
                 .map(|slot| SlotSnapshot {
-                    panel: slot.panel.read(cx).snapshot(cx),
+                    panel: if for_reload {
+                        slot.panel.read(cx).snapshot_for_reload(cx)
+                    } else {
+                        slot.panel.read(cx).snapshot(cx)
+                    },
                     row: slot.row,
                     width_fraction: slot.width_fraction,
                     restore_fraction: slot.restore_fraction,
@@ -8423,6 +8440,7 @@ mod tests {
             onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
+                    transcript: None,
                     image_pane_open: false,
                     side_document: None,
                     prompt_queue: Default::default(),
@@ -8628,6 +8646,7 @@ mod tests {
                     onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
+                            transcript: None,
                             image_pane_open: false,
                             side_document: None,
                             prompt_queue: Default::default(),

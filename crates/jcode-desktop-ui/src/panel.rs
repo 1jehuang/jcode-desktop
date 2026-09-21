@@ -24,6 +24,10 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[path = "panel_snapshot.rs"]
+mod snapshot;
+pub use snapshot::TranscriptSnapshot;
+
 #[path = "panel_background_task.rs"]
 mod background_task;
 
@@ -102,7 +106,7 @@ fn command_unavailable_message(input: &str) -> String {
 }
 
 /// One transcript entry, in display order.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Item {
     User(String),
     Image(TranscriptImage),
@@ -150,7 +154,7 @@ struct TranscriptRenderRow {
     show_label: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TodoCardPayload {
     #[serde(default)]
     todos: Vec<TodoCardItem>,
@@ -158,12 +162,12 @@ pub struct TodoCardPayload {
     plan: TodoCardPlan,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct TodoCardPlan {
     user_intention: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TodoCardItem {
     content: String,
     status: String,
@@ -173,11 +177,12 @@ struct TodoCardItem {
     blocked_by: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptImage {
     media_type: String,
     data: String,
     label: Option<String>,
+    #[serde(skip)]
     preview: Option<Arc<gpui::Image>>,
     source: jcode_sdk::RenderedImageSource,
     anchor: Option<jcode_sdk::RenderedImageAnchor>,
@@ -222,6 +227,8 @@ impl TranscriptImage {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PanelSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<TranscriptSnapshot>,
     #[serde(default)]
     pub image_pane_open: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,6 +321,8 @@ pub struct Panel {
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
     history_loaded: bool,
+    reconnect_response: Option<jcode_sdk::HistoryMessage>,
+    restored_transcript: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
     pinned_task_label: Entity<task_label::TypeInLabel>,
@@ -830,6 +839,8 @@ impl Panel {
             bridge,
             preview_state: None,
             history_loaded: false,
+            reconnect_response: None,
+            restored_transcript: false,
             expanded_tools: HashSet::new(),
             pinned_task_label: cx.new(task_label::TypeInLabel::new),
             tool_detail_motion: HashMap::new(),
@@ -2118,6 +2129,7 @@ impl Panel {
             .document_scroll_offset(cx)
             .unwrap_or_else(|| self.transcript_list.scroll_px_offset_for_scrollbar());
         PanelSnapshot {
+            transcript: None,
             image_pane_open: self.image_pane_open,
             side_document: self.document_snapshot(cx),
             prompt_queue: self.prompt_queue.clone(),
@@ -2146,6 +2158,9 @@ impl Panel {
     pub fn restore_snapshot(&mut self, snapshot: PanelSnapshot, cx: &mut Context<Self>) {
         if self.restore_side_document_snapshot(&snapshot, cx) {
             return;
+        }
+        if let Some(transcript) = snapshot.transcript {
+            self.restore_transcript(transcript);
         }
         self.image_pane_open = snapshot.image_pane_open;
         self.image_pane_selected = None;
@@ -2599,34 +2614,24 @@ impl Panel {
             return;
         }
         self.transcript_measurements.dirty = true;
+        if self.restored_transcript {
+            self.hydrate_restored_prefix(&messages);
+            // An empty/behind reply still completes the connection handshake.
+            // Keep the cache reconciliation marker independent of readiness.
+            self.history_loaded = true;
+            self.input
+                .update(cx, |input, cx| input.set_pending_session(false, cx));
+        }
         if self.history_loaded {
-            // Reattaching a session fetches history again. The runtime may have
-            // completed the active turn while its event stream was unavailable,
-            // so reconcile the newest assistant message instead of discarding
-            // the refresh and leaving the locally echoed prompt unanswered.
-            if let Some(response) = messages
-                .iter()
-                .rev()
-                .take_while(|message| message.role != "user")
-                .find(|message| message.role == "assistant" && !message.content.trim().is_empty())
-            {
-                self.recover_response(&response.content);
-                if let Some(stats) = response.response_stats.clone() {
-                    self.finish_response();
-                    let mut restored: response_stats::ResponseStats = stats.into();
-                    if let Some(Item::ResponseStats(existing)) = self.items.last_mut() {
-                        restored.duration_secs = restored.duration_secs.or(existing.duration_secs);
-                        restored.tool_calls = existing.tool_calls;
-                        *existing = restored;
-                    } else if !restored.is_empty() {
-                        self.items.push(Item::ResponseStats(restored));
-                    }
-                }
-                if self.stick_to_bottom {
-                    self.transcript_list.scroll_to_end();
-                }
-                cx.notify();
+            // History is persisted message state, not a replay of the live turn.
+            // Wait for authoritative idle before reconciling it with a saved
+            // suffix. Buffered deltas must not be appended to a history prefix.
+            self.defer_reconnect_history(&messages);
+            for image in images {
+                self.insert_rendered_image(image);
             }
+            self.send_queued_prompts(cx);
+            cx.notify();
             return;
         }
         self.history_loaded = true;
@@ -2750,10 +2755,16 @@ impl Panel {
             return;
         }
 
-        if let Some(existing) = self.items.iter_mut().rev().find_map(|item| match item {
-            Item::Assistant(text) => Some(text),
-            _ => None,
-        }) {
+        if let Some(existing) = self
+            .items
+            .iter_mut()
+            .rev()
+            .take_while(|item| !matches!(item, Item::User(_)))
+            .find_map(|item| match item {
+                Item::Assistant(text) => Some(text),
+                _ => None,
+            })
+        {
             if existing == response {
                 return;
             }
@@ -2772,6 +2783,18 @@ impl Panel {
     pub fn apply(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         if self.is_side_document() {
             return;
+        }
+        if matches!(
+            event,
+            ApiEvent::TextDelta { .. }
+                | ApiEvent::ReasoningDelta { .. }
+                | ApiEvent::ToolStart { .. }
+                | ApiEvent::MessageAccepted { .. }
+                | ApiEvent::Error { .. }
+                | ApiEvent::TurnStopped { .. }
+        ) {
+            // New live evidence supersedes the earlier persisted candidate.
+            self.reconnect_response = None;
         }
         // Streaming appends only affect the live suffix. Keep a conservative
         // full invalidation for tools, status transitions, images and errors.
@@ -2895,6 +2918,7 @@ impl Panel {
                 }
             }
             ApiEvent::TurnDone { .. } => {
+                self.reconcile_reconnect_response();
                 self.finish_response();
             }
             ApiEvent::TurnStopped { reason, message, provider_stop_reason, .. } => {
@@ -2921,6 +2945,7 @@ impl Panel {
                     status.clone()
                 };
                 if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
+                    self.reconcile_reconnect_response();
                     self.finish_response();
                 }
             }
@@ -7755,6 +7780,7 @@ mod tests {
                 Vec::new(),
                 cx,
             );
+            panel.apply(&ApiEvent::SessionStatus { session_id: "session-a".into(), status: "idle".into() }, cx);
             assert!(matches!(
                 panel.items.last(),
                 Some(Item::Assistant(text)) if text == "recovered response"
@@ -7763,7 +7789,7 @@ mod tests {
             panel.items = vec![Item::User("next".into())];
             panel.streaming_text = "partial".into();
             panel.load_history(
-                vec![jcode_sdk::HistoryMessage {
+                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None }, jcode_sdk::HistoryMessage {
                     response_stats: None,
                     role: "assistant".into(),
                     content: "partial response completed".into(),
@@ -7771,7 +7797,9 @@ mod tests {
                 Vec::new(),
                 cx,
             );
-            assert_eq!(panel.streaming_text, "partial response completed");
+            assert_eq!(panel.streaming_text, "partial", "history must not duplicate queued deltas");
+            panel.apply(&ApiEvent::SessionStatus { session_id: "session-a".into(), status: "idle".into() }, cx);
+            assert!(matches!(panel.items.last(), Some(Item::Assistant(text)) if text == "partial response completed"));
         });
     }
 

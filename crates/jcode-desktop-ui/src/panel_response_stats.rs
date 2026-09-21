@@ -1,7 +1,7 @@
 //! Per-response accounting, separate from latest-request context occupancy.
 use super::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResponseStats {
     pub duration_secs: Option<f64>,
     pub input_tokens: Option<u64>,
@@ -393,6 +393,18 @@ mod tests {
             panel.response_stats.observe(&usage(100, 10, None), None);
             panel.response_stats.started = Some(Instant::now() - Duration::from_secs(84));
             panel.load_history(history(), vec![], cx);
+            assert_eq!(
+                panel.items.len(),
+                1,
+                "history stats are not a completion signal"
+            );
+            panel.apply(
+                &ApiEvent::SessionStatus {
+                    session_id: "stats-history".into(),
+                    status: "idle".into(),
+                },
+                cx,
+            );
             assert_eq!(panel.items.len(), 3);
             let Item::ResponseStats(stats) = &panel.items[2] else {
                 panic!("missing recovered stats")

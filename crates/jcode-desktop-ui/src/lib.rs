@@ -298,7 +298,7 @@ unsafe extern "C-unwind" fn snapshot(
         };
         match workspace
             .read(app)
-            .snapshot(window, app)
+            .snapshot_for_reload(window, app)
             .and_then(|snapshot| snapshot.encode())
         {
             Ok(bytes) => host.store_snapshot(&bytes, STATE_SCHEMA_VERSION),
