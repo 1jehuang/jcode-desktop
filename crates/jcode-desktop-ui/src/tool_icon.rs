@@ -24,18 +24,28 @@ pub(crate) fn render_status(name: &str, done: bool, failed: bool) -> Div {
         .size(px(14.0))
         .flex_shrink_0()
         .debug_selector(move || state.selector().into())
-        .child(if state == Status::Running {
-            icon.with_animation(
-                "tool-icon-pulse",
-                Animation::new(Duration::from_millis(1400))
-                    .repeat_synced()
-                    .with_max_fps(20.0),
-                |icon, phase| icon.opacity(pulse_opacity(phase)),
+        .child(icon)
+}
+
+/// Pulse the entire header together, not just its status glyph. GPUI's
+/// animation wrapper respects reduced motion and stops when the call finishes.
+pub(crate) fn animate_running(header: Div, done: bool, failed: bool) -> gpui::AnyElement {
+    if status(done, failed) == Status::Running {
+        div()
+            .debug_selector(|| "tool-row-running".into())
+            .child(
+                header.with_animation(
+                    "tool-row-pulse",
+                    Animation::new(Duration::from_millis(1400))
+                        .repeat_synced()
+                        .with_max_fps(20.0),
+                    |header, phase| header.opacity(pulse_opacity(phase)),
+                ),
             )
             .into_any_element()
-        } else {
-            icon.into_any_element()
-        })
+    } else {
+        header.into_any_element()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

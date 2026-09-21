@@ -81,7 +81,7 @@ impl TimedPreview {
         div()
             .debug_selector(move || format!("edit-preview-header-{index}").into())
             .min_w_0()
-            .child(
+            .child(crate::tool_icon::animate_running(
                 div()
                     .debug_selector(move || format!("edit-preview-intent-row-{index}").into())
                     // Overflow clipping is rectangular in GPUI. Round the
@@ -118,7 +118,9 @@ impl TimedPreview {
                             ),
                     )
                     .child(counts),
-            )
+                self.done,
+                self.header.review.failed,
+            ))
             .child(metadata)
     }
 }

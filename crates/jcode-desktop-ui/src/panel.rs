@@ -3494,7 +3494,7 @@ impl Panel {
                     .flex_none()
                     .flex_col()
                     .overflow_hidden()
-                    .child(
+                    .child(crate::tool_icon::animate_running(
                         div()
                             .debug_selector(|| "tool-header".into())
                             .flex()
@@ -3507,14 +3507,16 @@ impl Panel {
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
                             .child(crate::tool_icon::render_status(name, *done, error.is_some()))
-                            .child(
-                                div()
-                                    .debug_selector(|| "tool-name".into())
-                                    .flex_none()
-                                    .font_family(Theme::global().FONT_MONO)
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .child(name.clone()),
-                            )
+                            .when(!*done && error.is_none(), |el| {
+                                el.child(
+                                    div()
+                                        .debug_selector(|| "tool-name".into())
+                                        .flex_none()
+                                        .font_family(Theme::global().FONT_MONO)
+                                        .text_color(Theme::global().TEXT_FAINT)
+                                        .child(name.clone()),
+                                )
+                            })
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()
@@ -3528,7 +3530,7 @@ impl Panel {
                                         .child(summary),
                                 )
                             })
-                            .when(!*done, |el| {
+                            .when(!*done && error.is_none(), |el| {
                                 el.child(
                                     div()
                                         .flex_none()
@@ -3586,7 +3588,9 @@ impl Panel {
                                         .child(token_label),
                                 )
                             }),
-                    )
+                        *done,
+                        error.is_some(),
+                    ))
                     .when(detail_visible && has_detail, |el| {
                         el.child(
                             div()
@@ -7008,6 +7012,7 @@ mod tests {
             (true, "", false),
             (true, "ok", false),
             (true, "failed", true),
+            (false, "failed", true),
         ] {
             panel.update(vcx, |panel, cx| {
                 panel.items = vec![Item::Tool {
@@ -7024,7 +7029,12 @@ mod tests {
             let button = vcx
                 .debug_bounds("tool-output-size")
                 .expect("running and finished tools expose their output toggle");
-            for selector in ["tool-name", "tool-summary"] {
+            assert_eq!(vcx.debug_bounds("tool-name").is_some(), !done && !failed);
+            assert_eq!(vcx.debug_bounds("tool-row-running").is_some(), !done && !failed);
+            for selector in ["tool-name", "tool-summary"]
+                .into_iter()
+                .filter(|selector| *selector != "tool-name" || (!done && !failed))
+            {
                 let text = vcx.debug_bounds(selector).expect("tool label paints");
                 assert_eq!(
                     text.size.height, button.size.height,
@@ -7044,9 +7054,9 @@ mod tests {
             };
             assert!(vcx.debug_bounds(status_selector).is_some());
             let icon = vcx.debug_bounds("tool-type-icon").expect("tool icon paints");
-            let name = vcx.debug_bounds("tool-name").unwrap();
+            let name = vcx.debug_bounds("tool-summary").unwrap();
             assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
-            assert!(icon.right() <= name.left(), "icon precedes the tool name");
+            assert!(icon.right() <= name.left(), "icon precedes the intent");
             assert!((f32::from(icon.center().y - name.center().y)).abs() < 1.0);
             vcx.simulate_click(button.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
@@ -7109,8 +7119,8 @@ mod tests {
 
         // The row itself is no longer an expansion target.
         // The compact header's center may land on the token button.
-        // Click the name to exercise the non-interactive part of the row.
-        let name = vcx.debug_bounds("tool-name").unwrap();
+        // Click the intent to exercise the non-interactive part of the row.
+        let name = vcx.debug_bounds("tool-summary").unwrap();
         vcx.simulate_click(name.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_none());
@@ -7148,8 +7158,8 @@ mod tests {
 
         // Clicking the header or output card leaves it open.
         // The compact header's center may land on the token button.
-        // Click the name to exercise the non-interactive part of the row.
-        let name = vcx.debug_bounds("tool-name").unwrap();
+        // Click the intent to exercise the non-interactive part of the row.
+        let name = vcx.debug_bounds("tool-summary").unwrap();
         vcx.simulate_click(name.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("tool-detail").is_some());
