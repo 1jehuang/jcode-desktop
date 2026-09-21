@@ -99,24 +99,14 @@ def run_case(root, fixture, binary, plugin, reloads):
         image = root / f"{stem}.png"
         subprocess.run(["import", "-window", "root", str(image)],
                        env=env, check=True, timeout=15)
-        ocr_image = image
-        ocr_args = []
-        if fixture == "tool-streaming":
-            # This probe fixes viewport/layout/theme. Isolate transcript ink
-            # and lift dim tool labels above OCR's threshold. Keep the original
-            # full screenshot as proof. Normal prose uses unmodified pixels.
-            ocr_image = root / f"{stem}-ocr.png"
-            subprocess.run(["convert", str(image), "-crop", "1190x850+236+38", "+repage",
-                            "-colorspace", "Gray", "-negate", "-threshold", "70%",
-                            "-resize", "200%", str(ocr_image)],
-                           env=env, check=True, timeout=15, stderr=subprocess.DEVNULL)
-            ocr_args = ["--psm", "6"]
-        text = subprocess.check_output(["tesseract", str(ocr_image), "stdout", *ocr_args],
+        # Preserve original pixels for prose and exactly-once prompt checks.
+        # Thresholding the entire transcript can erase small counters/descenders
+        # in otherwise legible text. Only tool labels need separate enlargement.
+        text = subprocess.check_output(["tesseract", str(image), "stdout"],
                                        env=env, stderr=subprocess.DEVNULL, timeout=30).decode()
         if fixture == "tool-streaming":
-            # Small dim badge glyphs can lose their final descender during
-            # thresholding (agentgrep -> agentgrer). Independently OCR the
-            # original two-tool region at 4x, without changing expected text.
+            # Full-screen OCR can miss small dim badge glyphs. Independently
+            # OCR the original two-tool region at 4x, without changing expected text.
             # This crop contains no marker or user prompt, so exactly-once
             # checks remain based on the full transcript OCR above.
             label_image = root / f"{stem}-label.png"
