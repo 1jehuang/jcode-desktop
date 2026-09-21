@@ -8,6 +8,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let active_id = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
         let existing = self
             .slots
             .iter()
@@ -22,11 +26,7 @@ impl Workspace {
                     cx,
                 )
             });
-            let index = if self.slots.is_empty() {
-                0
-            } else {
-                self.active + 1
-            };
+            let index = 0;
             let width = DEFAULT_WIDTH;
             self.slots.insert(
                 index,
@@ -53,11 +53,34 @@ impl Workspace {
             );
             index
         });
+        // Notes always lead their row, including when an existing notes panel
+        // was moved. Keep the outgoing chat's identity across the reordering.
+        if index != 0 {
+            let slot = self.slots.remove(index);
+            self.slots.insert(0, slot);
+        }
+        if let Some(index) = active_id.and_then(|id| {
+            self.slots
+                .iter()
+                .position(|slot| slot.panel.entity_id() == id)
+        }) {
+            self.active = index;
+        }
+        let row = self.slots[0].row;
+        if let Some(chat) = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.row == row && !slot.closing && slot.panel.read(cx).supports_voice())
+        {
+            chat.width_fraction = DEFAULT_WIDTH;
+            chat.animated_width.set(DEFAULT_WIDTH, Instant::now());
+            chat.restore_fraction = None;
+        }
         // Explicit updates should surface their notes even from overview mode.
         self.overview = false;
         self.overview_progress.set(0.0, Instant::now());
         self.hints_overlay = false;
-        self.set_active(index, cx);
+        self.set_active(0, cx);
         self.retarget_camera();
         self.focus_active(window, cx);
         cx.notify();
@@ -69,6 +92,74 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn changelog_can_open_without_a_chat(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.open_changelog(&OpenChangelog, window, cx);
+                w.open_changelog(&OpenChangelog, window, cx);
+                assert_eq!(w.slots.len(), 1);
+                assert_eq!(w.active, 0);
+                assert!(w.slots[0].panel.read(cx).is_changelog());
+                assert!(w.snapshot(window, cx).unwrap().slots.is_empty());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn changelog_leads_row_and_halves_only_first_live_chat(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("other-row", cx);
+            w.slots[0].width_fraction = 1.0;
+            w.push_test_panel("closing-chat", cx);
+            w.slots[1].row = 1;
+            w.slots[1].closing = true;
+            w.push_test_panel("accounts://first", cx);
+            w.slots[2].row = 1;
+            w.push_test_panel("first-chat", cx);
+            w.slots[3].row = 1;
+            w.slots[3].width_fraction = 1.0;
+            w.slots[3].animated_width = AnimatedValue::new(1.0, Duration::ZERO);
+            w.slots[3].restore_fraction = Some(0.75);
+            w.push_test_panel("focused-chat", cx);
+            w.slots[4].row = 1;
+            w.slots[4].width_fraction = 0.75;
+            w.active = 4;
+            w.active_row = 1;
+            w
+        });
+        vcx.update(|window, cx| {
+            workspace.update(cx, |w, cx| {
+                let source = w.slots[4].panel.entity_id();
+                w.open_changelog(&OpenChangelog, window, cx);
+                assert_eq!(w.active, 0);
+                assert!(w.slots[0].panel.read(cx).is_changelog());
+                assert_eq!(w.slots[0].row, 1);
+                assert_eq!(w.slots[0].width_fraction, 0.5);
+                assert_eq!(w.slots[1].width_fraction, 1.0);
+                assert_eq!(w.slots[4].panel.read(cx).session_id, "first-chat");
+                assert_eq!(w.slots[4].width_fraction, 0.5);
+                assert_eq!(w.slots[4].animated_width.sample(Instant::now()), 0.5);
+                assert_eq!(w.slots[4].restore_fraction, None);
+                assert_eq!(w.slots[5].width_fraction, 0.75);
+                assert_eq!(w.previous, Some(source));
+
+                // Reopening an existing panel brings it back to the left edge,
+                // without duplicating it or losing the focused chat identity.
+                let notes = w.slots.remove(0);
+                w.slots.push(notes);
+                w.active = 4;
+                w.open_changelog(&OpenChangelog, window, cx);
+                assert_eq!(w.slots.len(), 6);
+                assert!(w.slots[0].panel.read(cx).is_changelog());
+                assert_eq!(w.previous, Some(source));
+            })
+        });
+    }
+
+    #[gpui::test]
     fn changelog_opens_once_is_read_only_and_never_reaches_runtime(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
@@ -76,6 +167,7 @@ mod tests {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.set_test_bridge(bridge);
             workspace.push_test_panel("existing-session", cx);
+            workspace.slots[0].width_fraction = 1.0;
             workspace
         });
         vcx.update(|window, cx| {
@@ -83,6 +175,8 @@ mod tests {
                 w.open_changelog(&OpenChangelog, window, cx);
                 w.open_changelog(&OpenChangelog, window, cx);
                 assert_eq!(w.slots.len(), 2);
+                assert_eq!(w.active, 0);
+                assert_eq!(w.slots[1].width_fraction, 0.5);
                 assert!(w.slots[w.active].panel.read(cx).is_changelog());
                 assert!(!w.slots[w.active].panel.read(cx).can_fork());
                 assert!(
