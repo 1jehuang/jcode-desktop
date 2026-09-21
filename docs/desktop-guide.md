@@ -238,12 +238,20 @@ the supported keys are `canvas_dot`, `panel_border`, `panel_border_focus`,
 `tool_bg`, `tool_text`, `reasoning`, `reasoning_bg`, `text_faint`,
 `tool_border`, `error_bg`, `code_bg`, `code_text`, `inline_code_bg`,
 `code_border`, `code_header_bg`, `code_gutter`, `code_keyword`, `code_string`,
-`code_comment`, `code_number`, `code_type`, `code_punct`, `accent_muted`,
+`code_comment`, `code_number`, `code_type`, `code_punct`, `code_function`,
+`code_variable`, `code_control`, `code_constant`, `code_tag`, `code_attribute`,
+`accent_muted`,
 `quote_bg`, `table_stripe`, `input_bg`, `input_border`, `cursor`, `selection`,
 `heading`, `link`, `minimap_track`, `minimap_track_active`,
 `minimap_viewport`, `minimap_panel`, `minimap_panel_busy`, and `minimap_bg`.
 Unknown or malformed color values are ignored with a diagnostic rather than
 preventing the app from starting.
+
+Code blocks, diffs, and edit previews use VS Code Dark+-style syntax colors on
+dark themes and Light+-style colors on light themes. Functions, types, variables,
+control flow, and markup attributes have distinct roles. Highlighting uses syntax
+grammars rather than a language server, so it does not reproduce VS Code semantic
+token analysis. Custom `code_*` overrides remain supported.
 
 ## Sound effects
 

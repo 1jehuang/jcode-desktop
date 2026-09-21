@@ -45,6 +45,12 @@ pub struct Theme {
     pub CODE_NUMBER: Rgba,
     pub CODE_TYPE: Rgba,
     pub CODE_PUNCT: Rgba,
+    pub CODE_FUNCTION: Rgba,
+    pub CODE_VARIABLE: Rgba,
+    pub CODE_CONTROL: Rgba,
+    pub CODE_CONSTANT: Rgba,
+    pub CODE_TAG: Rgba,
+    pub CODE_ATTRIBUTE: Rgba,
     pub ACCENT_MUTED: Rgba,
     pub QUOTE_BG: Rgba,
     pub TABLE_STRIPE: Rgba,
@@ -194,17 +200,23 @@ impl Theme {
             TOOL_BORDER: rgb_c(0x3b3530),
             ERROR_BG: rgba_c(0xff646414),
             CODE_BG: rgb_c(0x1c1a18),
-            CODE_TEXT: rgb_c(0xe4ddd3),
+            CODE_TEXT: rgb_c(0xd4d4d4),
             INLINE_CODE_BG: rgb_c(0x36302b),
             CODE_BORDER: rgb_c(0x3b3530),
             CODE_HEADER_BG: rgb_c(0x292521),
             CODE_GUTTER: rgb_c(0x92877c),
-            CODE_KEYWORD: rgb_c(0xc6b49f),
-            CODE_STRING: rgb_c(0xb0b69e),
-            CODE_COMMENT: rgb_c(0x9e9589),
-            CODE_NUMBER: rgb_c(0xc4b38e),
-            CODE_TYPE: rgb_c(0xb9adb9),
-            CODE_PUNCT: rgb_c(0xb2a79b),
+            CODE_KEYWORD: rgb_c(0x569cd6),
+            CODE_STRING: rgb_c(0xce9178),
+            CODE_COMMENT: rgb_c(0x6a9955),
+            CODE_NUMBER: rgb_c(0xb5cea8),
+            CODE_TYPE: rgb_c(0x4ec9b0),
+            CODE_PUNCT: rgb_c(0xd4d4d4),
+            CODE_FUNCTION: rgb_c(0xdcdcaa),
+            CODE_VARIABLE: rgb_c(0x9cdcfe),
+            CODE_CONTROL: rgb_c(0xc586c0),
+            CODE_CONSTANT: rgb_c(0x4fc1ff),
+            CODE_TAG: rgb_c(0x569cd6),
+            CODE_ATTRIBUTE: rgb_c(0x9cdcfe),
             ACCENT_MUTED: rgb_c(0xa99a89),
             QUOTE_BG: rgba_c(0xe4ddd307),
             TABLE_STRIPE: rgba_c(0xe4ddd306),
@@ -265,6 +277,12 @@ impl Theme {
             "code_number" => self.CODE_NUMBER = color,
             "code_type" => self.CODE_TYPE = color,
             "code_punct" => self.CODE_PUNCT = color,
+            "code_function" => self.CODE_FUNCTION = color,
+            "code_variable" => self.CODE_VARIABLE = color,
+            "code_control" => self.CODE_CONTROL = color,
+            "code_constant" => self.CODE_CONSTANT = color,
+            "code_tag" => self.CODE_TAG = color,
+            "code_attribute" => self.CODE_ATTRIBUTE = color,
             "accent_muted" => self.ACCENT_MUTED = color,
             "quote_bg" => self.QUOTE_BG = color,
             "table_stripe" => self.TABLE_STRIPE = color,
@@ -465,6 +483,12 @@ fn interpolate(from: &Theme, to: &Theme, amount: f32) -> Theme {
         CODE_NUMBER,
         CODE_TYPE,
         CODE_PUNCT,
+        CODE_FUNCTION,
+        CODE_VARIABLE,
+        CODE_CONTROL,
+        CODE_CONSTANT,
+        CODE_TAG,
+        CODE_ATTRIBUTE,
         ACCENT_MUTED,
         QUOTE_BG,
         TABLE_STRIPE,
@@ -487,97 +511,105 @@ fn interpolate(from: &Theme, to: &Theme, amount: f32) -> Theme {
     result
 }
 
+/// Built-in palettes before user configuration.
+fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
+    let warm = Theme::defaults();
+    let mut studio = warm.clone();
+    studio.BG = rgb_c(0x211914);
+    studio.PANEL_BG = rgb_c(0x2d231d);
+    studio.HEADER_BG = rgb_c(0x392b23);
+    studio.ACCENT = rgb_c(0xd29a6a);
+    studio.ACCENT_DIM = rgba_c(0xd29a6a24);
+    studio.USER_ACCENT = rgb_c(0xe0ad7f);
+    studio.PANEL_BORDER_FOCUS = rgb_c(0xa87550);
+    studio.LINK = rgb_c(0xe0ad7f);
+    studio.SELECTION = rgba_c(0xb66f4380);
+    let mut dark = warm.clone();
+    dark.BG = rgb_c(0x151719);
+    dark.PANEL_BG = rgb_c(0x1d2023);
+    dark.HEADER_BG = rgb_c(0x262a2e);
+    dark.PANEL_BORDER = rgb_c(0x353a40);
+    dark.PANEL_BORDER_FOCUS = rgb_c(0x76818c);
+    dark.TEXT = rgb_c(0xe2e5e9);
+    dark.TEXT_DIM = rgb_c(0x9ba3ac);
+    dark.REASONING = dark.TEXT_DIM;
+    dark.ACCENT = rgb_c(0x9aa8b6);
+    dark.ACCENT_DIM = rgba_c(0x9aa8b620);
+    dark.INPUT_BG = rgb_c(0x191c1f);
+    dark.CODE_BG = rgb_c(0x151719);
+    dark.USER_BG = rgb_c(0x262a2e);
+    let mut light = warm.clone();
+    light.BG = rgb_c(0xebe9e5);
+    light.CANVAS_DOT = rgba_c(0x27252212);
+    light.PANEL_BG = rgb_c(0xf8f7f4);
+    light.PANEL_BORDER = rgb_c(0xd2cec7);
+    light.PANEL_BORDER_FOCUS = rgb_c(0x7b746a);
+    light.HEADER_BG = rgb_c(0xe2dfda);
+    light.TEXT = rgb_c(0x292724);
+    light.TEXT_USER = rgb_c(0x201e1b);
+    // Small workspace labels also sit on the tinted, recessed header.
+    // Keep their contrast above 4.5:1 there, not just on the panel paper.
+    light.TEXT_DIM = rgb_c(0x625d56);
+    light.REASONING = light.TEXT_DIM;
+    light.TEXT_FAINT = rgb_c(0x777169);
+    light.ACCENT = rgb_c(0x665f57);
+    light.ACCENT_DIM = rgba_c(0x665f5718);
+    light.USER_ACCENT = rgb_c(0x725d4c);
+    light.AI_ACCENT = rgb_c(0x53675b);
+    light.USER_BG = rgb_c(0xe8e4de);
+    light.TOOL_BG = rgb_c(0xefede8);
+    light.TOOL_BORDER = rgb_c(0xd2cec7);
+    light.TOOL_TEXT = rgb_c(0x67625b);
+    light.CODE_BG = rgb_c(0xf0efec);
+    light.CODE_TEXT = rgb_c(0x292724);
+    light.INLINE_CODE_BG = rgb_c(0xe4e1dc);
+    light.CODE_BORDER = rgb_c(0xd2cec7);
+    light.CODE_HEADER_BG = rgb_c(0xe8e5df);
+    light.CODE_GUTTER = rgb_c(0x746e66);
+    light.CODE_KEYWORD = rgb_c(0x6f3f62);
+    light.CODE_STRING = rgb_c(0x3f6848);
+    light.CODE_COMMENT = rgb_c(0x68635c);
+    light.CODE_NUMBER = rgb_c(0x7a542b);
+    light.CODE_TYPE = rgb_c(0x4d587b);
+    light.CODE_PUNCT = rgb_c(0x4e4a45);
+    // Status colors are also small foreground text in tool token badges.
+    // The inherited dark-theme pastels wash out against this light panel.
+    light.OK = rgb_c(0x3f6848);
+    light.WARN = rgb_c(0x7a542b);
+    light.ERROR = rgb_c(0xa33b3b);
+    light.INPUT_BG = rgb_c(0xffffff);
+    light.INPUT_BORDER = rgb_c(0xbdb7ae);
+    light.CURSOR = rgb_c(0x292724);
+    light.HEADING = rgb_c(0x292724);
+    light.LINK = rgb_c(0x655346);
+    light.MINIMAP_BG = rgba_c(0xf8f7f4e6);
+    light.MINIMAP_PANEL = rgb_c(0xaaa39a);
+    [
+        warm,
+        studio,
+        dark,
+        light,
+        palettes::MIDNIGHT.theme(),
+        palettes::OCEAN.theme(),
+        palettes::FOREST.theme(),
+        palettes::PLUM.theme(),
+        palettes::ROSE_DAWN.theme(),
+        palettes::PARCHMENT.theme(),
+        palettes::GRAPHITE.theme(),
+        palettes::SLATE.theme(),
+        palettes::PAPER.theme(),
+        palettes::SILVER.theme(),
+    ]
+    .map(|mut theme| {
+        palettes::apply_code_colors(&mut theme);
+        theme
+    })
+}
+
 fn themes() -> &'static [Theme; ThemePreset::ALL.len()] {
     static THEMES: OnceLock<[Theme; ThemePreset::ALL.len()]> = OnceLock::new();
     THEMES.get_or_init(|| {
-        let warm = Theme::defaults();
-        let mut studio = warm.clone();
-        studio.BG = rgb_c(0x211914);
-        studio.PANEL_BG = rgb_c(0x2d231d);
-        studio.HEADER_BG = rgb_c(0x392b23);
-        studio.ACCENT = rgb_c(0xd29a6a);
-        studio.ACCENT_DIM = rgba_c(0xd29a6a24);
-        studio.USER_ACCENT = rgb_c(0xe0ad7f);
-        studio.PANEL_BORDER_FOCUS = rgb_c(0xa87550);
-        studio.LINK = rgb_c(0xe0ad7f);
-        studio.SELECTION = rgba_c(0xb66f4380);
-        let mut dark = warm.clone();
-        dark.BG = rgb_c(0x151719);
-        dark.PANEL_BG = rgb_c(0x1d2023);
-        dark.HEADER_BG = rgb_c(0x262a2e);
-        dark.PANEL_BORDER = rgb_c(0x353a40);
-        dark.PANEL_BORDER_FOCUS = rgb_c(0x76818c);
-        dark.TEXT = rgb_c(0xe2e5e9);
-        dark.TEXT_DIM = rgb_c(0x9ba3ac);
-        dark.REASONING = dark.TEXT_DIM;
-        dark.ACCENT = rgb_c(0x9aa8b6);
-        dark.ACCENT_DIM = rgba_c(0x9aa8b620);
-        dark.INPUT_BG = rgb_c(0x191c1f);
-        dark.CODE_BG = rgb_c(0x151719);
-        dark.USER_BG = rgb_c(0x262a2e);
-        let mut light = warm.clone();
-        light.BG = rgb_c(0xebe9e5);
-        light.CANVAS_DOT = rgba_c(0x27252212);
-        light.PANEL_BG = rgb_c(0xf8f7f4);
-        light.PANEL_BORDER = rgb_c(0xd2cec7);
-        light.PANEL_BORDER_FOCUS = rgb_c(0x7b746a);
-        light.HEADER_BG = rgb_c(0xe2dfda);
-        light.TEXT = rgb_c(0x292724);
-        light.TEXT_USER = rgb_c(0x201e1b);
-        // Small workspace labels also sit on the tinted, recessed header.
-        // Keep their contrast above 4.5:1 there, not just on the panel paper.
-        light.TEXT_DIM = rgb_c(0x625d56);
-        light.REASONING = light.TEXT_DIM;
-        light.TEXT_FAINT = rgb_c(0x777169);
-        light.ACCENT = rgb_c(0x665f57);
-        light.ACCENT_DIM = rgba_c(0x665f5718);
-        light.USER_ACCENT = rgb_c(0x725d4c);
-        light.AI_ACCENT = rgb_c(0x53675b);
-        light.USER_BG = rgb_c(0xe8e4de);
-        light.TOOL_BG = rgb_c(0xefede8);
-        light.TOOL_BORDER = rgb_c(0xd2cec7);
-        light.TOOL_TEXT = rgb_c(0x67625b);
-        light.CODE_BG = rgb_c(0xf0efec);
-        light.CODE_TEXT = rgb_c(0x292724);
-        light.INLINE_CODE_BG = rgb_c(0xe4e1dc);
-        light.CODE_BORDER = rgb_c(0xd2cec7);
-        light.CODE_HEADER_BG = rgb_c(0xe8e5df);
-        light.CODE_GUTTER = rgb_c(0x746e66);
-        light.CODE_KEYWORD = rgb_c(0x6f3f62);
-        light.CODE_STRING = rgb_c(0x3f6848);
-        light.CODE_COMMENT = rgb_c(0x68635c);
-        light.CODE_NUMBER = rgb_c(0x7a542b);
-        light.CODE_TYPE = rgb_c(0x4d587b);
-        light.CODE_PUNCT = rgb_c(0x4e4a45);
-        // Status colors are also small foreground text in tool token badges.
-        // The inherited dark-theme pastels wash out against this light panel.
-        light.OK = rgb_c(0x3f6848);
-        light.WARN = rgb_c(0x7a542b);
-        light.ERROR = rgb_c(0xa33b3b);
-        light.INPUT_BG = rgb_c(0xffffff);
-        light.INPUT_BORDER = rgb_c(0xbdb7ae);
-        light.CURSOR = rgb_c(0x292724);
-        light.HEADING = rgb_c(0x292724);
-        light.LINK = rgb_c(0x655346);
-        light.MINIMAP_BG = rgba_c(0xf8f7f4e6);
-        light.MINIMAP_PANEL = rgb_c(0xaaa39a);
-        let configured = Theme::configured;
-        let result = [
-            configured(warm),
-            configured(studio),
-            configured(dark),
-            configured(light),
-            configured(palettes::MIDNIGHT.theme()),
-            configured(palettes::OCEAN.theme()),
-            configured(palettes::FOREST.theme()),
-            configured(palettes::PLUM.theme()),
-            configured(palettes::ROSE_DAWN.theme()),
-            configured(palettes::PARCHMENT.theme()),
-            configured(palettes::GRAPHITE.theme()),
-            configured(palettes::SLATE.theme()),
-            configured(palettes::PAPER.theme()),
-            configured(palettes::SILVER.theme()),
-        ];
+        let result = raw_themes().map(Theme::configured);
         ACTIVE_THEME.store(
             ThemePreset::from_id(&crate::config::get().appearance.theme).index(),
             Ordering::Relaxed,
@@ -636,6 +668,121 @@ pub fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn syntax_colors(theme: &Theme) -> [Rgba; 13] {
+        [
+            theme.CODE_TEXT,
+            theme.CODE_KEYWORD,
+            theme.CODE_STRING,
+            theme.CODE_COMMENT,
+            theme.CODE_NUMBER,
+            theme.CODE_TYPE,
+            theme.CODE_PUNCT,
+            theme.CODE_FUNCTION,
+            theme.CODE_VARIABLE,
+            theme.CODE_CONTROL,
+            theme.CODE_CONSTANT,
+            theme.CODE_TAG,
+            theme.CODE_ATTRIBUTE,
+        ]
+    }
+
+    #[test]
+    fn vscode_syntax_colors_match_every_raw_preset_and_remain_readable() {
+        for (preset, theme) in ThemePreset::ALL.into_iter().zip(raw_themes()) {
+            let light = luminance(theme.CODE_BG) > 0.179;
+            let expected = if light {
+                [
+                    0x000000, 0x0000ff, 0xa31515, 0x008000, 0x098658, 0x267f99, 0x000000, 0x795e26,
+                    0x001080, 0xaf00db, 0x0070c1, 0x800000, 0xe50000,
+                ]
+            } else {
+                [
+                    0xd4d4d4, 0x569cd6, 0xce9178, 0x6a9955, 0xb5cea8, 0x4ec9b0, 0xd4d4d4, 0xdcdcaa,
+                    0x9cdcfe, 0xc586c0, 0x4fc1ff, 0x569cd6, 0x9cdcfe,
+                ]
+            };
+            for (color, original) in syntax_colors(&theme).into_iter().zip(expected.map(rgb_c)) {
+                if contrast(original, theme.CODE_BG) >= 4.5 {
+                    assert_eq!(
+                        color, original,
+                        "{preset:?}: unnecessary palette adjustment"
+                    );
+                } else {
+                    let direction = if light { -1.0 } else { 1.0 };
+                    assert!((color.r - original.r) * direction >= 0.0);
+                    assert!((color.g - original.g) * direction >= 0.0);
+                    assert!((color.b - original.b) * direction >= 0.0);
+                }
+                assert!(
+                    contrast(color, theme.CODE_BG) >= 4.5,
+                    "{preset:?}: syntax contrast {}",
+                    contrast(color, theme.CODE_BG)
+                );
+            }
+            assert!(contrast(theme.CODE_TEXT, theme.CODE_BG) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn syntax_selection_uses_code_background_and_preserves_surfaces() {
+        let original = Theme::defaults();
+        let mut theme = original.clone();
+        theme.CODE_BG = rgb_c(0xffffff);
+        palettes::apply_code_colors(&mut theme);
+        assert_eq!(theme.CODE_FUNCTION, rgb_c(0x795e26));
+        assert_eq!(theme.BG, original.BG);
+        assert_eq!(theme.PANEL_BG, original.PANEL_BG);
+        assert_eq!(theme.TEXT, original.TEXT);
+        assert_eq!(theme.ACCENT, original.ACCENT);
+        assert_eq!(theme.CODE_BG, rgb_c(0xffffff));
+        assert_eq!(theme.CODE_BORDER, original.CODE_BORDER);
+        assert_eq!(theme.CODE_HEADER_BG, original.CODE_HEADER_BG);
+        assert_eq!(theme.CODE_GUTTER, original.CODE_GUTTER);
+        assert_eq!(theme.INLINE_CODE_BG, original.INLINE_CODE_BG);
+        theme.BG = rgb_c(0xffffff);
+        theme.CODE_BG = rgb_c(0x000000);
+        palettes::apply_code_colors(&mut theme);
+        assert_eq!(theme.CODE_FUNCTION, rgb_c(0xdcdcaa));
+    }
+
+    #[test]
+    fn new_code_roles_accept_overrides_and_interpolate() {
+        let mut from = Theme::defaults();
+        palettes::apply_code_colors(&mut from);
+        let mut to = from.clone();
+        let custom = rgba_c(0x12345678);
+        for role in [
+            "CODE_FUNCTION",
+            "code-variable",
+            "code_control",
+            "CODE_CONSTANT",
+            "code-tag",
+            "code_attribute",
+        ] {
+            to.set_color(role, custom);
+        }
+        let mixed = interpolate(&from, &to, 0.5);
+        for ((start, end), mid) in syntax_colors(&from)[7..]
+            .iter()
+            .zip(&syntax_colors(&to)[7..])
+            .zip(&syntax_colors(&mixed)[7..])
+        {
+            assert_eq!(*end, custom);
+            assert!((mid.r - (start.r + end.r) / 2.0).abs() < 0.00001);
+            assert!((mid.g - (start.g + end.g) / 2.0).abs() < 0.00001);
+            assert!((mid.b - (start.b + end.b) / 2.0).abs() < 0.00001);
+            assert!((mid.a - (start.a + end.a) / 2.0).abs() < 0.00001);
+        }
+        assert_eq!(
+            syntax_colors(&interpolate(&from, &to, 0.0)),
+            syntax_colors(&from)
+        );
+        assert_eq!(
+            syntax_colors(&interpolate(&from, &to, 1.0)),
+            syntax_colors(&to)
+        );
+    }
+
     #[test]
     fn ai_font_is_independent_and_defaults_to_ui_font() {
         let mut theme = Theme::defaults();
@@ -730,21 +877,10 @@ mod tests {
     }
 
     #[test]
-    fn new_palettes_keep_syntax_and_status_colors_legible() {
+    fn new_palettes_keep_status_colors_legible() {
         for preset in &ThemePreset::ALL[4..] {
             let theme = &themes()[preset.index()];
             for (background, foregrounds) in [
-                (
-                    theme.CODE_BG,
-                    vec![
-                        theme.CODE_KEYWORD,
-                        theme.CODE_STRING,
-                        theme.CODE_COMMENT,
-                        theme.CODE_NUMBER,
-                        theme.CODE_TYPE,
-                        theme.CODE_PUNCT,
-                    ],
-                ),
                 (
                     theme.PANEL_BG,
                     vec![

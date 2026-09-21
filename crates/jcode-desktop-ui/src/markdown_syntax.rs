@@ -1,4 +1,4 @@
-//! The same syntect engine used by jcode-tui-markdown, with Desktop semantic colors.
+//! The same syntect engine used by jcode-tui-markdown, with VS Code-style Desktop semantic colors.
 //! Two-face adds maintained TS/TSX grammars absent from syntect's default bundle.
 use crate::theme::{Theme, to_hsla};
 use gpui::HighlightStyle;
@@ -20,16 +20,24 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_new
 static SEMANTICS: LazyLock<SyntaxTheme> = LazyLock::new(|| {
     let mut theme = SyntaxTheme::default();
     theme.settings.foreground = Some(color_id(0));
+    // Keep categories separate even where a grammar only supplies lexical scopes.
+    // In particular, functions must not collapse into the teal type category.
     for (scope, id) in [
         ("keyword, storage", 1),
         ("string", 2),
         ("comment", 3),
-        ("constant.numeric, constant.language", 4),
-        (
-            "entity.name, support.type, support.class, support.function",
-            5,
-        ),
+        ("constant.numeric", 4),
+        ("entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, entity.name.trait, entity.name.namespace, support.type, support.class", 5),
         ("punctuation", 6),
+        ("entity.name.function, support.function, variable.function", 7),
+        ("variable, meta.object-literal.key, support.variable", 8),
+        ("keyword.control", 9),
+        ("constant.language, variable.language", 1),
+        ("constant.other, variable.other.constant, entity.name.constant", 10),
+        ("entity.name.tag", 11),
+        ("entity.other.attribute-name", 12),
+        ("keyword.operator", 6),
+        ("keyword.operator.word, keyword.operator.new, keyword.operator.expression", 1),
         ("string punctuation", 2),
         ("comment punctuation", 3),
     ] {
@@ -137,6 +145,12 @@ fn highlight_with_theme(
         theme.CODE_NUMBER,
         theme.CODE_TYPE,
         theme.CODE_PUNCT,
+        theme.CODE_FUNCTION,
+        theme.CODE_VARIABLE,
+        theme.CODE_CONTROL,
+        theme.CODE_CONSTANT,
+        theme.CODE_TAG,
+        theme.CODE_ATTRIBUTE,
     ];
     let spans = tokens(body, &lang.to_ascii_lowercase())
         .iter()
@@ -210,6 +224,23 @@ mod tests {
             current[0].1.color,
             Some(to_hsla(Theme::global().CODE_KEYWORD))
         );
+    }
+
+    #[test]
+    fn vscode_categories_distinguish_functions_types_and_control_flow() {
+        let rust = "struct Widget { count: u32 }\nfn build() { if true { return; } }";
+        assert_eq!(category_at(rust, "rust", "Widget"), 5);
+        assert_eq!(category_at(rust, "rust", "build"), 7);
+        assert_eq!(category_at(rust, "rust", "if"), 9);
+        assert_eq!(category_at(rust, "rust", "true"), 1);
+        let ts = "function greet(name: string) { return name + \"hello\"; }";
+        assert_eq!(category_at(ts, "typescript", "greet"), 7);
+        assert_eq!(category_at(ts, "typescript", "name"), 8);
+        assert_eq!(category_at(ts, "typescript", "return"), 9);
+        let html = "<div class=\"hello\">world</div>";
+        assert_eq!(category_at(html, "html", "div"), 11);
+        assert_eq!(category_at(html, "html", "class"), 12);
+        assert_eq!(category_at(html, "html", "hello"), 2);
     }
 
     #[test]

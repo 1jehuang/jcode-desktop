@@ -57,6 +57,12 @@ impl Palette {
             CODE_NUMBER: rgb_c(self.number),
             CODE_TYPE: rgb_c(self.secondary),
             CODE_PUNCT: rgb_c(self.muted),
+            CODE_FUNCTION: rgb_c(0xdcdcaa),
+            CODE_VARIABLE: rgb_c(0x9cdcfe),
+            CODE_CONTROL: rgb_c(0xc586c0),
+            CODE_CONSTANT: rgb_c(0x4fc1ff),
+            CODE_TAG: rgb_c(0x569cd6),
+            CODE_ATTRIBUTE: rgb_c(0x9cdcfe),
             ACCENT_MUTED: rgb_c(self.accent),
             QUOTE_BG: alpha(self.text, 0x07),
             TABLE_STRIPE: alpha(self.text, 0x06),
@@ -262,3 +268,72 @@ pub(super) const PARCHMENT: Palette = Palette {
     ok: 0x536b37,
     warn: 0x805d16,
 };
+
+/// VS Code Dark+ / Light+ token colors, independent of the application's surfaces.
+/// Apply to raw presets before configuration so explicit user colors always win.
+pub(super) fn apply_code_colors(theme: &mut Theme) {
+    let luminance = relative_luminance(theme.CODE_BG);
+    let light = luminance > 0.179;
+    let color = |dark, light_color| {
+        readable_code_color(rgb_c(if light { light_color } else { dark }), theme.CODE_BG)
+    };
+    theme.CODE_TEXT = color(0xd4d4d4, 0x000000);
+    theme.CODE_KEYWORD = color(0x569cd6, 0x0000ff);
+    theme.CODE_STRING = color(0xce9178, 0xa31515);
+    theme.CODE_COMMENT = color(0x6a9955, 0x008000);
+    theme.CODE_NUMBER = color(0xb5cea8, 0x098658);
+    theme.CODE_TYPE = color(0x4ec9b0, 0x267f99);
+    theme.CODE_PUNCT = color(0xd4d4d4, 0x000000);
+    theme.CODE_FUNCTION = color(0xdcdcaa, 0x795e26);
+    theme.CODE_VARIABLE = color(0x9cdcfe, 0x001080);
+    theme.CODE_CONTROL = color(0xc586c0, 0xaf00db);
+    theme.CODE_CONSTANT = color(0x4fc1ff, 0x0070c1);
+    theme.CODE_TAG = color(0x569cd6, 0x800000);
+    theme.CODE_ATTRIBUTE = color(0x9cdcfe, 0xe50000);
+}
+
+fn relative_luminance(color: gpui::Rgba) -> f32 {
+    let channel = |value: f32| {
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+}
+
+/// Keep the original VS Code hue unless the preset's tinted paper needs more
+/// contrast. Find the smallest blend toward black/white that reaches AA.
+fn readable_code_color(color: gpui::Rgba, background: gpui::Rgba) -> gpui::Rgba {
+    let background_luminance = relative_luminance(background);
+    let contrast = |foreground| {
+        let foreground_luminance = relative_luminance(foreground);
+        (foreground_luminance.max(background_luminance) + 0.05)
+            / (foreground_luminance.min(background_luminance) + 0.05)
+    };
+    if contrast(color) >= 4.5 {
+        return color;
+    }
+    let target = if background_luminance > 0.179 {
+        0.0
+    } else {
+        1.0
+    };
+    let mix = |amount: f32| gpui::Rgba {
+        r: color.r + (target - color.r) * amount,
+        g: color.g + (target - color.g) * amount,
+        b: color.b + (target - color.b) * amount,
+        a: color.a,
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..24 {
+        let middle = (low + high) / 2.0;
+        if contrast(mix(middle)) >= 4.5 {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    mix(high)
+}
