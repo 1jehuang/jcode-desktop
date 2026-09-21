@@ -3506,17 +3506,7 @@ impl Panel {
                             .text_size(px(14.0))
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
-                            .child(crate::tool_icon::render_status(name, *done, error.is_some()))
-                            .when(!*done && error.is_none(), |el| {
-                                el.child(
-                                    div()
-                                        .debug_selector(|| "tool-name".into())
-                                        .flex_none()
-                                        .font_family(Theme::global().FONT_MONO)
-                                        .text_color(Theme::global().TEXT_FAINT)
-                                        .child(name.clone()),
-                                )
-                            })
+                            .child(crate::tool_icon::render_badge(name, *done, error.is_some()))
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()
@@ -7029,12 +7019,12 @@ mod tests {
             let button = vcx
                 .debug_bounds("tool-output-size")
                 .expect("running and finished tools expose their output toggle");
-            assert_eq!(vcx.debug_bounds("tool-name").is_some(), !done && !failed);
+            assert!(
+                vcx.debug_bounds("tool-name").is_some(),
+                "tool names persist after completion"
+            );
             assert_eq!(vcx.debug_bounds("tool-row-running").is_some(), !done && !failed);
-            for selector in ["tool-name", "tool-summary"]
-                .into_iter()
-                .filter(|selector| *selector != "tool-name" || (!done && !failed))
-            {
+            for selector in ["tool-identity-pill", "tool-summary"] {
                 let text = vcx.debug_bounds(selector).expect("tool label paints");
                 assert_eq!(
                     text.size.height, button.size.height,
@@ -7045,6 +7035,18 @@ mod tests {
                     "{selector} aligns with the pill"
                 );
             }
+            let pill = vcx.debug_bounds("tool-identity-pill").unwrap();
+            let name = vcx.debug_bounds("tool-name").unwrap();
+            let glyph = vcx.debug_bounds("tool-type-icon").unwrap();
+            assert!(pill.left() < glyph.left() && name.right() < pill.right());
+            assert!(glyph.right() < name.left());
+            assert!((f32::from(glyph.center().y - name.center().y)).abs() < 1.0);
+            vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("tool-detail").is_none(),
+                "identity pill is not an expansion control"
+            );
             let status_selector = if failed {
                 "tool-icon-failed"
             } else if done {

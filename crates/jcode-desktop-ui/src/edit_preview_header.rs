@@ -98,7 +98,7 @@ impl TimedPreview {
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.TEXT)
-                    .child(crate::tool_icon::render_status(
+                    .child(crate::tool_icon::render_badge(
                         &self.header.review.name,
                         self.done,
                         self.header.review.failed,
@@ -169,7 +169,15 @@ mod tests {
                     .debug_bounds("tool-type-icon")
                     .expect("edit icon paints");
                 assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
-                assert!(icon.right() <= intent.left());
+                let pill = vcx
+                    .debug_bounds("tool-identity-pill")
+                    .expect("edit tool pill paints");
+                let name = vcx
+                    .debug_bounds("tool-name")
+                    .expect("edit tool name persists");
+                assert!(pill.left() < icon.left() && name.right() < pill.right());
+                assert!(icon.right() < name.left());
+                assert!(pill.right() <= intent.left());
                 let intent_row = vcx.debug_bounds("edit-preview-intent-row-0").unwrap();
                 let counts = vcx.debug_bounds("edit-change-counts-0").unwrap();
                 let metadata = vcx.debug_bounds("edit-preview-metadata-0").unwrap();

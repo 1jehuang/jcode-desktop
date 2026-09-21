@@ -27,6 +27,33 @@ pub(crate) fn render_status(name: &str, done: bool, failed: bool) -> Div {
         .child(icon)
 }
 
+/// Keep the tool identity together in a quiet, non-interactive pill.
+/// The intent remains outside so it stays the primary label.
+pub(crate) fn render_badge(name: &str, done: bool, failed: bool) -> Div {
+    let theme = Theme::global();
+    div()
+        .debug_selector(|| "tool-identity-pill".into())
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.0))
+        .px(px(6.0))
+        .py(px(2.0))
+        .rounded_full()
+        .bg(theme.INLINE_CODE_BG)
+        .child(render_status(name, done, failed))
+        .child(
+            div()
+                .debug_selector(|| "tool-name".into())
+                .font_family(theme.FONT_MONO)
+                .font_weight(gpui::FontWeight::NORMAL)
+                .text_size(px(11.0))
+                .line_height(px(14.0))
+                .text_color(theme.TEXT_DIM)
+                .child(name.to_owned()),
+        )
+}
+
 /// Pulse the entire header together, not just its status glyph. GPUI's
 /// animation wrapper respects reduced motion and stops when the call finishes.
 pub(crate) fn animate_running(header: Div, done: bool, failed: bool) -> gpui::AnyElement {
