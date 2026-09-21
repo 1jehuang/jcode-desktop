@@ -495,6 +495,10 @@ def main():
                 deadline = time.monotonic() + 45
                 state = root / "state"
                 expected_widths = "widths=" + ",".join([f"{1 / args.panels:.2f}"] * args.panels)
+                if args.changelog:
+                    expected_widths = "widths=" + ",".join(
+                        ["0.50", "0.50"] + [f"{1 / args.panels:.2f}"] * (args.panels - 1)
+                    )
                 while not state.exists() or expected_widths not in state.read_text():
                     if app.poll() is not None or time.monotonic() > deadline:
                         app_log.seek(0)

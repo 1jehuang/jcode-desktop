@@ -6516,8 +6516,8 @@ mod tests {
         let heading = vcx.debug_bounds("selectable-text-0-0").unwrap();
         let last_line = vcx.debug_bounds("selectable-text-0-2").unwrap();
         assert!(
-            heading.size.height <= last_line.size.height,
-            "thinking headings stay compact"
+            heading.size.height > last_line.size.height,
+            "thinking headings read as subsection titles above quieter body text"
         );
 
         // A quadruple click selects the entire Markdown leaf, not card chrome.
