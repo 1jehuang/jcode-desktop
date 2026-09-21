@@ -91,7 +91,10 @@ def verify(output, env, root):
         return Image.open(path).convert("RGB")
 
     def ocr(image, label):
-        bounds = (280, 60, image.width - 12, image.height)
+        # Sidebar density and visibility change the canvas origin. A fixed crop
+        # cut the beginning off real controls such as "Choose a model".
+        canvas_left = max(0, image.width - navigation()["canvas_width"] - 24)
+        bounds = (canvas_left, 60, image.width - 12, image.height)
         path = output.with_name(output.stem + "-" + label + "-ocr.png")
         crop = image.crop(bounds)
         crop.resize((crop.width * 3, crop.height * 3)).save(path)

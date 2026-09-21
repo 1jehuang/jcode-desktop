@@ -8,6 +8,14 @@ fn fixture(kind: &str) -> (tempfile::TempDir, AuthClient) {
 }
 
 fn fixture_with_url(kind: &str, url: &str) -> (tempfile::TempDir, AuthClient) {
+    fixture_with_validation(kind, url, false)
+}
+
+fn fixture_with_validation(
+    kind: &str,
+    url: &str,
+    validation_warning: bool,
+) -> (tempfile::TempDir, AuthClient) {
     let root = tempfile::tempdir().unwrap();
     let binary = root.path().join("auth-fixture.py");
     std::fs::write(
@@ -30,7 +38,13 @@ else:
     assert 'test-private-code' not in ' '.join(args)
     (home / 'submitted').write_text(data)
     print(json.dumps({{'provider':provider, 'status':'authenticated'}}))
-"#
+    # Older installed CLIs append this human report even with --json. The
+    # credentials are already saved, so Desktop must not ask to reuse the code.
+    print('=== auth-test: ' + provider + ' ===')
+    print('result: ' + ('FAIL' if {validation_warning} else 'PASS'))
+    sys.exit(1 if {validation_warning} else 0)
+"#,
+            validation_warning = if validation_warning { "True" } else { "False" }
         ),
     )
     .unwrap();
@@ -42,6 +56,46 @@ else:
         timeout: std::time::Duration::from_secs(3),
     });
     (root, client)
+}
+
+#[gpui::test]
+fn saved_oauth_with_failed_validation_offers_models_not_code_retry(cx: &mut gpui::TestAppContext) {
+    let (root, client) =
+        fixture_with_validation("auth_code", "https://example.invalid/authorize", true);
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("login-warning-test".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.open_login_picker(cx);
+        panel.login.as_mut().unwrap().client = client;
+        panel.login_command("/login claude", cx);
+    });
+    vcx.run_until_parked();
+    vcx.simulate_input("test-private-code");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(root.path().join("submitted").is_file());
+    assert!(vcx.debug_bounds("login-complete").is_some());
+    assert!(vcx.debug_bounds("login-choose-model").is_some());
+    assert!(vcx.debug_bounds("login-submit").is_none());
+    assert!(vcx.debug_bounds("login-retry").is_none());
+    panel.read_with(vcx, |panel, cx| {
+        let state = panel.login.as_ref().unwrap();
+        assert!(state.complete && !state.busy);
+        assert!(
+            state
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Credentials were saved")
+        );
+        assert!(state.input.read(cx).content_empty());
+        assert!(state.prompt.is_none());
+    });
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::RefreshRuntime { .. })
+    ));
 }
 
 #[gpui::test]
