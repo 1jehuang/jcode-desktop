@@ -23,7 +23,23 @@ Observed local preflight:
 - Corrected runtime: 20 ACP tests, one NDJSON keyed/legacy regression, one legacy-wire protocol regression, and a locked native CLI binary build passed.
 - No Cargo command used the dirty live runtime source, and no running application was reloaded.
 
-Native CI, signing, package integrity, public GitHub release assets, website downloads, and installation acceptance are pending. This document does not claim that Desktop 0.3.1 is already available on GitHub or the website. No native or public-download gate is bypassed.
+## Verified public delivery: September 21, 2026 (UTC)
+
+Release source is immutable commit `b0ca414d51df484952301e366012e93ea6272d11`, tagged `desktop-v0.3.1`. All release gates passed without bypasses:
+
+| Gate | Successful GitHub Actions run | Evidence |
+| --- | --- | --- |
+| Signed universal macOS packages | [35545848432](https://github.com/1jehuang/jcode-desktop/actions/runs/35545848432) | Completed in 52m 59s |
+| Linux/Windows x64 and ARM64, FreeBSD x64, source-release publication | [35545848848](https://github.com/1jehuang/jcode-desktop/actions/runs/35545848848) | Every native job and publish job passed, 53m 25s overall |
+| Public distribution and website bytes | [35548649167](https://github.com/1jehuang/jcode-desktop/actions/runs/35548649167) | Promoted at 00:45:52 UTC, then verified exact SHA-256 and byte length for all 16 website-served assets, including nine install packages, six checksum files, and the appcast |
+| Public macOS install acceptance | [35548738095](https://github.com/1jehuang/jcode-desktop/actions/runs/35548738095) | Anonymous downloads, DMG notarization/Gatekeeper, installed-app verification and launch all passed |
+| Release announcement | [35548739399](https://github.com/1jehuang/jcode-desktop/actions/runs/35548739399) | Successful `Announce desktop-v0.3.1` run |
+
+At 00:49 UTC, resuming `python3 scripts/release-desktop.py 0.3.1 --apply --timeout-minutes 2` reported every gate successful and validated the live stable website manifest, including the complete asset set, sizes, hashes, and exact versioned download URLs.
+
+Independent GitHub latest-release API reads confirmed non-draft, non-prerelease `desktop-v0.3.1` on both [the source repository](https://github.com/1jehuang/jcode-desktop/releases/tag/desktop-v0.3.1) (16 assets) and [the public distribution repository](https://github.com/1jehuang/jcode-desktop-releases/releases/tag/desktop-v0.3.1) (17 assets, including `latest.json`). A real browser observation of [the download page](https://jcode.sh/desktop) showed **stable Jcode Desktop 0.3.1** and resolved macOS, Linux and Windows download links targeting `desktop-v0.3.1`.
+
+The local monitor's 600-second shell timeout did not interrupt GitHub Actions. Scheduled follow-up checks preserved end-to-end verification. The obsolete 0.3.0 workflow was cancelled only after its macOS, Linux and Windows builds had failed; its immutable tag was not rewritten. Every native gate ran again successfully for 0.3.1.
 
 ## Running development host
 
