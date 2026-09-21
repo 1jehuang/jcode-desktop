@@ -45,7 +45,8 @@ pub(super) struct VoiceState {
     hold_capture: bool,
     recording: Option<NariRecording>,
     live_transcript: String,
-    transcript_scroll: gpui::ScrollHandle,
+    origin: Option<gpui::Bounds<gpui::Pixels>>,
+    entrance: Option<Instant>,
     canceled: Arc<AtomicBool>,
     started: Option<Instant>,
     error: Option<String>,
@@ -195,6 +196,8 @@ impl Panel {
             return;
         }
         self.prepare_voice_attempt(hold_capture);
+        self.voice.origin = self.input.read(cx).voice_bounds();
+        self.voice.entrance = Some(Instant::now());
         let token = self.voice.canceled.clone();
         let attempt = token.clone();
         let work = cx.background_executor().spawn(async move {
@@ -304,7 +307,6 @@ impl Panel {
                 // This separate preview can be revised without replacing anything the
                 // user types. Only Finished inserts one undoable edit into the draft.
                 self.voice.live_transcript = text;
-                self.voice.transcript_scroll.scroll_to_bottom();
                 cx.notify();
             }
             NariEvent::Finished(result) => self.finish_voice(result, cx),
@@ -620,7 +622,7 @@ mod tests {
             assert!(panel.voice.task.is_none(), "must not start a classifier");
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "typed draft open PDF renderer"
+                "typed draft\nopen PDF renderer"
             );
             assert_eq!(panel.items.len(), before, "never sends");
             assert!(panel.voice.live_transcript.is_empty());
@@ -690,7 +692,7 @@ mod tests {
                 panel.voice.sessions = Some(Vec::new());
                 let before = panel.items.len();
                 panel.resolve_voice_for_test("spoken words", result, cx);
-                assert_eq!(panel.input.read(cx).content.as_ref(), "typed spoken words");
+                assert_eq!(panel.input.read(cx).content.as_ref(), "typed\nspoken words");
                 assert_eq!(panel.items.len(), before);
                 assert!(!panel.voice_active());
                 assert!(panel.voice.live_transcript.is_empty());
@@ -767,7 +769,7 @@ mod tests {
             panel.apply_voice_event(NariEvent::Finished(Ok("Hello world.".into())), cx);
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "typed draft Hello world."
+                "typed draft\nHello world."
             );
             assert_eq!(panel.items.len(), before, "never auto-submit");
             assert!(panel.voice.live_transcript.is_empty());
@@ -1000,7 +1002,7 @@ mod tests {
             panel.finish_voice(Ok("  dictated words  ".into()), cx);
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
-                "Typed while transcribing dictated words"
+                "Typed while transcribing\ndictated words"
             );
             assert_eq!(
                 panel.items.len(),
@@ -1010,7 +1012,7 @@ mod tests {
             panel.finish_voice(Err(VoiceError::Network), cx);
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
-                "Typed while transcribing dictated words"
+                "Typed while transcribing\ndictated words"
             );
             assert!(panel.voice.error.is_some());
         });

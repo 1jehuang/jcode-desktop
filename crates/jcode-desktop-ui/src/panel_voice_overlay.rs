@@ -1,12 +1,39 @@
-//! Window-anchored speech feedback. It floats above panels without moving the draft.
+//! Lift the owning composer into the window center while speech is streaming.
 use super::*;
+
+fn lift_geometry(
+    viewport: gpui::Size<gpui::Pixels>,
+    origin: Option<gpui::Bounds<gpui::Pixels>>,
+    target_width: gpui::Pixels,
+    progress: f32,
+) -> (gpui::Pixels, gpui::Point<gpui::Pixels>) {
+    let remaining = 1.0 - crate::transition::ease_out_cubic(progress);
+    let width = target_width
+        + origin.map_or(px(0.), |b| {
+            b.size.width.min(viewport.width - px(32.)) - target_width
+        }) * remaining;
+    let offset = origin.map_or(gpui::point(px(0.), px(0.)), |b| {
+        gpui::point(
+            (b.center().x - viewport.width / 2.) * remaining,
+            (b.center().y - viewport.height / 2.) * remaining,
+        )
+    });
+    (width, offset)
+}
 
 impl Panel {
     pub(in crate::panel) fn render_voice_overlay(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        self.input.update(cx, |input, cx| {
+            input.set_voice_preview(
+                self.voice_active()
+                    .then(|| self.voice.live_transcript.clone()),
+                cx,
+            );
+        });
         if !self.voice_active() && self.voice.error.is_none() {
             return None;
         }
@@ -30,12 +57,32 @@ impl Panel {
             Phase::Idle => String::new(),
         });
         let viewport = window.viewport_size();
-        let width = (viewport.width - px(32.)).max(px(160.)).min(px(560.));
-        let transcript_height = (viewport.height * 0.25).min(px(160.));
+        let target_width = (viewport.width - px(32.)).max(px(160.)).min(px(640.));
+        let duration = jcode_desktop_motion::policy(
+            crate::transition::Transition::PanelOpen,
+            crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
+        )
+        .duration;
+        let progress = self.voice.entrance.map_or(1.0, |started| {
+            if duration.is_zero() {
+                1.0
+            } else {
+                (started.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0)
+            }
+        });
+        if progress < 1.0 {
+            window.request_animation_frame();
+        }
+        let (width, offset) = lift_geometry(viewport, self.voice.origin, target_width, progress);
         let card = div()
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
+            .relative()
+            .left(offset.x)
+            .top(offset.y)
             .w(width)
+            .max_h((viewport.height - px(32.)).max(px(160.)))
+            .overflow_y_scroll()
             .p_4()
             .flex()
             .flex_col()
@@ -73,35 +120,7 @@ impl Panel {
                         )
                     }),
             )
-            .when(self.voice_active(), |el| {
-                el.child(
-                    div()
-                        .id("voice-live-transcript")
-                        .debug_selector(|| "voice-live-transcript".into())
-                        .min_h(px(40.))
-                        .max_h(transcript_height)
-                        .overflow_y_scroll()
-                        .track_scroll(&self.voice.transcript_scroll)
-                        .text_size(px(17.))
-                        .text_color(if self.voice.live_transcript.is_empty() {
-                            theme.TEXT_DIM
-                        } else {
-                            theme.TEXT
-                        })
-                        .child(if self.voice.live_transcript.is_empty() {
-                            match phase {
-                                Phase::Checking => "Your words will appear here…",
-                                Phase::Recording => {
-                                    "Speak now. Your words appear here as you talk…"
-                                }
-                                _ => "Waiting for the final transcript…",
-                            }
-                            .to_string()
-                        } else {
-                            self.voice.live_transcript.clone()
-                        }),
-                )
-            })
+            .when(self.voice_active(), |el| el.child(self.input.clone()))
             .child(
                 div()
                     .debug_selector(|| "voice-status".into())
@@ -155,21 +174,40 @@ impl Panel {
                         )
                     }),
             );
-        // Deferred painting escapes the transcript's clipping. Only the card
-        // captures clicks, so the rest of the window stays usable while listening.
+        // Only the lifted composer captures input. The original slot retains
+        // its space so the transcript does not jump underneath the animation.
         Some(
             gpui::deferred(
                 gpui::anchored()
-                    .anchor(gpui::Anchor::BottomLeft)
-                    .position(gpui::point(
-                        (viewport.width - width) / 2.,
-                        viewport.height - px(24.),
-                    ))
-                    .child(card),
+                    .position(gpui::point(px(0.), px(0.)))
+                    .child(
+                        div()
+                            .w(viewport.width)
+                            .h(viewport.height)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(card),
+                    ),
             )
             .with_priority(90)
             .into_any_element(),
         )
+    }
+
+    pub(in crate::panel) fn render_voice_input_slot(&mut self, cx: &App) -> gpui::AnyElement {
+        if self.voice_active() {
+            if self.voice.origin.is_none() {
+                self.voice.origin = self.input.read(cx).voice_bounds();
+            }
+            div()
+                .debug_selector(|| "voice-input-origin".into())
+                .w_full()
+                .h(self.voice.origin.map_or(px(100.), |b| b.size.height))
+                .into_any_element()
+        } else {
+            self.input.clone().into_any_element()
+        }
     }
 
     pub(in crate::panel) fn seed_voice_preview(&mut self, state: PreviewState) {
@@ -191,8 +229,32 @@ impl Panel {
 mod tests {
     use super::*;
 
+    #[test]
+    fn voice_lift_starts_at_input_and_settles_at_window_center() {
+        let viewport = gpui::size(px(1440.), px(1000.));
+        let origin = gpui::Bounds::new(
+            gpui::point(px(300.), px(800.)),
+            gpui::size(px(900.), px(100.)),
+        );
+        let (width, offset) = lift_geometry(viewport, Some(origin), px(640.), 0.);
+        assert_eq!(width, origin.size.width);
+        assert_eq!(offset, gpui::point(px(30.), px(350.)));
+        let (_, halfway) = lift_geometry(viewport, Some(origin), px(640.), 0.5);
+        assert!(halfway.y > px(0.) && halfway.y < offset.y);
+        assert_eq!(
+            lift_geometry(viewport, Some(origin), px(640.), 1.),
+            (px(640.), gpui::point(px(0.), px(0.)))
+        );
+        assert_eq!(
+            lift_geometry(viewport, None, px(640.), 0.),
+            (px(640.), gpui::point(px(0.), px(0.)))
+        );
+    }
+
     #[gpui::test]
-    fn voice_overlay_is_bottom_center_without_moving_composer(cx: &mut gpui::TestAppContext) {
+    fn voice_overlay_centers_the_actual_composer_without_moving_footer(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for (width, height) in [(240., 320.), (480., 600.), (1440., 1000.)] {
@@ -219,11 +281,17 @@ mod tests {
                     "{card:?}"
                 );
                 assert!(
-                    (card.bottom() - px(height - 24.)).abs() <= px(1.),
+                    (card.center().y - px(height / 2.)).abs() <= px(1.),
                     "{card:?}"
                 );
                 assert!(card.left() >= px(0.) && card.right() <= px(width));
                 assert!(card.top() >= px(0.));
+                let input = vcx
+                    .debug_bounds("prompt-input")
+                    .expect("actual composer is lifted");
+                assert!(input.left() >= card.left() && input.right() <= card.right());
+                assert!(input.top() >= card.top() && input.bottom() <= card.bottom());
+                assert!(vcx.debug_bounds("voice-input-origin").is_some());
                 assert_eq!(
                     vcx.debug_bounds("panel-meta").unwrap(),
                     footer,
@@ -265,10 +333,7 @@ mod tests {
                 panel.voice.live_transcript,
                 "Revised live words. ".repeat(100)
             );
-            assert!(
-                panel.voice.transcript_scroll.offset().y < px(0.),
-                "latest words scroll into view"
-            );
+
             assert_eq!(panel.input.read(cx).content.as_ref(), "Keep my draft");
             assert!(
                 panel.voice.recording.is_none(),
@@ -283,7 +348,7 @@ mod tests {
         panel.read_with(vcx, |panel, cx| {
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "Keep my draft Final words."
+                "Keep my draft\nFinal words."
             );
         });
     }

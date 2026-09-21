@@ -117,7 +117,11 @@ impl Workspace {
                         .filter(|&index| eligible(index))
                 })
             })
-            .or_else(|| (0..self.slots.len()).find(|&index| eligible(index)))
+            .or_else(|| {
+                (0..self.slots.len())
+                    .filter(|&index| eligible(index))
+                    .min_by_key(|&index| index.abs_diff(self.active))
+            })
     }
 
     pub(super) fn toggle_voice(
@@ -627,6 +631,22 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui::test]
+    fn voice_falls_back_to_nearest_chat_when_no_chat_was_focused(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("far-chat", cx);
+            workspace.push_test_panel("near-chat", cx);
+            workspace.push_test_panel("terminal://test", cx);
+            workspace.active = 2;
+            workspace.last_voice_chat = None;
+            workspace
+        });
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(workspace.voice_target(cx), Some(1));
+        });
     }
 
     #[gpui::test]

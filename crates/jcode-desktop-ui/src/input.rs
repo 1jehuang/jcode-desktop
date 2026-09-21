@@ -136,6 +136,9 @@ pub struct PromptInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<WrappedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    voice_preview: Option<String>,
+    voice_preview_scroll: gpui::ScrollHandle,
+    composer_bounds: paste_preview::MeasuredBounds,
     visual_line_count: usize,
     is_selecting: bool,
     undo: Vec<String>,
@@ -393,6 +396,9 @@ impl PromptInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            voice_preview: None,
+            voice_preview_scroll: gpui::ScrollHandle::new(),
+            composer_bounds: Default::default(),
             visual_line_count: 1,
             is_selecting: false,
             undo: Vec::new(),
@@ -942,7 +948,40 @@ impl PromptInput {
         }
     }
 
-    /// Append asynchronous dictation without replacing newer edits or attachments.
+    /// Last painted composer bounds in window coordinates, if available.
+    /// Fall back to the editor viewport, then text bounds before the root is measured.
+    pub(crate) fn voice_bounds(&self) -> Option<Bounds<Pixels>> {
+        let viewport = self.editor_scroll.bounds();
+        let valid = |bounds: &Bounds<Pixels>| {
+            f32::from(bounds.origin.x).is_finite()
+                && f32::from(bounds.origin.y).is_finite()
+                && f32::from(bounds.size.width).is_finite()
+                && f32::from(bounds.size.height).is_finite()
+                && bounds.size.width > px(0.0)
+                && bounds.size.height > px(0.0)
+        };
+        if let Some(bounds) = self.composer_bounds.get().filter(valid) {
+            Some(bounds)
+        } else if valid(&viewport) {
+            Some(viewport)
+        } else {
+            self.last_bounds.filter(valid)
+        }
+    }
+
+    /// Display recognition partials without changing the draft or edit history.
+    pub(crate) fn set_voice_preview(&mut self, preview: Option<String>, cx: &mut Context<Self>) {
+        if self.voice_preview != preview {
+            if preview.is_some() {
+                self.voice_preview_scroll.scroll_to_bottom();
+            }
+            self.voice_preview = preview;
+            cx.notify();
+        }
+    }
+
+    /// Append asynchronous dictation on a new line as one undoable edit,
+    /// without replacing newer edits or attachments.
     pub(crate) fn append_dictation(&mut self, text: &str, cx: &mut Context<Self>) {
         let text = text.trim();
         if text.is_empty() {
@@ -951,8 +990,8 @@ impl PromptInput {
         self.undo.push(self.content.to_string());
         self.redo.clear();
         let mut draft = self.content.to_string();
-        if !draft.is_empty() && !draft.ends_with(char::is_whitespace) {
-            draft.push(' ');
+        if !draft.is_empty() && !draft.ends_with('\n') {
+            draft.push('\n');
         }
         draft.push_str(text);
         self.marked_range = None;
@@ -1553,7 +1592,9 @@ impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
-        let spacious = self.spacious && window.viewport_size().height >= px(400.);
+        let spacious = self.spacious
+            && self.voice_preview.is_none()
+            && window.viewport_size().height >= px(400.);
         let suggestions = self.command_suggestions();
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
@@ -1656,6 +1697,21 @@ impl Render for PromptInput {
             .key_context("PromptInput")
             .track_focus(&self.focus_handle(cx))
             .relative()
+            .child({
+                let measured = self.composer_bounds.clone();
+                gpui::canvas(|_, _, _| (), move |bounds, _, _, _| {
+                    // Absolute children fill the padding box. Include the root's
+                    // one-pixel border so reparenting preserves its exact footprint.
+                    measured.set(Some(Bounds::new(
+                        bounds.origin - point(px(1.0), px(1.0)),
+                        size(bounds.size.width + px(2.0), bounds.size.height + px(2.0)),
+                    )));
+                })
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+            })
             .when(
                 command_visible,
                 |el| {
@@ -1998,6 +2054,29 @@ impl Render for PromptInput {
                             .child(TextElement { input: cx.entity() }),
                     ),
             )
+            .children(self.voice_preview.as_ref().map(|preview| {
+                div()
+                    .id("prompt-voice-preview")
+                    .debug_selector(|| "voice-live-transcript".into())
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .max_h(px(120.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.voice_preview_scroll)
+                    .px_3()
+                    .pb_2()
+                    .text_size(px(14.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .when(!self.content.is_empty(), |el| {
+                        el.child(div().text_size(px(10.0)).child("Appending on a new line"))
+                    })
+                    .child(div().flex_none().child(if preview.trim().is_empty() {
+                        "Listening…".to_owned()
+                    } else {
+                        preview.clone()
+                    }))
+            }))
     }
 }
 
@@ -2087,6 +2166,147 @@ mod tests {
             })
             .unwrap();
         window
+    }
+
+    #[gpui::test]
+    fn dictation_appends_newline_without_replacing_existing_draft(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        for (before, expected) in [
+            ("", "spoken words"),
+            ("typed", "typed\nspoken words"),
+            ("typed ", "typed \nspoken words"),
+            ("typed\t", "typed\t\nspoken words"),
+            ("typed\n", "typed\nspoken words"),
+            ("typed\n\n", "typed\n\nspoken words"),
+            ("你好 🚀", "你好 🚀\nspoken words"),
+        ] {
+            input.update(cx, |input, cx| {
+                input.set_content(before.into(), cx);
+                input.undo.clear();
+                input.redo = vec!["old redo".into()];
+                input.selected_range = 0..input.content.len();
+                input.marked_range = Some(0..input.content.len());
+                input.history_index = Some(0);
+                input.append_dictation("  spoken words\n", cx);
+                assert_eq!(input.content.as_ref(), expected);
+                assert_eq!(input.undo, vec![before.to_owned()]);
+                assert!(input.redo.is_empty());
+                assert_eq!(input.selected_range, expected.len()..expected.len());
+                assert!(input.marked_range.is_none());
+                assert!(input.history_index.is_none());
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn dictation_is_one_undoable_edit_and_preserves_attachments(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "typed");
+        window
+            .update(cx, |input, _, cx| {
+                input.attachments.push(Attachment {
+                    media_type: "image/png".into(),
+                    encoded: "cG5n".into(),
+                    label: "4×3".into(),
+                    preview: preview_image("image/png", Vec::new()).unwrap(),
+                    bounds: Default::default(),
+                });
+                let previous_edits = input.undo.len();
+                input.append_dictation("first line\nsecond line", cx);
+                assert_eq!(input.undo.len(), previous_edits + 1);
+                assert_eq!(input.content.as_ref(), "typed\nfirst line\nsecond line");
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "ctrl-z");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "typed");
+                assert_eq!(input.attachments.len(), 1);
+            })
+            .unwrap();
+        cx.simulate_keystrokes(*window, "ctrl-shift-z");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.content.as_ref(), "typed\nfirst line\nsecond line");
+                assert_eq!(input.attachments[0].encoded, "cG5n");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn empty_dictation_and_partials_leave_content_and_undo_untouched(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, cx| {
+            input.set_content("keep this ".into(), cx);
+            input.selected_range = 0..4;
+            input.undo = vec!["previous".into()];
+            input.redo = vec!["next".into()];
+            input.append_dictation(" \n\t", cx);
+            for preview in [Some(String::new()), Some("partial words".into()), None] {
+                input.set_voice_preview(preview.clone(), cx);
+                assert_eq!(input.voice_preview, preview);
+                assert_eq!(input.content.as_ref(), "keep this ");
+                assert_eq!(input.selected_range, 0..4);
+                assert_eq!(input.undo, vec!["previous"]);
+                assert_eq!(input.redo, vec!["next"]);
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn voice_bounds_requires_a_valid_measurement(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, _| {
+            assert!(input.voice_bounds().is_none());
+            let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(100.0), px(30.0)));
+            input.last_bounds = Some(bounds);
+            assert_eq!(input.voice_bounds(), Some(bounds));
+            input.last_bounds = Some(Bounds::new(bounds.origin, size(px(0.0), px(30.0))));
+            assert!(input.voice_bounds().is_none());
+            input.last_bounds = Some(Bounds::new(point(px(f32::NAN), px(0.0)), bounds.size));
+            assert!(input.voice_bounds().is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn voice_preview_renders_below_editor_and_uses_measured_composer(cx: &mut TestAppContext) {
+        let (input, vcx) =
+            cx.add_window_view(|_, cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(vcx, |input, cx| {
+            input.spacious = true;
+            input.set_voice_preview(Some(String::new()), cx);
+        });
+        vcx.run_until_parked();
+        let editor = vcx.debug_bounds("prompt-editor").unwrap();
+        let preview = vcx.debug_bounds("voice-live-transcript").unwrap();
+        assert!(preview.top() >= editor.bottom());
+        assert!(preview.top() - editor.bottom() <= px(20.0));
+        assert!(preview.size.height <= px(120.0));
+        let composer = vcx.debug_bounds("prompt-input").unwrap();
+        input.read_with(vcx, |input, _| {
+            assert_eq!(input.voice_bounds(), Some(composer));
+        });
+        for lines in [30, 60] {
+            input.update(vcx, |input, cx| {
+                input.set_voice_preview(Some("recognized words\n".repeat(lines)), cx);
+            });
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("voice-live-transcript")
+                    .unwrap()
+                    .size
+                    .height
+                    <= px(120.0)
+            );
+            input.read_with(vcx, |input, _| {
+                assert!(input.voice_preview_scroll.offset().y < px(0.0));
+                assert!(input.content.is_empty());
+                assert!(input.undo.is_empty());
+            });
+        }
+        input.update(vcx, |input, cx| input.set_voice_preview(None, cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
     }
 
     #[gpui::test]
