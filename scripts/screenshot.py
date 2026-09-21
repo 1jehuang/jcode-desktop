@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--pending-interact", action="store_true",
                         help="verify Enter, retry and local fallback for an offline pending startup")
     parser.add_argument("--cloud-startup", choices=("connecting", "failed"),
-                        help="render the Jcode Cloud VM startup identity without cloud operations")
+                        help="render managed Jcode Cloud unavailability without cloud operations (both modes currently unavailable)")
     parser.add_argument("--onboarding-interact", action="store_true",
                         help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
     parser.add_argument("--sounds-interact", action="store_true",

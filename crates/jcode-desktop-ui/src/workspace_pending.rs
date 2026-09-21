@@ -70,13 +70,28 @@ impl Workspace {
     }
 
     pub(super) fn open_remote_draft(&mut self, host: String, cx: &mut Context<Self>) {
+        // The old Cloud button stored a personal AWS alias. New drafts must
+        // never turn that legacy preference into an implicit AWS operation.
+        // Existing live SSH sessions keep their original destination.
+        let host = if host == "jcode-cloud-alpha" {
+            if self.remotes.default_host.as_deref() == Some("jcode-cloud-alpha") {
+                self.remotes.default_host = Some(remotes::MANAGED_CLOUD_HOST.into());
+            }
+            remotes::MANAGED_CLOUD_HOST.to_owned()
+        } else {
+            host
+        };
         let request_id = next_remote_draft_id(&host);
         self.remotes.failed = false;
         self.remotes.status = Some(format!("Preparing connection to {host}…"));
         self.mount_session_draft(
             request_id.clone(),
             None,
-            format!("Connecting to {host}…"),
+            if host == remotes::MANAGED_CLOUD_HOST {
+                "Jcode Cloud unavailable".into()
+            } else {
+                format!("Connecting to {host}…")
+            },
             cx,
         );
         let panel = self.slots[self.active].panel.clone();
