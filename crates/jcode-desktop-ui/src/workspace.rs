@@ -3307,6 +3307,15 @@ impl Workspace {
             .collect();
         self.active = if self.single_panel {
             0
+        } else if self.slots[closed].panel.read(cx).is_changelog() {
+            self.previous
+                .and_then(|id| {
+                    remaining
+                        .iter()
+                        .copied()
+                        .find(|&index| self.slots[index].panel.entity_id() == id)
+                })
+                .unwrap_or_else(|| focus_after_close(closed, &remaining))
         } else {
             focus_after_close(closed, &remaining)
         };
