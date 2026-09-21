@@ -31,6 +31,7 @@ fn enabled_for(
 #[serde(tag = "command", rename_all = "lowercase", deny_unknown_fields)]
 pub(crate) enum Request {
     List {},
+    Onboarding {},
     Open { state: String },
     Reset { state: String },
 }
@@ -112,8 +113,52 @@ mod unix {
             Self::bind(dir.join(format!("{}.sock", std::process::id())))
         }
 
+        #[cfg(target_os = "linux")]
+        fn retire_same_process_endpoint(path: &std::path::Path) -> io::Result<()> {
+            use std::os::{fd::AsRawFd, unix::fs::FileTypeExt};
+            let Ok(meta) = std::fs::symlink_metadata(path) else {
+                return Ok(());
+            };
+            if !meta.file_type().is_socket()
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.mode() & 0o077 != 0
+            {
+                return Err(io::Error::other(
+                    "refusing to replace unsafe preview endpoint",
+                ));
+            }
+            let stream = UnixStream::connect(path)?;
+            let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+            let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+            let result = unsafe {
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&mut peer as *mut libc::ucred).cast(),
+                    &mut length,
+                )
+            };
+            if result != 0
+                || peer.pid != std::process::id() as libc::pid_t
+                || peer.uid != unsafe { libc::geteuid() }
+            {
+                return Err(io::Error::other(
+                    "preview endpoint belongs to another process",
+                ));
+            }
+            let current = std::fs::symlink_metadata(path)?;
+            if (current.dev(), current.ino()) != (meta.dev(), meta.ino()) {
+                return Err(io::Error::other("preview endpoint changed during handover"));
+            }
+            std::fs::remove_file(path)
+        }
+
         fn bind(path: PathBuf) -> io::Result<(Self, async_channel::Receiver<Pending>)> {
-            // Do not delete stale-looking endpoints. Only the owning lifecycle unlinks.
+            // Retained GPUI roots can keep an old generation's server alive.
+            // Only take over a private socket proven to belong to this process.
+            #[cfg(target_os = "linux")]
+            Self::retire_same_process_endpoint(&path)?;
             let listener = UnixListener::bind(&path)?;
             let meta = std::fs::symlink_metadata(&path)?;
             let stop = Arc::new(AtomicBool::new(false));
@@ -221,6 +266,35 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn new_generation_takes_over_retained_root_endpoint() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("preview.sock");
+            let (old, old_rx) = Server::bind(path.clone()).unwrap();
+            let (new, new_rx) = Server::bind(path.clone()).unwrap();
+            drop(old);
+            assert!(
+                path.exists(),
+                "retired server must not unlink the new endpoint"
+            );
+            let mut client = UnixStream::connect(&path).unwrap();
+            client.set_read_timeout(Some(TIMEOUT)).unwrap();
+            writeln!(client, "{{\"command\":\"onboarding\"}}").unwrap();
+            let pending = new_rx.recv_blocking().unwrap();
+            assert!(matches!(pending.request, Request::Onboarding {}));
+            assert!(old_rx.try_recv().is_err());
+            pending
+                .reply
+                .send(serde_json::json!({"ok":true,"step":"welcome"}))
+                .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(response.contains("welcome"));
+            drop(new);
+            assert!(!path.exists());
+        }
+
         #[test]
         fn protocol_is_strict() {
             assert!(matches!(

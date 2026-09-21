@@ -19,6 +19,13 @@ pub(super) struct Simulation {
 }
 
 impl Workspace {
+    /// Global rehearsal entry is idempotent: always return to the first step.
+    pub(super) fn restart_onboarding_simulator(&mut self, cx: &mut Context<Self>) {
+        self.onboarding_simulator = Some(Simulation::default());
+        self.focus_pending = true;
+        cx.notify();
+    }
+
     pub(crate) fn toggle_onboarding_simulator(
         &mut self,
         _: &ToggleOnboardingSimulator,
@@ -29,7 +36,7 @@ impl Workspace {
         if self.onboarding_simulator.is_some() {
             self.close_onboarding_simulator(window, cx);
         } else {
-            self.onboarding_simulator = Some(Simulation::default());
+            self.restart_onboarding_simulator(cx);
             window.focus(&self.focus_handle, cx);
             cx.notify();
         }
@@ -245,8 +252,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, _, cx| this.back_onboarding_simulator(cx)))))
                         .child(sim_button("onboarding-restart", "Restart")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.onboarding_simulator = Some(Simulation::default());
-                                cx.notify();
+                                this.restart_onboarding_simulator(cx);
                             }))))
                     .child(sim_button("onboarding-next", next)
                         .on_click(cx.listener(|this, _, window, cx| this.advance_onboarding_simulator(window, cx)))))
@@ -278,6 +284,45 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {id}"));
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn global_onboarding_entry_always_restarts_without_changing_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w.push_test_panel("existing", cx);
+            w
+        });
+        vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
+        vcx.simulate_input("preserved draft");
+        let before = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        for _ in 0..2 {
+            workspace.update(vcx, |w, cx| {
+                let reply =
+                    w.handle_preview_request(crate::preview_control::Request::Onboarding {}, cx);
+                assert_eq!(reply["step"], "welcome");
+                assert_eq!(w.onboarding_simulator, Some(Simulation::default()));
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("onboarding-simulator").is_some());
+            vcx.simulate_keystrokes("enter");
+            click(vcx, "onboarding-connect");
+            vcx.simulate_keystrokes("enter");
+            click(vcx, "onboarding-folder");
+            vcx.simulate_keystrokes("enter");
+            workspace.read_with(vcx, |w, _| {
+                assert_eq!(w.onboarding_simulator.as_ref().unwrap().step, Step::Ready);
+            });
+        }
+        vcx.simulate_keystrokes("escape");
+        let after = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        assert_eq!(before, after);
+        assert!(commands.try_recv().is_err());
     }
 
     #[gpui::test]

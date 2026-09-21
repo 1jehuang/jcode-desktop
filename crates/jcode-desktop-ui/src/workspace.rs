@@ -7020,6 +7020,14 @@ impl Render for Workspace {
         {
             self.last_voice_chat = Some(slot.panel.entity_id());
         }
+        if self.onboarding_simulator.is_some() {
+            if self.focus_pending {
+                self.focus_pending = false;
+                window.focus(&self.focus_handle, cx);
+            }
+            let content = self.render_onboarding_simulator(cx);
+            return self.voice_modal_root(content, cx);
+        }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
             let content = self.render_account_sign_in(cx);
@@ -7031,10 +7039,6 @@ impl Render for Workspace {
         }
         if self.single_panel {
             return self.render_single_panel(window, cx);
-        }
-        if self.onboarding_simulator.is_some() {
-            let content = self.render_onboarding_simulator(cx);
-            return self.voice_modal_root(content, cx);
         }
         self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar

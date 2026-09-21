@@ -53,7 +53,7 @@ impl Workspace {
         }));
     }
 
-    fn handle_preview_request(
+    pub(super) fn handle_preview_request(
         &mut self,
         request: Request,
         cx: &mut Context<Self>,
@@ -65,6 +65,10 @@ impl Workspace {
         let (state, reset) = match request {
             Request::List {} => {
                 return json!({"ok":true,"pid":std::process::id(),"states":PreviewState::ALL.iter().map(|s| json!({"id":s.id(),"title":s.title()})).collect::<Vec<_>>() });
+            }
+            Request::Onboarding {} => {
+                self.restart_onboarding_simulator(cx);
+                return json!({"ok":true,"step":"welcome"});
             }
             Request::Open { state } => (state, false),
             Request::Reset { state } => (state, true),
