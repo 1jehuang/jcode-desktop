@@ -137,8 +137,7 @@ impl Workspace {
         };
         let panel = self.slots[index].panel.clone();
         if !panel.read(cx).voice_active()
-            && (self.show_beta_notice
-                || self.account_sign_in.visible)
+            && self.account_sign_in.visible
         {
             return;
         }
@@ -202,7 +201,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        if self.show_beta_notice || self.account_sign_in.visible {
+        if self.account_sign_in.visible {
             return;
         }
         let Some(index) = self.voice_target(cx) else { return };

@@ -522,8 +522,9 @@ def main():
                         detail = diagnostics.read_text() if diagnostics.exists() else ""
                         raise RuntimeError("App failed to render:\n" + app_log.read() + detail)
                     time.sleep(0.1)
-                # Allow opening animation and font rasterization to settle.
-                time.sleep(2)
+                # Capture the short-lived beta toast early enough to test typing
+                # while it is still visible. Other fixtures can fully settle.
+                time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
                 if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],

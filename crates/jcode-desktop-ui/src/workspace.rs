@@ -1623,7 +1623,6 @@ impl Workspace {
             return;
         }
         if self.account_sign_in.visible
-            || self.show_beta_notice
             || self.onboarding_launch.error.is_some()
         {
             window.focus(&self.focus_handle, cx);
@@ -3570,7 +3569,6 @@ impl Workspace {
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates must not move focus behind a launch-only modal.
         if self.account_sign_in.visible
-            || self.show_beta_notice
             || self.onboarding_launch.error.is_some()
         {
             window.focus(&self.focus_handle, cx);
@@ -7284,11 +7282,6 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
-                if this.show_beta_notice {
-                    this.dismiss_beta_notice(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
                 if this.compact_sidebar_open {
                     this.compact_sidebar_open = false;
                     this.focus_active(window, cx);
@@ -7297,13 +7290,6 @@ impl Render for Workspace {
                 }
             }))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.show_beta_notice {
-                    if matches!(event.keystroke.key.as_str(), "escape" | "enter" | "space") {
-                        this.dismiss_beta_notice(window, cx);
-                    }
-                    cx.stop_propagation();
-                    return;
-                }
                 if this.rename_editor.is_some() && event.keystroke.key == "escape" {
                     this.close_rename_editor(cx);
                     cx.stop_propagation();

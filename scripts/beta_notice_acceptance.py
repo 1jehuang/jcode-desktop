@@ -1,4 +1,4 @@
-"""Verify the real startup countdown and dismissal on screenshot.py's private display."""
+"""Verify the real non-blocking startup notification and countdown on screenshot.py's private display."""
 import json
 
 from default_directory_acceptance import NativeUI
@@ -8,16 +8,15 @@ from model_picker_acceptance import normalized, phrase_bounds
 
 def verify(output, env, root):
     ui = NativeUI(output, env, root)
-    report = {"checks": {}, "scope": "native offline startup overlay"}
+    report = {"checks": {}, "scope": "native offline startup notification"}
     draft = "Ready to work after the beta notice"
 
     def words(image, label):
         return ui.words(image, (0, 0, image.width, image.height), label, psm=11)
 
     def opened(image):
-        text = words(image, "beta-launch")
-        phrase_bounds(text, "Jcode Desktop is in beta testing")
-        return phrase_bounds(text, "Got it")
+        text = ui.words(image, (max(0, image.width - 400), 40, image.width, 210), "beta-launch", psm=6)
+        return phrase_bounds(text, "Jcode Desktop is in beta testing")
 
     def dismissed(image):
         text = normalized(" ".join(word["text"] for word in words(image, "beta-dismissed")))
@@ -38,15 +37,17 @@ def verify(output, env, root):
     try:
         ui.wait_frame("beta-startup", opened)
         report["checks"]["shown-on-launch"] = True
-        # Do not click or press any key. The timer must dismiss the overlay.
+        # No composer click: typing must work while the notification is visible.
+        ui.native("type", "--clearmodifiers", "--delay", "0", draft)
+        ui.wait_frame("beta-typing-while-visible", opened)
+        report["checks"]["typing-with-notification-visible"] = True
+        # The timer must dismiss the toast without touching the draft.
         # Exact three-second timing and repaint stability are covered by the
         # deterministic GPUI tests, independent of OCR/capture overhead here.
         ui.wait_frame("beta-auto-dismissed", expired)
         report["checks"]["automatically-dismisses"] = True
-        # Do not click the composer. Dismissal must restore its focus itself.
-        ui.native("type", "--clearmodifiers", "--delay", "25", draft)
         ui.wait_frame("beta-dismissed", dismissed)
-        report["checks"]["countdown-restores-focus"] = True
+        report["checks"]["countdown-preserves-typing"] = True
         # Re-render and change sidebar visibility without spawning another notice.
         ui.native("key", "--clearmodifiers", "super+b")
         ui.native("key", "--clearmodifiers", "super+b")
@@ -59,4 +60,4 @@ def verify(output, env, root):
         raise
     finally:
         output.with_suffix(".beta.json").write_text(json.dumps(report, indent=2) + "\n")
-    print("Beta startup overlay acceptance passed", flush=True)
+    print("Beta startup notification acceptance passed", flush=True)

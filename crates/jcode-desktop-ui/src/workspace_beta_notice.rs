@@ -1,4 +1,4 @@
-//! A dismissible launch overlay, never a permanent strip in the workspace.
+//! A non-blocking startup notification with a three-second countdown.
 use super::*;
 use gpui::{Animation, AnimationExt};
 
@@ -52,9 +52,8 @@ fn countdown_ring(progress: f32) -> gpui::AnyElement {
 }
 
 impl Workspace {
-    pub(super) fn dismiss_beta_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn dismiss_beta_notice(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.show_beta_notice = false;
-        self.restore_focus(window, cx);
         cx.notify();
     }
 
@@ -65,7 +64,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let workspace = cx.weak_entity();
-        // The task lives only while the overlay is rendered. Repaints do not
+        // The task lives only while the notification is rendered. Repaints do not
         // restart it, and manual dismissal cancels it without stealing focus later.
         window.use_keyed_state("desktop-beta-timer", cx, |window, cx| {
             let timer = cx.background_executor().timer(COUNTDOWN);
@@ -81,41 +80,38 @@ impl Workspace {
             })
         });
         div()
-            .id("desktop-beta-overlay")
-            .debug_selector(|| "desktop-beta-overlay".into())
+            .id("desktop-beta-notice")
+            .debug_selector(|| "desktop-beta-notice".into())
             .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p_4()
-            .bg(gpui::black().opacity(0.45))
+            .top(px(48.0))
+            .right(px(16.0))
+            .w(px(380.0))
+            .max_w((window.viewport_size().width - px(32.0)).max(px(0.0)))
+            .p_3()
+            .rounded_lg()
+            .bg(theme.PANEL_BG)
+            .border_1()
+            .border_color(theme.ACCENT.opacity(0.2))
+            .shadow_md()
             .occlude()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.dismiss_beta_notice(window, cx);
-                    cx.stop_propagation();
-                }),
-            )
+            .flex()
+            .items_start()
+            .gap_3()
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
             .child(
                 div()
-                    .id("desktop-beta-notice")
-                    .debug_selector(|| "desktop-beta-notice".into())
-                    .w(px(420.0))
-                    .max_w_full()
-                    .p_6()
-                    .rounded_lg()
-                    .bg(theme.PANEL_BG)
-                    .shadow_lg()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap_4()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .gap_1()
                     .child(
                         div()
                             .debug_selector(|| "desktop-beta-title".into())
-                            .text_size(px(18.0))
+                            .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.TEXT)
                             .child("Jcode Desktop is in beta testing"),
@@ -123,38 +119,34 @@ impl Workspace {
                     .child(
                         div()
                             .debug_selector(|| "desktop-beta-message".into())
-                            .text_size(px(14.0))
-                            .text_color(theme.TEXT)
-                            .child("Expect bugs and unexpected behavior. Please report anything that goes wrong."),
-                    )
+                            .text_size(px(12.0))
+                            .text_color(theme.TEXT_DIM)
+                            .child("Expect bugs. Please report anything that goes wrong."),
+                    ),
+            )
+            .child(
+                div()
+                    .id("desktop-beta-dismiss")
+                    .debug_selector(|| "desktop-beta-dismiss".into())
+                    .flex_none()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.ACCENT.opacity(0.15)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::remotes::HeaderTooltip("Dismiss notification".into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dismiss_beta_notice(window, cx);
+                        cx.stop_propagation();
+                    }))
                     .child(
                         div()
-                            .id("desktop-beta-dismiss")
-                            .debug_selector(|| "desktop-beta-dismiss".into())
-                            .px_4()
-                            .py_2()
-                            .rounded_md()
-                            .bg(theme.ACCENT.opacity(0.15))
-                            .text_color(theme.TEXT)
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
-                            .hover(|style| style.bg(theme.ACCENT.opacity(0.25)))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dismiss_beta_notice(window, cx);
-                                cx.stop_propagation();
-                            }))
-                            .child("Got it")
-                            .child(
-                                div()
-                                    .debug_selector(|| "desktop-beta-countdown".into())
-                                    .with_animation(
-                                        "desktop-beta-countdown-animation",
-                                        Animation::new(COUNTDOWN).with_max_fps(30.0),
-                                        |ring, progress| ring.child(countdown_ring(progress)),
-                                    ),
+                            .debug_selector(|| "desktop-beta-countdown".into())
+                            .with_animation(
+                                "desktop-beta-countdown-animation",
+                                Animation::new(COUNTDOWN).with_max_fps(30.0),
+                                |ring, progress| ring.child(countdown_ring(progress)),
                             ),
                     ),
             )
@@ -167,9 +159,7 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn beta_countdown_expires_after_three_seconds_and_restores_input(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn beta_countdown_expires_without_interrupting_input(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.open_startup_draft(cx);
@@ -179,6 +169,14 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("desktop-beta-countdown").is_some());
+        vcx.simulate_input("typing immediately ");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "typing immediately "
+            );
+        });
+        assert!(vcx.debug_bounds("desktop-beta-notice").is_some());
         vcx.executor().advance_clock(Duration::from_millis(2000));
         // An unrelated workspace repaint must not restart the countdown.
         workspace.update(vcx, |_, cx| cx.notify());
@@ -193,7 +191,7 @@ mod tests {
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(
                 w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
-                "ready after countdown"
+                "typing immediately ready after countdown"
             );
         });
     }
@@ -208,7 +206,8 @@ mod tests {
             w
         });
         vcx.run_until_parked();
-        vcx.simulate_keystrokes("escape");
+        let button = vcx.debug_bounds("desktop-beta-dismiss").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         let other_focus = vcx.update(|window, cx| {
             let focus = cx.focus_handle();
@@ -222,7 +221,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn beta_overlay_dismissal_restores_composer_without_resizing(cx: &mut gpui::TestAppContext) {
+    fn beta_notification_dismissal_preserves_composer_without_resizing(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_sidebar = false;
@@ -260,40 +261,38 @@ mod tests {
     }
 
     #[gpui::test]
-    fn beta_overlay_keyboard_dismissal_does_not_clear_or_submit_draft(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn beta_notification_does_not_capture_keys_or_steal_focus(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.open_startup_draft(cx);
+            w.show_beta_notice = true;
             w.restore_focus(window, cx);
             w
         });
-        vcx.simulate_input("keep this draft");
-        for key in ["escape", "enter", "space"] {
-            vcx.update(|window, cx| {
-                workspace.update(cx, |w, cx| {
-                    w.show_beta_notice = true;
-                    w.restore_focus(window, cx);
-                    cx.notify();
-                })
-            });
-            vcx.run_until_parked();
-            vcx.simulate_keystrokes(key);
-            vcx.run_until_parked();
-            assert!(vcx.debug_bounds("desktop-beta-notice").is_none(), "{key}");
-            workspace.read_with(vcx, |w, cx| {
-                assert_eq!(
-                    w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
-                    "keep this draft",
-                    "{key}"
-                );
-            });
-        }
+        vcx.run_until_parked();
+        vcx.simulate_input("hello");
+        vcx.simulate_keystrokes("space");
+        vcx.simulate_input("world");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "hello world"
+            );
+        });
+        assert!(vcx.debug_bounds("desktop-beta-notice").is_some());
+        let other_focus = vcx.update(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            focus
+        });
+        vcx.executor().advance_clock(COUNTDOWN);
+        vcx.run_until_parked();
+        vcx.update(|window, _| assert!(other_focus.is_focused(window)));
+        assert!(vcx.debug_bounds("desktop-beta-notice").is_none());
     }
 
     #[gpui::test]
-    fn beta_overlay_fits_compact_and_wide_windows(cx: &mut gpui::TestAppContext) {
+    fn beta_notification_fits_compact_and_wide_windows(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = cx.add_window_view(|window, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.show_beta_notice = true;
@@ -304,21 +303,21 @@ mod tests {
         for width in [360.0, 640.0, 1440.0] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(700.0)));
             vcx.run_until_parked();
-            let overlay = vcx.debug_bounds("desktop-beta-overlay").unwrap();
+            assert!(vcx.debug_bounds("desktop-beta-overlay").is_none());
             let notice = vcx.debug_bounds("desktop-beta-notice").unwrap();
             let title = vcx.debug_bounds("desktop-beta-title").unwrap();
             let message = vcx.debug_bounds("desktop-beta-message").unwrap();
             let button = vcx.debug_bounds("desktop-beta-dismiss").unwrap();
-            assert_eq!(overlay.size.width, px(width));
-            assert!(notice.left() >= overlay.left() && notice.right() <= overlay.right());
+            assert!(notice.left() >= px(16.0) && notice.right() <= px(width - 16.0));
+            assert!(notice.top() >= px(40.0) && notice.bottom() < px(200.0));
             assert!(title.top() >= notice.top());
             assert!(title.bottom() <= message.top());
-            assert!(message.bottom() <= button.top());
+            assert!(message.right() <= button.left());
             assert!(button.bottom() <= notice.bottom());
         }
-        // Clicking the scrim dismisses even when there is no session open.
-        vcx.simulate_click(gpui::point(px(4.0), px(4.0)), gpui::Modifiers::default());
+        // No full-window scrim: clicks elsewhere do not dismiss or get captured.
+        vcx.simulate_click(gpui::point(px(4.0), px(400.0)), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("desktop-beta-notice").is_none());
+        assert!(vcx.debug_bounds("desktop-beta-notice").is_some());
     }
 }
