@@ -4514,12 +4514,12 @@ impl Render for Panel {
                             }
                         },
                     ))
-                    // Detached from the live end: one tap catches back up.
+                    // Float catch-up activity above the composer, centered in the
+                    // transcript rather than tucked into the scrollbar corner.
                     .when(show_jump_chip, |el| {
                         el.child(
                             div()
-                                .id("jump-to-latest")
-                                .debug_selector(|| "jump-to-latest".into())
+                                .debug_selector(|| "latest-pill-anchor".into())
                                 .absolute()
                                 .map(|el| {
                                     if self.startup_layout.is_some() {
@@ -4531,41 +4531,49 @@ impl Render for Panel {
                                         el.bottom_2()
                                     }
                                 })
+                                .left_3()
                                 .right_3()
                                 .flex()
-                                .items_center()
-                                .gap_2()
-                                .px_2p5()
-                                .py_1()
-                                .rounded_md()
-                                .bg(Theme::global().HEADER_BG)
-                                .border_1()
-                                .border_color(Theme::global().PANEL_BORDER)
-                                .text_size(px(10.5))
-                                .font_family(Theme::global().FONT_MONO)
-                                .text_color(Theme::global().TEXT_DIM)
-                                .cursor_pointer()
-                                .hover(|el| el.text_color(Theme::global().TEXT))
-                                .occlude()
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        this.jump_to_latest(cx);
-                                    }),
-                                )
-                                .when(self.activity_active(), |el| {
-                                    el.child(
-                                        div()
-                                            .debug_selector(|| "latest-activity".into())
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .text_color(Theme::global().ACCENT)
-                                            .child(self.latest_activity_spinner.clone())
-                                            .child(self.status_line()),
-                                    )
-                                })
-                                .child("↓ latest"),
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .id("jump-to-latest")
+                                        .debug_selector(|| "jump-to-latest".into())
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .px_2p5()
+                                        .py_1()
+                                        .rounded_full()
+                                        .bg(Theme::global().HEADER_BG)
+                                        .border_1()
+                                        .border_color(Theme::global().PANEL_BORDER)
+                                        .text_size(px(10.5))
+                                        .font_family(Theme::global().FONT_MONO)
+                                        .text_color(Theme::global().TEXT_DIM)
+                                        .cursor_pointer()
+                                        .hover(|el| el.text_color(Theme::global().TEXT))
+                                        .occlude()
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.jump_to_latest(cx);
+                                            }),
+                                        )
+                                        .when(self.activity_active(), |el| {
+                                            el.child(
+                                                div()
+                                                    .debug_selector(|| "latest-activity".into())
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .text_color(Theme::global().ACCENT)
+                                                    .child(self.latest_activity_spinner.clone())
+                                                    .child(self.status_line()),
+                                            )
+                                        })
+                                        .child("↓ latest"),
+                                ),
                         )
                     }),
             )

@@ -159,6 +159,20 @@ mod tests {
                 .expect("pinned activity paints");
             let chip = vcx.debug_bounds("jump-to-latest").unwrap();
             let transcript = vcx.debug_bounds("transcript").unwrap();
+            let anchor = vcx.debug_bounds("latest-pill-anchor").unwrap();
+            assert!(
+                (f32::from(chip.center().x - anchor.center().x)).abs() <= 1.0,
+                "live activity pill stays horizontally centered above the composer"
+            );
+            let meta = vcx.debug_bounds("panel-meta").unwrap();
+            assert!(
+                chip.bottom() <= meta.top(),
+                "pill floats above composer controls"
+            );
+            assert!(
+                (f32::from(chip.center().x - transcript.center().x)).abs() <= 1.0,
+                "status pill is centered in the conversation"
+            );
             assert!(activity.left() >= chip.left() && activity.right() <= chip.right());
             assert!(activity.top() >= transcript.top() && activity.bottom() <= transcript.bottom());
             assert!(
@@ -302,7 +316,9 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::User("A long prompt line\n".repeat(1000))];
+            // User prompts can fold to a short card. Use an unfolded assistant
+            // reply so this fixture actually clips the last row's bottom.
+            panel.items = vec![Item::Assistant("A long reply paragraph.\n\n".repeat(1000))];
             panel.stick_to_bottom = false;
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
             cx.notify();
