@@ -26,6 +26,30 @@ class ModelPickerPixelTests(unittest.TestCase):
     def test_dialog_bounds_come_from_visible_border(self):
         self.assertEqual(acceptance.dialog_bounds(fixture()), (540, 430, 1161, 711))
 
+    def test_viewport_edge_popup_border_is_not_excluded(self):
+        image = Image.new("RGB", (1440, 1000), (12, 12, 12))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((450, 430, 1210, 540), fill=(33, 30, 27), outline=(135, 121, 107))
+        draw.rectangle((450, 545, 1210, 991), fill=(48, 43, 39), outline=(135, 121, 107))
+        self.assertEqual(acceptance.dialog_bounds(image), (450, 545, 1211, 992))
+
+    def test_flipped_popup_is_not_mistaken_for_editor(self):
+        image = Image.new("RGB", (1440, 1000), (12, 12, 12))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((450, 430, 1210, 540), fill=(33, 30, 27), outline=(135, 121, 107))
+        draw.rectangle((450, 545, 1210, 900), fill=(48, 43, 39), outline=(135, 121, 107))
+        self.assertEqual(acceptance.picker_regions(image),
+                         ((450, 545, 1211, 901), (450, 430, 1211, 541)))
+
+    def test_wide_composer_does_not_crop_left_hand_menu_text(self):
+        self.assertEqual(acceptance.dialog_bounds(fixture((245, 430, 1418, 710))),
+                         (245, 430, 1419, 711))
+
+    def test_popup_shadow_can_darken_composer_top_border(self):
+        image = fixture()
+        ImageDraw.Draw(image).line((540, 715, 1160, 715), fill=(124, 111, 98))
+        self.assertEqual(acceptance.dialog_bounds(image), (540, 430, 1161, 711))
+
     def test_sidebar_and_tab_borders_do_not_move_dialog(self):
         image = fixture()
         draw = ImageDraw.Draw(image)

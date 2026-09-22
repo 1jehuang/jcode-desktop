@@ -7,6 +7,7 @@ JSON report (including the failing step if acceptance fails).
 """
 import csv
 import io
+import itertools
 import json
 import re
 import shutil
@@ -16,7 +17,6 @@ from collections import Counter
 
 from PIL import Image
 
-from fresh_session_acceptance import composer_bounds
 
 
 # These routes are supplied by the explicitly enabled screenshot model fixture.
@@ -34,21 +34,50 @@ def normalized(text):
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def dialog_bounds(image):
-    """Find suggestions immediately above the still-visible focused composer."""
+def focused_edges(image):
     edges = []
-    for y in range(100, image.height - 20):
-        xs = [x for x in range(280, image.width - 12)
-              if image.getpixel((x, y))[:3] == (135, 121, 107)]
-        if len(xs) >= 250:
-            edges.append((y, min(xs), max(xs)))
-    assert len(edges) == 4, f"Expected suggestion and composer borders, found {edges}"
-    top, bottom, composer_top, composer_bottom = edges
-    assert 0 < composer_top[0] - bottom[0] <= 8, ("Suggestions must be above input", edges)
-    assert abs(top[1] - composer_top[1]) <= 2, ("Suggestions must align with input", edges)
-    assert abs(top[2] - composer_top[2]) <= 2, ("Suggestions must match input width", edges)
-    assert abs(top[1] - bottom[1]) <= 2 and abs(top[2] - bottom[2]) <= 2, edges
+    for y in range(100, image.height):
+        xs = [x for x in range(image.width - 12)
+              # Foreground popup shadows slightly darken the composer border.
+              if all(expected - 14 <= actual <= expected
+                     for actual, expected in zip(image.getpixel((x, y))[:3], (135, 121, 107)))]
+        # Ignore isolated sidebar/vertical-border pixels on the same scanline.
+        runs = [[x for _, x in group] for _, group in
+                itertools.groupby(enumerate(xs), key=lambda item: item[1] - item[0])]
+        run = max(runs, key=len, default=[])
+        if len(run) >= 300:
+            edges.append((y, run[0], run[-1]))
+    return edges
+
+
+def composer_bounds(image):
+    edges = focused_edges(image)
+    assert len(edges) == 2, f"Expected two composer borders, found {edges}"
+    top, bottom = edges
     return (top[1], top[0], top[2] + 1, bottom[0] + 1)
+
+
+def picker_regions(image):
+    """Distinguish popup and editor by their rendered surfaces, allowing a flip."""
+    edges = focused_edges(image)
+    assert len(edges) == 4, f"Expected suggestion and composer borders, found {edges}"
+    first_top, first_bottom, second_top, second_bottom = edges
+    assert 0 < second_top[0] - first_bottom[0] <= 8, ("Popup must adjoin input", edges)
+    assert abs(first_top[1] - second_top[1]) <= 2, ("Suggestions must align with input", edges)
+    assert abs(first_top[2] - second_top[2]) <= 2, ("Suggestions must match input width", edges)
+    # The popup has HEADER_BG just inside its top border, before the first row.
+    # This remains distinct from INPUT_BG even for a filtered single-row menu.
+    sample = ((second_top[1] + second_top[2]) // 2, second_top[0] + 3)
+    below = image.getpixel(sample)[:3] == (48, 43, 39)
+    top, bottom = (second_top, second_bottom) if below else (first_top, first_bottom)
+    composer_top, composer_bottom = (first_top, first_bottom) if below else (second_top, second_bottom)
+    assert abs(top[1] - bottom[1]) <= 2 and abs(top[2] - bottom[2]) <= 2, edges
+    return ((top[1], top[0], top[2] + 1, bottom[0] + 1),
+            (composer_top[1], composer_top[0], composer_top[2] + 1, composer_bottom[0] + 1))
+
+
+def dialog_bounds(image):
+    return picker_regions(image)[0]
 
 
 def parse_words(tsv, bounds, scale=3):
@@ -269,7 +298,7 @@ def verify(output, env, root):
         def filtered(image):
             bounds, words = picker(image, stage, FILTER_ROUTE)
             # The query remains in the real composer below the suggestions.
-            query_words = ocr(image, (bounds[0], bounds[3] + 1, bounds[2], min(image.height, bounds[3] + 160)), stage + "-query")
+            query_words = ocr(image, picker_regions(image)[1], stage + "-query")
             phrase_bounds(query_words, FILTER)
             assert normalized(LAST_ROUTE) not in normalized(" ".join(word["text"] for word in words)), "Filtering kept unrelated routes"
             return bounds, words
@@ -303,7 +332,7 @@ def verify(output, env, root):
         native("key", "Return")
         def selected(image, route):
             closed(image)
-            words = ocr(image, (280, 50, image.width - 12, image.height - 30), stage)
+            words = ocr(image, (0, 50, image.width - 12, image.height - 30), stage)
             phrase_bounds(words, "Switching model to")
             phrase_bounds(words, route)
             return True
