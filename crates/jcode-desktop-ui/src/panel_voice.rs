@@ -512,6 +512,10 @@ impl Panel {
 }
 
 #[cfg(test)]
+#[path = "panel_voice_live_tests.rs"]
+mod live_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
