@@ -129,8 +129,18 @@ impl Panel {
     pub(super) fn handle_preview_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         // Only simulated login and local model-picker UI are permitted. Never forward
         // arbitrary commands to the normal dispatcher (terminal/files/integrations).
-        if !self.login_command(content.trim(), cx) && content.trim() == "/model" {
-            self.open_recovery_models(cx);
+        if !self.login_command(content.trim(), cx) {
+            if matches!(content.trim(), "/model" | "/models") {
+                self.open_model_picker(cx);
+            } else if let Some(model) = content.trim().strip_prefix("/model ") {
+                if self.available_models.iter().any(|available| available == model) {
+                    self.model = Some(model.to_string());
+                    self.items.push(Item::Assistant(format!(
+                        "Offline preview: selected `{model}` locally. No account or session was changed."
+                    )));
+                    self.close_model_picker(cx);
+                }
+            }
         }
         cx.notify();
         true

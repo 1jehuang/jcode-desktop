@@ -358,6 +358,7 @@ pub struct Panel {
     todoist: Option<TodoistPanelState>,
     recovery_picker_open: bool,
     model_picker_open: bool,
+    focus_pending: bool,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -870,6 +871,7 @@ impl Panel {
             .then(|| TodoistPanelState::fixture(80)),
             recovery_picker_open: false,
             model_picker_open: false,
+            focus_pending: false,
             login: None,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -2284,12 +2286,6 @@ impl Panel {
                                 handled = true;
                             } else if this.model_picker_open {
                                 this.close_model_picker(cx);
-                                let input = this.input.clone();
-                                cx.defer(move |cx| {
-                                    input.update(cx, |input, cx| {
-                                        input.set_content(String::new(), cx)
-                                    });
-                                });
                                 handled = true;
                             } else if !this.is_pending_session()
                                 && (this.status != "idle"
@@ -2570,17 +2566,21 @@ impl Panel {
             self.open_recovery_models(cx);
             return;
         }
+        self.recovery_picker_open = false;
         self.model_picker_open = true;
+        let models = self.available_models.clone();
         let input = self.input.clone();
         cx.defer(move |cx| {
             input.update(cx, |input, cx| {
-                input.set_content("/model ".to_string(), cx);
+                input.open_model_menu(models, cx);
             });
         });
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {
         self.model_picker_open = false;
+        let input = self.input.clone();
+        cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
         cx.notify();
     }
 
@@ -3741,6 +3741,9 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.focus_pending) {
+            self.focus_input(window, cx);
+        }
         if !self.tool_detail_motion.is_empty() {
             let now = Instant::now();
             let reduce_motion = cx.reduce_motion() || crate::config::get().appearance.reduce_motion;
@@ -4582,9 +4585,7 @@ impl Render for Panel {
                                 )
                                 .on_click(cx.listener(
                                     |this, _, window, cx| {
-                                        this.recovery_picker_open = !this.recovery_picker_open;
-                                        this.focus_input(window, cx);
-                                        cx.notify();
+                                        this.toggle_model_picker(window, cx);
                                         cx.stop_propagation();
                                     },
                                 )),
@@ -8282,8 +8283,8 @@ mod tests {
             .debug_bounds("prompt-input")
             .expect("composer remains rendered");
         assert!(
-            suggestions.bottom() <= input.top(),
-            "model suggestions are above the composer"
+            suggestions.bottom() <= input.top() || suggestions.top() >= input.bottom(),
+            "model suggestions must not cover the composer"
         );
         assert!((suggestions.left() - input.left()).abs() <= px(1.0));
         assert!((suggestions.size.width - input.size.width).abs() <= px(2.0));

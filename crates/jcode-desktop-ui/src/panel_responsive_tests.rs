@@ -14,6 +14,8 @@ fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui:
         panel.auth_method = Some("oauth".into());
         panel.available_models = vec!["openai:test".into(), "anthropic:test".into()];
         panel.input.update(cx, |input, cx| {
+            input.set_command_models(panel.available_models.clone(), cx);
+            input.set_current_model(panel.model.clone(), cx);
             input.set_content("keep my draft".into(), cx)
         });
         cx.notify();
@@ -27,22 +29,22 @@ fn footer_model_click_preserves_draft_and_selects_without_sending(cx: &mut gpui:
     );
     vcx.simulate_click(model.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("recovery-model-picker").is_some());
+    assert!(vcx.debug_bounds("slash-command-overlay").is_some());
     assert!(commands.try_recv().is_err());
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    assert!(vcx.debug_bounds("slash-command-overlay").is_none());
     let model = vcx.debug_bounds("panel-model").unwrap();
     vcx.simulate_click(model.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    let choice = vcx.debug_bounds("recovery-model-picker-1").unwrap();
+    let choice = vcx.debug_bounds("slash-command-row-1").unwrap();
     vcx.simulate_click(choice.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
         matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "anthropic:test")
     );
     assert!(commands.try_recv().is_err());
-    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    assert!(vcx.debug_bounds("slash-command-overlay").is_none());
     panel.read_with(vcx, |panel, cx| {
         assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft")
     });

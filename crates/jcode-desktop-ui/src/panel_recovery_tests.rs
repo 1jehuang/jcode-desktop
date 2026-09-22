@@ -58,6 +58,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     let panel = workspace
         .read_with(vcx, |workspace, _| workspace.test_panel(0))
         .unwrap();
+    vcx.update(|_, cx| Panel::connect_input(&panel, cx));
     panel.update(vcx, |panel, cx| {
         panel.input.update(cx, |input, cx| {
             input.set_content("keep this draft".into(), cx)
@@ -99,13 +100,13 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     vcx.simulate_click(choose.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     let row = vcx
-        .debug_bounds("recovery-model-picker-0")
+        .debug_bounds("slash-command-row-0")
         .expect("native model choice");
     assert!(vcx.debug_bounds("recovery-model-picker-1").is_none());
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
-        matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "session-a" && model == "openai:test")
+        matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "session-a" && model == "openai-api:test")
     );
     assert!(
         commands.try_recv().is_err(),
@@ -136,12 +137,12 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     panel.update(vcx, |panel, cx| panel.open_recovery_models(cx));
     vcx.run_until_parked();
     let row = vcx
-        .debug_bounds("recovery-model-picker-0")
+        .debug_bounds("slash-command-row-0")
         .expect("native picker route");
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(
-        matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai:test")
+        matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-api:test")
     );
     assert!(vcx.debug_bounds("recovery-model-picker").is_none());
 
@@ -225,9 +226,11 @@ fn recovery_many_routes_stay_compact_until_choose_model_is_clicked(cx: &mut gpui
     let (bridge, commands) = crate::harness::spawn_recording();
     let (panel, vcx) =
         cx.add_window_view(|_, cx| Panel::new("compact".into(), None, None, bridge, cx));
+    vcx.update(|_, cx| Panel::connect_input(&panel, cx));
     panel.update(vcx, |panel, cx| {
         panel.available_models = (0..80).map(|n| format!("minimax:model-{n:02}")).collect();
         panel.input.update(cx, |input, cx| {
+            input.set_command_models(panel.available_models.clone(), cx);
             input.set_content("preserve draft".into(), cx)
         });
         panel.apply(&error(REFRESH_TOKEN_ERROR), cx);
@@ -251,20 +254,12 @@ fn recovery_many_routes_stay_compact_until_choose_model_is_clicked(cx: &mut gpui
     let choose = vcx.debug_bounds("recovery-choose-model").unwrap();
     vcx.simulate_click(choose.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    let choices = vcx
-        .debug_bounds("recovery-model-choices")
-        .expect("bounded catalog");
-    assert!(choices.size.height <= px(180.));
-    let picker = vcx.debug_bounds("recovery-model-picker").unwrap();
-    assert!(
-        picker.size.height <= px(250.),
-        "picker must not expand to fit all routes: {picker:?}"
-    );
-    let row = vcx.debug_bounds("recovery-model-picker-0").unwrap();
-    assert!(
-        row.size.height >= px(20.),
-        "rows remain readable rather than shrinking to fit"
-    );
+    let picker = vcx.debug_bounds("slash-command-overlay").expect("shared model menu");
+    assert!(picker.top() >= px(0.), "menu must stay inside the viewport");
+    assert!(picker.size.height <= px(490.));
+    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    let row = vcx.debug_bounds("slash-command-row-0").unwrap();
+    assert!(row.size.height >= px(20.));
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     assert!(

@@ -113,87 +113,27 @@ fn native_error_message(message: &str) -> String {
 }
 
 impl Panel {
+    pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recovery_picker_open {
+            self.recovery_picker_open = false;
+        } else if self.model_picker_open {
+            self.close_model_picker(cx);
+        } else {
+            self.open_recovery_models(cx);
+        }
+        self.focus_input(window, cx);
+        cx.notify();
+    }
+
     pub(super) fn open_recovery_models(&mut self, cx: &mut Context<Self>) {
         self.login = None;
-        self.recovery_picker_open = true;
-        cx.notify();
-    }
-
-    fn select_recovery_model(&mut self, model: String, cx: &mut Context<Self>) {
-        // RuntimeInfo is authoritative. A stale rendered row must not select a
-        // route that has since become unavailable.
-        if !self.available_models.contains(&model) {
-            return;
-        }
-        if self.preview_state.is_none() {
-            self.bridge.send(Command::SetModel {
-                session_id: self.session_id.clone(),
-                model: model.clone(),
-            });
-        }
-        self.recovery_picker_open = false;
-        if self.preview_state.is_some() {
-            self.model = Some(model.clone());
-            self.items.push(Item::Assistant(format!(
-                "Offline preview: selected `{model}` locally. No account or session was changed."
-            )));
+        if self.available_models.is_empty() {
+            self.recovery_picker_open = true;
         } else {
-            self.items.push(Item::Assistant(format!(
-                "Switching model to `{model}`… Your draft is unchanged."
-            )));
+            self.open_model_picker(cx);
         }
+        self.focus_pending = true;
         cx.notify();
-    }
-
-    fn recovery_model_choices(&self, scope: String, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id(SharedString::from(format!("recovery-models-{scope}")))
-            .flex()
-            .flex_col()
-            .gap_1()
-            .debug_selector(|| "recovery-model-choices".into())
-            .flex_none()
-            .h(px(
-                (self.available_models.len().max(1) as f32 * 30.).min(180.)
-            ))
-            .overflow_y_scroll()
-            .when(self.available_models.is_empty(), |el| {
-                el.child(
-                    div().text_color(Theme::global().TEXT_DIM).child(
-                        "No connected models yet. Choices appear when the session connects.",
-                    ),
-                )
-            })
-            .children(
-                self.available_models
-                    .iter()
-                    .enumerate()
-                    .map(|(index, model)| {
-                        let model = model.clone();
-                        let selected = self.model.as_ref() == Some(&model);
-                        let selector = format!("recovery-model-{scope}-{index}");
-                        div()
-                            .id(SharedString::from(selector.clone()))
-                            .debug_selector(move || selector.clone())
-                            .flex_none()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_color(Theme::global().TEXT)
-                            .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                            .child(format!(
-                                "{}{}",
-                                model,
-                                if selected { " · current" } else { "" }
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_recovery_model(model.clone(), cx);
-                                cx.stop_propagation();
-                            }))
-                    }),
-            )
-            .into_any_element()
     }
 
     pub(super) fn render_recovery_model_picker(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -224,7 +164,6 @@ impl Panel {
                             })),
                     ),
             )
-            .child(self.recovery_model_choices("picker".into(), cx))
             .when(self.available_models.is_empty(), |el| {
                 el.child(
                     div()

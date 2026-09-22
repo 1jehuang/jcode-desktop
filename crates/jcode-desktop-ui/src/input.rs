@@ -17,6 +17,9 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
+#[path = "input_popup.rs"]
+mod popup;
+
 #[path = "input_model_menu.rs"]
 mod model_menu;
 #[path = "input_paste_preview.rs"]
@@ -147,6 +150,7 @@ pub struct PromptInput {
     history_index: Option<usize>,
     live_draft: String,
     attachments: Vec<Attachment>,
+    model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
     attachment_notice: Option<SharedString>,
     /// The newest paste briefly appears at reading size, then flies into its
     /// thumbnail. The index keeps simultaneous attachments independent.
@@ -296,17 +300,24 @@ pub struct AttachmentSnapshot {
 
 impl PromptInput {
     pub fn snapshot(&self) -> PromptInputSnapshot {
+        // A transient picker must never replace the user's persisted draft.
+        let (content, attachments) = self.model_menu_draft.as_ref()
+            .map(|(content, attachments)| (content, attachments))
+            .unwrap_or((&self.content, &self.attachments));
+        let selection = if self.model_menu_draft.is_some() {
+            content.len()..content.len()
+        } else {
+            self.selected_range.clone()
+        };
         PromptInputSnapshot {
-            content: self.content.to_string(),
-            selection_start: self.selected_range.start,
-            selection_end: self.selected_range.end,
+            content: content.to_string(),
+            selection_start: selection.start,
+            selection_end: selection.end,
             selection_reversed: self.selection_reversed,
             history: self.history.clone(),
             history_index: self.history_index,
             live_draft: self.live_draft.clone(),
-            attachments: self
-                .attachments
-                .iter()
+            attachments: attachments.iter()
                 .map(|attachment| AttachmentSnapshot {
                     media_type: attachment.media_type.clone(),
                     encoded: attachment.encoded.clone(),
@@ -317,6 +328,7 @@ impl PromptInput {
     }
 
     pub fn restore(&mut self, snapshot: PromptInputSnapshot, cx: &mut Context<Self>) {
+        self.model_menu_draft = None;
         let len = snapshot.content.len();
         self.content = snapshot.content.into();
         self.selected_range = snapshot.selection_start.min(len)..snapshot.selection_end.min(len);
@@ -407,6 +419,7 @@ impl PromptInput {
             history_index: None,
             live_draft: String::new(),
             attachments: Vec::new(),
+            model_menu_draft: None,
             attachment_notice: None,
             attachment_preview: None,
             preview_panel_bounds: Default::default(),
@@ -1013,6 +1026,30 @@ impl PromptInput {
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
+        }
+    }
+
+    pub(crate) fn open_model_menu(&mut self, fallback_models: Vec<String>, cx: &mut Context<Self>) {
+        // Offline/reconnected inputs may not have received route metadata yet.
+        // Never replace the canonical grouped routes once they are available.
+        if self.command_models.is_empty() {
+            self.set_command_models(fallback_models, cx);
+        }
+        if self.model_menu_draft.is_none()
+            && !(self.content.trim() == "/model" || self.content.trim_start().starts_with("/model "))
+        {
+            self.model_menu_draft = Some((self.content.clone(), std::mem::take(&mut self.attachments)));
+            self.attachment_preview = None;
+        }
+        self.set_content("/model ".into(), cx);
+    }
+
+    pub(crate) fn close_model_menu(&mut self, cx: &mut Context<Self>) {
+        if let Some((draft, attachments)) = self.model_menu_draft.take() {
+            self.attachments = attachments;
+            self.set_content(draft.to_string(), cx);
+        } else if self.content.trim() == "/model" || self.content.trim_start().starts_with("/model ") {
+            self.set_content(String::new(), cx);
         }
     }
 
@@ -1715,15 +1752,12 @@ impl Render for PromptInput {
             .when(
                 command_visible,
                 |el| {
-                    el.child(
+                    el.child(gpui::deferred(popup::Popup::new(
                         div()
                             .id("slash-command-suggestions")
                             .debug_selector(|| "slash-command-overlay".into())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_full()
-                            .mb(px(4.0 + 6.0 * (1.0 - menu_progress)))
+                            .w_full()
+                            .max_h_full()
                             .opacity(0.65 + 0.35 * menu_progress)
                             .flex()
                             .flex_col()
@@ -1736,16 +1770,19 @@ impl Render for PromptInput {
                             .child(
                                 div()
                                     .relative()
+                                    .flex()
+                                    .flex_col()
+                                    .min_h_0()
                                     .p_1()
                                     .child(
                                         div()
                                             .id("slash-command-scroll")
                                             .debug_selector(|| "slash-command-scroll".into())
+                                            .min_h_0()
                                             .flex()
                                             .flex_col()
-                                            .max_h(px((f32::from(window.viewport_size().height)
-                                                * if self.content.trim_start().starts_with("/model") { 0.6 } else { 0.35 })
-                                                .min(if self.content.trim_start().starts_with("/model") { 480. } else { 280. })))
+                                            .max_h(popup::scroll_height(window.viewport_size().height,
+                                                self.content.trim_start().starts_with("/model")))
                                             .overflow_y_scroll()
                                             .track_scroll(&self.command_scroll)
                                             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
@@ -1962,7 +1999,8 @@ impl Render for PromptInput {
                                         "slash-command-scrollbar",
                                     )),
                             ),
-                    )
+                        px(4.0 + 6.0 * (1.0 - menu_progress)),
+                    )).with_priority(1))
                 },
             )
             .cursor(CursorStyle::IBeam)
@@ -2231,6 +2269,37 @@ mod tests {
                 assert_eq!(input.attachments[0].encoded, "cG5n");
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn model_menu_restores_draft_and_images_after_selection_or_cancel(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+        input.update(cx, |input, cx| {
+            input.set_content("unfinished prompt".into(), cx);
+            input.attachments.push(Attachment {
+                media_type: "image/png".into(),
+                encoded: "cG5n".into(),
+                label: "4×3".into(),
+                preview: preview_image("image/png", Vec::new()).unwrap(),
+                bounds: Default::default(),
+            });
+            for selected in [false, true] {
+                input.open_model_menu(Vec::new(), cx);
+                input.open_model_menu(Vec::new(), cx); // Reopening must not replace the saved draft.
+                assert_eq!(input.content.as_ref(), "/model ");
+                assert!(input.attachments.is_empty());
+                let snapshot = input.snapshot();
+                assert_eq!(snapshot.content, "unfinished prompt");
+                assert_eq!(snapshot.attachments.len(), 1);
+                if selected {
+                    input.set_content(String::new(), cx);
+                }
+                input.close_model_menu(cx);
+                assert_eq!(input.content.as_ref(), "unfinished prompt");
+                assert_eq!(input.attachments.len(), 1);
+                assert_eq!(input.attachments[0].encoded, "cG5n");
+            }
+        });
     }
 
     #[gpui::test]

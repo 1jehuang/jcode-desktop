@@ -129,3 +129,46 @@ fn login_composer_remote_provider_keeps_native_recovery(cx: &mut gpui::TestAppCo
         assert!(w.slots[0].panel.read(cx).items.is_empty())
     });
 }
+
+#[gpui::test]
+fn footer_and_account_model_actions_share_slash_menu_without_new_windows(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx, "unified-model-picker");
+    let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+    source.update(vcx, |panel, cx| {
+        panel.apply(&jcode_sdk::ApiEvent::RuntimeInfo {
+            session_id: "unified-model-picker".into(),
+            provider: Some("openai".into()),
+            model: Some("test".into()),
+            reasoning_effort: None,
+            routes: vec![jcode_sdk::ModelRouteInfo {
+                model: "test".into(), provider: "openai".into(),
+                api_method: "openai-api-key".into(), available: true,
+                detail: String::new(), usage: None,
+            }],
+        }, cx);
+        panel.input.update(cx, |input, cx| input.set_content("keep this draft".into(), cx));
+    });
+    for single in [false, true] {
+        workspace.update(vcx, |w, cx| {
+            w.single_panel = single;
+            source.update(cx, |_, cx| cx.notify());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        click(vcx, "panel-model");
+        assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+        assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+        vcx.update(|_, cx| assert_eq!(cx.windows().len(), 1));
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        source.read_with(vcx, |panel, cx| assert_eq!(panel.input.read(cx).content.as_ref(), "keep this draft"));
+        source.update(vcx, |panel, cx| panel.choose_account_model(cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        assert!(matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "openai-api:test"));
+        source.read_with(vcx, |panel, cx| assert_eq!(panel.input.read(cx).content.as_ref(), "keep this draft"));
+    }
+    assert!(commands.try_recv().is_err());
+}
