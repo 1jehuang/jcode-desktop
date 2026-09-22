@@ -3360,7 +3360,6 @@ impl Panel {
                 if self.image_pane_open {
                     return self.render_image_pane_link(index, image, cx);
                 }
-                let preview_image = image.clone();
                 let panel = cx.entity().downgrade();
                 let label = image
                     .label
@@ -3377,15 +3376,8 @@ impl Panel {
                         let scroll_panel = panel.clone();
                         let gesture_panel = panel.clone();
                         el.child(
-                            crate::inline_image::InlineImage::new(
-                                index,
-                                preview,
-                                move |window, cx| {
-                                    let _ = panel.update(cx, |panel, cx| {
-                                        panel.open_image_preview(preview_image.clone(), window, cx);
-                                    });
-                                },
-                            )
+                            crate::inline_image::InlineImage::new(index, preview)
+                            .metadata(label.clone())
                             .on_fit_scroll(move |event, window, cx| {
                                 let _ = scroll_panel.update(cx, |panel, cx| {
                                     if panel.transcript_list.is_scrollbar_dragging() {
@@ -3410,16 +3402,14 @@ impl Panel {
                             }),
                         )
                     })
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(if image.preview.is_some() {
-                                label
-                            } else {
-                                format!("{label} (could not display {})", image.media_type)
-                            }),
-                    )
+                    .when(image.preview.is_none(), |el| {
+                        el.child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child(format!("{label} (could not display {})", image.media_type)),
+                        )
+                    })
                     .into_any_element()
             }
             Item::Assistant(text) => div()

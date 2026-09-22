@@ -9,28 +9,24 @@ use gpui::{
 };
 use std::{rc::Rc, sync::Arc};
 
-type OpenImage = Rc<dyn Fn(&mut Window, &mut App)>;
+type GestureHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type FitScroll = Rc<dyn Fn(&ScrollWheelEvent, &mut Window, &mut App)>;
 
 #[derive(IntoElement)]
 pub(crate) struct InlineImage {
     key: SharedString,
     image: Arc<Image>,
-    open: OpenImage,
+    metadata: Option<SharedString>,
     fit_scroll: Option<FitScroll>,
-    on_gesture: Option<OpenImage>,
+    on_gesture: Option<GestureHandler>,
 }
 
 impl InlineImage {
-    pub(crate) fn new(
-        row: usize,
-        image: Arc<Image>,
-        open: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub(crate) fn new(row: usize, image: Arc<Image>) -> Self {
         Self {
             key: format!("inline-image-{row}-{}", image.id).into(),
             image,
-            open: Rc::new(open),
+            metadata: None,
             fit_scroll: None,
             on_gesture: None,
         }
@@ -38,6 +34,11 @@ impl InlineImage {
 }
 
 impl InlineImage {
+    pub(crate) fn metadata(mut self, metadata: impl Into<SharedString>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
+    }
+
     /// A capturing parent scroller can delegate fit scrolling explicitly. In
     /// this mode the image occludes its parent only inside the viewport.
     pub(crate) fn on_fit_scroll(
@@ -59,18 +60,19 @@ impl RenderOnce for InlineImage {
         let state = window.use_keyed_state(self.key, cx, |_, _| ImageView {
             fit_size: inline_fit_size(&self.image),
             image: self.image,
-            open: self.open.clone(),
+            metadata: self.metadata.clone(),
             fit_scroll: self.fit_scroll.clone(),
             on_gesture: self.on_gesture.clone(),
+            expanded: false,
             zoom: 1.0,
             pinch_active: false,
             scroll: ScrollHandle::new(),
             drag: None,
             dragged: false,
         });
-        // A retained row can receive a fresh callback without losing its gestures.
+        // Refresh metadata and callbacks without losing the row's zoom or expansion.
         state.update(cx, |state, _| {
-            state.open = self.open;
+            state.metadata = self.metadata;
             state.fit_scroll = self.fit_scroll;
             state.on_gesture = self.on_gesture;
         });
@@ -98,16 +100,17 @@ fn inline_fit_size(image: &Image) -> (f32, f32) {
         .filter(|(width, height)| *width > 0 && *height > 0)
         .unwrap_or((320, 320));
     let (width, height) = (dimensions.0 as f32, dimensions.1 as f32);
-    let scale = (320.0 / height).min(1.0);
+    let scale = (400.0 / height).min(1.0);
     (width * scale, height * scale)
 }
 
 struct ImageView {
     fit_size: (f32, f32),
     image: Arc<Image>,
-    open: OpenImage,
+    metadata: Option<SharedString>,
     fit_scroll: Option<FitScroll>,
-    on_gesture: Option<OpenImage>,
+    on_gesture: Option<GestureHandler>,
+    expanded: bool,
     zoom: f32,
     pinch_active: bool,
     scroll: ScrollHandle,
@@ -143,6 +146,7 @@ impl Render for ImageView {
         div()
             .relative()
             .w(px(self.fit_size.0))
+            .when(self.expanded, |view| view.w_full())
             .max_w_full()
             .flex()
             .flex_col()
@@ -241,7 +245,12 @@ impl Render for ImageView {
                         let displaced = matches!(event, ClickEvent::Mouse(event)
                             if (event.up.position - event.down.position).magnitude() > 4.0);
                         if !this.dragged && !displaced {
-                            (this.open)(window, cx);
+                            if let Some(begin) = &this.on_gesture {
+                                begin(window, cx);
+                            }
+                            this.expanded = !this.expanded;
+                            this.zoom = 1.0;
+                            this.scroll.set_offset(Point::default());
                         }
                         this.drag = None;
                         cx.notify();
@@ -314,40 +323,62 @@ impl Render for ImageView {
                         .size_full()
                     }),
             )
-            .when(self.zoom > 1.0, |view| {
-                view.child(
-                    div()
-                        .absolute()
-                        .top_2()
-                        .left_2()
-                        .rounded_md()
-                        .bg(Theme::global().PANEL_BG)
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap_2()
-                        .text_size(px(11.0))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(
-                            div()
-                                .id("inline-image-fit")
-                                .debug_selector(|| "inline-image-fit".into())
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(Theme::global().QUOTE_BG))
-                                .child("Fit")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.drag = None;
-                                    this.dragged = false;
-                                    this.zoom_at(1.0, this.scroll.bounds().center(), cx);
-                                    cx.stop_propagation();
-                                })),
-                        )
-                        .child(format!("{:.0}%", self.zoom * 100.0)),
-                )
-            })
+            .when(
+                self.metadata.is_some() || self.expanded || self.zoom > 1.0,
+                |view| {
+                    view.child(
+                        div()
+                            .debug_selector(|| "inline-image-metadata".into())
+                            .w_full()
+                            .min_h(px(28.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap_2()
+                            .text_size(px(11.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .when_some(self.metadata.clone(), |row, metadata| {
+                                row.child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(metadata),
+                                )
+                            })
+                            .when(self.expanded || self.zoom > 1.0, |row| {
+                                row.child(
+                                    div()
+                                        .id("inline-image-fit")
+                                        .debug_selector(|| "inline-image-fit".into())
+                                        .flex_none()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(Theme::global().QUOTE_BG))
+                                        .child("Fit")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.expanded = false;
+                                            this.drag = None;
+                                            this.dragged = false;
+                                            this.zoom_at(1.0, this.scroll.bounds().center(), cx);
+                                            cx.stop_propagation();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(|| "inline-image-zoom".into())
+                                        .flex_none()
+                                        .child(format!("{:.0}%", self.zoom * 100.0)),
+                                )
+                            }),
+                    )
+                },
+            )
     }
 }
 
@@ -358,13 +389,12 @@ mod tests {
         Bounds, Entity, ImageFormat, Modifiers, ScrollDelta, TestAppContext, TouchPhase,
         VisualTestContext,
     };
-    use std::cell::Cell;
 
     #[test]
     fn inline_image_fit_preserves_aspect_ratio_without_upscaling() {
         for (width, height, expected) in [
-            (1000, 600, (533.3334, 320.0)),
-            (600, 1000, (192.0, 320.0)),
+            (1000, 600, (666.6667, 400.0)),
+            (600, 1000, (240.0, 400.0)),
             (64, 48, (64.0, 48.0)),
         ] {
             let mut bytes = std::io::Cursor::new(Vec::new());
@@ -405,13 +435,11 @@ mod tests {
         width: f32,
         image: Arc<Image>,
         scroll: ScrollHandle,
-        opens: Rc<Cell<usize>>,
         revision: usize,
     }
 
     impl Render for Transcript {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let opens = self.opens.clone();
             div()
                 .id("test-transcript")
                 .debug_selector(|| "test-transcript".into())
@@ -419,22 +447,19 @@ mod tests {
                 .h(px(500.0))
                 .overflow_scroll()
                 .track_scroll(&self.scroll)
-                .child(InlineImage::new(0, self.image.clone(), move |_, _| {
-                    opens.set(opens.get() + 1);
-                }))
+                .child(InlineImage::new(0, self.image.clone()).metadata("Image preview test chart"))
                 .child(div().h(px(1000.0)).child(format!("tail {}", self.revision)))
         }
     }
 
     fn setup(cx: &mut TestAppContext) -> (Entity<Transcript>, &mut VisualTestContext) {
         cx.add_window_view(|_, _| Transcript {
-            width: 600.0,
+            width: 800.0,
             image: crate::image_cache::encoded(
                 ImageFormat::Png,
                 include_bytes!("../../../assets/previews/image-preview.png").to_vec(),
             ),
             scroll: ScrollHandle::new(),
-            opens: Rc::new(Cell::new(0)),
             revision: 0,
         })
     }
@@ -544,7 +569,6 @@ mod tests {
                 transcript.read_with(cx, |t, _| t.scroll.offset()),
                 Point::default()
             );
-            assert_eq!(transcript.read_with(cx, |t, _| t.opens.get()), 0);
         }
         cx.simulate_event(PinchEvent {
             position: anchor,
@@ -590,7 +614,7 @@ mod tests {
         let (transcript, cx) = setup(cx);
         cx.run_until_parked();
         let viewport = cx.debug_bounds("inline-image-viewport").unwrap();
-        assert_eq!(viewport.size.height, px(320.0));
+        assert_eq!(viewport.size.height, px(400.0));
         let before = bounds(cx);
         assert_eq!(before.size, viewport.size);
         let anchor = viewport.origin + point(viewport.size.width * 0.3, px(120.0));
@@ -607,7 +631,7 @@ mod tests {
                 .unwrap()
                 .size
                 .height,
-            px(320.0)
+            px(400.0)
         );
         for (delta, scale) in [(100.0, 4.0), (f32::NAN, 4.0), (-0.99, 1.0)] {
             pinch(cx, anchor, delta);
@@ -617,10 +641,18 @@ mod tests {
         assert_near(bounds(cx).origin, before.origin);
         pinch(cx, anchor, 1.0);
         let fit = cx.debug_bounds("inline-image-fit").unwrap();
+        let metadata = cx.debug_bounds("inline-image-metadata").unwrap();
+        let viewport = cx.debug_bounds("inline-image-viewport").unwrap();
+        let percentage = cx.debug_bounds("inline-image-zoom").unwrap();
+        assert!(metadata.top() >= viewport.bottom());
+        assert!(fit.top() >= viewport.bottom());
+        assert!(percentage.top() >= viewport.bottom());
+        assert!(metadata.contains(&fit.center()));
+        assert!(metadata.contains(&percentage.center()));
         cx.simulate_click(fit.center(), Modifiers::default());
         cx.run_until_parked();
         assert_eq!(bounds(cx), before);
-        assert_eq!(transcript.read_with(cx, |t, _| t.opens.get()), 0);
+
         assert_eq!(
             transcript.read_with(cx, |t, _| t.scroll.offset()),
             Point::default()
@@ -658,8 +690,8 @@ mod tests {
     }
 
     #[gpui::test]
-    fn inline_image_drag_round_trip_outside_release_and_open(cx: &mut TestAppContext) {
-        let (transcript, cx) = setup(cx);
+    fn inline_image_drag_round_trip_outside_release_and_expand(cx: &mut TestAppContext) {
+        let (_, cx) = setup(cx);
         cx.run_until_parked();
         let viewport = cx.debug_bounds("inline-image-viewport").unwrap();
         let anchor = viewport.center();
@@ -692,9 +724,9 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(
-            transcript.read_with(cx, |t, _| t.opens.get()),
-            0,
-            "round-trip drag is not a click"
+            cx.debug_bounds("inline-image-viewport").unwrap().size,
+            viewport.size,
+            "round-trip drag must not expand the image"
         );
         assert_near(bounds(cx).origin, before.origin);
         cx.simulate_event(MouseDownEvent {
@@ -723,18 +755,22 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(bounds(cx), released, "release outside ends capture");
-        assert_eq!(transcript.read_with(cx, |t, _| t.opens.get()), 0);
+
         let fit = cx.debug_bounds("inline-image-fit").unwrap();
         cx.simulate_click(fit.center(), Modifiers::default());
         cx.run_until_parked();
         cx.simulate_click(anchor, Modifiers::default());
         cx.run_until_parked();
-        assert_eq!(transcript.read_with(cx, |t, _| t.opens.get()), 1);
-        assert!(cx.debug_bounds("inline-image-fit").is_none());
+
+        assert_eq!(
+            cx.debug_bounds("inline-image-viewport").unwrap().size.width,
+            px(800.0)
+        );
+        assert!(cx.debug_bounds("inline-image-fit").is_some());
         assert!(cx.debug_bounds("inline-image-open").is_none());
         cx.simulate_click(anchor, Modifiers::default());
         cx.run_until_parked();
-        assert_eq!(transcript.read_with(cx, |t, _| t.opens.get()), 2);
+        assert_eq!(bounds(cx).size, viewport.size);
     }
 
     #[gpui::test]

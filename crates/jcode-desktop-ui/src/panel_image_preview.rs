@@ -330,7 +330,7 @@ mod tests {
             .debug_bounds("inline-image-viewport")
             .expect("inline viewport paints");
         let before = vcx.debug_bounds("inline-image-content").unwrap();
-        assert_eq!(viewport.size.height, px(320.0));
+        assert_eq!(viewport.size.height, px(400.0));
         assert_eq!(before.size, viewport.size);
         let anchor = viewport.center();
         let transcript_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn image_preview_click_enlarges_and_escape_restores_draft(cx: &mut gpui::TestAppContext) {
+    fn image_click_expands_inline_and_preserves_draft(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::input::bind_keys(cx));
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -474,77 +474,29 @@ mod tests {
             workspace.push_test_panel("image-session", cx);
             workspace
         });
-        let mut panel = None;
-        workspace.update(vcx, |workspace, _| panel = workspace.test_panel(0));
-        let panel = panel.unwrap();
-        panel.update(vcx, |panel, cx| {
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
+        vcx.update(|window, cx| panel.update(cx, |panel, cx| {
             panel.items = vec![Item::Image(fixture_image())];
-            panel.input.update(cx, |input, cx| {
-                input.set_content("keep this draft".into(), cx)
-            });
+            panel.input.update(cx, |input, cx| input.set_content("draft".into(), cx));
+            panel.focus_input(window, cx);
             cx.notify();
-        });
+        }));
         vcx.run_until_parked();
-        let scroll_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
-        let thumbnail = vcx
-            .debug_bounds("transcript-image")
-            .expect("thumbnail paints");
-        vcx.simulate_click(thumbnail.center(), gpui::Modifiers::default());
+        let before = vcx.debug_bounds("inline-image-viewport").unwrap();
+        vcx.simulate_click(before.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_some()));
-        let enlarged = vcx
-            .debug_bounds("image-preview-full")
-            .expect("full image paints");
-        assert!(
-            enlarged.size.height > thumbnail.size.height,
-            "preview must be larger than thumbnail"
-        );
-        vcx.simulate_keystrokes("x");
-        assert_eq!(
-            panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
-            "keep this draft"
-        );
-        vcx.simulate_keystrokes("escape");
-        vcx.run_until_parked();
+        let expanded = vcx.debug_bounds("inline-image-viewport").unwrap();
+        assert!(expanded.size.width > before.size.width);
+        assert!(expanded.size.height > before.size.height);
         assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
         assert!(vcx.debug_bounds("image-preview").is_none());
-        assert_eq!(
-            panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
-            scroll_before
-        );
         vcx.simulate_keystrokes("x");
-        assert_eq!(
-            panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
-            "keep this draftx"
-        );
-        let thumbnail = vcx.debug_bounds("transcript-image").unwrap();
-        vcx.simulate_click(thumbnail.center(), gpui::Modifiers::default());
+        assert_eq!(panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content), "draftx");
+        let fit = vcx.debug_bounds("inline-image-fit").unwrap();
+        assert!(fit.top() >= expanded.bottom());
+        vcx.simulate_click(fit.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        let overlay = vcx.debug_bounds("image-preview").unwrap();
-        vcx.simulate_click(overlay.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
-        assert!(vcx.debug_bounds("image-preview").is_none());
-        assert_eq!(
-            panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
-            scroll_before
-        );
-        vcx.simulate_keystrokes("y");
-        assert_eq!(
-            panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
-            "keep this draftxy"
-        );
-        // The backdrop still dismisses the viewer too.
-        let thumbnail = vcx.debug_bounds("transcript-image").unwrap();
-        vcx.simulate_click(thumbnail.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        let overlay = vcx.debug_bounds("image-preview").unwrap();
-        vcx.simulate_click(
-            overlay.origin + gpui::point(px(2.0), px(2.0)),
-            gpui::Modifiers::default(),
-        );
-        vcx.run_until_parked();
-        assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
+        assert_eq!(vcx.debug_bounds("inline-image-viewport").unwrap().size, before.size);
     }
 
     #[gpui::test]
@@ -564,8 +516,9 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        let thumbnail = vcx.debug_bounds("transcript-image").unwrap();
-        vcx.simulate_click(thumbnail.center(), gpui::Modifiers::default());
+        vcx.update(|window, cx| panel.update(cx, |panel, cx| {
+            panel.open_image_preview(fixture_image(), window, cx);
+        }));
         vcx.run_until_parked();
         let viewport = vcx.debug_bounds("image-preview-viewport").unwrap();
         let before = vcx.debug_bounds("image-preview-full").unwrap();
