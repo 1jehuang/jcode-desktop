@@ -1,6 +1,7 @@
 //! Prompt input with full IME support, adapted from gpui's input example.
 //! Long prompts soft-wrap in a bounded, scrollable editor. Enter submits via a callback.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ mod popup;
 
 #[path = "input_model_menu.rs"]
 mod model_menu;
+#[path = "input_model_picker.rs"]
+mod model_picker;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
 
@@ -166,8 +169,10 @@ pub struct PromptInput {
     model_details: HashMap<String, model_menu::ModelDetails>,
     expanded_model_groups: HashSet<String>,
     current_model: Option<String>,
-    command_scroll: gpui::ScrollHandle,
-    command_layout_key: Option<(SharedString, usize, usize, gpui::Size<Pixels>)>,
+    command_scroll: gpui::ListState,
+    suggestions_revision: u64,
+    suggestions_cache: RefCell<Option<model_picker::SuggestionsCache>>,
+    command_layout_key: Option<(SharedString, usize, gpui::Size<Pixels>)>,
     command_entrance: jcode_desktop_motion::MenuEntrance,
     editor_scroll: gpui::ScrollHandle,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
@@ -433,7 +438,9 @@ impl PromptInput {
             model_details: HashMap::new(),
             expanded_model_groups: HashSet::new(),
             current_model: None,
-            command_scroll: gpui::ScrollHandle::new(),
+            command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
+            suggestions_revision: 0,
+            suggestions_cache: RefCell::new(None),
             command_layout_key: None,
             command_entrance: jcode_desktop_motion::MenuEntrance::default(),
             editor_scroll: gpui::ScrollHandle::new(),
@@ -485,6 +492,7 @@ impl PromptInput {
     pub fn set_command_models(&mut self, models: Vec<String>, cx: &mut Context<Self>) {
         if self.command_models != models {
             self.command_models = models;
+            self.suggestions_revision += 1;
             self.command_selection = 0;
             cx.notify();
         }
@@ -502,6 +510,7 @@ impl PromptInput {
             .get(self.command_selection)
             .cloned();
         self.model_details = model_menu::from_routes(routes);
+        self.suggestions_revision += 1;
         self.current_model = current_model;
         if !routes.is_empty() {
             models = self.model_details.keys().cloned().collect();
@@ -523,6 +532,7 @@ impl PromptInput {
             {
                 self.expanded_model_groups
                     .insert(model_menu::group_key(model, &self.model_details));
+                self.suggestions_revision += 1;
             }
         }
         // A background usage update must not move Enter onto a different model.
@@ -536,7 +546,7 @@ impl PromptInput {
             })
         }) {
             self.command_selection = index;
-            self.command_scroll.scroll_to_item(index);
+            self.reveal_command(index);
         }
         cx.notify();
     }
@@ -544,6 +554,7 @@ impl PromptInput {
     pub fn set_current_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
         if self.current_model != model {
             self.current_model = model;
+            self.suggestions_revision += 1;
             cx.notify();
         }
     }
@@ -562,7 +573,7 @@ impl PromptInput {
     #[cfg(test)]
     pub fn model_picker_rows(&self) -> Vec<(String, bool)> {
         self.command_suggestions()
-            .into_iter()
+            .iter()
             .enumerate()
             .filter_map(|(index, suggestion)| {
                 suggestion.value.strip_prefix("/model ").map(|model| {
@@ -582,11 +593,12 @@ impl PromptInput {
         &self.command_models
     }
 
-    fn command_suggestions(&self) -> Vec<CommandSuggestion> {
+    fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
         if !self.command_completion {
             return Vec::new();
         }
         let now = model_menu::now_unix_secs();
+        let current = model_menu::current_spec(self.current_model.as_deref(), &self.command_models, &self.model_details);
         let trimmed = self.content.trim_start();
         let suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
@@ -620,11 +632,7 @@ impl PromptInput {
                             .map(|details| details.label(now))
                             .unwrap_or_else(|| model_menu::usage_label(None, now)),
                     );
-                    suggestion.help = if model_menu::current_spec(
-                        self.current_model.as_deref(),
-                        &self.command_models,
-                        &self.model_details,
-                    ) == Some(model)
+                    suggestion.help = if current == Some(model)
                     {
                         "Current".into()
                     } else {
@@ -640,6 +648,7 @@ impl PromptInput {
         if !self.expanded_model_groups.remove(&key) {
             self.expanded_model_groups.insert(key.clone());
         }
+        self.suggestions_revision += 1;
         // Keep focus on the disclosure when rows appear or disappear above it.
         if let Some(index) = self
             .command_suggestions()
@@ -647,7 +656,7 @@ impl PromptInput {
             .position(|row| row.toggle.as_ref() == Some(&key))
         {
             self.command_selection = index;
-            self.command_scroll.scroll_to_item(index);
+            self.reveal_command(index);
         }
         cx.notify();
     }
@@ -713,6 +722,7 @@ impl PromptInput {
         self.attachment_preview = None;
         self.content = "".into();
         self.expanded_model_groups.clear();
+        self.suggestions_revision += 1;
         // The cleared editor is one line immediately. Waiting for its next
         // paint leaves a tall, empty composer after a wrapped prompt submits.
         self.visual_line_count = 1;
@@ -912,7 +922,7 @@ impl PromptInput {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = self.command_selection.saturating_sub(1);
-            self.command_scroll.scroll_to_item(self.command_selection);
+            self.reveal_command(self.command_selection);
             cx.notify();
             return;
         }
@@ -934,7 +944,7 @@ impl PromptInput {
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
-            self.command_scroll.scroll_to_item(self.command_selection);
+            self.reveal_command(self.command_selection);
             cx.notify();
             return;
         }
@@ -1026,6 +1036,7 @@ impl PromptInput {
         let content = self.content.trim_start();
         if content.contains('\n') || !(content == "/model" || content.starts_with("/model ")) {
             self.expanded_model_groups.clear();
+            self.suggestions_revision += 1;
         }
     }
 
@@ -1057,7 +1068,7 @@ impl PromptInput {
         self.content = content.into();
         self.reset_model_groups_after_exit();
         self.command_selection = 0;
-        self.command_scroll.scroll_to_item(0);
+        self.reveal_command(0);
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         cx.notify();
@@ -1289,7 +1300,7 @@ impl EntityInputHandler for PromptInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         self.command_selection = 0;
-        self.command_scroll.scroll_to_item(0);
+        self.reveal_command(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
         }
@@ -1326,7 +1337,7 @@ impl EntityInputHandler for PromptInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
         self.command_selection = 0;
-        self.command_scroll.scroll_to_item(0);
+        self.reveal_command(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
         }
@@ -1649,18 +1660,16 @@ impl Render for PromptInput {
         if self.command_entrance.is_animating() {
             window.request_animation_frame();
         }
-        let command_selection = self.command_selection;
         let command_layout_key = (!suggestions.is_empty()).then(|| {
             (
                 self.content.clone(),
                 suggestions.len(),
-                command_selection,
                 window.viewport_size(),
             )
         });
         if self.command_layout_key != command_layout_key {
             self.command_layout_key = command_layout_key;
-            // ScrollHandle geometry is updated during layout, after render.
+            // List geometry is updated during layout, after render.
             // One follow-up frame keeps the thumb correct without idle polling.
             let input = cx.entity().downgrade();
             window.on_next_frame(move |_, cx| {
@@ -1783,8 +1792,6 @@ impl Render for PromptInput {
                                             .flex_col()
                                             .max_h(popup::scroll_height(window.viewport_size().height,
                                                 self.content.trim_start().starts_with("/model")))
-                                            .overflow_y_scroll()
-                                            .track_scroll(&self.command_scroll)
                                             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
                                             .pr(px(crate::scrollbar::GUTTER - 4.0))
                                             .when(suggestions.is_empty(), |el| {
@@ -1797,204 +1804,17 @@ impl Render for PromptInput {
                                                         .child("No models match"),
                                                 )
                                             })
-                                            .children(suggestions.into_iter().enumerate().map(
-                                                |(index, suggestion)| {
-                                                    let is_toggle = suggestion.toggle.is_some();
-                                                    let selected = index == command_selection;
-                                                    let ink = if selected {
-                                                        Theme::global().BG
-                                                    } else {
-                                                        Theme::global().TEXT_DIM
-                                                    };
-                                                    let model =
-                                                        suggestion.value.strip_prefix("/model ");
-                                                    let logo = model.map(|model| {
-                                                        let provider = self
-                                                            .model_logo_providers
-                                                            .get(model)
-                                                            .map(String::as_str)
-                                                            .or_else(|| self.model_details.get(model).and_then(|detail| self.model_logo_providers.get(&detail.model).map(String::as_str)))
-                                                            .unwrap_or("");
-                                                        let logo: gpui::AnyElement =
-                                                            match crate::accounts::logo(provider) {
-                                                                Some(bytes) => gpui::svg()
-                                                                    .data(bytes)
-                                                                    .size(px(18.0))
-                                                                    .flex_none()
-                                                                    .text_color(ink)
-                                                                    .into_any_element(),
-                                                                None => div()
-                                                                    .size(px(18.0))
-                                                                    .flex_none()
-                                                                    .text_size(px(10.0))
-                                                                    .child(
-                                                                        crate::accounts::lettermark(
-                                                                            model,
-                                                                        ),
-                                                                    )
-                                                                    .into_any_element(),
-                                                            };
-                                                        div()
-                                                            .debug_selector(move || {
-                                                                format!("model-picker-logo-{index}")
-                                                            })
-                                                            .child(logo)
-                                                    });
-                                                    let label = model
-                                                        .and_then(|model| self.model_details.get(model).map(|detail| detail.model.as_str()))
-                                                        .or(model)
-                                                        .unwrap_or(&suggestion.value)
-                                                        .to_string();
-                                                    div().flex_none().flex().flex_col()
-                                                        .children(suggestion.header.clone().map(|header| div()
-                                                            .debug_selector(move || format!("model-picker-group-{index}"))
-                                                            .px_3().pt_2().pb_1().text_size(px(11.0))
-                                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                            .text_color(Theme::global().TEXT_FAINT).child(header)))
-                                                        .child(div()
-                                                        .id(("slash-command", index))
-                                                        .debug_selector(move || {
-                                                            if is_toggle { format!("model-picker-toggle-{index}") } else { format!("slash-command-row-{index}") }
-                                                        })
-                                                        .flex_none()
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_between()
-                                                        .gap_3()
-                                                        .px_3()
-                                                        .py_1p5()
-                                                        .rounded_md()
-                                                        .bg(if selected {
-                                                            Theme::global().TEXT
-                                                        } else {
-                                                            Theme::global().HEADER_BG
-                                                        })
-                                                        .when(!selected, |row| {
-                                                            row.hover(|style| {
-                                                                style.bg(Theme::global().INPUT_BG)
-                                                            })
-                                                        })
-                                                        .text_size(px(12.0))
-                                                        .text_color(ink)
-                                                        .cursor_pointer()
-                                                        .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                                                            if this.command_selection != index {
-                                                                this.command_selection = index;
-                                                                cx.notify();
-                                                            }
-                                                        }))
-                                                        .child(
-                                                            div()
-                                                                .flex()
-                                                                .flex_1()
-                                                                .min_w_0()
-                                                                .overflow_hidden()
-                                                                .items_center()
-                                                                .gap_3()
-                                                                .children(logo)
-                                                                .font_family(
-                                                                    Theme::global().FONT_MONO,
-                                                                )
-                                                                .text_color(ink)
-                                                                .when(selected, |label| {
-                                                                    label.font_weight(
-                                                                        gpui::FontWeight::SEMIBOLD,
-                                                                    )
-                                                                })
-                                                                .child(
-                                                                    div()
-                                                                        .flex()
-                                                                        .flex_col()
-                                                                        .min_w_0()
-                                                                        .gap_1()
-                                                                        .child(div().min_w_0().truncate().child(label))
-                                                                        .children(suggestion.detail.map(|detail| div()
-                                                                            .debug_selector(move || format!("model-picker-detail-{index}"))
-                                                                            .min_w_0()
-                                                                            .truncate()
-                                                                            .text_size(px(11.0))
-                                                                            .font_weight(gpui::FontWeight::NORMAL)
-                                                                            .text_color(if selected { ink } else { Theme::global().TEXT_FAINT })
-                                                                            .child(detail))),
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .max_w(relative(0.4))
-                                                                .min_w_0()
-                                                                .truncate()
-                                                                .text_color(if selected {
-                                                                    ink
-                                                                } else {
-                                                                    Theme::global().TEXT_FAINT
-                                                                })
-                                                                .child(suggestion.help),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .w(px(14.0))
-                                                                .flex_none()
-                                                                .text_color(ink)
-                                                                .when(selected, |marker| {
-                                                                    marker
-                                                                        .debug_selector(|| {
-                                                                            "slash-command-selected"
-                                                                                .into()
-                                                                        })
-                                                                        .child("✓")
-                                                                }),
-                                                        )
-                                                        .on_mouse_down(
-                                                            MouseButton::Left,
-                                                            cx.listener(
-                                                                move |this, _, window, cx| {
-                                                                    cx.stop_propagation();
-                                                                    window.focus(
-                                                                        &this.focus_handle,
-                                                                        cx,
-                                                                    );
-                                                                    if let Some(key) = suggestion.toggle.clone() {
-                                                                        this.toggle_model_group(key, cx);
-                                                                        return;
-                                                                    }
-                                                                    if matches!(
-                                                                        suggestion.value.as_str(),
-                                                                        "/model" | "/models"
-                                                                    ) {
-                                                                        this.set_content(
-                                                                            "/model ".into(),
-                                                                            cx,
-                                                                        );
-                                                                        if let Some(on_change) =
-                                                                            &this.on_change
-                                                                        {
-                                                                            on_change(
-                                                                                &this.content,
-                                                                                cx,
-                                                                            );
-                                                                        }
-                                                                    } else {
-                                                                        this.set_content(
-                                                                            suggestion
-                                                                                .value
-                                                                                .clone(),
-                                                                            cx,
-                                                                        );
-                                                                        // Search may also match a longer model name. Click must
-                                                                        // submit this exact route, not the first substring match.
-                                                                        this.command_selection = this.command_suggestions().iter()
-                                                                            .position(|row| row.value == suggestion.value).unwrap_or(0);
-                                                                        this.submit(
-                                                                            &Submit, window, cx,
-                                                                        );
-                                                                    }
-                                                                },
-                                                            ),
-                                                        ))
-                                                },
-                                            )),
+                                            .when(!suggestions.is_empty(), |el| {
+                                                let input = cx.entity();
+                                                el.child(gpui::list(self.command_scroll.clone(), move |index, _, cx| {
+                                                    input.update(cx, |input, cx| input.render_command_row(index, suggestions[index].clone(), cx))
+                                                })
+                                                .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+                                                .min_h_0()
+                                                .w_full())
+                                            }),
                                     )
-                                    .child(crate::scrollbar::vertical_with_track(
+                                    .child(crate::scrollbar::vertical_list(
                                         &self.command_scroll,
                                         "slash-command-scrollbar",
                                     )),
@@ -2861,3 +2681,11 @@ mod pending_session_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "input_model_profile_tests.rs"]
+mod model_profile_tests;
+
+#[cfg(test)]
+#[path = "input_model_picker_tests.rs"]
+mod model_picker_tests;

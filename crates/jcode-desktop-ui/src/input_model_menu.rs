@@ -380,19 +380,20 @@ pub(super) fn grouped_rows(
     let current = current_spec(current, &ranked, details).map(str::to_string);
     ranked.sort_by_key(|model| current.as_deref() != Some(model.as_str()));
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut group_indices = HashMap::new();
+    let mut seen = std::collections::HashSet::with_capacity(ranked.len());
     for model in ranked {
-        let key = group_key(&model, details);
-        let index = groups
-            .iter()
-            .position(|(group, _)| group == &key)
-            .unwrap_or_else(|| {
-                groups.push((key.clone(), Vec::new()));
-                groups.len() - 1
-            });
-        let members = &mut groups[index].1;
-        if !members.contains(&model) {
-            members.push(model);
+        // Preserve ranked first occurrence and group order without repeatedly
+        // scanning every previous group or every member of a large group.
+        if !seen.insert(model.clone()) {
+            continue;
         }
+        let key = group_key(&model, details);
+        let index = *group_indices.entry(key.clone()).or_insert_with(|| {
+            groups.push((key, Vec::new()));
+            groups.len() - 1
+        });
+        groups[index].1.push(model);
     }
     let query = query.trim().to_ascii_lowercase();
     let mut rows = Vec::new();
@@ -438,4 +439,189 @@ pub(super) fn grouped_rows(
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod grouping_performance_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn fixture(count: usize, group_count: usize) -> (Vec<String>, HashMap<String, ModelDetails>) {
+        let models: Vec<_> = (0..count)
+            .map(|i| format!("provider:model-{i:04}"))
+            .collect();
+        let details = models
+            .iter()
+            .enumerate()
+            .map(|(i, model)| {
+                (
+                    model.clone(),
+                    ModelDetails {
+                        model: format!("model-{i:04}"),
+                        recommended: i % 7 == 0,
+                        provider: format!("Provider {}", i % group_count),
+                        api_method: "openai-oauth".into(),
+                        usage: None,
+                    },
+                )
+            })
+            .collect();
+        (models, details)
+    }
+
+    #[test]
+    fn indexed_grouping_matches_legacy_order_filtering_and_deduplication() {
+        for group_count in [1, 8, 200] {
+            let (mut models, details) = fixture(200, group_count);
+            // Deliberately repeated and missing-metadata entries exercise stable
+            // deduplication and the fallback group, not just unique route maps.
+            models.extend(models.clone());
+            models.extend(["unknown-model".into(), "unknown-model".into()]);
+            let expanded: HashSet<_> = models.iter().map(|m| group_key(m, &details)).collect();
+            for expansion in [&HashSet::new(), &expanded] {
+                for query in ["", "MODEL-001", "Provider", "oauth", "missing"] {
+                    for current in [None, Some("provider:model-0199"), Some("model-0005")] {
+                        assert_eq!(
+                            grouped_rows(&models, &details, current, expansion, query),
+                            legacy_grouped_rows(&models, &details, current, expansion, query),
+                            "groups={group_count}, query={query}, current={current:?}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "opt-in CPU microbenchmark, run with --ignored --nocapture"]
+    fn grouped_rows_profile() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        type Grouping = fn(
+            &[String],
+            &HashMap<String, ModelDetails>,
+            Option<&str>,
+            &HashSet<String>,
+            &str,
+        ) -> Vec<GroupRow>;
+        for count in [40, 200, 1000] {
+            for group_count in [1, 8] {
+                let (models, details) = fixture(count, group_count);
+                let closed = HashSet::new();
+                let expanded: HashSet<_> = models.iter().map(|m| group_key(m, &details)).collect();
+                for (scenario, expansion, query) in [
+                    ("collapsed", &closed, ""),
+                    ("expanded", &expanded, ""),
+                    ("broad-search", &closed, "model"),
+                    ("narrow-search", &closed, "model-001"),
+                    ("no-match", &closed, "missing"),
+                ] {
+                    let current = Some(models[count - 1].as_str());
+                    assert_eq!(
+                        grouped_rows(&models, &details, current, expansion, query),
+                        legacy_grouped_rows(&models, &details, current, expansion, query)
+                    );
+                    for (implementation, group) in [
+                        ("legacy", legacy_grouped_rows as Grouping),
+                        ("indexed", grouped_rows as Grouping),
+                    ] {
+                        for _ in 0..20 {
+                            black_box(group(&models, &details, current, expansion, query));
+                        }
+                        let mut micros = Vec::with_capacity(200);
+                        for _ in 0..200 {
+                            let started = Instant::now();
+                            black_box(group(
+                                black_box(&models),
+                                &details,
+                                current,
+                                expansion,
+                                query,
+                            ));
+                            micros.push(started.elapsed().as_secs_f64() * 1_000_000.);
+                        }
+                        micros.sort_by(f64::total_cmp);
+                        eprintln!(
+                            "grouped_rows {implementation} n={count} groups={group_count} {scenario}: p50={:.1}us p95={:.1}us max={:.1}us",
+                            micros[100], micros[189], micros[199]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Frozen pre-indexing implementation: a same-binary reference for both
+    // correctness and performance, not a second production code path.
+    fn legacy_grouped_rows(
+        models: &[String],
+        details: &HashMap<String, ModelDetails>,
+        current: Option<&str>,
+        expanded: &std::collections::HashSet<String>,
+        query: &str,
+    ) -> Vec<GroupRow> {
+        let mut ranked = models.to_vec();
+        rank(&mut ranked, details);
+        let current = current_spec(current, &ranked, details).map(str::to_string);
+        ranked.sort_by_key(|model| current.as_deref() != Some(model.as_str()));
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        for model in ranked {
+            let key = group_key(&model, details);
+            let index = groups
+                .iter()
+                .position(|(group, _)| group == &key)
+                .unwrap_or_else(|| {
+                    groups.push((key.clone(), Vec::new()));
+                    groups.len() - 1
+                });
+            let members = &mut groups[index].1;
+            if !members.contains(&model) {
+                members.push(model);
+            }
+        }
+        let query = query.trim().to_ascii_lowercase();
+        let mut rows = Vec::new();
+        for (key, members) in groups {
+            let searching = !query.is_empty();
+            let matching: Vec<_> = members
+                .into_iter()
+                .filter(|model| {
+                    !searching
+                        || model.to_ascii_lowercase().contains(&query)
+                        || details.get(model).is_some_and(|detail| {
+                            detail.model.to_ascii_lowercase().contains(&query)
+                        })
+                        || group_label(model, details)
+                            .to_ascii_lowercase()
+                            .contains(&query)
+                        || key.to_ascii_lowercase().contains(&query)
+                })
+                .collect();
+            let count = matching.len();
+            let open = expanded.contains(&key);
+            for (index, model) in matching
+                .into_iter()
+                .take(if searching || open { usize::MAX } else { 3 })
+                .enumerate()
+            {
+                rows.push(GroupRow {
+                    header: (index == 0).then(|| group_label(&model, details)),
+                    value: format!("/model {model}"),
+                    toggle: None,
+                });
+            }
+            if !searching && count > 3 {
+                rows.push(GroupRow {
+                    value: if open {
+                        "Show fewer models".into()
+                    } else {
+                        format!("Show {} more models", count - 3)
+                    },
+                    header: None,
+                    toggle: Some(key),
+                });
+            }
+        }
+        rows
+    }
 }
