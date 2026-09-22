@@ -14,7 +14,7 @@ impl LaunchMode {
     pub fn from_args(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Self {
         let mut mode = Self::Workspace;
         for arg in args {
-            if arg.as_ref() == "--single-panel" {
+            if arg.as_ref() == "--single-panel" || arg.as_ref() == "--resume" {
                 return Self::SinglePanel;
             }
             if arg.as_ref() == "--no-sidebar" || arg.as_ref() == "--workspace" {
@@ -22,6 +22,11 @@ impl LaunchMode {
             }
         }
         mode
+    }
+
+    /// Open the session picker only for an explicit fresh resume launch.
+    pub fn resume_requested(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> bool {
+        args.into_iter().any(|arg| arg.as_ref() == "--resume")
     }
 
     /// Auxiliary windows never acquire the main instance's global shortcut.
@@ -54,6 +59,22 @@ mod tests {
                 assert_eq!(LaunchMode::from_args(args), LaunchMode::SinglePanel);
             }
         }
+    }
+
+    #[test]
+    fn resume_launch_is_standalone_in_any_flag_order() {
+        for args in [
+            ["--resume", "--workspace"],
+            ["--no-sidebar", "--resume"],
+            ["--single-panel", "--resume"],
+        ] {
+            assert_eq!(LaunchMode::from_args(args), LaunchMode::SinglePanel);
+            assert!(LaunchMode::resume_requested(args));
+        }
+        assert!(!LaunchMode::resume_requested([
+            "--single-panel",
+            "--resume-other"
+        ]));
     }
 
     #[test]

@@ -169,12 +169,15 @@ def run_mode(binary, output, evidence, driver, single, report):
             env["DISPLAY"] = ":" + display
             launch("openbox", ["openbox", "--sm-disable", "--config-file", str(wm)])
             time.sleep(.5)
-            app = launch("app", [str(binary), "--no-hot-reload", *(["--single-panel"] if single else [])])
+            app = launch("app", [str(binary), "--no-hot-reload", *(["--resume"] if single else [])])
             wait(lambda: navigation(state_path), "initial fixture")
             window = native("search", "--sync", "--onlyvisible", "--pid", app.pid).stdout.split()
             assert len(window) == 1, window
             native("windowactivate", "--sync", window[0])
             time.sleep(1)
+            if single:
+                state_check("resume-launch-opens-standalone-picker", picker)
+                capture(evidence / "single-panel-startup.png", ("Resume session", TITLE, "Resume acceptance beta"))
             key("Escape")
             time.sleep(.3)
             # The shortcut must open the same picker without consuming a draft.
@@ -203,11 +206,11 @@ def run_mode(binary, output, evidence, driver, single, report):
             picker_png = output.with_name(output.stem + "-single-picker.png") if single else output
             capture(picker_png, ("Resume session", TITLE, "Resume acceptance beta"))
             type_text("Resume acceptance")
-            capture(evidence / f"{name}-preview-alpha.png", ("Status: idle",))
+            capture(evidence / f"{name}-preview-alpha.png", ("Status: idle", "Alpha conversation preview"))
             key("Down")
-            capture(evidence / f"{name}-preview-beta.png", ("Status: running",), ("Status: idle",))
+            capture(evidence / f"{name}-preview-beta.png", ("Status: running", "Beta conversation preview"), ("Status: idle", "Alpha conversation preview"))
             key("Up")
-            capture(evidence / f"{name}-preview-return.png", ("Status: idle",), ("Status: running",))
+            capture(evidence / f"{name}-preview-return.png", ("Status: idle", "Alpha conversation preview"), ("Status: running", "Beta conversation preview"))
             key("ctrl+3")
             capture(evidence / f"{name}-saved.png", (TITLE,), ("Resume acceptance beta",))
             key("ctrl+1")

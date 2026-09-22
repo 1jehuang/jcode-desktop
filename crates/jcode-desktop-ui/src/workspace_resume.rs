@@ -15,6 +15,10 @@ pub(super) struct State {
     selected: Option<String>,
     filter: Filter,
     scroll: ScrollHandle,
+    pub(super) start_on_close: bool,
+    preview_id: Option<String>,
+    preview: Option<Result<Vec<(String, String)>, String>>,
+    preview_task: Option<gpui::Task<()>>,
 }
 
 pub(crate) fn is_resume_command(content: &str) -> bool {
@@ -141,12 +145,19 @@ impl Workspace {
             selected: None,
             filter: Filter::All,
             scroll: ScrollHandle::new(),
+            start_on_close: false,
+            preview_id: None,
+            preview: None,
+            preview_task: None,
         });
         cx.notify();
     }
 
     fn close_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.resume = None;
+        let start_on_close = self.resume.take().is_some_and(|state| state.start_on_close);
+        if start_on_close && (self.connected || self.remotes.default_host.is_some()) {
+            self.start_default_startup(cx);
+        }
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -164,6 +175,11 @@ impl Workspace {
         };
         self.resume = None;
         self.activate_session(session, window, cx);
+        if self.slots[self.active].panel.read(cx).is_startup_draft()
+            && (self.connected || self.remotes.default_host.is_some())
+        {
+            self.start_default_startup(cx);
+        }
         if self.single_panel {
             // Slot zero is the standalone chat anchor. Utilities must return to
             // the resumed chat, not resurrect the previous chat as a back page.
@@ -244,6 +260,7 @@ impl Workspace {
         let search = state.search.clone();
         let scroll = state.scroll.clone();
         let filter = state.filter;
+        self.load_resume_preview(selected.as_deref(), cx);
         let theme = Theme::global();
         let mut rows = div()
             .id("resume-results")
@@ -354,6 +371,36 @@ impl Workspace {
                     .child(div().text_size(px(12.0)).text_color(theme.TEXT_DIM).child(
                         "Press Enter to resume this conversation. Your current draft is kept.",
                     ));
+            preview = preview.child(div().text_size(px(14.0)).child("Recent messages"));
+            match self
+                .resume
+                .as_ref()
+                .and_then(|state| state.preview.as_ref())
+            {
+                None => preview = preview.child("Loading conversation…"),
+                Some(Err(error)) => preview = preview.child(error.clone()),
+                Some(Ok(messages)) if messages.is_empty() => {
+                    preview = preview.child("No conversation messages yet.");
+                }
+                Some(Ok(messages)) => {
+                    for (index, (role, text)) in messages.iter().enumerate() {
+                        preview = preview.child(
+                            div()
+                                .debug_selector(move || format!("resume-preview-message-{index}"))
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(role.clone()),
+                                )
+                                .child(div().text_size(px(13.0)).child(text.clone())),
+                        );
+                    }
+                }
+            }
         } else {
             preview = preview.child("Select a session to see its details.");
         }
@@ -464,6 +511,33 @@ impl Workspace {
             ))
     }
 
+    fn load_resume_preview(&mut self, selected: Option<&str>, cx: &mut Context<Self>) {
+        let Some(id) = selected else { return };
+        let state = self.resume.as_mut().expect("resume picker is open");
+        if state.preview_id.as_deref() == Some(id) {
+            return;
+        }
+        state.preview_id = Some(id.to_owned());
+        state.preview = None;
+        let id = id.to_owned();
+        let requested_id = id.clone();
+        let request = cx
+            .background_executor()
+            .spawn(async move { load_preview_messages(&id) });
+        // Replacing this task cancels the previous selection's UI delivery.
+        state.preview_task = Some(cx.spawn(async move |this, cx| {
+            let result = request.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(state) = this.resume.as_mut()
+                    && state.preview_id.as_ref() == Some(&requested_id)
+                {
+                    state.preview = Some(result);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(super) fn init_resume_fixture(&mut self) {
         if !harness::screenshot_mode()
             || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_none()
@@ -487,10 +561,156 @@ impl Workspace {
     }
 }
 
+/// Read only: never attach/watch a runtime just to browse its conversation.
+fn load_preview_messages(id: &str) -> Result<Vec<(String, String)>, String> {
+    if harness::screenshot_mode()
+        && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_some()
+        && id.starts_with("resume-fixture-")
+    {
+        return Ok(vec![
+            (
+                "user".into(),
+                "Please recover the standalone conversation.".into(),
+            ),
+            (
+                "assistant".into(),
+                format!(
+                    "{} conversation preview",
+                    if id.ends_with("alpha") {
+                        "Alpha"
+                    } else {
+                        "Beta"
+                    }
+                ),
+            ),
+        ]);
+    }
+    // Reject path components and remote IDs rather than reading outside local storage.
+    if id.is_empty() || id.contains(['/', '\\']) || id == "." || id == ".." {
+        return Err(
+            "Preview unavailable for this session. Resume to load its conversation.".into(),
+        );
+    }
+    let path = jcode_base::session::session_path(id)
+        .map_err(|_| "Conversation storage unavailable.".to_owned())?;
+    load_preview_path(&path)
+}
+
+fn load_preview_path(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+    let session = jcode_base::session::Session::load_from_path(path)
+        .map_err(|_| "Conversation preview unavailable. Resume to load this session.".to_owned())?;
+    Ok(preview_messages(&session))
+}
+
+fn preview_messages(session: &jcode_base::session::Session) -> Vec<(String, String)> {
+    // Match CLI resume: render persisted snapshot plus journal, last 20 messages.
+    jcode_base::session::render_messages(session)
+        .into_iter()
+        .rev()
+        .take(20)
+        .rev()
+        .map(|message| (message.role, message.content.chars().take(4000).collect()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::workspace::tests::session_info;
+
+    #[test]
+    fn resume_preview_reads_actual_recent_messages_and_bounds_unicode() {
+        use jcode_base::message::{ContentBlock, Role};
+        let mut session =
+            jcode_base::session::Session::create_with_id("preview-test".into(), None, None);
+        for index in 0..24 {
+            session.add_message(
+                if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                vec![ContentBlock::Text {
+                    text: format!("Actual message {index}"),
+                    cache_control: None,
+                }],
+            );
+        }
+        let messages = preview_messages(&session);
+        assert_eq!(messages.len(), 20);
+        assert_eq!(messages[0], ("user".into(), "Actual message 4".into()));
+        assert_eq!(
+            messages[19],
+            ("assistant".into(), "Actual message 23".into())
+        );
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "界".repeat(5000),
+                cache_control: None,
+            }],
+        );
+        assert_eq!(
+            preview_messages(&session).last().unwrap().1.chars().count(),
+            4000
+        );
+    }
+
+    #[test]
+    fn resume_preview_loads_persisted_messages_without_modifying_storage() {
+        use jcode_base::message::{ContentBlock, Role};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preview.json");
+        let mut session =
+            jcode_base::session::Session::create_with_id("persisted-preview".into(), None, None);
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "Persisted user question".into(),
+                cache_control: None,
+            }],
+        );
+        session.add_message(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "Persisted assistant answer".into(),
+                cache_control: None,
+            }],
+        );
+        let bytes = serde_json::to_vec(&session).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            load_preview_path(&path).unwrap(),
+            vec![
+                ("user".into(), "Persisted user question".into()),
+                ("assistant".into(), "Persisted assistant answer".into()),
+            ]
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        assert!(load_preview_path(&directory.path().join("missing.json")).is_err());
+        std::fs::write(&path, b"malformed").unwrap();
+        assert!(load_preview_path(&path).is_err());
+    }
+
+    #[test]
+    fn resume_preview_rejects_nonlocal_paths() {
+        for id in [
+            "",
+            "../secret",
+            "/etc/passwd",
+            "remote://host/session",
+            "..",
+            "foo\\bar",
+        ] {
+            assert!(load_preview_messages(id).is_err(), "{id}");
+        }
+    }
 
     #[test]
     fn resume_search_is_case_insensitive_multiword_and_handles_unicode() {
@@ -534,6 +754,57 @@ mod tests {
         assert!(is_resume_command("/sessions"));
         assert!(!is_resume_command("/resumeall"));
         assert!(!is_resume_command("/resume unrelated"));
+    }
+
+    #[gpui::test]
+    fn resume_startup_connected_does_not_create_until_cancel(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.single_panel = true;
+            w.bridge = bridge;
+            w.open_startup_draft(cx);
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_resume(&OpenResume, window, cx);
+            w.apply(harness::Update::Connected, cx);
+            assert!(
+                commands.try_recv().is_err(),
+                "browsing must not create or attach a session"
+            );
+            w.close_resume(window, cx);
+            assert!(
+                commands.try_recv().is_ok(),
+                "cancel starts the normal draft"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn resume_selection_before_connection_does_not_create_hidden_startup_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.single_panel = true;
+            w.bridge = bridge;
+            w.open_startup_draft(cx);
+            w.sessions = vec![session_info("target", Some("Existing conversation"))];
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_resume(&OpenResume, window, cx);
+            w.resume.as_mut().unwrap().selected = Some("target".into());
+            w.resume_selected(window, cx);
+            while commands.try_recv().is_ok() {}
+            w.apply(harness::Update::Connected, cx);
+            assert!(
+                commands.try_recv().is_err(),
+                "late connection must not create hidden startup draft"
+            );
+        });
     }
 
     #[gpui::test]

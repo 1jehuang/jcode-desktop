@@ -12,6 +12,8 @@ A native desktop client for [Jcode](https://github.com/1jehuang/jcode), with AI 
 Run `jcode-desktop --single-panel` for one chat panel in its own native window,
 without the workspace sidebar, tabs, or navigation. Each invocation opens a new
 independent window, even with other Jcode windows already open.
+Run `jcode-desktop --resume` to start that window at the session browser instead,
+with searchable history and a conversation preview.
 See [single-panel mode](docs/single-panel.md) for controls and details.
 
 ## Voice input

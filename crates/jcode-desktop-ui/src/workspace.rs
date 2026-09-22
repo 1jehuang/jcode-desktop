@@ -767,6 +767,8 @@ impl Workspace {
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let performance_enabled = crate::performance::enabled(std::env::args_os());
+        let resume_on_startup = snapshot.is_none()
+            && jcode_desktop_api::LaunchMode::resume_requested(std::env::args_os());
         let single_panel = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
             == jcode_desktop_api::LaunchMode::SinglePanel;
 
@@ -1123,8 +1125,12 @@ impl Workspace {
         } else {
             workspace.open_startup_draft(cx);
         }
-        if workspace.remotes.default_host.is_some() {
+        if !resume_on_startup && workspace.remotes.default_host.is_some() {
             workspace.start_default_startup(cx);
+        }
+        if resume_on_startup {
+            workspace.open_resume(&OpenResume, window, cx);
+            workspace.resume.as_mut().unwrap().start_on_close = true;
         }
         workspace.start_preview_control(cx);
         workspace
@@ -1790,7 +1796,13 @@ impl Workspace {
             Update::Connected => {
                 self.connected = true;
                 self.status = "connected".into();
-                self.start_default_startup(cx);
+                if let Some(state) = self.resume.as_mut() {
+                    state.start_on_close = true;
+                } else if self.slots.get(self.active).is_some_and(|slot| {
+                    slot.panel.read(cx).is_startup_draft()
+                }) {
+                    self.start_default_startup(cx);
+                }
             }
             Update::Sessions { sessions } => {
                 if self.pinned_working_dir.is_none()

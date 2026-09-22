@@ -14,6 +14,38 @@ the workspace and its navigation while initially hiding the sidebar. Normal
 launches still reuse the normal instance, and `--no-sidebar` launches still
 reuse their own named instance.
 
+## Standalone resume menu
+
+```sh
+jcode-desktop --resume
+# Equivalent explicit form:
+jcode-desktop --single-panel --resume
+```
+
+This opens the Desktop session browser directly in a new standalone window,
+not the CLI and not an existing workspace. Search by title, folder, or session
+ID. Use Up/Down to select a session and view its conversation preview, then
+Enter to resume in the same single-panel window. Ctrl+1/2/3 selects All, Active,
+or Saved. Escape returns to the window's fresh chat. Existing windows stay intact.
+
+For Niri, add this inside `binds` (adjust the executable path if necessary):
+
+```kdl
+Alt+Shift+B repeat=false hotkey-overlay-title="Jcode Desktop: resume (single panel)" {
+    spawn "jcode-desktop" "--single-panel" "--resume";
+}
+```
+
+The existing Alt+B CLI resume shortcut can remain unchanged.
+
+To verify the startup picker, search, preview navigation, draft preservation,
+and resuming without workspace chrome on an isolated display:
+
+```sh
+python3 scripts/verify-resume-panel.py target/resume-panel.png \
+  --binary target/release/jcode-desktop
+```
+
 ## Interaction
 
 - One panel is visible at a time. Chat retains its usual input and controls.
