@@ -27,6 +27,21 @@ ceiling, or action-family gate. `uncertain` competes as its own outcome. Failed
 requests and winning uncertain outcomes keep the transcript in the draft rather
 than executing an action. See [the complete action catalog](jev-actions.md).
 
+## Request size
+
+The routing policy is application-owned data in `state.policy`, sent once per
+request rather than repeated in every question. Each typed question explicitly
+applies that policy. Transcript text and candidate metadata remain untrusted
+inputs and cannot replace the policy.
+
+Repeating the policy across 27 questions (seven routing questions plus 20
+conversation candidates) could exceed the local 64 KiB aggregate request guard
+even for a short utterance. Sharing the policy removes that duplication without
+truncating the transcript, dropping candidates, or relaxing request-size limits.
+Every inference batch still receives the complete policy and candidate context.
+A regression fixture with 20 descriptive titles and a 33-byte utterance shrank
+from 65,912 bytes to 26,530 bytes in the conservatively escaped request envelope.
+
 ## Live acceptance
 
 ```sh
@@ -36,7 +51,8 @@ cargo test -p jcode-desktop-ui live_voice_transcript_to_jev_to_panel \
 
 This opt-in test makes real inference requests using the same credential lookup
 and asynchronous routing code as Desktop. It supplies synthetic text at the
-production final-transcription boundary, then checks the actual UI completion:
+production final-transcription boundary with all 20 conversation candidates and
+descriptive distractor titles, then checks the actual UI completion:
 
 1. Open an offered conversation by its title.
 2. Request a new conversation through the bounded quick-action event.

@@ -29,10 +29,20 @@ fn live_voice_transcript_to_jev_to_panel(cx: &mut gpui::TestAppContext) {
         panel.status = "idle".into();
         panel
     });
-    let sessions: Vec<jcode_sdk::SessionInfo> = serde_json::from_value(serde_json::json!([
+    let mut sessions: Vec<jcode_sdk::SessionInfo> = serde_json::from_value(serde_json::json!([
         {"session_id": "voice-fixture-orchid", "status": "idle", "title": "Orchid greenhouse irrigation planning", "working_dir": "/synthetic/greenhouse"},
         {"session_id": "voice-fixture-database", "status": "idle", "title": "Database migration debugging", "working_dir": "/synthetic/database"}
     ])).unwrap();
+    // A full recent-session list used to exceed the aggregate 64 KiB guard
+    // even with a short utterance because every question repeated the policy.
+    for index in 2..20 {
+        sessions.push(serde_json::from_value(serde_json::json!({
+            "session_id": format!("voice-fixture-unrelated-{index}"),
+            "status": "idle",
+            "title": format!("Unrelated project notes topic {index}: documentation inventory, maintenance schedules, workspace organization, release bookkeeping, dependency catalogs, meeting summaries, asset naming conventions, routine housekeeping, and general administrative reference material."),
+            "working_dir": format!("/synthetic/projects/unrelated-{index}")
+        })).unwrap());
+    }
     let navigations = Rc::new(RefCell::new(Vec::new()));
     let actions = Rc::new(RefCell::new(Vec::new()));
     panel.update(cx, |panel, cx| {
