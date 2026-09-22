@@ -17,8 +17,8 @@ See [single-panel mode](docs/single-panel.md) for controls and details.
 ## Voice input
 
 Hover over the microphone icon beside the composer to see the platform shortcut.
-Hold the voice key to transcribe live, then release it to finish into an editable
-draft. Releasing while the microphone is still connecting cancels that attempt.
+Hold the voice key to transcribe live, then release it to let Jev route the
+utterance. Releasing while the microphone is still connecting cancels that attempt.
 
 - **Copilot keyboards:** hold the physical Copilot key in the focused Jcode
   window, including standalone chat windows. On Linux, leave the key unbound in
@@ -30,10 +30,13 @@ draft. Releasing while the microphone is still connecting cancels that attempt.
 - **Click or composer fallback:** click the microphone or press **Ctrl+Shift+V**
   to start/stop recording without holding a key.
 
-Audio streams to Nari. Hold-to-talk always produces dictation, never navigation
-or automatic sending. Click recording can also recognize requests to open a
-recent session. Explicit `--voice-press` and `--voice-release` commands are
-available for integrations that can deliver both edges to an existing main host.
+Audio streams to Nari. After local transcription, Jev sends or queues agent work,
+performs a supported navigation action, or preserves uncertain input in the draft.
+A persistent decision card shows the questions, Yes probabilities, and result.
+Existing typed text and attachments are preserved. See
+[voice routing](docs/voice-session-navigation.md) for provider setup and limits.
+Explicit `--voice-press` and `--voice-release` commands are available for
+integrations that can deliver both edges to an existing main host.
 
 ## Development
 
