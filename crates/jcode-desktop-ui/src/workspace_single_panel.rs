@@ -32,7 +32,6 @@ impl Workspace {
         self.show_minimap = false;
         self.overview = false;
         self.hints_overlay = false;
-        self.onboarding_simulator = None;
         self.active_row = 0;
         self.outgoing_row = None;
         self.camera_x.fill(0.0);
@@ -79,6 +78,7 @@ impl Workspace {
             .text_size(px(14.0 * crate::config::get().appearance.text_scale))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(Self::toggle_onboarding_simulator))
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
             .capture_action(cx.listener(Self::begin_voice_hold))

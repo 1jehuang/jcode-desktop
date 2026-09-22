@@ -2207,6 +2207,16 @@ impl Panel {
                             _window.dispatch_action(Box::new(crate::workspace::OpenResume), app);
                             return;
                         }
+                        // First-run launch is local, including before a session connects.
+                        if images.is_empty()
+                            && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
+                        {
+                            _window.dispatch_action(
+                                Box::new(crate::workspace::ToggleOnboardingSimulator),
+                                app,
+                            );
+                            return;
+                        }
                         // A draft has no runtime identity yet. The editor
                         // retains slash commands while ordinary prompts queue.
                         if let Some(panel) = weak.upgrade()
@@ -2217,15 +2227,6 @@ impl Panel {
                             panel.update(app, |this, cx| {
                                 this.submit_or_queue(content, images, queued, cx);
                             });
-                            return;
-                        }
-                        if images.is_empty()
-                            && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
-                        {
-                            _window.dispatch_action(
-                                Box::new(crate::workspace::ToggleOnboardingSimulator),
-                                app,
-                            );
                             return;
                         }
                         if images.is_empty() && content.trim() == "/changelog" {

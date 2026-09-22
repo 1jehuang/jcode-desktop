@@ -1,295 +1,218 @@
-//! A local-only first-run rehearsal. No provider, filesystem, or runtime calls.
+//! Entry points for the real, isolated production first-run Desktop flow.
+//! The launcher owns profile isolation. This workspace is never replaced.
 use super::*;
+use std::process::Command;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
-enum Step {
-    #[default]
-    Welcome,
-    Account,
-    Folder,
-    Ready,
+#[derive(Default)]
+pub(super) struct LaunchState {
+    #[cfg(not(test))]
+    pending: bool,
+    pub(super) error: Option<String>,
+    #[cfg(test)]
+    requests: Vec<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-pub(super) struct Simulation {
-    step: Step,
-    connected: bool,
-    connection_error: bool,
-    folder_selected: bool,
+fn launcher_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/onboarding-desktop.py")
+}
+
+/// Keep command construction injectable and independent of the caller's cwd.
+/// No account/session arguments or shell interpolation are passed to the script.
+fn launcher_command(script: &Path) -> Command {
+    let mut command = Command::new("python3");
+    command.arg(script).stdin(std::process::Stdio::null());
+    command
+}
+
+#[cfg(not(test))]
+fn run_launcher(script: &Path) -> Result<(), String> {
+    let output = launcher_command(script)
+        .output()
+        .map_err(|error| format!("Could not start fresh-profile Desktop: {error}"))?;
+    if !output.status.success() {
+        // Avoid surfacing arbitrary environment/account data from child output.
+        return Err(format!(
+            "Fresh-profile Desktop launcher failed ({}).",
+            output.status
+        ));
+    }
+    validate_response(&output.stdout)
+}
+
+fn validate_response(stdout: &[u8]) -> Result<(), String> {
+    let result: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|_| "Fresh-profile Desktop launcher returned an invalid response.".to_owned())?;
+    if result.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("Fresh-profile Desktop launcher could not open the new window.".into());
+    }
+    Ok(())
 }
 
 impl Workspace {
-    /// Global rehearsal entry is idempotent: always return to the first step.
-    pub(super) fn restart_onboarding_simulator(&mut self, cx: &mut Context<Self>) {
-        self.onboarding_simulator = Some(Simulation::default());
-        self.focus_pending = true;
-        cx.notify();
+    pub(super) fn launch_onboarding(&mut self, cx: &mut Context<Self>) {
+        let script = launcher_path();
+        // Unit/visual tests record the exact production route, never launch a process.
+        #[cfg(test)]
+        {
+            self.onboarding_launch.requests.push(script);
+            let _ = cx;
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            if harness::screenshot_mode() || self.onboarding_launch.pending {
+                return;
+            }
+            self.onboarding_launch.pending = true;
+            self.onboarding_launch.error = None;
+            // The script starts the separate window, prints JSON, then exits.
+            // Both process creation and waiting happen off the UI thread.
+            let launch = cx
+                .background_executor()
+                .spawn(async move { run_launcher(&script) });
+            cx.spawn(async move |this, cx| {
+                let result = launch.await;
+                let _ = this.update(cx, |workspace, cx| {
+                    workspace.onboarding_launch.pending = false;
+                    workspace.onboarding_launch.error = result.err();
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     pub(crate) fn toggle_onboarding_simulator(
         &mut self,
         _: &ToggleOnboardingSimulator,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        if self.onboarding_simulator.is_some() {
-            self.close_onboarding_simulator(window, cx);
-        } else {
-            self.restart_onboarding_simulator(cx);
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-        }
+        self.launch_onboarding(cx);
     }
 
-    fn close_onboarding_simulator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.onboarding_simulator = None;
-        self.focus_active(window, cx);
-        cx.notify();
-    }
-
-    fn advance_onboarding_simulator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(sim) = &mut self.onboarding_simulator else {
-            return;
-        };
-        match sim.step {
-            Step::Welcome => sim.step = Step::Account,
-            Step::Account => sim.step = Step::Folder,
-            Step::Folder => sim.step = Step::Ready,
-            Step::Ready => {
-                self.close_onboarding_simulator(window, cx);
-                return;
-            }
-        }
-        cx.notify();
-    }
-
-    fn back_onboarding_simulator(&mut self, cx: &mut Context<Self>) {
-        if let Some(sim) = &mut self.onboarding_simulator {
-            sim.step = match sim.step {
-                Step::Welcome | Step::Account => Step::Welcome,
-                Step::Folder => Step::Account,
-                Step::Ready => Step::Folder,
-            };
-            cx.notify();
-        }
-    }
-
-    pub(super) fn render_onboarding_simulator(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let sim = self
-            .onboarding_simulator
-            .as_ref()
-            .expect("simulator is open");
-        let (number, title, description, next) = match sim.step {
-            Step::Welcome => (
-                1,
-                "Welcome to Jcode Desktop",
-                "A space for your code, conversations, and ideas. Rehearse the first-run experience here.",
-                "Get started",
-            ),
-            Step::Account => (
-                2,
-                "Connect your AI",
-                "Try a successful connection or a sign-in error. These are demo states, not real accounts.",
-                if sim.connected {
-                    "Continue"
-                } else {
-                    "Skip for now"
-                },
-            ),
-            Step::Folder => (
-                3,
-                "Choose a project",
-                "Give your first session a place to work. This demo folder is never opened or created.",
-                if sim.folder_selected {
-                    "Continue"
-                } else {
-                    "Skip for now"
-                },
-            ),
-            Step::Ready => (
-                4,
-                "You're ready",
-                "In the real workspace, write a prompt to begin. Use the Learn tab to explore panel navigation and shortcuts.",
-                "Return to workspace",
-            ),
-        };
-        let mut details = div().flex().flex_col().gap_3().min_h(px(120.0));
-        match sim.step {
-            Step::Welcome => {
-                details = details
-                    .child("1. Connect an AI account")
-                    .child("2. Choose your project folder")
-                    .child("3. Start your first conversation");
-            }
-            Step::Account => {
-                details =
-                    details
-                        .child(
-                            div()
-                                .p_3()
-                                .rounded_lg()
-                                .bg(Theme::global().HEADER_BG)
-                                .child(if sim.connected {
-                                    "Demo account connected"
-                                } else {
-                                    "Demo AI account · Not connected"
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap_2()
-                                .child(
-                                    sim_button(
-                                        "onboarding-connect",
-                                        if sim.connection_error {
-                                            "Retry demo connection"
-                                        } else {
-                                            "Connect demo account"
-                                        },
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            if let Some(sim) = &mut this.onboarding_simulator {
-                                                sim.connected = true;
-                                                sim.connection_error = false;
-                                            }
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    sim_button("onboarding-error", "Simulate sign-in error")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(sim) = &mut this.onboarding_simulator {
-                                                sim.connected = false;
-                                                sim.connection_error = true;
-                                            }
-                                            cx.notify();
-                                        })),
-                                ),
-                        )
-                        .when(sim.connection_error, |el| {
-                            el.child(
-                        div().debug_selector(|| "onboarding-connection-error".into())
-                            .child("Demo sign-in failed. Retry the connection or skip for now.")
-                    )
-                        });
-            }
-            Step::Folder => {
-                details = details
-                    .child(
-                        div()
-                            .p_3()
-                            .rounded_lg()
-                            .bg(Theme::global().HEADER_BG)
-                            .child(if sim.folder_selected {
-                                "Selected: ~/Projects/hello-jcode (demo)"
-                            } else {
-                                "No demo project selected"
-                            }),
-                    )
-                    .child(
-                        sim_button("onboarding-folder", "Use demo project").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                if let Some(sim) = &mut this.onboarding_simulator {
-                                    sim.folder_selected = true;
-                                }
-                                cx.notify();
-                            },
-                        )),
-                    );
-            }
-            Step::Ready => {
-                details = details
-                    .child(if sim.connected {
-                        "AI account: Demo connected"
-                    } else {
-                        "AI account: Skipped"
-                    })
-                    .child(if sim.folder_selected {
-                        "Project: ~/Projects/hello-jcode (demo)"
-                    } else {
-                        "Project: Skipped"
-                    })
-                    .child("Your real workspace and settings are unchanged.");
-            }
-        }
-        div().size_full().flex().flex_col().justify_center().items_center().p_6()
-            .bg(Theme::global().BG).text_color(Theme::global().TEXT)
-            .font_family(Theme::global().FONT_UI).text_size(px(14.0))
+    pub(super) fn render_onboarding_launch_error(&self, cx: &Context<Self>) -> gpui::Div {
+        div()
+            .debug_selector(|| "onboarding-launch-error".into())
             .track_focus(&self.focus_handle)
-            .capture_action(cx.listener(Self::toggle_onboarding_simulator))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 cx.stop_propagation();
-                if event.is_held { return; }
-                match event.keystroke.key.as_str() {
-                    "escape" => this.close_onboarding_simulator(window, cx),
-                    "enter" => this.advance_onboarding_simulator(window, cx),
-                    "left" => this.back_onboarding_simulator(cx),
-                    _ => {}
+                if event.keystroke.key == "escape" {
+                    this.onboarding_launch.error = None;
+                    this.focus_active(window, cx);
+                    cx.notify();
                 }
             }))
-            .child(div().id("onboarding-simulator").debug_selector(|| "onboarding-simulator".into())
-                .w_full().max_w(px(600.0)).max_h_full().overflow_y_scroll()
-                .p_6().rounded_xl().border_1().border_color(Theme::global().PANEL_BORDER)
-                .bg(Theme::global().PANEL_BG).flex().flex_col().gap_5()
-                .child(div().flex().justify_between().items_center().gap_3()
-                    .child(div().text_size(px(11.0)).text_color(Theme::global().TEXT_DIM).child("ONBOARDING SIMULATOR"))
-                    .child(sim_button("onboarding-exit", "Exit · Alt+9")
-                        .on_click(cx.listener(|this, _, window, cx| this.close_onboarding_simulator(window, cx)))))
-                .child(div().text_size(px(12.0)).text_color(Theme::global().TEXT_DIM).child(format!("Step {number} of 4 · Preview only")))
-                .child(div().text_size(px(28.0)).child(title))
-                .child(description)
-                .child(details)
-                .child(div().text_size(px(12.0)).text_color(Theme::global().TEXT_DIM)
-                    .child("No credentials, settings, or sessions are changed. Esc exits at any time."))
-                .child(div().flex().flex_wrap().justify_between().gap_2()
-                    .child(div().flex().gap_2()
-                        .when(sim.step != Step::Welcome, |el| el.child(sim_button("onboarding-back", "Back")
-                            .on_click(cx.listener(|this, _, _, cx| this.back_onboarding_simulator(cx)))))
-                        .child(sim_button("onboarding-restart", "Restart")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.restart_onboarding_simulator(cx);
-                            }))))
-                    .child(sim_button("onboarding-next", next)
-                        .on_click(cx.listener(|this, _, window, cx| this.advance_onboarding_simulator(window, cx)))))
+            .size_full()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .items_center()
+            .gap_3()
+            .bg(Theme::global().BG)
+            .text_color(Theme::global().TEXT)
+            .child("Could not open first-run Desktop")
+            .child(self.onboarding_launch.error.clone().unwrap_or_default())
+            .child(
+                div()
+                    .id("onboarding-launch-dismiss")
+                    .debug_selector(|| "onboarding-launch-dismiss".into())
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .child("Return to workspace")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.onboarding_launch.error = None;
+                        this.focus_active(window, cx);
+                        cx.notify();
+                    })),
             )
     }
-}
-
-fn sim_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .border_1()
-        .border_color(Theme::global().PANEL_BORDER)
-        .cursor_pointer()
-        .hover(|el| el.bg(Theme::global().HEADER_BG))
-        .child(label)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn click(cx: &mut gpui::VisualTestContext, id: &'static str) {
-        let bounds = cx
-            .debug_bounds(id)
-            .unwrap_or_else(|| panic!("missing {id}"));
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
-        cx.run_until_parked();
+    #[test]
+    fn launcher_uses_absolute_script_without_personal_arguments() {
+        let script = launcher_path();
+        assert!(script.is_absolute());
+        assert!(script.ends_with("scripts/onboarding-desktop.py"));
+        let command = launcher_command(&script);
+        assert_eq!(command.get_program(), "python3");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![script.as_os_str()]
+        );
+    }
+
+    #[test]
+    fn launcher_response_errors_are_visible_without_leaking_child_output() {
+        assert!(validate_response(br#"{"ok":true,"pid":42}"#).is_ok());
+        assert!(validate_response(br#"{"ok":false,"error":"private token"}"#).is_err());
+        assert!(validate_response(b"null").is_err());
+        assert!(validate_response(b"{}").is_err());
+        let error = validate_response(b"private token").unwrap_err();
+        assert!(!error.contains("private token"));
     }
 
     #[gpui::test]
-    fn global_onboarding_entry_always_restarts_without_changing_workspace(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn onboarding_aliases_route_to_production_launcher(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w.push_test_panel("existing", cx);
+            w
+        });
+        vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
+        let mut before = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        for command in ["/onboarding-sim", "/onboarding-preview"] {
+            vcx.simulate_input(command);
+            vcx.simulate_keystrokes("enter");
+            vcx.run_until_parked();
+        }
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(
+                w.onboarding_launch.requests,
+                vec![launcher_path(), launcher_path()]
+            );
+        });
+        let after = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        // Normal command submission adds local input history, but no session state changes.
+        before.slots[0].panel.draft.history =
+            vec!["/onboarding-sim".into(), "/onboarding-preview".into()];
+        assert_eq!(before, after);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn launcher_error_is_dismissible_without_changing_workspace(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("existing", cx);
+            w
+        });
+        vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
+        let before = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        workspace.update(vcx, |w, cx| {
+            w.onboarding_launch.error = Some("Could not start fresh-profile Desktop".into());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("onboarding-launch-error").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("onboarding-launch-error").is_none());
+        let after = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        assert_eq!(before, after);
+    }
+
+    #[gpui::test]
+    fn production_onboarding_routes_preserve_workspace(cx: &mut gpui::TestAppContext) {
         cx.update(crate::bind_workspace_keys);
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -301,116 +224,27 @@ mod tests {
         vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
         vcx.simulate_input("preserved draft");
         let before = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
-        for _ in 0..2 {
-            workspace.update(vcx, |w, cx| {
-                let reply =
-                    w.handle_preview_request(crate::preview_control::Request::Onboarding {}, cx);
-                assert_eq!(reply["step"], "welcome");
-                assert_eq!(w.onboarding_simulator, Some(Simulation::default()));
-            });
-            vcx.run_until_parked();
-            assert!(vcx.debug_bounds("onboarding-simulator").is_some());
-            vcx.simulate_keystrokes("enter");
-            click(vcx, "onboarding-connect");
-            vcx.simulate_keystrokes("enter");
-            click(vcx, "onboarding-folder");
-            vcx.simulate_keystrokes("enter");
-            workspace.read_with(vcx, |w, _| {
-                assert_eq!(w.onboarding_simulator.as_ref().unwrap().step, Step::Ready);
-            });
-        }
-        vcx.simulate_keystrokes("escape");
+        vcx.simulate_keystrokes("alt-9");
+        workspace.update(vcx, |w, cx| {
+            let reply =
+                w.handle_preview_request(crate::preview_control::Request::Onboarding {}, cx);
+            assert_eq!(reply["flow"], "production");
+            assert_eq!(reply["separate_window"], true);
+            assert_eq!(
+                w.onboarding_launch.requests,
+                vec![launcher_path(), launcher_path()]
+            );
+        });
         let after = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
         assert_eq!(before, after);
         assert!(commands.try_recv().is_err());
-    }
 
-    #[gpui::test]
-    fn onboarding_simulator_shortcut_walkthrough_is_sandboxed(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::bind_workspace_keys);
-        let (bridge, commands) = harness::spawn_recording();
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut w = Workspace::for_test(learning::Coach::new(), cx);
-            w.set_test_bridge(bridge);
-            w.push_test_panel("existing", cx);
-            w
-        });
-        vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
-        vcx.simulate_input("keep my draft");
-        let before = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
-        vcx.simulate_keystrokes("alt-9");
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("onboarding-simulator").is_some());
-        vcx.update(|window, cx| {
-            workspace.update(cx, |w, cx| {
-                w.focus_active(window, cx);
-                assert!(w.focus_handle.is_focused(window));
-            })
-        });
-        // Real navigation/creation shortcuts cannot mutate the hidden workspace.
-        vcx.simulate_keystrokes("super-n super-q super-j");
-        click(vcx, "onboarding-next");
-        click(vcx, "onboarding-error");
-        assert!(vcx.debug_bounds("onboarding-connection-error").is_some());
-        click(vcx, "onboarding-connect");
-        assert!(vcx.debug_bounds("onboarding-connection-error").is_none());
-        click(vcx, "onboarding-next");
-        click(vcx, "onboarding-folder");
-        click(vcx, "onboarding-next");
-        workspace.read_with(vcx, |w, _| {
-            let sim = w.onboarding_simulator.as_ref().unwrap();
-            assert_eq!(sim.step, Step::Ready);
-            assert!(sim.connected && sim.folder_selected);
-        });
-        click(vcx, "onboarding-back");
-        click(vcx, "onboarding-restart");
-        workspace.read_with(vcx, |w, _| {
-            assert_eq!(w.onboarding_simulator, Some(Simulation::default()))
-        });
-        vcx.simulate_keystrokes("enter enter enter enter");
-        vcx.run_until_parked();
-        let after = vcx.update(|window, cx| workspace.read(cx).snapshot(window, cx).unwrap());
+        // Legacy fake-simulator state is an ignored field, never restored as UI.
+        let mut old: serde_json::Value = serde_json::from_slice(&before.encode().unwrap()).unwrap();
+        old["onboarding_simulator"] = serde_json::json!({"step":"Account","connected":true});
         assert_eq!(
-            before, after,
-            "simulation must preserve drafts and workspace state"
+            WorkspaceSnapshot::decode(&serde_json::to_vec(&old).unwrap()).unwrap(),
+            before
         );
-        vcx.simulate_keystrokes("alt-9 alt-9");
-        workspace.read_with(vcx, |w, _| assert!(w.onboarding_simulator.is_none()));
-        vcx.simulate_keystrokes("alt-9 escape");
-        workspace.read_with(vcx, |w, _| assert!(w.onboarding_simulator.is_none()));
-        assert!(
-            commands.try_recv().is_err(),
-            "simulation must never call the runtime"
-        );
-    }
-
-    #[gpui::test]
-    fn onboarding_simulator_command_and_reload(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::bind_workspace_keys);
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut w = Workspace::for_test(learning::Coach::new(), cx);
-            w.push_test_panel("existing", cx);
-            w
-        });
-        vcx.update(|window, cx| workspace.update(cx, |w, cx| w.focus_active(window, cx)));
-        vcx.simulate_input("/onboarding-sim");
-        vcx.simulate_keystrokes("enter enter");
-        vcx.run_until_parked();
-        click(vcx, "onboarding-connect");
-        vcx.update(|window, cx| {
-            workspace.update(cx, |w, cx| {
-                let snapshot = w.snapshot(window, cx).unwrap();
-                let snapshot = WorkspaceSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
-                let state = snapshot.onboarding_simulator.clone();
-                w.apply_snapshot(snapshot, cx);
-                w.restore_focus(window, cx);
-                assert_eq!(w.onboarding_simulator, state);
-                assert!(w.focus_handle.is_focused(window));
-            })
-        });
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("onboarding-simulator").is_some());
-        vcx.simulate_keystrokes("escape");
-        assert!(workspace.read_with(vcx, |w, _| w.onboarding_simulator.is_none()));
     }
 }

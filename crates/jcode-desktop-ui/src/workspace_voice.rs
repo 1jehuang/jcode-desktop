@@ -88,6 +88,7 @@ impl Workspace {
     ) -> gpui::Div {
         div()
             .size_full()
+            .capture_action(cx.listener(Self::toggle_onboarding_simulator))
             .capture_action(cx.listener(Self::toggle_voice))
             .capture_action(cx.listener(Self::toggle_panel_voice))
             .capture_action(cx.listener(Self::begin_voice_hold))
@@ -137,8 +138,7 @@ impl Workspace {
         let panel = self.slots[index].panel.clone();
         if !panel.read(cx).voice_active()
             && (self.show_beta_notice
-                || self.account_sign_in.visible
-                || self.onboarding_simulator.is_some())
+                || self.account_sign_in.visible)
         {
             return;
         }
@@ -202,7 +202,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
-        if self.show_beta_notice || self.account_sign_in.visible || self.onboarding_simulator.is_some() {
+        if self.show_beta_notice || self.account_sign_in.visible {
             return;
         }
         let Some(index) = self.voice_target(cx) else { return };

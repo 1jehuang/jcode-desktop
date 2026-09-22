@@ -67,8 +67,8 @@ impl Workspace {
                 return json!({"ok":true,"pid":std::process::id(),"states":PreviewState::ALL.iter().map(|s| json!({"id":s.id(),"title":s.title()})).collect::<Vec<_>>() });
             }
             Request::Onboarding {} => {
-                self.restart_onboarding_simulator(cx);
-                return json!({"ok":true,"step":"welcome"});
+                self.launch_onboarding(cx);
+                return json!({"ok":true,"status":"launch_requested","flow":"production","profile":"fresh","separate_window":true});
             }
             Request::Open { state } => (state, false),
             Request::Reset { state } => (state, true),

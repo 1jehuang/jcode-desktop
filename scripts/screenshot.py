@@ -55,7 +55,7 @@ def main():
     parser.add_argument("--cloud-startup", choices=("connecting", "failed"),
                         help="render managed Jcode Cloud unavailability without cloud operations (both modes currently unavailable)")
     parser.add_argument("--onboarding-interact", action="store_true",
-                        help="exercise Alt+9 and the sandboxed Desktop onboarding walkthrough")
+                        help="exercise real production first-run Welcome, Skip, accounts, and cleanup on private Xvfb")
     parser.add_argument("--sounds-interact", action="store_true",
                         help="verify sound opt-in, preview, and saved mute on the private display")
     parser.add_argument("--rename-interact", action="store_true",
@@ -133,6 +133,19 @@ def main():
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()
+    if args.onboarding_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "onboarding_interact")
+        if (others or args.preview_state or args.account_sign_in or args.beta_notice
+                or args.panels != 1 or args.learn_stage is not None or args.focus_panel is not None
+                or args.changelog or args.notification or args.swarm or args.worktrees
+                or args.cloud_startup or args.release_status or args.mermaid_source
+                or args.transcript != "all" or args.theme != "warm-neutral"
+                or args.layout_mode != "folder_tabs" or args.ai_font or args.scroll_up):
+            parser.error("onboarding-interact runs production first-run alone, without fixtures or other interactions")
+        from onboarding_real_acceptance import run
+        run(args.output, args.binary, args.no_build, args.size)
+        return
     if args.accounts_sidebar_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "accounts_sidebar_interact")
@@ -224,13 +237,6 @@ def main():
             parser.error("account-sign-in requires one panel and no other interaction or overlay modes")
         if args.account_sign_in_interact and (args.size != "1440x1000" or not shutil.which("tesseract")):
             parser.error("account-sign-in-interact requires the default size and tesseract")
-    if args.onboarding_interact:
-        others = any(value for key, value in vars(args).items()
-                     if key.endswith("_interact") and key != "onboarding_interact")
-        if others or args.panels != 1 or args.learn_stage is not None or args.preview_state:
-            parser.error("onboarding-interact requires one panel and no other interaction or preview modes")
-        if not shutil.which("xdotool") or not shutil.which("tesseract"):
-            parser.error("onboarding-interact requires xdotool and tesseract")
     if args.slash_interact:
         others = any(value for key, value in vars(args).items()
                      if key.endswith("_interact") and key != "slash_interact")
@@ -598,9 +604,6 @@ def main():
                     verify(output, env, root)
                 if args.account_sign_in_interact:
                     from account_sign_in_acceptance import verify
-                    verify(output, env, root)
-                if args.onboarding_interact:
-                    from onboarding_acceptance import verify
                     verify(output, env, root)
                 if args.scroll_up > 0:
                     subprocess.run(["xdotool", "mousemove", str((canvas_left + width) // 2),

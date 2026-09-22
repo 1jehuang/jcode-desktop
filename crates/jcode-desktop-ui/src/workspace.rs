@@ -575,8 +575,6 @@ pub struct WorkspaceSnapshot {
     worktree_mode: bool,
     #[serde(default)]
     tutorial_page: usize,
-    #[serde(default)]
-    onboarding_simulator: Option<onboarding_simulator::Simulation>,
     slots: Vec<SlotSnapshot>,
     active: usize,
     active_row: usize,
@@ -659,7 +657,7 @@ pub struct Workspace {
     worktree_mode: bool,
     worktrees: sidebar_worktrees::State,
     tutorial_page: usize,
-    onboarding_simulator: Option<onboarding_simulator::Simulation>,
+    onboarding_launch: onboarding_simulator::LaunchState,
     expanded_directories: HashSet<PathBuf>,
     slots: Vec<Slot>,
     active: usize,
@@ -916,7 +914,7 @@ impl Workspace {
             worktree_mode: false,
             worktrees: sidebar_worktrees::State::default(),
             tutorial_page: 0,
-            onboarding_simulator: None,
+            onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -1204,7 +1202,7 @@ impl Workspace {
             worktree_mode: false,
             worktrees: sidebar_worktrees::State::default(),
             tutorial_page: 0,
-            onboarding_simulator: None,
+            onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
             slots: Vec::new(),
             active: 0,
@@ -1359,7 +1357,6 @@ impl Workspace {
             sidebar_view: self.sidebar_view,
             worktree_mode: self.worktree_mode,
             tutorial_page: self.tutorial_page,
-            onboarding_simulator: self.onboarding_simulator.clone(),
             slots: slots
                 .iter()
                 .map(|slot| SlotSnapshot {
@@ -1401,7 +1398,6 @@ impl Workspace {
         self.sidebar_view = snapshot.sidebar_view;
         self.worktree_mode = snapshot.worktree_mode;
         self.tutorial_page = snapshot.tutorial_page.min(2);
-        self.onboarding_simulator = snapshot.onboarding_simulator;
         self.slots.clear();
         for saved in snapshot.slots {
             let mut panel_state = saved.panel;
@@ -1628,7 +1624,7 @@ impl Workspace {
         }
         if self.account_sign_in.visible
             || self.show_beta_notice
-            || self.onboarding_simulator.is_some()
+            || self.onboarding_launch.error.is_some()
         {
             window.focus(&self.focus_handle, cx);
             return;
@@ -3572,10 +3568,10 @@ impl Workspace {
     }
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
-        // Runtime updates may restore focus while the rehearsal hides panels.
+        // Runtime updates must not move focus behind a launch-only modal.
         if self.account_sign_in.visible
             || self.show_beta_notice
-            || self.onboarding_simulator.is_some()
+            || self.onboarding_launch.error.is_some()
         {
             window.focus(&self.focus_handle, cx);
             return;
@@ -7039,13 +7035,9 @@ impl Render for Workspace {
         {
             self.last_voice_chat = Some(slot.panel.entity_id());
         }
-        if self.onboarding_simulator.is_some() {
-            if self.focus_pending {
-                self.focus_pending = false;
-                window.focus(&self.focus_handle, cx);
-            }
-            let content = self.render_onboarding_simulator(cx);
-            return self.voice_modal_root(content, cx);
+        if self.onboarding_launch.error.is_some() {
+            window.focus(&self.focus_handle, cx);
+            return self.render_onboarding_launch_error(cx);
         }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
@@ -8446,7 +8438,6 @@ mod tests {
             sidebar_view: SidebarView::Sessions,
             worktree_mode: false,
             tutorial_page: 0,
-            onboarding_simulator: None,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
                     transcript: None,
@@ -8652,7 +8643,6 @@ mod tests {
                     sidebar_view: SidebarView::Sessions,
                     worktree_mode: false,
                     tutorial_page: 0,
-                    onboarding_simulator: None,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             transcript: None,

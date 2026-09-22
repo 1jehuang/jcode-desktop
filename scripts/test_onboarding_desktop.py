@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Headless stdlib tests, with only private Unix sockets and a mocked launcher."""
+"""Headless isolation and process-lifecycle regression tests. No real credentials."""
 import contextlib
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import signal
 import socket
-import struct
 import subprocess
 import tempfile
-import threading
 import time
 import unittest
 from unittest import mock
@@ -19,276 +18,219 @@ SCRIPT = Path(__file__).with_name("onboarding-desktop.py")
 SPEC = importlib.util.spec_from_file_location("onboarding_desktop", SCRIPT)
 launcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(launcher)
-WELCOME = {"ok": True, "step": "welcome"}
 
 
-@unittest.skipUnless(hasattr(socket, "SO_PEERCRED"), "Linux peer credentials required")
-class OnboardingTests(unittest.TestCase):
+class EnvironmentTests(unittest.TestCase):
+    def test_allowlist_excludes_credentials_config_socket_and_fixture_overrides(self):
+        root = Path("/private/profile")
+        source = {key: "sensitive-parent-value" for key in (
+            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "JCODE_API_KEY", "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID", "SSH_AUTH_SOCK", "HTTPS_PROXY", "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME", "JCODE_DESKTOP_CONFIG", "JCODE_DESKTOP_UI", "JCODE_API_SOCKET",
+            "JCODE_HOME", "HOME", "JCODE_DESKTOP_SCREENSHOT", "DBUS_SESSION_BUS_ADDRESS",
+            "XDG_CONFIG_HOME", "PYTHONPATH", "LD_PRELOAD", "BROWSER",
+        )}
+        source.update(DISPLAY=":88", WAYLAND_DISPLAY="wayland-1", XDG_RUNTIME_DIR="/run/user/123")
+        env = launcher.isolated_environment(root, source)
+        self.assertNotIn("sensitive-parent-value", env.values())
+        self.assertEqual(env["WAYLAND_DISPLAY"], "/run/user/123/wayland-1")
+        self.assertEqual(env["DISPLAY"], ":88")
+        self.assertEqual(env["HOME"], str(root / "home"))
+        self.assertEqual(env["JCODE_HOME"], str(root / "jcode"))
+        self.assertEqual(env["JCODE_SOCKET"], str(root / "runtime/jcode.sock"))
+        self.assertEqual(env["JCODE_API_SOCKET"], str(root / "runtime/jcode-api.sock"))
+        self.assertEqual(env["XDG_RUNTIME_DIR"], str(root / "runtime"))
+        self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/private/profile/no-session-bus")
+        self.assertNotIn("JCODE_DESKTOP_SCREENSHOT", env)
+        self.assertNotIn("JCODE_DESKTOP_CONFIG", env)
+
+    def test_absolute_wayland_socket_is_preserved(self):
+        env = launcher.isolated_environment(Path("/private"), {"WAYLAND_DISPLAY": "/run/display"})
+        self.assertEqual(env["WAYLAND_DISPLAY"], "/run/display")
+
+    def test_relative_wayland_requires_original_runtime(self):
+        with self.assertRaisesRegex(RuntimeError, "WAYLAND_DISPLAY"):
+            launcher.isolated_environment(Path("/private"), {"WAYLAND_DISPLAY": "wayland-1"})
+
+    def test_invalid_timeouts_fail_before_launch(self):
+        for timeout in (0, -1, 121, float("inf"), float("nan")):
+            with self.subTest(timeout=timeout), mock.patch.object(launcher.subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    launcher.open_onboarding(timeout)
+                spawn.assert_not_called()
+
+    def test_runtime_directory_must_be_private_and_not_symlink(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            launcher.private_directory(root)
+            root.chmod(0o755)
+            with self.assertRaises(RuntimeError):
+                launcher.private_directory(root)
+            root.chmod(0o700)
+            link = root / "link"
+            link.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(RuntimeError):
+                launcher.private_directory(link)
+
+    def test_private_browser_uses_explicit_fresh_profile_and_never_remote(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "browser").mkdir()
+            with mock.patch.object(launcher.shutil, "which", return_value="/usr/bin/firefox"), \
+                    mock.patch.object(launcher.subprocess, "Popen") as spawn:
+                launcher.open_private_url(root, "https://jcode.sh/account")
+                args = spawn.call_args.args[0]
+                self.assertIn("--no-remote", args)
+                self.assertIn("--profile", args)
+                self.assertTrue(Path(args[args.index("--profile") + 1]).is_relative_to(root / "browser"))
+                self.assertEqual(args[-1], "https://jcode.sh/account")
+
+    def test_browser_failure_is_handled_without_system_opener_fallback(self):
+        with mock.patch.object(launcher, "open_private_url", side_effect=RuntimeError("unavailable")), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(launcher.main(["--open-url", "/private", "https://jcode.sh"]), 0)
+            self.assertIn("unavailable", errors.getvalue())
+
+    def test_browser_rejects_non_web_links(self):
+        with tempfile.TemporaryDirectory() as name:
+            for url in ("file:///home/personal", "--profile", "mailto:person@example.com"):
+                with self.assertRaises(RuntimeError):
+                    launcher.open_private_url(Path(name), url)
+
+    def test_internal_supervision_never_removes_an_arbitrary_private_directory(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            sentinel = root / "keep"
+            sentinel.write_text("not disposable")
+            with self.assertRaisesRegex(RuntimeError, "non-onboarding"):
+                launcher.supervise(root, Path("/usr/bin/false"), 1)
+            self.assertEqual(sentinel.read_text(), "not disposable")
+
+    def test_readiness_requires_render_and_matching_peer_not_just_a_socket(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "runtime").mkdir()
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(root / "runtime/jcode-desktop.sock"))
+                server.listen(5)
+                self.assertFalse(launcher.host_ready(root, os.getpid()))
+                (root / "desktop-state.txt").touch()
+                with self.assertRaisesRegex(RuntimeError, "unexpected process"):
+                    launcher.host_ready(root, os.getpid() + 1)
+                self.assertTrue(launcher.host_ready(root, os.getpid()))
+
+    def test_explicit_companion_must_exist_and_be_executable(self):
+        self.assertEqual(launcher.runtime_binary({}, "/usr/bin/true"), Path("/usr/bin/true"))
+        with self.assertRaisesRegex(RuntimeError, "not executable"):
+            launcher.runtime_binary({}, "/nonexistent-jcode")
+
+    def test_help_describes_real_flow_without_launching(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output, \
+                mock.patch.object(launcher, "open_onboarding") as spawn:
+            with self.assertRaises(SystemExit):
+                launcher.main(["--help"])
+            spawn.assert_not_called()
+            self.assertIn("Alt+Shift+5", output.getvalue())
+            self.assertIn("REAL first-run", output.getvalue())
+
+
+FAKE_HOST = '''#!/usr/bin/python3
+import json, os, pathlib, socket, subprocess, sys, time
+root = pathlib.Path(os.environ["HOME"]).parent
+(root / "observed.json").write_text(json.dumps({"env":dict(os.environ), "argv":sys.argv, "cwd":os.getcwd()}))
+child = subprocess.Popen(["/usr/bin/python3", "-c", "import time; time.sleep(600)"], start_new_session=True)
+(root / "descendant.pid").write_text(str(child.pid))
+server = socket.socket(socket.AF_UNIX)
+server.bind(str(root / "runtime/jcode-desktop.sock"))
+server.listen()
+(root / "desktop-state.txt").write_text("rendered production root")
+while True:
+    client, _ = server.accept()
+    client.close()
+'''
+
+
+@unittest.skipUnless(os.name == "posix" and hasattr(os, "pidfd_open"), "Linux supervisor required")
+class LifecycleTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        self.runtime = Path(temp.name)
-        self.directory = self.runtime / "jcode-desktop-preview"
-        self.directory.mkdir(mode=0o700)
-        self.addCleanup(mock.patch.stopall)
-        mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.runtime)}).start()
-        self.popen = mock.patch.object(launcher.subprocess, "Popen").start()
-        self.requests = []
+        self.temp = tempfile.TemporaryDirectory(prefix="ob-test-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "parent-home"
+        (self.home / ".local/bin").mkdir(parents=True)
+        (self.home / ".local/bin/jcode").symlink_to("/usr/bin/true")
+        self.sentinel = self.home / "credentials-sentinel"
+        self.sentinel.write_text("parent credentials must not be touched")
+        self.host = self.root / "fake-desktop"
+        self.host.write_text(FAKE_HOST)
+        self.host.chmod(0o700)
+        self.source = {"HOME": str(self.home), "XDG_RUNTIME_DIR": str(self.root),
+                       "ANTHROPIC_API_KEY": "must-not-inherit", "JCODE_DESKTOP_SCREENSHOT": "1",
+                       "JCODE_API_SOCKET": "/never-touch/main-api.sock", "PATH": "/usr/bin:/bin"}
+        self.launched = []
+        self.addCleanup(self.stop_all)
 
-    def server(self, path, response, main=False):
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(str(path))
-        path.chmod(0o600)
-        listener.listen()
-        listener.settimeout(0.02)
-        stop = threading.Event()
-        errors = []
+    def start(self):
+        result = launcher.open_onboarding(5, self.host, self.source)
+        self.launched.append(result)
+        return result
 
-        def serve():
-            while not stop.is_set():
-                try:
-                    client, _ = listener.accept()
-                except socket.timeout:
-                    continue
-                try:
-                    with client:
-                        client.settimeout(1)
-                        data = bytearray()
-                        while (not data) if main else (b"\n" not in data):
-                            chunk = client.recv(4096)
-                            if not chunk:
-                                break
-                            data.extend(chunk)
-                        if not data:  # Peer validation can reject before sending.
-                            continue
-                        self.requests.append((path.name, bytes(data)))
-                        chunks = response if isinstance(response, list) else [response]
-                        for chunk in chunks:
-                            client.sendall(chunk)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass  # Size-limit/deadline checks deliberately close early.
-                except Exception as error:
-                    errors.append(error)
+    def stop_all(self):
+        for result in self.launched:
+            try:
+                os.kill(result["supervisor_pid"], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            self.wait_removed(Path(result["profile"]))
+            try:
+                os.waitpid(result["supervisor_pid"], 0)
+            except ChildProcessError:
+                pass
 
-        worker = threading.Thread(target=serve, daemon=True)
-        worker.start()
+    def wait_removed(self, path):
+        deadline = time.monotonic() + 10
+        while path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(path.exists(), "private profile was not cleaned up")
 
-        def cleanup():
-            stop.set()
-            worker.join(2)
-            listener.close()
-            self.assertFalse(worker.is_alive())
-            self.assertEqual(errors, [])
+    def test_real_command_clean_environment_and_independent_repeated_launch(self):
+        first, second = self.start(), self.start()
+        self.assertNotEqual(first["pid"], second["pid"])
+        self.assertNotEqual(first["profile"], second["profile"])
+        for result in (first, second):
+            self.assertEqual(result["mode"], "real-first-run")
+            profile = Path(result["profile"])
+            observed = json.loads((profile / "observed.json").read_text())
+            self.assertEqual(observed["argv"][1:], ["--no-hot-reload"])
+            self.assertEqual(observed["cwd"], str(profile / "home"))
+            self.assertNotIn("ANTHROPIC_API_KEY", observed["env"])
+            self.assertNotIn("JCODE_DESKTOP_SCREENSHOT", observed["env"])
+            self.assertEqual(observed["env"]["JCODE_API_SOCKET"], str(profile / "runtime/jcode-api.sock"))
+            self.assertFalse((profile / "home/credentials-sentinel").exists())
+        self.assertEqual(self.sentinel.read_text(), "parent credentials must not be touched")
 
-        self.addCleanup(cleanup)
-        return path
+    def test_closing_desktop_stops_detached_descendant_and_removes_only_its_profile(self):
+        result = self.start()
+        profile = Path(result["profile"])
+        descendant = int((profile / "descendant.pid").read_text())
+        os.kill(result["pid"], signal.SIGTERM)
+        self.wait_removed(profile)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(descendant, 0)
+        self.assertTrue(self.sentinel.is_file())
 
-    def main_server(self, response=b"ok\n"):
-        return self.server(self.runtime / "jcode-desktop.sock", response, main=True)
+    def test_failed_startup_cleans_fresh_profile(self):
+        with self.assertRaisesRegex(RuntimeError, "before rendering"):
+            launcher.open_onboarding(5, "/usr/bin/false", self.source)
+        self.assertEqual(list(self.root.glob("jcode-onboarding-*")), [])
+        self.assertTrue(self.sentinel.is_file())
 
-    def preview_server(self, result=WELCOME, pid=None, raw=None):
-        return self.server(
-            self.directory / f"{os.getpid() if pid is None else pid}.sock",
-            json.dumps(result).encode() + b"\n" if raw is None else raw,
-        )
-
-    def deadline(self):
-        return time.monotonic() + 1
-
-    def test_existing_main_restored_and_welcome_reset_every_time(self):
-        self.main_server([b"o", b"k", b"\n"])
-        self.preview_server()
-        self.preview_server(pid=999999)
-        for _ in range(2):
-            self.assertEqual(launcher.open_onboarding(1), WELCOME)
-        self.assertEqual(self.requests, [
-            ("jcode-desktop.sock", b"S"),
-            (f"{os.getpid()}.sock", b'{"command":"onboarding"}\n'),
-        ] * 2)
-        self.assertEqual(self.popen.call_count, 2)
-        self.popen.assert_called_with(
-            [str(Path.home() / ".local/bin/jcode-desktop")],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True,
-        )
-
-    def test_delayed_startup_and_preview_retry_without_relaunch(self):
-        with mock.patch.object(launcher, "main_host_pid", side_effect=[
-            FileNotFoundError("starting"), 42, 43,
-        ]) as discover, mock.patch.object(launcher, "request_onboarding", side_effect=[
-            ConnectionRefusedError("UI loading"), WELCOME,
-        ]) as request:
-            self.assertEqual(launcher.open_onboarding(1), WELCOME)
-        self.assertEqual(discover.call_count, 3)
-        self.assertEqual([call.args[1] for call in request.call_args_list], [42, 43])
-        self.popen.assert_called_once()
-
-    def test_auxiliary_preview_never_used_when_main_absent(self):
-        self.preview_server(pid=999999)
-        start = time.monotonic()
-        with self.assertRaisesRegex(RuntimeError, "timed out.*main Desktop"):
-            launcher.open_onboarding(0.05)
-        self.assertLess(time.monotonic() - start, 1)
-        self.assertEqual(self.requests, [])
-
-    def test_missing_main_preview_never_falls_back_to_auxiliary(self):
-        self.main_server()
-        self.preview_server(pid=999999)
-        with self.assertRaisesRegex(RuntimeError, "No auxiliary preview was selected"):
-            launcher.open_onboarding(0.05)
-        self.assertTrue(self.requests)
-        self.assertTrue(all(name == "jcode-desktop.sock" for name, _ in self.requests))
-
-    def test_bad_or_missing_show_acknowledgement(self):
-        path = self.main_server(b"no\n")
-        with self.assertRaisesRegex(RuntimeError, "invalid Show acknowledgement"):
-            launcher.main_host_pid(self.runtime, self.deadline())
-        path.unlink()
-        self.main_server(b"")
-        with self.assertRaisesRegex(RuntimeError, "closed before acknowledging Show"):
-            launcher.main_host_pid(self.runtime, self.deadline())
-
-    def test_preview_must_confirm_exact_welcome_success(self):
-        for result in [None, [], {"ok": 1, "step": "welcome"},
-                       {"ok": True, "step": "provider"}, {"ok": False, "error": "unsupported"}]:
-            with self.subTest(result=result):
-                path = self.preview_server(result)
-                with self.assertRaisesRegex(RuntimeError, "did not confirm Welcome"):
-                    launcher.request_onboarding(self.runtime, os.getpid(), self.deadline())
-                path.unlink()
-
-    def test_malformed_truncated_and_oversize_preview_responses(self):
-        for raw, error, message in [
-            (b"bad json\n", ValueError, ""),
-            (b'{"ok":true}', RuntimeError, "closed before acknowledging"),
-            (b"x" * 65537, RuntimeError, "response too large"),
-        ]:
-            with self.subTest(raw_size=len(raw)):
-                path = self.preview_server(raw=raw)
-                with self.assertRaisesRegex(error, message):
-                    launcher.request_onboarding(self.runtime, os.getpid(), self.deadline())
-                path.unlink()
-
-    def test_unsafe_preview_directory_and_socket_rejected(self):
-        path = self.preview_server()
-        for target, mode in [(self.directory, 0o755), (path, 0o666)]:
-            with self.subTest(target=target):
-                target.chmod(mode)
-                with self.assertRaises(launcher.UnsafeEndpoint):
-                    launcher.request_onboarding(self.runtime, os.getpid(), self.deadline())
-                target.chmod(0o700 if target == self.directory else 0o600)
-        self.assertEqual(self.requests, [])
-
-    def test_symlink_and_regular_file_rejected(self):
-        real = self.preview_server(pid=999999)
-        target = self.directory / f"{os.getpid()}.sock"
-        target.symlink_to(real)
-        with self.assertRaises(launcher.UnsafeEndpoint):
-            launcher.request_onboarding(self.runtime, os.getpid(), self.deadline())
-        target.unlink()
-        target.touch(mode=0o600)
-        with self.assertRaises(launcher.UnsafeEndpoint):
-            launcher.request_onboarding(self.runtime, os.getpid(), self.deadline())
-        self.assertEqual(self.requests, [])
-
-    def test_wrong_preview_peer_pid_rejected(self):
-        self.preview_server(pid=999999)
-        with self.assertRaisesRegex(launcher.UnsafeEndpoint, "unexpected peer"):
-            launcher.request_onboarding(self.runtime, 999999, self.deadline())
-        self.assertEqual(self.requests, [])
-
-    def test_wrong_peer_uid_rejected(self):
-        peer = mock.MagicMock()
-        peer.getsockopt.return_value = struct.pack("3i", 123, os.getuid() + 1, 123)
-        with mock.patch.object(launcher, "validate_path"), mock.patch.object(
-            launcher.socket, "socket", return_value=peer
-        ):
-            with self.assertRaisesRegex(launcher.UnsafeEndpoint, "unexpected peer"):
-                launcher.main_host_pid(self.runtime, self.deadline())
-        peer.sendall.assert_not_called()
-        peer.close.assert_called_once()
-
-    def test_wrong_owner_rejected(self):
-        metadata = self.directory.lstat()
-        with mock.patch.object(launcher.os, "getuid", return_value=metadata.st_uid + 1):
-            with self.assertRaises(launcher.UnsafeEndpoint):
-                launcher.validate_path(self.directory, directory=True)
-
-    def test_unsafe_main_socket_fails_without_retrying(self):
-        path = self.main_server()
-        path.chmod(0o666)
-        with mock.patch.object(launcher.time, "sleep") as sleep:
-            with self.assertRaises(launcher.UnsafeEndpoint):
-                launcher.open_onboarding(1)
-        sleep.assert_not_called()
-        self.assertEqual(self.requests, [])
-
-    def test_missing_or_relative_runtime_and_invalid_timeout_do_not_launch(self):
-        for value in ["", "relative"]:
-            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": value}):
-                with self.assertRaisesRegex(RuntimeError, "XDG_RUNTIME_DIR"):
-                    launcher.open_onboarding()
-        for value in [0, -1, float("inf"), float("nan"), 121]:
-            with self.assertRaisesRegex(ValueError, "timeout"):
-                launcher.open_onboarding(value)
-        self.popen.assert_not_called()
-
-    def test_launch_failure_has_executable_context(self):
-        self.popen.side_effect = FileNotFoundError("not installed")
-        with self.assertRaisesRegex(RuntimeError, "could not launch .*jcode-desktop.*not installed"):
-            launcher.open_onboarding(1)
-
-    def test_deadline_caps_each_io_timeout(self):
-        with mock.patch.object(launcher.time, "monotonic", return_value=10):
-            self.assertAlmostEqual(launcher.remaining(10.05), 0.05)
-            self.assertEqual(launcher.remaining(20), 3)
-            with self.assertRaises(TimeoutError):
-                launcher.remaining(10)
-
-    def test_fragmented_preview_response(self):
-        self.preview_server(raw=[b'{"ok":', b'true,"step":', b'"welcome"}\n'])
-        self.assertEqual(
-            launcher.request_onboarding(self.runtime, os.getpid(), self.deadline()), WELCOME
-        )
-
-    def test_stalled_main_is_bounded_by_overall_deadline(self):
-        # A listening socket that never accepts or acknowledges Show.
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.addCleanup(listener.close)
-        path = self.runtime / "jcode-desktop.sock"
-        listener.bind(str(path))
-        path.chmod(0o600)
-        listener.listen()
-        start = time.monotonic()
-        with self.assertRaisesRegex(RuntimeError, "timed out after 0.05s"):
-            launcher.open_onboarding(0.05)
-        self.assertLess(time.monotonic() - start, 0.5)
-
-    def test_cli_help_documents_binding_without_launch(self):
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as result:
-            launcher.main(["--help"])
-        self.assertEqual(result.exception.code, 0)
-        self.assertIn("Alt+Shift+5", output.getvalue())
-        self.assertIn("--timeout", output.getvalue())
-        self.popen.assert_not_called()
-
-    def test_cli_success_and_error_json(self):
-        for response, expected in [(WELCOME, 0), (RuntimeError("failed"), 1)]:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with mock.patch.object(launcher, "open_onboarding") as invoke:
-                if expected:
-                    invoke.side_effect = response
-                else:
-                    invoke.return_value = response
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    self.assertEqual(launcher.main([]), expected)
-            if expected:
-                self.assertEqual(json.loads(stderr.getvalue()), {"ok": False, "error": "failed"})
-                self.assertEqual(stdout.getvalue(), "")
-            else:
-                self.assertEqual(json.loads(stdout.getvalue()), WELCOME)
-                self.assertEqual(stderr.getvalue(), "")
+    def test_timeout_stops_only_its_children_and_preserves_parent_data(self):
+        self.host.write_text("#!/usr/bin/python3\nimport time\ntime.sleep(600)\n")
+        with self.assertRaisesRegex(RuntimeError, "startup timeout"):
+            launcher.open_onboarding(0.2, self.host, self.source)
+        self.assertEqual(list(self.root.glob("jcode-onboarding-*")), [])
+        self.assertTrue(self.sentinel.is_file())
 
 
 if __name__ == "__main__":

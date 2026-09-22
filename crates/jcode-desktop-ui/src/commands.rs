@@ -173,11 +173,11 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public(
         "/onboarding-preview",
-        "Preview the Desktop onboarding simulator (Alt+9)",
+        "Open real first-run Desktop in a separate fresh-profile window (Alt+9)",
     ),
     RegisteredCommand::public(
         "/onboarding-sim",
-        "Simulate Desktop onboarding without changing settings (Alt+9)",
+        "Open real first-run Desktop with an isolated fresh profile (Alt+9)",
     ),
     RegisteredCommand::public("/reload", "Reload into newest available binary"),
     RegisteredCommand::public("/restart", "Restart with current binary"),
