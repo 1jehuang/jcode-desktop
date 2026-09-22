@@ -337,3 +337,34 @@ fn readable_code_color(color: gpui::Rgba, background: gpui::Rgba) -> gpui::Rgba 
     }
     mix(high)
 }
+
+/// Sampled from the supplied ChatGPT desktop screenshot. Keep its exact neutral
+/// surfaces and focus blue, but darken blue text and secondary ink for contrast.
+pub(super) fn chatgpt_light() -> Theme {
+    let mut theme = Palette {
+        bg: 0xf6f6f6,
+        panel: 0xffffff,
+        raised: 0xf4f4f4,
+        border: 0xe9eaea,
+        text: 0x1a1c1f,
+        muted: 0x646668,
+        accent: 0x2463c4,
+        secondary: 0x3b3d3f,
+        keyword: 0x2463c4,
+        string: 0x306844,
+        number: 0x805518,
+        error: 0xb42332,
+        ok: 0x306844,
+        warn: 0x805518,
+    }
+    .theme();
+    theme.PANEL_BORDER_FOCUS = rgb_c(0x3a83f7);
+    theme.ACCENT_DIM = rgba_c(0x3a83f718);
+    theme.USER_BG = rgb_c(0xe9eaea);
+    theme.INPUT_BG = rgb_c(0xfffeff);
+    theme.TOOL_BG = rgb_c(0xf4f4f4);
+    theme.CODE_BG = rgb_c(0xf4f4f4);
+    theme.SELECTION = rgba_c(0x3a83f740);
+    theme.CURSOR = theme.TEXT;
+    theme
+}

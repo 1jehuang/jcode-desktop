@@ -323,10 +323,11 @@ pub enum ThemePreset {
     Slate,
     Paper,
     Silver,
+    ChatGptLight,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -341,6 +342,7 @@ impl ThemePreset {
         Self::Slate,
         Self::Paper,
         Self::Silver,
+        Self::ChatGptLight,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -358,6 +360,7 @@ impl ThemePreset {
             Self::Slate => "slate",
             Self::Paper => "paper",
             Self::Silver => "silver",
+            Self::ChatGptLight => "chatgpt-light",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -376,6 +379,7 @@ impl ThemePreset {
             Self::Slate => "Slate",
             Self::Paper => "Paper",
             Self::Silver => "Silver",
+            Self::ChatGptLight => "ChatGPT Light",
         }
     }
     const fn index(self) -> usize {
@@ -394,6 +398,7 @@ impl ThemePreset {
             Self::Slate => 11,
             Self::Paper => 12,
             Self::Silver => 13,
+            Self::ChatGptLight => 14,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -599,6 +604,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::SLATE.theme(),
         palettes::PAPER.theme(),
         palettes::SILVER.theme(),
+        palettes::chatgpt_light(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -857,6 +863,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn chatgpt_light_matches_sampled_reference_surfaces() {
+        let theme = &raw_themes()[ThemePreset::ChatGptLight.index()];
+        assert_eq!(theme.PANEL_BG, rgb_c(0xffffff));
+        assert_eq!(theme.BG, rgb_c(0xf6f6f6));
+        assert_eq!(theme.HEADER_BG, rgb_c(0xf4f4f4));
+        assert_eq!(theme.USER_BG, rgb_c(0xe9eaea));
+        assert_eq!(theme.INPUT_BG, rgb_c(0xfffeff));
+        assert_eq!(theme.TEXT, rgb_c(0x1a1c1f));
+        assert_eq!(theme.PANEL_BORDER_FOCUS, rgb_c(0x3a83f7));
+        assert!(contrast(theme.LINK, theme.PANEL_BG) >= 4.5);
+        assert!(contrast(theme.TEXT_DIM, theme.HEADER_BG) >= 4.5);
     }
 
     #[test]
