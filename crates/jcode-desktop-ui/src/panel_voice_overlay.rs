@@ -1,24 +1,10 @@
-//! Lift the owning composer into the window center while speech is streaming.
+//! A bottom-of-window microphone meter, independent of the draft composer.
 use super::*;
 
-fn lift_geometry(
-    viewport: gpui::Size<gpui::Pixels>,
-    origin: Option<gpui::Bounds<gpui::Pixels>>,
-    target_width: gpui::Pixels,
-    progress: f32,
-) -> (gpui::Pixels, gpui::Point<gpui::Pixels>) {
-    let remaining = 1.0 - crate::transition::ease_out_cubic(progress);
-    let width = target_width
-        + origin.map_or(px(0.), |b| {
-            b.size.width.min(viewport.width - px(32.)) - target_width
-        }) * remaining;
-    let offset = origin.map_or(gpui::point(px(0.), px(0.)), |b| {
-        gpui::point(
-            (b.center().x - viewport.width / 2.) * remaining,
-            (b.center().y - viewport.height / 2.) * remaining,
-        )
-    });
-    (width, offset)
+fn meter_height(level: f32) -> f32 {
+    // Speech RMS is far below full scale. Compress the visual range so quiet
+    // speech is visible without making silence look like incoming audio.
+    3.0 + (level.max(0.0) * 4.0).sqrt().min(1.0) * 19.0
 }
 
 impl Panel {
@@ -27,13 +13,9 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        self.input.update(cx, |input, cx| {
-            input.set_voice_preview(
-                self.voice_active()
-                    .then(|| self.voice.live_transcript.clone()),
-                cx,
-            );
-        });
+        // Streaming words never resize, move, or replace the draft editor.
+        self.input
+            .update(cx, |input, cx| input.set_voice_preview(None, cx));
         if !self.voice_active() && self.voice.error.is_none() {
             return None;
         }
@@ -41,141 +23,113 @@ impl Panel {
         let phase = self.voice.phase;
         let title = match phase {
             Phase::Idle => "Voice unavailable",
-            Phase::Checking => "Connecting microphone…",
-            Phase::Recording => "Listening…",
-            Phase::Transcribing => "Finishing transcript…",
-            Phase::Routing => "Understanding your request…",
+            Phase::Checking => "Connecting…",
+            Phase::Recording => "Listening",
+            Phase::Transcribing => "Transcribing…",
+            Phase::Routing => "Understanding…",
         };
-        let detail = self.voice.error.clone().unwrap_or_else(|| match phase {
-            Phase::Recording if self.voice.hold_capture => {
-                format!("Audio streams to Nari · Release {VOICE_SHORTCUT} to finish transcription")
-            }
-            Phase::Recording => "Audio streams to Nari · Click Stop to finish".into(),
-            Phase::Checking => "Connecting to Nari and checking microphone access".into(),
-            Phase::Transcribing => "Your words will not be sent automatically".into(),
-            Phase::Routing => "Jev is checking your last 20 sessions".into(),
-            Phase::Idle => String::new(),
-        });
         let viewport = window.viewport_size();
-        let target_width = (viewport.width - px(32.)).max(px(160.)).min(px(640.));
-        let duration = jcode_desktop_motion::policy(
-            crate::transition::Transition::PanelOpen,
-            crate::config::get().appearance.reduce_motion || cx.reduce_motion(),
-        )
-        .duration;
-        let progress = self.voice.entrance.map_or(1.0, |started| {
-            if duration.is_zero() {
-                1.0
-            } else {
-                (started.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0)
-            }
-        });
-        if progress < 1.0 {
-            window.request_animation_frame();
-        }
-        let (width, offset) = lift_geometry(viewport, self.voice.origin, target_width, progress);
         let card = div()
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
-            .relative()
-            .left(offset.x)
-            .top(offset.y)
-            .w(width)
-            .max_h((viewport.height - px(32.)).max(px(160.)))
-            .overflow_y_scroll()
-            .p_4()
+            .w((viewport.width - px(32.)).min(px(if phase == Phase::Idle { 360. } else { 196. })))
+            .min_h(px(44.))
+            .px_3()
+            .py_2()
             .flex()
-            .flex_col()
-            .gap_3()
-            .rounded_xl()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .rounded_full()
+            .when(phase == Phase::Idle, |el| el.rounded_xl())
             .border_1()
-            .border_color(theme.ACCENT.opacity(0.35))
+            .border_color(theme.ACCENT.opacity(0.25))
             .bg(theme.PANEL_BG)
             .shadow_lg()
             .text_color(theme.TEXT)
-            .text_size(px(13.))
+            .text_size(px(11.))
             .occlude()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .when(phase == Phase::Recording, |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "voice-waveform".into())
+                        .flex_1()
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(2.))
+                        .children(self.voice.levels.iter().map(|level| {
+                            div()
+                                .w(px(2.))
+                                .h(px(meter_height(*level)))
+                                .rounded_full()
+                                .bg(theme.ACCENT.opacity(0.9))
+                        })),
+                )
+            })
+            .when(phase != Phase::Recording, |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "voice-status".into())
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(theme.TEXT_DIM)
+                        .child(self.voice.error.clone().unwrap_or_else(|| title.into())),
+                )
+            })
             .child(
                 div()
+                    .id("voice-cancel")
+                    .debug_selector(|| "voice-cancel".into())
+                    .size(px(24.))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(div().size(px(8.)).rounded_full().bg(theme.ACCENT))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .when(phase == Phase::Recording, |el| {
-                        let seconds = self.voice.started.map_or(0, |t| t.elapsed().as_secs());
-                        el.child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(theme.TEXT_DIM)
-                                .child(format!("{}:{:02}", seconds / 60, seconds % 60)),
-                        )
-                    }),
-            )
-            .when(self.voice_active(), |el| el.child(self.input.clone()))
-            .child(
-                div()
-                    .debug_selector(|| "voice-status".into())
-                    .text_size(px(11.))
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
                     .text_color(theme.TEXT_DIM)
-                    .child(detail),
+                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| VoiceTooltip("Cancel recording · Keep draft unchanged".into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(|panel, _, _, cx| {
+                        panel.cancel_voice(cx);
+                        cx.stop_propagation();
+                    }))
+                    .child("×"),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("voice-cancel")
-                            .debug_selector(|| "voice-cancel".into())
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_color(theme.TEXT_DIM)
-                            .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                            .on_click(cx.listener(|panel, _, _, cx| {
-                                panel.cancel_voice(cx);
-                                cx.stop_propagation();
-                            }))
-                            .child(if phase == Phase::Idle {
-                                "Dismiss"
-                            } else {
-                                "Cancel"
-                            }),
-                    )
-                    .when(phase == Phase::Recording, |el| {
-                        el.child(
-                            div()
-                                .id("voice-stop")
-                                .debug_selector(|| "voice-stop".into())
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .bg(theme.ACCENT_DIM)
-                                .text_color(theme.ACCENT)
-                                .hover(|el| el.bg(theme.ACCENT.opacity(0.25)))
-                                .on_click(cx.listener(|panel, _, _, cx| {
-                                    panel.stop_voice(cx);
-                                    cx.stop_propagation();
-                                }))
-                                .child("Stop"),
-                        )
-                    }),
-            );
-        // Only the lifted composer captures input. The original slot retains
-        // its space so the transcript does not jump underneath the animation.
+            .when(phase == Phase::Recording, |el| {
+                el.child(
+                    div()
+                        .id("voice-stop")
+                        .debug_selector(|| "voice-stop".into())
+                        .size(px(24.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(theme.ACCENT_DIM)
+                        .text_color(theme.ACCENT)
+                        .tooltip(|_, cx| {
+                            cx.new(|_| {
+                                VoiceTooltip("Finish transcription · Insert into draft".into())
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(|panel, _, _, cx| {
+                            panel.stop_voice(cx);
+                            cx.stop_propagation();
+                        }))
+                        .child("■"),
+                )
+            });
         Some(
             gpui::deferred(
                 gpui::anchored()
@@ -184,8 +138,9 @@ impl Panel {
                         div()
                             .w(viewport.width)
                             .h(viewport.height)
+                            .pb(px(24.))
                             .flex()
-                            .items_center()
+                            .items_end()
                             .justify_center()
                             .child(card),
                     ),
@@ -195,23 +150,13 @@ impl Panel {
         )
     }
 
-    pub(in crate::panel) fn render_voice_input_slot(&mut self, cx: &App) -> gpui::AnyElement {
-        if self.voice_active() {
-            if self.voice.origin.is_none() {
-                self.voice.origin = self.input.read(cx).voice_bounds();
-            }
-            div()
-                .debug_selector(|| "voice-input-origin".into())
-                .w_full()
-                .h(self.voice.origin.map_or(px(100.), |b| b.size.height))
-                .into_any_element()
-        } else {
-            self.input.clone().into_any_element()
-        }
+    pub(in crate::panel) fn render_voice_input_slot(&mut self, _cx: &App) -> gpui::AnyElement {
+        self.input.clone().into_any_element()
     }
 
     pub(in crate::panel) fn seed_voice_preview(&mut self, state: PreviewState) {
         self.voice = VoiceState::default();
+        self.voice.hold_capture = true;
         self.voice.phase = if state == PreviewState::VoiceConnecting {
             Phase::Checking
         } else {
@@ -219,8 +164,9 @@ impl Panel {
         };
         if state == PreviewState::VoiceListening {
             self.voice.started = Some(Instant::now());
-            self.voice.live_transcript =
-                "Show me what I’m saying as I speak, right here on the screen.".into();
+            // Deterministic offline microphone fixture, never used in live capture.
+            self.voice.levels =
+                std::array::from_fn(|i| ((i as f32 * 0.7).sin().abs() * 0.2) + 0.002);
         }
     }
 }
@@ -230,31 +176,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn voice_lift_starts_at_input_and_settles_at_window_center() {
-        let viewport = gpui::size(px(1440.), px(1000.));
-        let origin = gpui::Bounds::new(
-            gpui::point(px(300.), px(800.)),
-            gpui::size(px(900.), px(100.)),
-        );
-        let (width, offset) = lift_geometry(viewport, Some(origin), px(640.), 0.);
-        assert_eq!(width, origin.size.width);
-        assert_eq!(offset, gpui::point(px(30.), px(350.)));
-        let (_, halfway) = lift_geometry(viewport, Some(origin), px(640.), 0.5);
-        assert!(halfway.y > px(0.) && halfway.y < offset.y);
-        assert_eq!(
-            lift_geometry(viewport, Some(origin), px(640.), 1.),
-            (px(640.), gpui::point(px(0.), px(0.)))
-        );
-        assert_eq!(
-            lift_geometry(viewport, None, px(640.), 0.),
-            (px(640.), gpui::point(px(0.), px(0.)))
-        );
+    fn meter_tracks_silence_and_clamps_loud_audio() {
+        assert_eq!(meter_height(0.), 3.);
+        assert_eq!(meter_height(1.), 22.);
+        assert_eq!(meter_height(2.), 22.);
+        assert!(meter_height(0.1) > meter_height(0.01));
+        assert!(meter_height(0.02) > 8.);
     }
-
     #[gpui::test]
-    fn voice_overlay_centers_the_actual_composer_without_moving_footer(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn voice_overlay_stays_at_bottom_without_moving_composer(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for (width, height) in [(240., 320.), (480., 600.), (1440., 1000.)] {
@@ -262,6 +192,7 @@ mod tests {
             panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
             vcx.run_until_parked();
             let footer = vcx.debug_bounds("panel-meta").unwrap();
+            let original_input = vcx.debug_bounds("prompt-input").unwrap();
             for phase in [
                 Phase::Checking,
                 Phase::Recording,
@@ -281,17 +212,19 @@ mod tests {
                     "{card:?}"
                 );
                 assert!(
-                    (card.center().y - px(height / 2.)).abs() <= px(1.),
+                    (card.bottom() - px(height - 24.)).abs() <= px(1.),
                     "{card:?}"
                 );
                 assert!(card.left() >= px(0.) && card.right() <= px(width));
                 assert!(card.top() >= px(0.));
-                let input = vcx
-                    .debug_bounds("prompt-input")
-                    .expect("actual composer is lifted");
-                assert!(input.left() >= card.left() && input.right() <= card.right());
-                assert!(input.top() >= card.top() && input.bottom() <= card.bottom());
-                assert!(vcx.debug_bounds("voice-input-origin").is_some());
+                assert_eq!(vcx.debug_bounds("prompt-input").unwrap(), original_input);
+                assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+                assert_eq!(
+                    vcx.debug_bounds("voice-waveform").is_some(),
+                    phase == Phase::Recording
+                );
+                assert!(card.size.width <= px(196.));
+                assert!(card.size.height <= px(48.));
                 assert_eq!(
                     vcx.debug_bounds("panel-meta").unwrap(),
                     footer,
@@ -320,7 +253,7 @@ mod tests {
             panel.apply_voice_event(NariEvent::Transcript("first partial".into()), cx);
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("voice-live-transcript").is_some());
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
         panel.update(vcx, |panel, cx| {
             panel.apply_voice_event(
                 NariEvent::Transcript("Revised live words. ".repeat(100)),

@@ -45,8 +45,7 @@ pub(super) struct VoiceState {
     hold_capture: bool,
     recording: Option<NariRecording>,
     live_transcript: String,
-    origin: Option<gpui::Bounds<gpui::Pixels>>,
-    entrance: Option<Instant>,
+    levels: [f32; 24],
     canceled: Arc<AtomicBool>,
     started: Option<Instant>,
     error: Option<String>,
@@ -196,8 +195,6 @@ impl Panel {
             return;
         }
         self.prepare_voice_attempt(hold_capture);
-        self.voice.origin = self.input.read(cx).voice_bounds();
-        self.voice.entrance = Some(Instant::now());
         let token = self.voice.canceled.clone();
         let attempt = token.clone();
         let work = cx.background_executor().spawn(async move {
@@ -253,6 +250,15 @@ impl Panel {
                     .update(cx, |panel, cx| {
                         if !Arc::ptr_eq(&attempt, &panel.voice.canceled) || !panel.voice_active() {
                             return false;
+                        }
+                        if panel.voice.phase == Phase::Recording {
+                            let level = panel
+                                .voice
+                                .recording
+                                .as_ref()
+                                .map_or(0., NariRecording::audio_level);
+                            panel.voice.levels.rotate_left(1);
+                            panel.voice.levels[23] = level;
                         }
                         // Drain a bounded batch so a fast provider cannot monopolize the UI.
                         for _ in 0..64 {
@@ -819,14 +825,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_live_preview_renders_without_replacing_composer(cx: &mut gpui::TestAppContext) {
+    fn voice_meter_renders_without_streaming_into_composer(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel.voice.phase = Phase::Recording;
             panel.apply_voice_event(NariEvent::Transcript("Streaming Nari words".into()), cx);
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("voice-live-transcript").is_some());
+        assert!(vcx.debug_bounds("voice-live-transcript").is_none());
+        assert!(vcx.debug_bounds("voice-waveform").is_some());
         panel.read_with(vcx, |panel, cx| {
             assert!(panel.input.read(cx).content.is_empty())
         });
