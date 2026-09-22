@@ -195,8 +195,10 @@ def main():
             time.sleep(.5)
             assert wm.poll() is None, "Private Openbox exited"
             protected = {}
-            for name, mode in (("normal", []), ("no-sidebar", ["--no-sidebar"]),
-                               ("single-a", ["--single-panel"]), ("single-b", ["--single-panel"])):
+            # The workspace shortcut must create the main window even when
+            # standalone/sidebar-free windows already exist.
+            for name, mode in (("single-a", ["--single-panel"]), ("single-b", ["--single-panel"]),
+                               ("no-sidebar", ["--no-sidebar"]), ("normal", [])):
                 child_env = dict(env, JCODE_DESKTOP_STATE=str(root / (name + ".state")))
                 process = spawn(name, [str(binary), "--no-hot-reload", *mode], child_env)
                 suffix = f"-single-panel-{process.pid}" if name.startswith("single") else (
@@ -226,6 +228,19 @@ def main():
             assert len({app["window"] for app in apps.values()}) == 4
             assert len({app["inode"] for app in apps.values()}) == 4
             report["checks"].append("four independent PIDs, native windows and listening sockets")
+            report["checks"].append("default launch opens workspace with auxiliary windows already running")
+            # Exercise the same no-mode launch used by the workspace shortcut.
+            # A secondary process must exit, focus the original workspace, and
+            # leave every existing window, socket and workspace intact.
+            for previous in ("single-a", "single-b", "no-sidebar", "normal"):
+                focus(previous)
+                secondary = subprocess.run([str(binary), "--no-hot-reload"], env=env,
+                                           cwd=root, capture_output=True, text=True, timeout=10)
+                assert secondary.returncode == 0, secondary.stderr
+                wait_for(lambda: native("getactivewindow").stdout.strip() == apps["normal"]["window"],
+                         "default launch focuses workspace from " + previous, processes)
+                unchanged(protected)
+                report["checks"].append("default launch refocuses existing workspace from " + previous)
             for name in ("single-a", "single-b"):
                 focus(name)
                 for key in WORKSPACE_KEYS:
