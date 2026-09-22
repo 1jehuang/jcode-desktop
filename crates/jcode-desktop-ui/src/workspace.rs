@@ -564,6 +564,8 @@ enum FocusSnapshot {
 pub struct WorkspaceSnapshot {
     format_version: u32,
     #[serde(default)]
+    resume: resume::Snapshot,
+    #[serde(default)]
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
     #[serde(default)]
     layout_mode: crate::config::LayoutMode,
@@ -767,8 +769,9 @@ impl Workspace {
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let performance_enabled = crate::performance::enabled(std::env::args_os());
-        let resume_on_startup = snapshot.is_none()
-            && jcode_desktop_api::LaunchMode::resume_requested(std::env::args_os());
+        let resume_requested =
+            jcode_desktop_api::LaunchMode::resume_requested(std::env::args_os());
+        let resume_snapshot = snapshot.as_ref().map(|snapshot| snapshot.resume.clone());
         let single_panel = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
             == jcode_desktop_api::LaunchMode::SinglePanel;
 
@@ -1051,7 +1054,6 @@ impl Workspace {
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
             workspace.init_worktree_fixture();
-            workspace.init_resume_fixture();
             if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
                 for (index, (label, status)) in [
                     ("API reviewer", "working"),
@@ -1125,12 +1127,11 @@ impl Workspace {
         } else {
             workspace.open_startup_draft(cx);
         }
-        if !resume_on_startup && workspace.remotes.default_host.is_some() {
+        workspace.init_resume_fixture(cx);
+        // Restore the picker after slots, but before a default remote can start.
+        workspace.restore_resume(resume_snapshot, resume_requested, window, cx);
+        if workspace.resume.is_none() && workspace.remotes.default_host.is_some() {
             workspace.start_default_startup(cx);
-        }
-        if resume_on_startup {
-            workspace.open_resume(&OpenResume, window, cx);
-            workspace.resume.as_mut().unwrap().start_on_close = true;
         }
         workspace.start_preview_control(cx);
         workspace
@@ -1357,6 +1358,7 @@ impl Workspace {
             .map(|search| search.read(cx).snapshot());
         Ok(WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            resume: self.resume_snapshot(cx),
             side_panel_snapshots: self.side_panel_snapshots.clone(),
             layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
@@ -8430,6 +8432,7 @@ mod tests {
         };
         let snapshot = WorkspaceSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
+            resume: resume::Snapshot::Closed,
             side_panel_snapshots: HashMap::new(),
             layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
@@ -8635,6 +8638,7 @@ mod tests {
             workspace.apply_snapshot(
                 WorkspaceSnapshot {
                     format_version: SNAPSHOT_FORMAT_VERSION,
+                    resume: resume::Snapshot::Closed,
                     side_panel_snapshots: HashMap::new(),
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),

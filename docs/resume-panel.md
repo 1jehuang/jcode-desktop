@@ -11,6 +11,13 @@ In standalone `--single-panel` windows, resuming keeps the same single-panel pre
 
 The browser is a transient workspace surface, not a daemon session. Browsing and canceling do not create a conversation or submit a prompt.
 
+The open browser survives UI hot reloads, including the automatic reload just after
+launching with `--resume`. Search text, selection, filter, and keyboard focus are
+restored before startup can create a session. A browser already dismissed or used
+to resume a chat stays closed on subsequent reloads. Older linked hosts without
+picker snapshots recover `--resume` only while the active chat is still an
+unstarted startup draft.
+
 ## Verification
 
 Run the focused Rust tests and isolated native acceptance script against a current build:
@@ -18,6 +25,12 @@ Run the focused Rust tests and isolated native acceptance script against a curre
 ```sh
 cargo test -p jcode-desktop-ui --lib workspace::resume
 python3 scripts/verify-resume-panel.py target/resume-panel.png
+cargo build -p jcode-desktop -p jcode-desktop-ui
+python3 scripts/verify-resume-panel.py target/resume-reload.png --plugin target/debug/libjcode_desktop_ui.so
 ```
 
 The script runs the real Desktop renderer with offline fixture sessions on private Xvfb displays, exercises both workspace and single-panel presentation, and retains screenshots and navigation evidence. It never controls the live desktop.
+
+The optional matched `--plugin` also exercises automatic startup and manual
+hot reloads. It loads the prebuilt plugin without rebuilding inside the isolated
+fixture process.

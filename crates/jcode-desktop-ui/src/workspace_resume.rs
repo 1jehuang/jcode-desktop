@@ -1,12 +1,28 @@
 //! A transient, keyboard-first session browser. It never becomes a runtime slot.
 use super::*;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum Filter {
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub(super) enum Filter {
     #[default]
     All,
     Active,
     Saved,
+}
+
+/// Legacy is only a decode fallback. Every new snapshot explicitly records
+/// Closed or Open so --resume cannot reopen a deliberately dismissed picker.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(super) enum Snapshot {
+    #[default]
+    Legacy,
+    Closed,
+    Open {
+        search: PromptInputSnapshot,
+        query: String,
+        selected: Option<String>,
+        filter: Filter,
+        start_on_close: bool,
+    },
 }
 
 pub(super) struct State {
@@ -68,6 +84,57 @@ fn filtered_sessions(
 }
 
 impl Workspace {
+    pub(super) fn resume_snapshot(&self, cx: &App) -> Snapshot {
+        match &self.resume {
+            None => Snapshot::Closed,
+            Some(state) => Snapshot::Open {
+                search: state.search.read(cx).snapshot(),
+                query: state.query.clone(),
+                selected: state.selected.clone(),
+                filter: state.filter,
+                start_on_close: state.start_on_close,
+            },
+        }
+    }
+
+    pub(super) fn restore_resume(
+        &mut self,
+        snapshot: Option<Snapshot>,
+        resume_requested: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resume = None;
+        match snapshot {
+            Some(Snapshot::Open {
+                search,
+                query,
+                selected,
+                filter,
+                start_on_close,
+            }) => {
+                self.open_resume(&OpenResume, window, cx);
+                let state = self.resume.as_mut().unwrap();
+                state.search.update(cx, |input, cx| input.restore(search, cx));
+                state.query = query;
+                state.selected = selected;
+                state.filter = filter;
+                state.start_on_close = start_on_close;
+            }
+            None | Some(Snapshot::Legacy) if resume_requested => {
+                // Old linked hosts omitted picker state. Recover only while the
+                // active slot is still the unstarted startup draft, not a chat.
+                if snapshot.is_none() || self.slots.get(self.active).is_some_and(|slot| {
+                    slot.panel.read(cx).is_startup_draft()
+                }) {
+                    self.open_resume(&OpenResume, window, cx);
+                    self.resume.as_mut().unwrap().start_on_close = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn resume_sessions(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
         let mut sessions = self.sessions.clone();
         // Keep local drafts and already-open chats reachable when switching the
@@ -250,9 +317,12 @@ impl Workspace {
     pub(super) fn render_resume(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let matches = self.resume_matches(cx);
         let state = self.resume.as_mut().expect("resume picker is open");
-        if !matches
-            .iter()
-            .any(|s| Some(&s.session_id) == state.selected.as_ref())
+        // The session catalog arrives asynchronously after a reload. Do not
+        // discard the restored selection while only local slots are available.
+        if (state.selected.is_none() || !self.sessions.is_empty())
+            && !matches
+                .iter()
+                .any(|s| Some(&s.session_id) == state.selected.as_ref())
         {
             state.selected = matches.first().map(|s| s.session_id.clone());
         }
@@ -538,13 +608,13 @@ impl Workspace {
         }));
     }
 
-    pub(super) fn init_resume_fixture(&mut self) {
+    pub(super) fn init_resume_fixture(&mut self, cx: &App) {
         if !harness::screenshot_mode()
             || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_none()
         {
             return;
         }
-        let Some(base) = self.sessions.first().cloned() else {
+        let Some(base) = self.resume_sessions(cx).first().cloned() else {
             return;
         };
         for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
@@ -754,6 +824,129 @@ mod tests {
         assert!(is_resume_command("/sessions"));
         assert!(!is_resume_command("/resumeall"));
         assert!(!is_resume_command("/resume unrelated"));
+    }
+
+    fn reload_picker(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+        let snapshot = w.snapshot_for_reload(window, cx).unwrap();
+        let snapshot = WorkspaceSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
+        let picker = snapshot.resume.clone();
+        w.resume = None;
+        w.apply_snapshot(snapshot, cx);
+        w.restore_resume(Some(picker), true, window, cx);
+        w.restore_focus(window, cx);
+    }
+
+    #[gpui::test]
+    fn resume_reload_roundtrip_preserves_search_selection_and_suppresses_connected(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w.open_startup_draft(cx);
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_resume(&OpenResume, window, cx);
+            let state = w.resume.as_mut().unwrap();
+            state.search.update(cx, |input, cx| {
+                let mut search = input.snapshot();
+                search.content = "Résumé planner".into();
+                search.selection_start = 2;
+                search.selection_end = 5;
+                search.selection_reversed = true;
+                input.restore(search, cx);
+            });
+            state.query = "Résumé planner".into();
+            state.selected = Some("selected-session".into());
+            state.filter = Filter::Saved;
+            state.start_on_close = true;
+            let expected = w.resume_snapshot(cx);
+            reload_picker(w, window, cx);
+            assert_eq!(w.resume_snapshot(cx), expected);
+            assert!(w.resume.as_ref().unwrap().search.focus_handle(cx).is_focused(window));
+            w.apply(harness::Update::Connected, cx);
+            assert_eq!(w.resume_snapshot(cx), expected);
+            assert!(commands.try_recv().is_err(), "reload must not create or attach a session");
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.resume.as_ref().unwrap().selected.as_deref(), Some("selected-session"));
+        });
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn resume_reload_cancelled_picker_stays_closed(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.open_startup_draft(cx);
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.restore_resume(None, true, window, cx);
+            w.close_resume(window, cx);
+            assert!(w.slots[w.active].panel.read(cx).is_startup_draft());
+            assert_eq!(w.resume_snapshot(cx), Snapshot::Closed);
+            reload_picker(w, window, cx);
+            assert!(w.resume.is_none(), "--resume must not reopen an intentionally closed picker");
+        });
+    }
+
+    #[gpui::test]
+    fn resume_reload_selected_picker_stays_closed(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w.open_startup_draft(cx);
+            w.sessions = vec![session_info("target", Some("Target"))];
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.restore_resume(None, true, window, cx);
+            w.resume.as_mut().unwrap().selected = Some("target".into());
+            w.resume_selected(window, cx);
+            reload_picker(w, window, cx);
+            assert!(w.resume.is_none());
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "target");
+            while commands.try_recv().is_ok() {}
+            w.apply(harness::Update::Connected, cx);
+            assert!(commands.try_recv().is_err(), "must not start the hidden startup draft");
+        });
+    }
+
+    #[gpui::test]
+    fn resume_reload_legacy_recovers_only_requested_active_startup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.bridge = bridge;
+            w.open_startup_draft(cx);
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            let mut json = serde_json::to_value(w.snapshot_for_reload(window, cx).unwrap()).unwrap();
+            json.as_object_mut().unwrap().remove("resume");
+            let legacy = WorkspaceSnapshot::decode(&serde_json::to_vec(&json).unwrap()).unwrap();
+            assert_eq!(legacy.resume, Snapshot::Legacy);
+            w.apply_snapshot(legacy, cx);
+            w.restore_resume(Some(Snapshot::Legacy), false, window, cx);
+            assert!(w.resume.is_none());
+            w.restore_resume(Some(Snapshot::Legacy), true, window, cx);
+            assert!(w.resume.as_ref().unwrap().start_on_close);
+            assert!(w.resume.as_ref().unwrap().search.focus_handle(cx).is_focused(window));
+            w.apply(harness::Update::Connected, cx);
+            assert!(commands.try_recv().is_err());
+            w.sessions = vec![session_info("target", Some("Target"))];
+            w.resume.as_mut().unwrap().selected = Some("target".into());
+            w.resume_selected(window, cx);
+            w.restore_resume(Some(Snapshot::Legacy), true, window, cx);
+            assert!(w.resume.is_none(), "legacy --resume must not replace an active chat");
+        });
     }
 
     #[gpui::test]

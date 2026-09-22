@@ -2,7 +2,8 @@
 """Verify the dedicated /resume surface and standalone resume on private Xvfb.
 
 Uses an already-built real Desktop app with offline resume fixtures. No daemon,
-provider, live display, builds or reloads. Retains PNGs, OCR, navigation and logs.
+provider, live display or builds. Optional --plugin tests isolated hot reloads.
+Retains PNGs, OCR, navigation and logs.
 Example: python3 scripts/verify-resume-panel.py target/resume-panel.png
 """
 import argparse
@@ -52,7 +53,7 @@ def assert_single(state, size, chat=False):
         assert abs(state["canvas_width"] - size[0]) <= 1, state
 
 
-def run_mode(binary, output, evidence, driver, single, report):
+def run_mode(binary, output, evidence, driver, single, report, plugin=None):
     name = "single-panel" if single else "workspace"
     size = (800, 950) if single else (1440, 1000)
     mode = {"mode": name, "checks": [], "passed": False}
@@ -67,6 +68,10 @@ def run_mode(binary, output, evidence, driver, single, report):
                    JCODE_DESKTOP_SCREENSHOT_PANELS="1",
                    JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE="1",
                    JCODE_DESKTOP_CONFIG=str(root / "desktop.toml"))
+        if plugin:
+            # Exercise real generation swaps with the supplied matched build,
+            # without invoking Cargo inside the isolated fixture environment.
+            env["CARGO"] = "/usr/bin/true"
         for directory in ("home", "runtime", "config", "cache", "data", "logs", "jcode"):
             (root / directory).mkdir(mode=0o700)
         assert len(str(root / "runtime/jcode-desktop-single-panel-99999999.sock").encode()) < 104, "Private socket path too long"
@@ -169,7 +174,17 @@ def run_mode(binary, output, evidence, driver, single, report):
             env["DISPLAY"] = ":" + display
             launch("openbox", ["openbox", "--sm-disable", "--config-file", str(wm)])
             time.sleep(.5)
-            app = launch("app", [str(binary), "--no-hot-reload", *(["--resume"] if single else [])])
+            reload_args = ["--hot-reload", str(plugin)] if plugin else ["--no-hot-reload"]
+            app = launch("app", [str(binary), *reload_args, *(["--resume"] if single else [])])
+            diagnostics = root / "logs/jcode-desktop/jcode-desktop.log"
+
+            def wait_generation(generation):
+                wait(lambda: diagnostics.exists() and
+                     f"activated UI generation {generation} " in diagnostics.read_text(),
+                     f"UI generation {generation}")
+
+            if plugin:
+                wait_generation(1)
             wait(lambda: navigation(state_path), "initial fixture")
             window = native("search", "--sync", "--onlyvisible", "--pid", app.pid).stdout.split()
             assert len(window) == 1, window
@@ -203,12 +218,23 @@ def run_mode(binary, output, evidence, driver, single, report):
             type_text("/resume")
             key("Return")
             state_check("dedicated-picker", picker)
+            if plugin:
+                key("ctrl+r")
+                wait_generation(2)
+                state_check("reload-preserves-picker", picker)
             picker_png = output.with_name(output.stem + "-single-picker.png") if single else output
             capture(picker_png, ("Resume session", TITLE, "Resume acceptance beta"))
             type_text("Resume acceptance")
             capture(evidence / f"{name}-preview-alpha.png", ("Status: idle", "Alpha conversation preview"))
             key("Down")
             capture(evidence / f"{name}-preview-beta.png", ("Status: running", "Beta conversation preview"), ("Status: idle", "Alpha conversation preview"))
+            if plugin:
+                key("ctrl+r")
+                wait_generation(3)
+                state_check("reload-preserves-search-and-selection", picker)
+                capture(evidence / f"{name}-reloaded-beta.png",
+                        ("Resume acceptance", "Status: running", "Beta conversation preview"),
+                        ("Status: idle", "Alpha conversation preview"))
             key("Up")
             capture(evidence / f"{name}-preview-return.png", ("Status: idle", "Alpha conversation preview"), ("Status: running", "Beta conversation preview"))
             key("ctrl+3")
@@ -232,6 +258,10 @@ def run_mode(binary, output, evidence, driver, single, report):
             state_check("reopened-picker", picker)
             key("Escape")
             state_check("dismiss-restores-chat", resumed)
+            if plugin:
+                key("ctrl+r")
+                wait_generation(4)
+                state_check("reload-keeps-dismissed-picker-closed", resumed)
             mode["passed"] = True
             print("PASS: " + name + " dedicated picker, filtering, resume and keyboard focus", flush=True)
         except BaseException:
@@ -271,6 +301,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, nargs="?", default=repo / "target/resume-panel.png")
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
+    parser.add_argument("--plugin", type=Path,
+                        help="matched prebuilt plugin, enables startup and manual hot reload checks")
     args = parser.parse_args()
     for executable in ("Xvfb", "openbox", "xdotool", "import", "tesseract"):
         if not shutil.which(executable, path="/usr/bin:/bin"):
@@ -279,6 +311,7 @@ def main():
     if not drivers:
         parser.error("Mesa lavapipe Vulkan driver required")
     binary, output = args.binary.resolve(), args.output.resolve()
+    plugin = args.plugin.resolve(strict=True) if args.plugin else None
     if not binary.is_file() or not os.access(binary, os.X_OK):
         parser.error("--binary must be an already-built executable")
     evidence = output.with_name(output.stem + "-evidence")
@@ -289,10 +322,11 @@ def main():
     evidence.mkdir(parents=True)
     report = {"passed": False, "binary": str(binary), "binary_mtime_ns": binary.stat().st_mtime_ns, "runs": [],
               "scope": "real linked Desktop UI, offline fixtures, native input and rendered pixels on private Xvfb",
-              "not_tested": ["live Desktop", "hot reload", "daemon saved-session I/O", "provider calls"]}
+              "not_tested": ["live Desktop", "daemon saved-session I/O", "provider calls"]
+              + ([] if plugin else ["hot reload"])}
     try:
         for single in (False, True):
-            run_mode(binary, output, evidence, drivers[0], single, report)
+            run_mode(binary, output, evidence, drivers[0], single, report, plugin)
         report["passed"] = True
     except BaseException as error:
         report["error"] = f"{type(error).__name__}: {error}"
