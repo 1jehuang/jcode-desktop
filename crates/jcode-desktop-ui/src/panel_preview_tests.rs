@@ -12,7 +12,8 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
         match state {
             PreviewState::Empty => assert!(panel.items.is_empty()),
             PreviewState::Streaming => {
-                assert_eq!(panel.status, "running");
+                assert_eq!(panel.status, "streaming");
+                assert_eq!(panel.status_line(), "Responding");
                 assert!(!panel.streaming_text.is_empty());
             }
             PreviewState::LoginDialogError => assert!(panel.login.is_some()),

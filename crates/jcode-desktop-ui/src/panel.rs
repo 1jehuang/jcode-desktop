@@ -33,6 +33,8 @@ mod background_task;
 
 #[path = "panel_activity.rs"]
 mod activity;
+#[path = "panel_activity_state.rs"]
+mod activity_state;
 #[path = "panel_scroll_motion.rs"]
 mod scroll_motion;
 use scroll_motion::WheelGlide;
@@ -2811,6 +2813,7 @@ impl Panel {
             self.transcript_measurements.dirty = true;
         }
         self.response_stats.observe(event, self.provider.as_deref());
+        self.observe_activity_state(event);
         if let Some(cue) = self.sound_events.observe(event)
             && self.preview_state.is_none()
         {
@@ -2926,7 +2929,8 @@ impl Panel {
                     reason, message, provider_stop_reason.as_deref(),
                 ));
             }
-            ApiEvent::SessionStatus { status, .. } if status == "attached" => {
+            ApiEvent::SessionStatus { status, .. }
+                if status == "attached" || (status == "connected" && self.activity_active()) => {
                 // Transport bookkeeping is not a turn transition. In particular,
                 // a late attach notification must not resurrect a completed turn.
             }
@@ -3127,7 +3131,7 @@ impl Panel {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.status != "idle" || !self.streaming_text.is_empty()
+        self.status != "idle" || self.activity_active()
     }
 
     /// A compact, presentation-neutral summary for the workspace minimap.
@@ -3189,9 +3193,18 @@ impl Panel {
     fn status_line(&self) -> String {
         let phase = self.connection_phase.trim();
         if !phase.is_empty() && !matches!(phase, "connected" | "streaming") {
-            return phase.replace('_', " ");
+            return activity_state::phase_label(phase);
         }
         if self.activity_active() {
+            // Buffers may still contain an earlier block. The latest semantic
+            // event remains authoritative even after ReasoningDone flushes it.
+            match self.status.as_str() {
+                "thinking" => return "Thinking".into(),
+                "streaming" => return "Responding".into(),
+                "running_tools" => return "Running tools".into(),
+                "compacting" => return "Compacting context".into(),
+                _ => {}
+            }
             if !self.streaming_reasoning.is_empty() {
                 return "Thinking".into();
             }
@@ -3209,6 +3222,7 @@ impl Panel {
             "thinking" => "Thinking".into(),
             "streaming" => "Responding".into(),
             "running_tools" => "Running tools".into(),
+            "compacting" => "Compacting context".into(),
             status => status.replace('_', " "),
         }
     }
@@ -3223,9 +3237,10 @@ impl Panel {
         !self.streaming_text.is_empty()
             || !self.streaming_reasoning.is_empty()
             || self.connection_phase.trim() == "streaming"
+            || activity_state::is_request_phase(&self.connection_phase)
             || matches!(
                 status.as_str(),
-                "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools"
+                "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools" | "compacting"
             )
     }
 
