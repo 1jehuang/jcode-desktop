@@ -71,8 +71,10 @@ cargo test -p jcode-desktop-ui grouped_rows_profile -- --ignored --nocapture
 ```
 
 The grouping microbenchmark retains the old algorithm in test-only code and
-checks output parity. Its smaller improvements vary with workload and concurrent
-build load. It is not the principal explanation for the frame-time improvement.
+checks output parity. Results are mixed: hashing adds roughly 10 to 20 µs in
+some 40-route cases, while larger cases can benefit. Concurrent build load also
+varies the samples. This is not a universal grouping speedup and is not the
+principal explanation for the frame-time improvement.
 
 ## Regression and acceptance checks
 
@@ -94,3 +96,11 @@ after correcting row width. Final optimized broad-search p95 values were
 `final-input-tests.log`, `final-model-tests.log`, `final-profile.log`,
 `visual-full-width.log`, and `model-picker-full-width-model-open.png` beneath
 `target/model-selector-profile/`.
+
+The final source also passed all 16 native checks in `visual-final.log` and was
+visually inspected at `model-picker-final-model-open.png`. The running release
+host (PID 660899) activated UI generation 3 without a restart. Activation was
+confirmed in the host log, and the staged library's SHA-256 matched the rebuilt
+release UI, recorded in `final-reload.json`. The self-development tool could not
+discover this single-panel host, so its existing private Ctrl+R socket was used.
+The live preview catalog was read successfully without changing the user's UI.
