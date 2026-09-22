@@ -93,6 +93,7 @@ struct InteractiveListScrollbar {
     state: ListState,
     selector: &'static str,
     on_scroll_start: ScrollStart,
+    on_scroll_finished: Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
 /// Interactive alternative to [`vertical_list`]. Render after the list, inside
@@ -105,15 +106,19 @@ struct InteractiveListScrollbar {
 /// while `state.is_scrollbar_dragging()` so touchpad momentum cannot fight a grab.
 /// The selector still identifies only the 4px painted thumb, not the invisible
 /// 20px hit target. Dragging is direct pixel positioning, without momentum.
+/// The finished callback runs after a track page or after a drag releases its
+/// frozen extent, including recovery from a missed mouse-up.
 pub fn interactive_vertical_list(
     state: &ListState,
     selector: &'static str,
     on_scroll_start: impl Fn(&mut Window, &mut App) + 'static,
+    on_scroll_finished: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     InteractiveListScrollbar {
         state: state.clone(),
         selector,
         on_scroll_start: Box::new(on_scroll_start),
+        on_scroll_finished: Rc::new(on_scroll_finished),
     }
     .into_any_element()
 }
@@ -132,6 +137,8 @@ impl RenderOnce for InteractiveListScrollbar {
         let track_origin = Rc::new(Cell::new(0.0));
         let painted_origin = track_origin.clone();
         let selector = self.selector;
+        let page_finished = self.on_scroll_finished.clone();
+        let drag_finished = self.on_scroll_finished.clone();
         div()
             .id((selector, 1usize))
             .group(selector)
@@ -165,6 +172,7 @@ impl RenderOnce for InteractiveListScrollbar {
                         px(0.),
                         px(-current_geometry.page_offset(track_y < geometry.top)),
                     ));
+                    page_finished(window, cx);
                 }
                 cx.stop_propagation();
                 window.refresh();
@@ -191,13 +199,15 @@ impl RenderOnce for InteractiveListScrollbar {
                     move |bounds, _, window, _| {
                         painted_origin.set(f32::from(bounds.top()));
                         let drag_move = drag.clone();
+                        let move_finished = drag_finished.clone();
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                             if !phase.capture() || drag_move.read(cx).is_none() {
                                 return;
                             }
-                            drag_move.update(cx, |drag, _| {
+                            let finished = drag_move.update(cx, |drag, _| {
                                 if !event.dragging() {
                                     drag.take();
+                                    return true;
                                 } else if let Some(drag) = drag {
                                     let offset = drag
                                         .geometry
@@ -205,7 +215,11 @@ impl RenderOnce for InteractiveListScrollbar {
                                     drag.state
                                         .set_offset_from_scrollbar(point(px(0.), px(-offset)));
                                 }
+                                false
                             });
+                            if finished {
+                                move_finished(window, cx);
+                            }
                             cx.stop_propagation();
                             window.refresh();
                         });
@@ -217,6 +231,7 @@ impl RenderOnce for InteractiveListScrollbar {
                                 drag.update(cx, |drag, _| {
                                     drag.take();
                                 });
+                                drag_finished(window, cx);
                                 cx.stop_propagation();
                                 window.refresh();
                             }
@@ -358,6 +373,7 @@ mod tests {
                         &self.list,
                         "test-list-thumb",
                         move |_, _| starts.set(starts.get() + 1),
+                        |_, _| {},
                     ))
                 })
         }

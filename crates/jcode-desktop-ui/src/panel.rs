@@ -926,6 +926,7 @@ impl Panel {
         let current = self.transcript_list.scroll_px_offset_for_scrollbar();
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, current.y + px(delta_y)));
+        self.resume_transcript_follow_after_scroll(cx);
         self.flicker_diagnostics
             .borrow_mut()
             .scroll_applied(f32::from(
@@ -979,6 +980,7 @@ impl Panel {
         let target = (f32::from(current.y) - step).clamp(-max, 0.0);
         self.transcript_list
             .set_offset_from_scrollbar(point(current.x, px(target)));
+        self.resume_transcript_follow_after_scroll(cx);
         self.flicker_diagnostics
             .borrow_mut()
             .scroll_applied(f32::from(current.y) - target);
@@ -4509,6 +4511,15 @@ impl Render for Panel {
                                     panel.cancel_transcript_momentum();
                                     panel.release_startup_preview();
                                     panel.stick_to_bottom = false;
+                                    cx.notify();
+                                });
+                            }
+                        },
+                        {
+                            let panel = cx.entity().downgrade();
+                            move |_, cx| {
+                                let _ = panel.update(cx, |panel, cx| {
+                                    panel.resume_transcript_follow_after_scroll(cx);
                                     cx.notify();
                                 });
                             }
