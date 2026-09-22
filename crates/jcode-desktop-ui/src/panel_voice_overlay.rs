@@ -1,6 +1,9 @@
 //! A bottom-of-window microphone meter, independent of the draft composer.
 use super::*;
 
+#[path = "panel_voice_pills.rs"]
+mod pills;
+
 fn meter_height(level: f32) -> f32 {
     // Speech RMS is far below full scale. Compress the visual range so quiet
     // speech is visible without making silence look like incoming audio.
@@ -16,6 +19,9 @@ impl Panel {
         // Streaming words never resize, move, or replace the draft editor.
         self.input
             .update(cx, |input, cx| input.set_voice_preview(None, cx));
+        if self.voice.trace.is_some() && !self.voice.trace_expanded {
+            return Some(self.render_voice_pills(window, cx));
+        }
         if !self.voice_active() && self.voice.error.is_none() {
             return None;
         }

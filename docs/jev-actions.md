@@ -42,6 +42,19 @@ For example, `new_session = 0.45` wins when every other concrete outcome is
 below 0.45, even if the family score `quick_action` is low. A higher
 `uncertain` score instead retains the draft.
 
+## Decision display
+
+During routing and after a decision, Desktop shows concrete actions as compact
+pills at the top of the window. Each pill displays its returned confidence
+percentage, and the winning outcome is highlighted when routing succeeds.
+Conversation pills use the offered conversation title. These are independent
+probabilities, not percentages that must sum to 100.
+
+Missing answers show a waiting or unavailable label, never an invented score.
+The pill area wraps and scrolls when needed. **Details** opens the full routing
+report, including diagnostic family scores, questions, and candidates. The
+close control dismisses the ephemeral report without changing the composer.
+
 ## Existing-conversation scope
 
 Desktop offers at most the **20 most recent non-archived conversations**. Pending
