@@ -5,6 +5,21 @@ use std::{cell::Cell, rc::Rc};
 // the card top, not the row top and not the disappearance of its bottom.
 pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
 
+/// Bound both long pasted paragraphs and newline-heavy snippets. Return a
+/// source prefix, never alter the actual prompt sent to the harness or stored.
+fn compact_prompt(text: &str) -> Option<&str> {
+    let mut lines = 1;
+    for (characters, (byte, ch)) in text.char_indices().enumerate() {
+        if characters == 600 || (ch == '\n' && lines == 6) {
+            return Some(&text[..byte]);
+        }
+        if ch == '\n' {
+            lines += 1;
+        }
+    }
+    None
+}
+
 pub(super) fn fixture_items() -> Vec<Item> {
     vec![
         Item::User("A longer first line with a short second line\nShort second line.".into()),
@@ -12,6 +27,7 @@ pub(super) fn fixture_items() -> Vec<Item> {
         Item::User("Please make this naturally wrapped prompt fit closely around every rendered line, keeping **bold text**, `inline code`, and [links](https://example.com) selectable without filling the unused space after the final words. Fin.".into()),
         Item::User("Unicode stays aligned: café 日本語 🦀\nSmall.\nA longer third line to exercise both inward and outward curves.".into()),
         Item::User("A separate paragraph stays separate.\n\nTiny.".into()),
+        Item::User("Please review this pasted specification and preserve the complete original prompt.\n".repeat(30)),
     ]
 }
 
@@ -169,6 +185,9 @@ impl Panel {
         });
         let background = Theme::global()
             .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX));
+        let preview = compact_prompt(text);
+        let expanded = self.expanded_prompts.contains(&(index, pinned));
+        let collapsed = preview.is_some() && !expanded;
         let card = div()
             .relative()
             .debug_selector(move || format!("user-prompt-{index}").into())
@@ -183,8 +202,13 @@ impl Panel {
             .child(
                 div()
                     .debug_selector(move || format!("prompt-content-{index}").into())
+                    // Also bound rendered markdown (headings, tables, images)
+                    // and wrapping in narrow chat panes, not just source length.
+                    .when(collapsed, |content| {
+                        content.max_h(px(140.)).overflow_hidden()
+                    })
                     .child(markdown::render_prompt(
-                        text,
+                        if collapsed { preview.unwrap() } else { text },
                         index,
                         &self.transcript_selection,
                         window,
@@ -193,6 +217,31 @@ impl Panel {
                         background,
                     )),
             )
+            .when(preview.is_some(), |card| {
+                card.child(
+                    div()
+                        .id(("prompt-expand", index))
+                        .debug_selector(move || format!("prompt-expand-{index}").into())
+                        .mt_1()
+                        .text_size(px(11.))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(Theme::global().TEXT_USER))
+                        .on_click(cx.listener(move |panel, _, _, cx| {
+                            cx.stop_propagation();
+                            if !panel.expanded_prompts.remove(&(index, pinned)) {
+                                panel.expanded_prompts.insert((index, pinned));
+                            }
+                            panel.transcript_measurements.dirty = true;
+                            cx.notify();
+                        }))
+                        .child(if expanded {
+                            "Collapse prompt"
+                        } else {
+                            "… Expand prompt"
+                        }),
+                )
+            })
             .into_any_element();
         // Animate and hide the complete row so inline and sticky badges always
         // travel with their cards. Shrink only the card when markdown wraps.
@@ -356,6 +405,100 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_prompt_bounds_lines_and_unicode_without_changing_short_prompts() {
+        for text in ["", "Short prompt", "1\n2\n3\n4\n5\n6"] {
+            assert_eq!(compact_prompt(text), None);
+        }
+        assert_eq!(compact_prompt(&"x".repeat(600)), None);
+        assert_eq!(
+            compact_prompt(&"x".repeat(601)),
+            Some("x".repeat(600).as_str())
+        );
+        let unicode = "🦀日本語".repeat(200);
+        let preview = compact_prompt(&unicode).unwrap();
+        assert_eq!(preview.chars().count(), 600);
+        assert!(unicode.starts_with(preview));
+        assert_eq!(
+            compact_prompt("1\n2\n3\n4\n5\n6\n7"),
+            Some("1\n2\n3\n4\n5\n6")
+        );
+    }
+
+    #[gpui::test]
+    fn long_prompts_expand_inline_and_pinned_independently(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "long-prompts".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        let text = (1..=10)
+            .map(|n| format!("Pasted line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        for width in [600., 320.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
+            panel.update(vcx, |panel, cx| {
+                panel.items = vec![Item::User(text.clone())];
+                panel.expanded_prompts.clear();
+                panel.stick_to_bottom = false;
+                panel.transcript_list.scroll_to(gpui::ListOffset::default());
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let compact = vcx.debug_bounds("user-prompt-0").unwrap();
+            assert!(compact.size.height < px(180.));
+            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
+            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > compact.size.height);
+            panel.read_with(vcx, |panel, _| {
+                assert!(panel.expanded_prompts.contains(&(0, false)));
+                assert!(matches!(&panel.items[0], Item::User(original) if original == &text));
+            });
+            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
+            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(
+                vcx.debug_bounds("user-prompt-0").unwrap().size,
+                compact.size
+            );
+            panel.update(vcx, |panel, cx| {
+                panel.expanded_prompts.insert((0, false));
+                panel
+                    .items
+                    .extend((0..40).map(|n| Item::Assistant(format!("Response {n}"))));
+                panel.stick_to_bottom = true;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("pinned-latest-prompt").is_some());
+            assert_eq!(
+                vcx.debug_bounds("user-prompt-0").unwrap().size,
+                compact.size
+            );
+            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
+            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("user-prompt-0").unwrap().size.height > compact.size.height);
+            panel.read_with(vcx, |panel, _| {
+                assert!(panel.expanded_prompts.contains(&(0, true)))
+            });
+            let toggle = vcx.debug_bounds("prompt-expand-0").unwrap();
+            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(
+                vcx.debug_bounds("user-prompt-0").unwrap().size,
+                compact.size
+            );
+        }
+    }
 
     const BACKGROUND_NOTICES: [&str; 4] = [
         "**Background task started** `task-42` · `Workspace tests`",

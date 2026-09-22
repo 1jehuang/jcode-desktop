@@ -312,6 +312,8 @@ pub struct Panel {
     startup_layout: Option<startup::StartupLayout>,
     offscreen_prompt: Option<usize>,
     offscreen_prompt_clip: Option<gpui::Pixels>,
+    /// Inline and pinned prompts expand independently so the reminder stays compact.
+    expanded_prompts: HashSet<(usize, bool)>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
     changelog_view: crate::update_notes::View,
@@ -833,6 +835,7 @@ impl Panel {
             startup_layout: None,
             offscreen_prompt: None,
             offscreen_prompt_clip: None,
+            expanded_prompts: HashSet::new(),
             pinned_todo_expanded: false,
             transcript_selection,
             changelog_view: crate::update_notes::View::Latest,
