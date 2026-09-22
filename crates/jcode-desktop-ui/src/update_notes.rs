@@ -190,6 +190,137 @@ pub(crate) fn summary() -> Summary {
     summarize(entries(), SEEN.get().copied().unwrap_or(Seen::FirstVisit))
 }
 
+/// Editorial release notes are separate from commit history and unseen counts.
+/// Missing editorial notes are represented by `None`, not another release.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ReleaseOverview {
+    pub title: String,
+    pub sections: Vec<ReleaseSection>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ReleaseSection {
+    pub label: &'static str,
+    pub entries: Vec<String>,
+}
+
+fn release_version(raw: &str) -> Option<semver::Version> {
+    let mut version = semver::Version::parse(raw.trim().trim_start_matches('v')).ok()?;
+    // Build metadata does not identify a different release. Other prerelease
+    // channels must match exactly, never borrow notes from a future stable tag.
+    version.build = semver::BuildMetadata::EMPTY;
+    Some(version)
+}
+
+fn overview(raw: &str, current: &str) -> Option<ReleaseOverview> {
+    let mut result = ReleaseOverview {
+        title: format!("Jcode Desktop {}", current.trim().trim_start_matches('v')),
+        sections: Vec::new(),
+    };
+    let version = release_version(current)?;
+    let mut target = version.clone();
+    let development = version.pre.as_str().split('.').next() == Some("dev");
+    if development {
+        target.pre = semver::Prerelease::EMPTY;
+        result.title = format!("Jcode Desktop {target} · Development preview");
+    }
+
+    let mut matched = false;
+    let mut label = Some("Highlights");
+    let mut continuation = false;
+    let mut awaiting_headline = true;
+    let mut fenced = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if let Some(heading) = line.strip_prefix("### Jcode Desktop ") {
+            if matched {
+                break;
+            }
+            matched = release_version(heading).as_ref() == Some(&target);
+            continue;
+        }
+        if !matched {
+            continue;
+        }
+        if line.starts_with("# ") || line.starts_with("## ") || line.starts_with("### ") {
+            break;
+        }
+        // An optional introductory prose line is the editor's theme headline.
+        // Read it only before sections/bullets so download footers cannot become
+        // a release title. No heuristic summaries are generated from commits.
+        if awaiting_headline && !trimmed.is_empty() {
+            awaiting_headline = false;
+            if !trimmed.starts_with(['#', '-', '*', '>']) {
+                result.title.push_str(" · ");
+                result.title.push_str(trimmed);
+                continue;
+            }
+        }
+        if let Some(heading) = line.strip_prefix("#### ") {
+            label = match heading.trim().to_ascii_lowercase().as_str() {
+                "themes" => Some("Themes"),
+                "highlights" => Some("Highlights"),
+                "improvements" => Some("Improvements"),
+                "fixes" => Some("Fixes"),
+                // Do not accidentally present installation or download steps
+                // as release highlights when the document gains new sections.
+                _ => None,
+            };
+            continuation = false;
+            continue;
+        }
+        let Some(label) = label else { continue };
+        if let Some(entry) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            let entry = entry.trim();
+            continuation = !entry.is_empty();
+            if !continuation {
+                continue;
+            }
+            let index = result
+                .sections
+                .iter()
+                .position(|section| section.label == label)
+                .unwrap_or_else(|| {
+                    result.sections.push(ReleaseSection {
+                        label,
+                        entries: Vec::new(),
+                    });
+                    result.sections.len() - 1
+                });
+            result.sections[index].entries.push(entry.to_owned());
+        } else if continuation
+            && (line.starts_with("  ") || line.starts_with('\t'))
+            && !trimmed.is_empty()
+        {
+            if let Some(entry) = result
+                .sections
+                .iter_mut()
+                .find(|section| section.label == label)
+                .and_then(|section| section.entries.last_mut())
+            {
+                entry.push(' ');
+                entry.push_str(trimmed);
+            }
+        } else {
+            continuation = false;
+        }
+    }
+    (!result.sections.is_empty()).then_some(result)
+}
+
+/// Pure, offline and Desktop-specific. Never substitutes CLI release notes or
+/// the latest available release when this build has no matching editorial notes.
+pub(crate) fn release_overview() -> Option<ReleaseOverview> {
+    overview(fallback(), crate::build_info::VERSION)
+}
+
 pub(crate) fn development() -> bool {
     crate::changelog::development()
 }
@@ -212,6 +343,115 @@ pub(crate) fn fallback() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overview_matches_only_the_requested_desktop_release() {
+        let raw = "## What's new\n### Jcode Desktop 2.0.0\n- Future\n## Previous releases\n### Jcode Desktop 1.0.0\n- Current\nDownloads elsewhere.\n## Previous update\n- Unversioned";
+        let notes = overview(raw, "v1.0.0+build.9").unwrap();
+        assert_eq!(notes.title, "Jcode Desktop 1.0.0+build.9");
+        assert_eq!(
+            notes.sections,
+            vec![ReleaseSection {
+                label: "Highlights",
+                entries: vec!["Current".into()],
+            }]
+        );
+        for missing in ["0.86.0", "1.0.1", "1.0.0-beta.1", "invalid", ""] {
+            assert_eq!(overview(raw, missing), None, "{missing}");
+        }
+        assert_eq!(overview("### Jcode 1.0.0\n- CLI only", "1.0.0"), None);
+        assert_eq!(
+            overview("### Jcode Desktop 1.0.0\nNo bullets", "1.0.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn editorial_headline_retains_version_and_ignores_footer_prose() {
+        let raw = "### Jcode Desktop 1.0.0\n\nClearer navigation and richer feedback\n\n#### Highlights\n- Native panels\n\nDownloads elsewhere.";
+        assert_eq!(
+            overview(raw, "1.0.0").unwrap().title,
+            "Jcode Desktop 1.0.0 · Clearer navigation and richer feedback"
+        );
+        assert_eq!(
+            overview(raw, "1.0.0-dev.1").unwrap().title,
+            "Jcode Desktop 1.0.0 · Development preview · Clearer navigation and richer feedback"
+        );
+        assert_eq!(
+            overview("### Jcode Desktop 1.0.0\n- Notes\nDownloads", "1.0.0")
+                .unwrap()
+                .title,
+            "Jcode Desktop 1.0.0"
+        );
+    }
+
+    #[test]
+    fn development_preview_matches_base_but_other_prereleases_are_exact() {
+        let raw = "### Jcode Desktop 1.0.0\n- Stable\n### Jcode Desktop 1.0.0-beta.2\n- Beta";
+        let preview = overview(raw, "1.0.0-dev.12+local").unwrap();
+        assert_eq!(preview.title, "Jcode Desktop 1.0.0 · Development preview");
+        assert_eq!(preview.sections[0].entries, ["Stable"]);
+        let beta = overview(raw, "1.0.0-beta.2").unwrap();
+        assert_eq!(beta.sections[0].entries, ["Beta"]);
+        assert_eq!(overview(raw, "1.0.0-beta.1"), None);
+        assert_eq!(overview(raw, "2.0.0-dev.1"), None);
+    }
+
+    #[test]
+    fn overview_preserves_editorial_sections_and_wrapped_text() {
+        let raw = "### Jcode Desktop 1.0.0\n#### Themes\n- Navigation\n  and clarity.\n\n#### Highlights\n* Native panels\n#### Improvements\n- Selection\n#### Fixes\n- Scrolling\n#### Downloads\n- Not a feature\n#### Fixes\n- Recovery\n```md\n### Jcode Desktop 9.0.0\n- Example only\n```\n## Previous releases\n- Never included";
+        let notes = overview(raw, "1.0.0").unwrap();
+        assert_eq!(
+            notes.sections.iter().map(|s| s.label).collect::<Vec<_>>(),
+            ["Themes", "Highlights", "Improvements", "Fixes"]
+        );
+        assert_eq!(notes.sections[0].entries, ["Navigation and clarity."]);
+        assert_eq!(notes.sections[3].entries, ["Scrolling", "Recovery"]);
+        assert!(
+            !notes
+                .sections
+                .iter()
+                .flat_map(|s| &s.entries)
+                .any(|entry| entry.contains("feature")
+                    || entry.contains("Example")
+                    || entry.contains("Never"))
+        );
+    }
+
+    #[test]
+    fn bundled_editorial_notes_are_desktop_specific_and_version_bounded() {
+        let current = overview(fallback(), "0.3.0").unwrap();
+        assert_eq!(
+            current.sections.iter().map(|s| s.label).collect::<Vec<_>>(),
+            ["Themes", "Highlights", "Improvements", "Fixes"]
+        );
+        let text = current
+            .sections
+            .iter()
+            .flat_map(|s| &s.entries)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Thinking Orbs"));
+        assert!(text.contains("experimental Unix-only"));
+        assert!(!text.contains("Nari credentials"));
+        assert!(!text.contains("Downloads are available"));
+        let previous = overview(fallback(), "0.2.1").unwrap();
+        assert_eq!(previous.sections.len(), 1);
+        assert_eq!(previous.sections[0].label, "Highlights");
+        assert!(
+            previous.sections[0]
+                .entries
+                .iter()
+                .any(|entry| entry.contains("Nari credentials"))
+        );
+        assert!(
+            !previous.sections[0]
+                .entries
+                .iter()
+                .any(|entry| entry.contains("FPS indicator"))
+        );
+    }
 
     fn fixture() -> Vec<Entry> {
         parse(

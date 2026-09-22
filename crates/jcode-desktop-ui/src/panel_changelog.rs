@@ -9,14 +9,14 @@ fn update_entries(entries: Vec<String>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap_1()
         .children(entries.into_iter().map(|entry| {
             div()
                 .flex()
                 .items_start()
                 .gap_3()
                 .text_size(px(14.))
-                .line_height(px(22.))
+                .line_height(px(21.))
                 .child(
                     div()
                         .flex_shrink_0()
@@ -27,90 +27,49 @@ fn update_entries(entries: Vec<String>) -> gpui::Div {
         }))
 }
 
-fn release_heading(version: String, date: String, count: usize) -> gpui::Div {
+fn release_heading(version: String, date: String) -> gpui::Div {
     let theme = Theme::global();
     div()
         .flex()
-        .flex_col()
+        .flex_wrap()
+        .items_baseline()
         .gap_2()
-        .child(
-            div()
-                .text_size(px(20.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(version),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .text_size(px(12.))
-                .text_color(theme.TEXT_DIM)
-                .when(!date.is_empty(), |el| {
-                    el.child(date)
-                        .child(div().text_color(theme.TEXT_FAINT).child("·"))
-                })
-                .child(format!(
-                    "{count} {}",
-                    if count == 1 { "change" } else { "changes" }
-                )),
-        )
+        .text_size(px(15.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(version)
+        .when(!date.is_empty(), |el| {
+            el.child(div().text_color(theme.TEXT_DIM).child(format!("· {date}")))
+        })
 }
 
 fn running_build() -> gpui::Div {
     let theme = Theme::global();
     div()
         .debug_selector(|| "update-running-build".into())
-        .rounded_lg()
-        .p_5()
-        .bg(theme.HEADER_BG)
         .flex()
-        .flex_col()
+        .flex_wrap()
+        .items_baseline()
         .gap_2()
         .child(
             div()
-                .text_size(px(11.))
-                .text_color(theme.TEXT_DIM)
-                .child("YOUR DESKTOP"),
-        )
-        .child(
-            div()
                 .debug_selector(|| "update-version".into())
-                .text_size(px(30.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(crate::build_info::version()),
         )
         .child(
             div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .rounded_md()
-                        .px_2()
-                        .py_1()
-                        .bg(theme.PANEL_BG)
-                        .text_color(theme.TEXT_DIM)
-                        .text_size(px(11.))
-                        .child(if crate::build_info::development() {
-                            "Development"
-                        } else {
-                            "Release"
-                        }),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(theme.TEXT_DIM)
-                        .child(format!(
-                            "{} · {}",
-                            crate::build_info::revision(),
-                            crate::build_info::age()
-                        )),
-                ),
+                .text_size(px(12.))
+                .text_color(theme.TEXT_DIM)
+                .child(format!(
+                    "· {} · {}{}",
+                    crate::build_info::revision(),
+                    crate::build_info::age(),
+                    if crate::build_info::development() {
+                        " · unreleased"
+                    } else {
+                        ""
+                    },
+                )),
         )
 }
 
@@ -158,23 +117,53 @@ impl Panel {
             .id(content_id)
             .debug_selector(move || content_id.into())
             .w_full()
-            .max_w(px(680.))
+            .max_w(px(1120.))
             .mx_auto()
             .flex()
             .flex_col()
-            .gap_6();
+            .gap_5();
         match self.changelog_view {
             View::Latest => {
                 let summary = update_notes::summary();
+                let overview = update_notes::release_overview();
+                let has_overview = overview.is_some();
+                content = content.child(running_build());
+                if let Some(overview) = overview {
+                    content = content.child(
+                        div()
+                            .debug_selector(|| "update-release-overview".into())
+                            .flex()
+                            .flex_col()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(overview.title),
+                            )
+                            .children(overview.sections.into_iter().map(|section| {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(section.label),
+                                    )
+                                    .child(update_entries(section.entries))
+                            })),
+                    );
+                }
                 content = content
-                    .child(running_build())
                     .child(div().flex().flex_col().gap_2()
-                        .child(div().text_size(px(20.)).font_weight(gpui::FontWeight::SEMIBOLD).child(summary.heading))
-                        .child(div().text_size(px(13.)).line_height(px(20.)).text_color(Theme::global().TEXT_DIM).child(summary.description)))
+                        .child(div().text_size(px(15.)).font_weight(gpui::FontWeight::SEMIBOLD).child(summary.heading))
+                        .child(div().text_size(px(12.)).line_height(px(18.)).text_color(Theme::global().TEXT_DIM).child(summary.description)))
                     .child(update_entries(summary.entries.clone()))
                     .when(summary.entries.is_empty(), |el| el
                         .child(div().text_color(Theme::global().TEXT_DIM).child("Git history wasn’t included in this build. Here are the bundled release notes."))
-                        .child(markdown::render(update_notes::fallback(), 0, &self.transcript_selection, window, cx)))
+                        .when(!has_overview, |el| el.child(markdown::render(update_notes::fallback(), 0, &self.transcript_selection, window, cx))))
                     .child(div()
                         .id("update-see-all")
                         .debug_selector(|| "update-see-all".into())
@@ -186,9 +175,9 @@ impl Panel {
                             cx.notify();
                         }))
                         .child(if summary.remaining > 0 {
-                            format!("View history · {} more changes →", summary.remaining)
+                            format!("Full changelog · {} more changes →", summary.remaining)
                         } else {
-                            "View release history →".into()
+                            "Full changelog →".into()
                         }));
             }
             View::History => {
@@ -211,13 +200,9 @@ impl Panel {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap_4()
-                                .pb_5()
-                                .child(release_heading(
-                                    group.version,
-                                    group.date,
-                                    group.entries.len(),
-                                ))
+                                .gap_3()
+                                .pb_3()
+                                .child(release_heading(group.version, group.date))
                                 .child(update_entries(group.entries))
                         }));
             }
@@ -238,6 +223,7 @@ impl Panel {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .font_family(Theme::global().FONT_MONO)
             .text_size(px(14.))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
@@ -273,13 +259,14 @@ impl Panel {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_4()
-                    .p_5()
+                    .gap_2()
+                    .px_5()
+                    .py_3()
                     .flex_shrink_0()
                     .child(
                         div()
                             .w_full()
-                            .max_w(px(680.))
+                            .max_w(px(1120.))
                             .mx_auto()
                             .flex()
                             .justify_between()
@@ -292,16 +279,16 @@ impl Panel {
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_size(px(23.))
-                                            .line_height(px(30.))
+                                            .text_size(px(17.))
+                                            .line_height(px(24.))
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .child("What’s new"),
+                                            .child("Changelog"),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(12.))
                                             .text_color(Theme::global().TEXT_DIM)
-                                            .child("The latest improvements to Jcode Desktop"),
+                                            .child("Jcode Desktop · release notes & updates"),
                                     ),
                             )
                             .child(
@@ -330,20 +317,20 @@ impl Panel {
                     .child(
                         div()
                             .w_full()
-                            .max_w(px(680.))
+                            .max_w(px(1120.))
                             .mx_auto()
                             .flex()
                             .flex_wrap()
                             .gap_1()
                             .child(self.update_view_button(
                                 View::Latest,
-                                "Latest updates",
+                                "Highlights",
                                 "updates-latest",
                                 cx,
                             ))
                             .child(self.update_view_button(
                                 View::History,
-                                "Release history",
+                                "Full changelog",
                                 "updates-history",
                                 cx,
                             ))
@@ -370,7 +357,7 @@ impl Panel {
                     .min_h_0()
                     .overflow_y_scroll()
                     .px_5()
-                    .pt_4()
+                    .pt_2()
                     .pb_8()
                     .child(content),
             )
@@ -378,11 +365,11 @@ impl Panel {
                 div().px_5().py_3().flex_shrink_0().child(
                     div()
                         .w_full()
-                        .max_w(px(680.))
+                        .max_w(px(1120.))
                         .mx_auto()
                         .text_size(px(11.))
                         .text_color(Theme::global().TEXT_DIM)
-                        .child("←/→ switch views · Esc to close"),
+                        .child("←/→ switch views · Scroll to read · Esc to close"),
                 ),
             )
             .into_any_element()
@@ -406,12 +393,16 @@ mod tests {
         assert!(vcx.debug_bounds("update-summary").is_some());
         assert!(vcx.debug_bounds("update-version").is_some());
         assert!(vcx.debug_bounds("update-running-build").is_some());
+        assert_eq!(
+            vcx.debug_bounds("update-release-overview").is_some(),
+            update_notes::release_overview().is_some(),
+        );
         assert!(vcx.debug_bounds("update-history").is_none());
         assert!(vcx.debug_bounds("update-build").is_none());
         let development = update_notes::development();
         assert_eq!(vcx.debug_bounds("updates-build").is_some(), development);
         for (control, target, view) in [
-            ("update-see-all", "update-history", View::History),
+            ("updates-history", "update-history", View::History),
             ("updates-build", "update-build", View::Build),
             ("updates-latest", "update-summary", View::Latest),
             ("updates-history", "update-history", View::History),
