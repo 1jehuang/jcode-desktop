@@ -1,4 +1,5 @@
 //! Background work is a quiet status row, not a full transcript card.
+use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use gpui::{prelude::*, *};
 
@@ -22,6 +23,9 @@ pub(super) fn render(
     summary: &str,
     percent: Option<f32>,
     done: bool,
+    selection: &Entity<TextSelection>,
+    window: &Window,
+    cx: &App,
 ) -> impl IntoElement {
     let theme = Theme::global();
     let details = format!(
@@ -56,7 +60,13 @@ pub(super) fn render(
                 .min_w_0()
                 .truncate()
                 .text_color(theme.TOOL_TEXT)
-                .child(label.to_owned()),
+                .child(text_selection::plain(
+                    selection.clone(),
+                    format!("background-label-{index}"),
+                    label.to_owned(),
+                    window,
+                    cx,
+                )),
         )
         .child(
             div()
@@ -64,7 +74,13 @@ pub(super) fn render(
                 .min_w_0()
                 .truncate()
                 .text_color(theme.TEXT_DIM)
-                .child(summary.to_owned()),
+                .child(text_selection::plain(
+                    selection.clone(),
+                    format!("background-summary-{index}"),
+                    summary.to_owned(),
+                    window,
+                    cx,
+                )),
         )
         .when_some(percent.filter(|value| value.is_finite()), |el, percent| {
             el.child(

@@ -242,7 +242,13 @@ impl Panel {
                             .min_w_0()
                             .truncate()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(page.title.clone()),
+                            .child(text_selection::plain(
+                                document.selection.clone(),
+                                "document-title",
+                                page.title.clone(),
+                                window,
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -251,7 +257,13 @@ impl Panel {
                             .truncate()
                             .text_size(px(11.))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(source),
+                            .child(text_selection::plain(
+                                document.selection.clone(),
+                                "document-source",
+                                source,
+                                window,
+                                cx,
+                            )),
                     ),
             )
             .child(if let Some(pdf) = &document.pdf {

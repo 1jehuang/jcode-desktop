@@ -251,6 +251,13 @@ pub(crate) fn selectable_with_prefix(
         .debug_selector(move || element_id.to_string())
         .cursor(CursorStyle::IBeam)
         .track_focus(&focus_handle)
+        // Leaves also appear in pinned tasks and document headers, outside a
+        // transcript key context. Keep keyboard copy local to the focused leaf.
+        .key_context(KEY_CONTEXT)
+        .on_action({
+            let model = model.clone();
+            move |_: &Copy, _, cx| model.update(cx, |selection, cx| selection.copy(cx))
+        })
         .on_mouse_down(MouseButton::Left, {
             let model = model.clone();
             let key = key.clone();
@@ -331,7 +338,7 @@ pub fn plain(
     model: Entity<TextSelection>,
     key: impl Into<SharedString>,
     text: impl Into<SharedString>,
-    window: &Window,
+    _window: &Window,
     cx: &App,
 ) -> gpui::AnyElement {
     let key = key.into();
@@ -340,8 +347,8 @@ pub fn plain(
     if let Some(highlight) = model.read(cx).highlight(&key, text.len()) {
         highlights.push(highlight);
     }
-    let styled =
-        StyledText::new(text.clone()).with_default_highlights(&window.text_style(), highlights);
+    // Resolve inherited fonts and colors during layout, after parent styling.
+    let styled = StyledText::new(text.clone()).with_highlights(highlights);
     let layout = styled.layout().clone();
     selectable(model, key, text, layout, styled, cx)
 }

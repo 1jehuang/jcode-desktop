@@ -1110,6 +1110,15 @@ pub(crate) fn highlight_code(
 }
 
 pub(crate) fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui::AnyElement {
+    code_block_with_selection(lang, body, window, None)
+}
+
+fn code_block_with_selection(
+    lang: &str,
+    body: &str,
+    window: &gpui::Window,
+    selection: Option<(&gpui::Entity<TextSelection>, SharedString, &gpui::App)>,
+) -> gpui::AnyElement {
     let (plain, highlights) = highlight_code(body, lang);
     let line_count = plain.lines().count().max(1);
     let gutter = (1..=line_count)
@@ -1120,6 +1129,20 @@ pub(crate) fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui:
     style.font_family = Theme::global().FONT_MONO.into();
     style.font_size = px(12.5).into();
     style.color = to_hsla(Theme::global().CODE_TEXT);
+    let mut highlights = highlights;
+    if let Some((model, key, cx)) = &selection {
+        if let Some(highlight) = model.read(cx).highlight(key, plain.len()) {
+            highlights.push(highlight);
+        }
+    }
+    let styled = StyledText::new(plain.clone())
+        .with_default_highlights(&style, flatten_highlights(&highlights));
+    let code = if let Some((model, key, cx)) = selection {
+        let layout = styled.layout().clone();
+        text_selection::selectable(model.clone(), key, plain, layout, styled, cx)
+    } else {
+        styled.into_any_element()
+    };
     // Multi-line blocks always get the header so copy is reachable even when
     // the fence carried no language.
     let show_header = !lang.is_empty() || line_count > 1;
@@ -1210,7 +1233,7 @@ pub(crate) fn code_block(lang: &str, body: &str, window: &gpui::Window) -> gpui:
                         .flex_1()
                         .min_w_0()
                         .line_height(relative(1.5))
-                        .child(StyledText::new(plain).with_default_highlights(&style, highlights)),
+                        .child(code),
                 ),
         )
         .into_any_element()
@@ -1797,11 +1820,15 @@ fn render_document_with_prompt_background(
             {
                 crate::diff_block::DiffBlock::new(&body, text_key()).into_any_element()
             }
-            Block::Code { lang, body } => code_block(&lang, &body, window),
+            Block::Code { lang, body } => code_block_with_selection(
+                &lang, &body, window, Some((selection, text_key(), cx)),
+            ),
             Block::HtmlPreview(body) if !reasoning => {
                 crate::html_preview::HtmlPreview::new(body, row, block_index).into_any_element()
             }
-            Block::HtmlPreview(body) => code_block("html-preview", &body, window),
+            Block::HtmlPreview(body) => code_block_with_selection(
+                "html-preview", &body, window, Some((selection, text_key(), cx)),
+            ),
             Block::Mermaid(body) => mermaid_diagram(&body, text_key(), on_preview.clone()),
             Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
             Block::Math(source) => math_block(&source, selection, text_key(), window, cx),
@@ -2289,6 +2316,95 @@ mod tests {
     struct RestoredReasoningView {
         selection: gpui::Entity<TextSelection>,
         source: String,
+    }
+
+    #[gpui::test]
+    fn fenced_code_selection_copies_source_without_gutters(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::text_selection::bind_keys);
+        struct CodeDocument {
+            selection: gpui::Entity<TextSelection>,
+            source: String,
+        }
+        impl gpui::Render for CodeDocument {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                let selection = self.selection.clone();
+                div()
+                    .w(px(500.))
+                    .key_context(TextSelection::key_context())
+                    .track_focus(&selection.read(cx).focus_handle())
+                    .on_action(move |_: &text_selection::Copy, _, cx| {
+                        selection.update(cx, |selection, cx| selection.copy(cx));
+                    })
+                    .child(render(&self.source, 0, &self.selection, window, cx))
+            }
+        }
+        let (view, vcx) = cx.add_window_view(|_, cx| {
+            let selection = cx.new(TextSelection::new);
+            cx.observe(&selection, |_, _, cx| cx.notify()).detach();
+            CodeDocument {
+                selection,
+                source: "```rust\nlet βeta = 1;\nprintln!(\"hello\");\n```".into(),
+            }
+        });
+        for (source, expected, header) in [
+            ("```rust\nlet βeta = 1;\nprintln!(\"hello\");\n```", "let βeta = 1;\nprintln!(\"hello\");", true),
+            ("```\nβeta\n```", "βeta", false),
+        ] {
+            view.update(vcx, |view, cx| {
+                view.source = source.into();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds("code-copy").is_some(), header);
+            let bounds = vcx.debug_bounds("selectable-text-0-0").unwrap();
+            let start = gpui::point(bounds.left() + px(0.1), bounds.top() + px(5.));
+            let end = gpui::point(bounds.right() + px(10.), bounds.bottom() - px(2.));
+            vcx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            });
+            vcx.simulate_event(gpui::MouseMoveEvent {
+                position: end,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            });
+            vcx.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: end,
+                modifiers: Default::default(),
+                click_count: 1,
+            });
+            vcx.run_until_parked();
+            view.read_with(vcx, |view, cx| {
+                assert!(view.selection.read(cx).highlight("0-0", expected.len()).is_some());
+            });
+            vcx.simulate_keystrokes("ctrl-c");
+            assert_eq!(
+                vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).as_deref(),
+                Some(expected),
+            );
+            if let Some(copy) = vcx.debug_bounds("code-copy") {
+                vcx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into())));
+                vcx.simulate_event(gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position: copy.center(),
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                });
+                assert_eq!(
+                    vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).as_deref(),
+                    Some(expected),
+                );
+            }
+        }
     }
 
     impl gpui::Render for RestoredReasoningView {

@@ -3448,7 +3448,7 @@ impl Panel {
                     self.media_preview_handler(cx),
                 ))
                 .into_any_element(),
-            Item::Todos(payload) => render_todo_card(payload).into_any_element(),
+            Item::Todos(payload) => render_todo_card_with_style(payload, false, &format!("todo-{index}"), &self.transcript_selection, window, cx),
             Item::BackgroundTask {
                 task_id: _,
                 label,
@@ -3456,7 +3456,7 @@ impl Panel {
                 percent,
                 done,
             } => {
-                background_task::render(index, label, summary, *percent, *done).into_any_element()
+                background_task::render(index, label, summary, *percent, *done, &self.transcript_selection, window, cx).into_any_element()
             }
             Item::Tool {
                 call_id,
@@ -3489,7 +3489,7 @@ impl Panel {
                     return div()
                         .ml(px(offset))
                         .opacity(opacity)
-                        .child(render_todo_card(&payload))
+                        .child(render_todo_card_with_style(&payload, false, &format!("todo-{index}"), &self.transcript_selection, window, cx))
                         .into_any_element();
                 }
                 if let Some(preview) =
@@ -3554,7 +3554,13 @@ impl Panel {
                                         .whitespace_nowrap()
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(Theme::global().TOOL_TEXT)
-                                        .child(summary),
+                                        .child(text_selection::plain(
+                                            self.transcript_selection.clone(),
+                                            format!("tool-summary-{index}"),
+                                            summary,
+                                            window,
+                                            cx,
+                                        )),
                                 )
                             })
                             .when(!*done && error.is_none(), |el| {
@@ -3637,7 +3643,13 @@ impl Panel {
                                 .text_size(px(11.5))
                                 .line_height(relative(1.45))
                                 .text_color(Theme::global().CODE_TEXT)
-                                .child(detail),
+                                .child(text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    format!("tool-detail-{index}"),
+                                    detail,
+                                    window,
+                                    cx,
+                                )),
                         )
                     })
                     .children(error.clone().map(|message| {
@@ -3649,7 +3661,13 @@ impl Panel {
                             .text_size(px(11.5))
                             .font_family(Theme::global().FONT_MONO)
                             .text_color(Theme::global().ERROR)
-                            .child(condense(&strip_ansi(&message), 300))
+                            .child(text_selection::plain(
+                                self.transcript_selection.clone(),
+                                format!("tool-error-{index}"),
+                                condense(&strip_ansi(&message), 300),
+                                window,
+                                cx,
+                            ))
                     }))
                     .into_any_element()
             }
@@ -3817,7 +3835,9 @@ impl Render for Panel {
                 .py_2();
             match &file.contents {
                 Ok(contents) => {
-                    for (index, line) in contents.lines().enumerate() {
+                    if !contents.is_empty() {
+                        // One shaped leaf lets a drag span lines without copying
+                        // the separate, nonselectable line-number gutter.
                         body = body.child(
                             div()
                                 .flex()
@@ -3829,18 +3849,22 @@ impl Render for Panel {
                                         .pr_3()
                                         .text_align(gpui::TextAlign::Right)
                                         .text_color(Theme::global().CODE_GUTTER)
-                                        .child((index + 1).to_string()),
+                                        .children(contents.lines().enumerate().map(|(index, _)| {
+                                            div().child((index + 1).to_string())
+                                        })),
                                 )
                                 .child(
                                     div()
                                         .pr_4()
                                         .whitespace_nowrap()
                                         .text_color(Theme::global().CODE_TEXT)
-                                        .child(if line.is_empty() {
-                                            " ".to_string()
-                                        } else {
-                                            line.to_owned()
-                                        }),
+                                        .child(text_selection::plain(
+                                            self.transcript_selection.clone(),
+                                            "code-file-text",
+                                            contents.clone(),
+                                            window,
+                                            cx,
+                                        )),
                                 ),
                         );
                     }
@@ -3858,7 +3882,13 @@ impl Render for Panel {
                         div()
                             .p_4()
                             .text_color(Theme::global().ERROR)
-                            .child(error.clone()),
+                            .child(text_selection::plain(
+                                self.transcript_selection.clone(),
+                                "code-file-error",
+                                error.clone(),
+                                window,
+                                cx,
+                            )),
                     );
                 }
             }
@@ -3882,7 +3912,13 @@ impl Render for Panel {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .child(path),
+                        .child(text_selection::plain(
+                            self.transcript_selection.clone(),
+                            "code-file-path",
+                            path,
+                            window,
+                            cx,
+                        )),
                 )
                 .child(body)
                 .into_any_element();
@@ -4384,7 +4420,7 @@ impl Render for Panel {
                                     (f32::from(window.viewport_size().height) * 0.25).min(240.)
                                 ))
                                 .overflow_y_scroll()
-                                .child(render_todo_card_with_style(&payload, true)),
+                                .child(render_todo_card_with_style(&payload, true, "pinned-todo", &self.transcript_selection, window, cx)),
                         )
                     })
             }))
@@ -5295,11 +5331,14 @@ fn render_pinned_todo_summary(
         )
 }
 
-fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
-    render_todo_card_with_style(payload, false)
-}
-
-fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui::AnyElement {
+fn render_todo_card_with_style(
+    payload: &TodoCardPayload,
+    pinned: bool,
+    key: &str,
+    selection: &Entity<TextSelection>,
+    window: &Window,
+    cx: &App,
+) -> gpui::AnyElement {
     let intention = payload
         .plan
         .user_intention
@@ -5351,7 +5390,7 @@ fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui:
                 .child("No tasks yet. Jcode will populate them as work is planned."),
         );
     } else {
-        for (group, todos) in groups {
+        for (group_index, (group, todos)) in groups.into_iter().enumerate() {
             let done = todos
                 .iter()
                 .filter(|todo| todo.status == "completed")
@@ -5375,7 +5414,13 @@ fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui:
                                 .text_ellipsis()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(Theme::global().ACCENT_MUTED)
-                                .child(group.unwrap_or("Other").to_string()),
+                                .child(text_selection::plain(
+                                    selection.clone(),
+                                    format!("{key}-group-{group_index}"),
+                                    group.unwrap_or("Other").to_string(),
+                                    window,
+                                    cx,
+                                )),
                         )
                         .child(
                             div()
@@ -5384,7 +5429,7 @@ fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui:
                         ),
                 );
             }
-            for todo in todos {
+            for (todo_index, todo) in todos.into_iter().enumerate() {
                 section = section.child(
                     div()
                         .debug_selector(|| "todo-row".into())
@@ -5409,7 +5454,13 @@ fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui:
                                 } else {
                                     Theme::global().TEXT
                                 })
-                                .child(todo.content.clone()),
+                                .child(text_selection::plain(
+                                    selection.clone(),
+                                    format!("{key}-task-{group_index}-{todo_index}"),
+                                    todo.content.clone(),
+                                    window,
+                                    cx,
+                                )),
                         ),
                 );
             }
@@ -5432,7 +5483,13 @@ fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui:
                     div()
                         .text_size(px(12.0))
                         .text_color(Theme::global().TEXT_USER)
-                        .child(intention),
+                        .child(text_selection::plain(
+                            selection.clone(),
+                            format!("{key}-intention"),
+                            intention,
+                            window,
+                            cx,
+                        )),
                 )
             })
             .child(body)
@@ -5468,7 +5525,13 @@ fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui:
                             .text_ellipsis()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(Theme::global().HEADING)
-                            .child(intention),
+                            .child(text_selection::plain(
+                                selection.clone(),
+                                format!("{key}-intention"),
+                                intention,
+                                window,
+                                cx,
+                            )),
                     )
                 })
                 .child(
@@ -8576,13 +8639,14 @@ Goals: []"#,
         assert_eq!(paper.left(), task.left());
         assert!(paper.top() >= summary.bottom());
         assert!(vcx.debug_bounds("todo-card").is_none(), "no tool-style card when pinned");
-        let expanded = vcx
+        let _expanded = vcx
             .debug_bounds("pinned-todo-expanded")
             .expect("clicking the summary expands the pinned details");
 
         vcx.simulate_event(gpui::MouseDownEvent {
             button: gpui::MouseButton::Left,
-            position: expanded.center(),
+            // Expanded text is selectable. Collapse through the summary.
+            position: summary.center(),
             modifiers: gpui::Modifiers::default(),
             click_count: 1,
             first_mouse: false,
