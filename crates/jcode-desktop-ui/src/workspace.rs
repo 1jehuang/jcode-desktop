@@ -7457,7 +7457,7 @@ impl Render for Workspace {
                 root.child(self.render_rename_editor(cx))
             })
             .when(self.show_beta_notice, |root| {
-                root.child(self.render_beta_notice(cx))
+                root.child(self.render_beta_notice(window, cx))
             });
         self.dump_state(window, cx);
         let animation_active = self.animation_active();

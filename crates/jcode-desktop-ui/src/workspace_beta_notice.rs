@@ -1,5 +1,55 @@
 //! A dismissible launch overlay, never a permanent strip in the workspace.
 use super::*;
+use gpui::{Animation, AnimationExt};
+
+const COUNTDOWN: Duration = Duration::from_secs(3);
+
+fn countdown_ring(progress: f32) -> gpui::AnyElement {
+    let theme = Theme::global();
+    let remaining = (1.0 - progress).clamp(0.0, 1.0);
+    div()
+        .relative()
+        .size(px(28.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(12.0))
+        .child(format!("{:.0}", (remaining * 3.0).ceil()))
+        .child(
+            gpui::canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    for (fraction, color) in
+                        [(1.0, theme.ACCENT.opacity(0.18)), (remaining, theme.ACCENT)]
+                    {
+                        if fraction <= 0.0 {
+                            continue;
+                        }
+                        let mut path = gpui::PathBuilder::stroke(px(2.0));
+                        let steps = (96.0 * fraction).ceil() as usize;
+                        for step in 0..=steps {
+                            let angle = -std::f32::consts::FRAC_PI_2
+                                + std::f32::consts::TAU * fraction * step as f32 / steps as f32;
+                            let point = bounds.center()
+                                + gpui::point(px(angle.cos() * 12.0), px(angle.sin() * 12.0));
+                            if step == 0 {
+                                path.move_to(point);
+                            } else {
+                                path.line_to(point);
+                            }
+                        }
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, color);
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+        .into_any_element()
+}
 
 impl Workspace {
     pub(super) fn dismiss_beta_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -8,8 +58,28 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_beta_notice(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    pub(super) fn render_beta_notice(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let theme = Theme::global();
+        let workspace = cx.weak_entity();
+        // The task lives only while the overlay is rendered. Repaints do not
+        // restart it, and manual dismissal cancels it without stealing focus later.
+        window.use_keyed_state("desktop-beta-timer", cx, |window, cx| {
+            let timer = cx.background_executor().timer(COUNTDOWN);
+            cx.spawn_in(window, async move |_, cx| {
+                timer.await;
+                let _ = cx.update(|window, cx| {
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        if workspace.show_beta_notice {
+                            workspace.dismiss_beta_notice(window, cx);
+                        }
+                    });
+                });
+            })
+        });
         div()
             .id("desktop-beta-overlay")
             .debug_selector(|| "desktop-beta-overlay".into())
@@ -67,12 +137,25 @@ impl Workspace {
                             .bg(theme.ACCENT.opacity(0.15))
                             .text_color(theme.TEXT)
                             .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
                             .hover(|style| style.bg(theme.ACCENT.opacity(0.25)))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dismiss_beta_notice(window, cx);
                                 cx.stop_propagation();
                             }))
-                            .child("Got it"),
+                            .child("Got it")
+                            .child(
+                                div()
+                                    .debug_selector(|| "desktop-beta-countdown".into())
+                                    .with_animation(
+                                        "desktop-beta-countdown-animation",
+                                        Animation::new(COUNTDOWN).with_max_fps(30.0),
+                                        |ring, progress| ring.child(countdown_ring(progress)),
+                                    ),
+                            ),
                     ),
             )
             .into_any_element()
@@ -82,6 +165,61 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn beta_countdown_expires_after_three_seconds_and_restores_input(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.open_startup_draft(cx);
+            w.show_beta_notice = true;
+            w.restore_focus(window, cx);
+            w
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("desktop-beta-countdown").is_some());
+        vcx.executor().advance_clock(Duration::from_millis(2000));
+        // An unrelated workspace repaint must not restart the countdown.
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        vcx.executor().advance_clock(Duration::from_millis(999));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("desktop-beta-notice").is_some());
+        vcx.executor().advance_clock(Duration::from_millis(1));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("desktop-beta-notice").is_none());
+        vcx.simulate_input("ready after countdown");
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "ready after countdown"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn early_beta_dismissal_does_not_refocus_after_timeout(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.open_startup_draft(cx);
+            w.show_beta_notice = true;
+            w.restore_focus(window, cx);
+            w
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        let other_focus = vcx.update(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            focus
+        });
+        vcx.executor().advance_clock(COUNTDOWN);
+        vcx.run_until_parked();
+        vcx.update(|window, _| assert!(other_focus.is_focused(window)));
+        workspace.read_with(vcx, |w, _| assert!(!w.show_beta_notice));
+    }
 
     #[gpui::test]
     fn beta_overlay_dismissal_restores_composer_without_resizing(cx: &mut gpui::TestAppContext) {

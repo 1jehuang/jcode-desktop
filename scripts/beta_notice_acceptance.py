@@ -1,4 +1,4 @@
-"""Verify the real startup overlay and dismissal on screenshot.py's private display."""
+"""Verify the real startup countdown and dismissal on screenshot.py's private display."""
 import json
 
 from default_directory_acceptance import NativeUI
@@ -23,17 +23,30 @@ def verify(output, env, root):
         text = normalized(" ".join(word["text"] for word in words(image, "beta-dismissed")))
         assert "betatesting" not in text, "Startup notice remained visible"
         bounds = composer_bounds(image)
+        # The shared helper scans from x=280 for older sidebar widths. Recover
+        # the full horizontal border so a narrower sidebar cannot clip the draft.
+        border = image.getpixel((bounds[0], bounds[1]))[:3]
+        while bounds[0] > 0 and image.getpixel((bounds[0] - 1, bounds[1]))[:3] == border:
+            bounds[0] -= 1
         actual = normalized(" ".join(word["text"] for word in ui.words(image, bounds, "beta-draft")))
         assert normalized(draft) in actual, "Dismissal did not restore composer typing"
 
+    def expired(image):
+        text = normalized(" ".join(word["text"] for word in words(image, "beta-expired")))
+        assert "betatesting" not in text, "Startup countdown has not expired"
+
     try:
-        button = ui.wait_frame("beta-startup", opened)
+        ui.wait_frame("beta-startup", opened)
         report["checks"]["shown-on-launch"] = True
-        ui.click(button)
+        # Do not click or press any key. The timer must dismiss the overlay.
+        # Exact three-second timing and repaint stability are covered by the
+        # deterministic GPUI tests, independent of OCR/capture overhead here.
+        ui.wait_frame("beta-auto-dismissed", expired)
+        report["checks"]["automatically-dismisses"] = True
         # Do not click the composer. Dismissal must restore its focus itself.
         ui.native("type", "--clearmodifiers", "--delay", "25", draft)
         ui.wait_frame("beta-dismissed", dismissed)
-        report["checks"]["button-dismisses-and-restores-focus"] = True
+        report["checks"]["countdown-restores-focus"] = True
         # Re-render and change sidebar visibility without spawning another notice.
         ui.native("key", "--clearmodifiers", "super+b")
         ui.native("key", "--clearmodifiers", "super+b")
