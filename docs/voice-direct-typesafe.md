@@ -20,10 +20,12 @@ longer inherits the memory provider setting.
   Desktop installation. Use a separate local key for direct access.
 
 Pure UI commands are not coding work merely because they mention a session or
-because a candidate title contains a coding topic. Mixed navigation and coding
-still routes to the coding agent. Immediate actions retain the existing 0.8
-confidence floor and 0.2 ceiling for every competing outcome. Uncertain or failed
-requests keep the transcript in the draft rather than executing an action.
+because a candidate title contains a coding topic. For mixed navigation and coding,
+the prompt still instructs Jev to prefer the coding agent. Selection chooses the highest
+validated concrete-outcome score without a confidence floor, competing-score
+ceiling, or action-family gate. `uncertain` competes as its own outcome. Failed
+requests and winning uncertain outcomes keep the transcript in the draft rather
+than executing an action. See [the complete action catalog](jev-actions.md).
 
 ## Live acceptance
 
