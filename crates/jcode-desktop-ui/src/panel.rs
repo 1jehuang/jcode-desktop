@@ -4363,19 +4363,25 @@ impl Render for Panel {
                             cx.notify();
                         }),
                     )
-                    .child(if self.pinned_todo_expanded {
-                        div()
-                            .id("pinned-todo-expanded-scroll")
-                            .debug_selector(|| "pinned-todo-expanded".into())
-                            .max_h(px(
-                                (f32::from(window.viewport_size().height) * 0.25).min(240.)
-                            ))
-                            .overflow_y_scroll()
-                            .child(render_todo_card(&payload))
-                            .into_any_element()
-                    } else {
-                        render_pinned_todo_summary(&payload, &self.pinned_task_label, cx)
-                            .into_any_element()
+                    .child(render_pinned_todo_summary(
+                        &payload,
+                        &self.pinned_task_label,
+                        self.pinned_todo_expanded,
+                        cx,
+                    ))
+                    .when(self.pinned_todo_expanded, |card| {
+                        card.child(
+                            div()
+                                .id("pinned-todo-expanded-scroll")
+                                .debug_selector(|| "pinned-todo-expanded".into())
+                                .ml(px(26.0))
+                                .mt_1()
+                                .max_h(px(
+                                    (f32::from(window.viewport_size().height) * 0.25).min(240.)
+                                ))
+                                .overflow_y_scroll()
+                                .child(render_todo_card_with_style(&payload, true)),
+                        )
                     })
             }))
             .child(
@@ -5189,6 +5195,7 @@ fn pinned_todo_label(payload: &TodoCardPayload, summary: &PinnedTodoSummary) -> 
 fn render_pinned_todo_summary(
     payload: &TodoCardPayload,
     label: &Entity<task_label::TypeInLabel>,
+    expanded: bool,
     cx: &mut Context<Panel>,
 ) -> impl IntoElement {
     let theme = Theme::global();
@@ -5282,11 +5289,15 @@ fn render_pinned_todo_summary(
             div()
                 .flex_none()
                 .text_color(theme.TEXT_FAINT)
-                .child("⌄"),
+                .child(if expanded { "⌃" } else { "⌄" }),
         )
 }
 
 fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
+    render_todo_card_with_style(payload, false)
+}
+
+fn render_todo_card_with_style(payload: &TodoCardPayload, pinned: bool) -> gpui::AnyElement {
     let intention = payload
         .plan
         .user_intention
@@ -5328,8 +5339,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
         .flex_col()
         .w_full()
         .gap_0p5()
-        .max_h(px(132.0))
-        .overflow_y_scroll();
+        .when(!pinned, |body| body.max_h(px(132.0)).overflow_y_scroll());
     if payload.todos.is_empty() {
         body = body.child(
             div()
@@ -5389,9 +5399,11 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .text_size(px(12.5))
+                                .text_size(px(if pinned { 12.0 } else { 12.5 }))
                                 .text_color(if todo.status == "completed" {
                                     Theme::global().TEXT_DIM
+                                } else if pinned {
+                                    Theme::global().TEXT_USER
                                 } else {
                                     Theme::global().TEXT
                                 })
@@ -5401,6 +5413,28 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
             }
             body = body.child(section);
         }
+    }
+
+    if pinned {
+        return div()
+            .debug_selector(|| "pinned-todo-details-paper".into())
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(px(8.0))
+            .bg(Theme::global().prompt_background(0))
+            .px_2()
+            .py_1p5()
+            .when_some(intention, |paper, intention| {
+                paper.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(Theme::global().TEXT_USER)
+                        .child(intention),
+                )
+            })
+            .child(body)
+            .into_any_element();
     }
 
     div()
@@ -5458,6 +5492,7 @@ fn render_todo_card(payload: &TodoCardPayload) -> impl IntoElement {
                 ),
         )
         .child(body)
+        .into_any_element()
 }
 
 /// The human-readable intent of a tool call, with a useful argument fallback.
@@ -8532,7 +8567,13 @@ Goals: []"#,
             first_mouse: false,
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("pinned-todo-summary").is_none());
+        let expanded_summary = vcx.debug_bounds("pinned-todo-summary").unwrap();
+        assert_eq!(expanded_summary, summary, "expansion preserves the compact header");
+        assert_eq!(vcx.debug_bounds("pinned-todo-badge").unwrap(), badge);
+        let paper = vcx.debug_bounds("pinned-todo-details-paper").unwrap();
+        assert_eq!(paper.left(), task.left());
+        assert!(paper.top() >= summary.bottom());
+        assert!(vcx.debug_bounds("todo-card").is_none(), "no tool-style card when pinned");
         let expanded = vcx
             .debug_bounds("pinned-todo-expanded")
             .expect("clicking the summary expands the pinned details");

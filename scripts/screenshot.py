@@ -46,6 +46,8 @@ def main():
                         help="capture the initial beta overlay instead of dismissing it")
     parser.add_argument("--beta-notice-interact", action="store_true",
                         help="verify startup beta overlay dismissal and native typing")
+    parser.add_argument("--pinned-todo-interact", action="store_true",
+                        help="verify pinned todo header styling survives expansion and collapse")
     parser.add_argument("--queue-interact", action="store_true",
                         help="verify Ctrl+Enter queues prompts on the private display")
     parser.add_argument("--pending-interact", action="store_true",
@@ -324,6 +326,14 @@ def main():
             parser.error("model-interact requires one panel, default size/theme/layout, all or empty transcript, and no other interaction mode")
         if not shutil.which("xdotool") or not shutil.which("tesseract"):
             parser.error("model-interact requires xdotool and tesseract")
+    if args.pinned_todo_interact:
+        others = any(value for key, value in vars(args).items()
+                     if key.endswith("_interact") and key != "pinned_todo_interact")
+        if (others or args.panels != 1 or args.size != "1440x1000"
+                or args.transcript != "all" or args.theme != "warm-neutral"
+                or args.layout_mode != "folder_tabs" or args.preview_state
+                or args.learn_stage is not None or args.beta_notice):
+            parser.error("pinned-todo-interact requires the default one-panel chat fixture")
     if args.fps_header_interact and (args.panels != 4 or args.layout_mode != "folder_tabs"):
         parser.error("fps-header-interact requires four panels and folder_tabs layout")
     if args.sidebar_workspaces_interact:
@@ -513,6 +523,9 @@ def main():
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)
+                if args.pinned_todo_interact:
+                    from pinned_todo_acceptance import verify
+                    verify(output, env)
                 if args.queue_interact:
                     # The streaming fixture has an active turn but no network.
                     subprocess.run(["xdotool", "mousemove", str((canvas_left + width) // 2),
