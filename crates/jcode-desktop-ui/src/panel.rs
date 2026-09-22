@@ -24,6 +24,10 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[cfg(test)]
+#[path = "panel_selection_tests.rs"]
+mod selection_tests;
+
 #[path = "panel_snapshot.rs"]
 mod snapshot;
 pub use snapshot::TranscriptSnapshot;

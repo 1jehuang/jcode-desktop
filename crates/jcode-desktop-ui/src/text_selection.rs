@@ -8,7 +8,8 @@ use std::ops::Range;
 
 use gpui::{
     App, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, HighlightStyle, KeyBinding,
-    MouseButton, SharedString, StyledText, TextLayout, Window, actions, div, prelude::*,
+    MouseButton, MouseMoveEvent, MouseUpEvent, SharedString, StyledText, TextLayout, Window,
+    actions, canvas, div, prelude::*,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -145,6 +146,14 @@ impl TextSelection {
         self.selecting = true;
     }
 
+    fn is_selecting(&self, key: &str) -> bool {
+        self.selecting
+            && self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.key.as_ref() == key)
+    }
+
     fn drag_to(&mut self, key: &str, offset: usize) {
         if !self.selecting {
             return;
@@ -237,6 +246,7 @@ pub(crate) fn selectable_with_prefix(
     let element_id: SharedString = format!("selectable-text-{key}").into();
 
     div()
+        .relative()
         .id(element_id.clone())
         .debug_selector(move || element_id.to_string())
         .cursor(CursorStyle::IBeam)
@@ -266,26 +276,52 @@ pub(crate) fn selectable_with_prefix(
                 cx.stop_propagation();
             }
         })
-        .on_mouse_move({
-            let model = model.clone();
-            let key = key.clone();
-            let layout = layout.clone();
-            let text_len = text.len();
-            move |event, _window, cx| {
-                let offset =
-                    source_index(layout_index(&layout, event.position), prefix_len, text_len);
-                model.update(cx, |selection, cx| {
-                    selection.drag_to(&key, offset);
-                    cx.notify();
-                });
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
-            model.update(cx, |selection, cx| {
-                selection.finish();
-                cx.notify();
-            });
-        })
+        // A selection is a captured gesture, not a hover interaction. Continue
+        // tracking outside this leaf and finish even if released over other UI.
+        // Register during paint without adding another hitbox over links/text.
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |_, _, window, _| {
+                    let moved = model.clone();
+                    let moved_key = key.clone();
+                    let moved_layout = layout.clone();
+                    let text_len = text.len();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if !phase.capture() || !moved.read(cx).is_selecting(&moved_key) {
+                            return;
+                        }
+                        moved.update(cx, |selection, cx| {
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                let offset = source_index(
+                                    layout_index(&moved_layout, event.position),
+                                    prefix_len,
+                                    text_len,
+                                );
+                                selection.drag_to(&moved_key, offset);
+                            } else {
+                                // A release outside the window may not be delivered.
+                                selection.finish();
+                            }
+                            cx.notify();
+                        });
+                    });
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                        if phase.capture()
+                            && event.button == MouseButton::Left
+                            && model.read(cx).is_selecting(&key)
+                        {
+                            model.update(cx, |selection, cx| {
+                                selection.finish();
+                                cx.notify();
+                            });
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
         .child(child)
         .into_any_element()
 }
