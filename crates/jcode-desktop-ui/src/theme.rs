@@ -26,6 +26,8 @@ pub struct Theme {
     pub USER_ACCENT: Rgba,
     pub AI_ACCENT: Rgba,
     pub USER_BG: Rgba,
+    /// Maximum age-rainbow wash. Neutral palettes can keep prompt paper untinted.
+    pub PROMPT_TINT_STRENGTH: f32,
     pub TOOL_BG: Rgba,
     pub TOOL_TEXT: Rgba,
     pub REASONING: Rgba,
@@ -84,7 +86,7 @@ impl Theme {
             0xff5050, 0xffa050, 0xffe650, 0x50dc64, 0x50c8dc, 0x648cff, 0xb464ff,
         ];
         let tint = rgb(RAINBOW[RAINBOW.len() - 1 - distance.min(RAINBOW.len() - 1)]);
-        let strength = 0.05 * (-0.4 * distance as f32).exp();
+        let strength = self.PROMPT_TINT_STRENGTH * (-0.4 * distance as f32).exp();
         // Prompt cards cover transcript text, including with custom RGBA themes.
         // Blend a light tint into opaque paper, never into a translucent layer.
         let mut paper = self.USER_BG;
@@ -192,6 +194,7 @@ impl Theme {
             USER_ACCENT: rgb_c(0xc2b09d),
             AI_ACCENT: rgb_c(0xa9b09b),
             USER_BG: rgb_c(0x302b27),
+            PROMPT_TINT_STRENGTH: 0.05,
             TOOL_BG: rgb_c(0x292521),
             TOOL_TEXT: rgb_c(0xa79d91),
             REASONING: rgb_c(0xa79d91),
@@ -323,7 +326,7 @@ pub enum ThemePreset {
     Slate,
     Paper,
     Silver,
-    ChatGptLight,
+    LightNeutral,
 }
 
 impl ThemePreset {
@@ -342,7 +345,7 @@ impl ThemePreset {
         Self::Slate,
         Self::Paper,
         Self::Silver,
-        Self::ChatGptLight,
+        Self::LightNeutral,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -360,7 +363,7 @@ impl ThemePreset {
             Self::Slate => "slate",
             Self::Paper => "paper",
             Self::Silver => "silver",
-            Self::ChatGptLight => "chatgpt-light",
+            Self::LightNeutral => "light-neutral",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -379,7 +382,7 @@ impl ThemePreset {
             Self::Slate => "Slate",
             Self::Paper => "Paper",
             Self::Silver => "Silver",
-            Self::ChatGptLight => "ChatGPT Light",
+            Self::LightNeutral => "Light Neutral",
         }
     }
     const fn index(self) -> usize {
@@ -398,10 +401,16 @@ impl ThemePreset {
             Self::Slate => 11,
             Self::Paper => 12,
             Self::Silver => 13,
-            Self::ChatGptLight => 14,
+            Self::LightNeutral => 14,
         }
     }
     pub fn from_id(value: &str) -> Self {
+        // Keep existing selections when upgrading from the original theme name.
+        let value = if value == "chatgpt-light" {
+            "light-neutral"
+        } else {
+            value
+        };
         Self::ALL
             .into_iter()
             .find(|preset| preset.id() == value)
@@ -446,6 +455,8 @@ fn interpolate(from: &Theme, to: &Theme, amount: f32) -> Theme {
         return to.clone();
     }
     let mut result = from.clone();
+    result.PROMPT_TINT_STRENGTH =
+        from.PROMPT_TINT_STRENGTH + (to.PROMPT_TINT_STRENGTH - from.PROMPT_TINT_STRENGTH) * amount;
     let mix = |a: Rgba, b: Rgba| Rgba {
         r: a.r + (b.r - a.r) * amount,
         g: a.g + (b.g - a.g) * amount,
@@ -604,7 +615,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::SLATE.theme(),
         palettes::PAPER.theme(),
         palettes::SILVER.theme(),
-        palettes::chatgpt_light(),
+        palettes::light_neutral(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -866,17 +877,49 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_light_matches_sampled_reference_surfaces() {
-        let theme = &raw_themes()[ThemePreset::ChatGptLight.index()];
+    fn light_neutral_matches_sampled_reference_surfaces() {
+        let theme = &raw_themes()[ThemePreset::LightNeutral.index()];
         assert_eq!(theme.PANEL_BG, rgb_c(0xffffff));
         assert_eq!(theme.BG, rgb_c(0xf6f6f6));
         assert_eq!(theme.HEADER_BG, rgb_c(0xf4f4f4));
-        assert_eq!(theme.USER_BG, rgb_c(0xe9eaea));
-        assert_eq!(theme.INPUT_BG, rgb_c(0xfffeff));
-        assert_eq!(theme.TEXT, rgb_c(0x1a1c1f));
-        assert_eq!(theme.PANEL_BORDER_FOCUS, rgb_c(0x3a83f7));
+        assert_eq!(theme.USER_BG, rgb_c(0xf4f4f4));
+        assert_eq!(theme.INPUT_BG, rgb_c(0xffffff));
+        assert_eq!(theme.TEXT, rgb_c(0x3b3d3f));
+        assert_eq!(theme.PANEL_BORDER_FOCUS, rgb_c(0x858585));
+        assert_eq!(theme.ACCENT_DIM, rgb_c(0xe9eaea));
+        assert_eq!(theme.HEADING, rgb_c(0x1a1c1f));
         assert!(contrast(theme.LINK, theme.PANEL_BG) >= 4.5);
         assert!(contrast(theme.TEXT_DIM, theme.HEADER_BG) >= 4.5);
+    }
+
+    #[test]
+    fn light_neutral_preserves_old_ids_and_untinted_prompt_paper() {
+        let preset = ThemePreset::LightNeutral;
+        assert_eq!(ThemePreset::from_id("chatgpt-light"), preset);
+        assert_eq!(ThemePreset::from_id("light-neutral"), preset);
+        assert_eq!(preset.id(), "light-neutral");
+        assert_eq!(preset.label(), "Light Neutral");
+        let theme = &raw_themes()[preset.index()];
+        for age in [0, 1, 6, 40, usize::MAX] {
+            assert_eq!(theme.prompt_background(age), theme.USER_BG);
+        }
+        for color in [
+            theme.ACCENT,
+            theme.ACCENT_DIM,
+            theme.PANEL_BORDER_FOCUS,
+            theme.USER_BG,
+            theme.TOOL_BG,
+            theme.CODE_BG,
+        ] {
+            assert!((color.r - color.b).abs() <= 4.0 / 255.0 + f32::EPSILON);
+        }
+        assert!(contrast(theme.PANEL_BORDER_FOCUS, theme.INPUT_BG) >= 3.0);
+        assert!(contrast(theme.LINK, theme.PANEL_BG) >= 4.5);
+        let warm = Theme::defaults();
+        assert_eq!(warm.PROMPT_TINT_STRENGTH, 0.05);
+        let mixed = interpolate(&warm, theme, 0.5);
+        assert!((mixed.PROMPT_TINT_STRENGTH - 0.025).abs() < f32::EPSILON);
+        assert_eq!(interpolate(&warm, theme, 1.0).PROMPT_TINT_STRENGTH, 0.0);
     }
 
     #[test]

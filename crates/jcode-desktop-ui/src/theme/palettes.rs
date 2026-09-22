@@ -38,6 +38,7 @@ impl Palette {
             USER_ACCENT: rgb_c(self.accent),
             AI_ACCENT: rgb_c(self.secondary),
             USER_BG: rgb_c(self.raised),
+            PROMPT_TINT_STRENGTH: 0.05,
             TOOL_BG: rgb_c(self.raised),
             TOOL_TEXT: rgb_c(self.muted),
             REASONING: rgb_c(self.muted),
@@ -338,17 +339,18 @@ fn readable_code_color(color: gpui::Rgba, background: gpui::Rgba) -> gpui::Rgba 
     mix(high)
 }
 
-/// Sampled from the supplied ChatGPT desktop screenshot. Keep its exact neutral
-/// surfaces and focus blue, but darken blue text and secondary ink for contrast.
-pub(super) fn chatgpt_light() -> Theme {
+/// Neutral paper hierarchy inspired by the reference, not a blue-accented
+/// editor theme. Chrome and prompt cards stay gray. Blue is reserved for links
+/// and text selection, while syntax and status retain their semantic colors.
+pub(super) fn light_neutral() -> Theme {
     let mut theme = Palette {
         bg: 0xf6f6f6,
         panel: 0xffffff,
         raised: 0xf4f4f4,
-        border: 0xe9eaea,
-        text: 0x1a1c1f,
-        muted: 0x646668,
-        accent: 0x2463c4,
+        border: 0xe6e6e6,
+        text: 0x3b3d3f,
+        muted: 0x666666,
+        accent: 0x3b3d3f,
         secondary: 0x3b3d3f,
         keyword: 0x2463c4,
         string: 0x306844,
@@ -358,13 +360,19 @@ pub(super) fn chatgpt_light() -> Theme {
         warn: 0x805518,
     }
     .theme();
-    theme.PANEL_BORDER_FOCUS = rgb_c(0x3a83f7);
-    theme.ACCENT_DIM = rgba_c(0x3a83f718);
-    theme.USER_BG = rgb_c(0xe9eaea);
-    theme.INPUT_BG = rgb_c(0xfffeff);
-    theme.TOOL_BG = rgb_c(0xf4f4f4);
-    theme.CODE_BG = rgb_c(0xf4f4f4);
-    theme.SELECTION = rgba_c(0x3a83f740);
-    theme.CURSOR = theme.TEXT;
+    theme.PANEL_BORDER_FOCUS = rgb_c(0x858585);
+    theme.ACCENT_DIM = rgb_c(0xe9eaea);
+    theme.USER_BG = rgb_c(0xf4f4f4);
+    theme.PROMPT_TINT_STRENGTH = 0.0;
+    theme.TEXT_USER = rgb_c(0x1a1c1f);
+    theme.HEADING = rgb_c(0x1a1c1f);
+    theme.INPUT_BG = rgb_c(0xffffff);
+    theme.INPUT_BORDER = rgb_c(0xd9d9d9);
+    theme.TOOL_BG = rgb_c(0xf7f7f7);
+    theme.CODE_BG = rgb_c(0xf7f7f7);
+    theme.INLINE_CODE_BG = rgb_c(0xeeeeee);
+    theme.LINK = rgb_c(0x2463c4);
+    theme.SELECTION = rgba_c(0x3a83f730);
+    theme.CURSOR = theme.HEADING;
     theme
 }
