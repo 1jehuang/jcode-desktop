@@ -3450,13 +3450,13 @@ impl Panel {
                 .into_any_element(),
             Item::Todos(payload) => render_todo_card_with_style(payload, false, &format!("todo-{index}"), &self.transcript_selection, window, cx),
             Item::BackgroundTask {
-                task_id: _,
+                task_id,
                 label,
                 summary,
                 percent,
                 done,
             } => {
-                background_task::render(index, label, summary, *percent, *done, &self.transcript_selection, window, cx).into_any_element()
+                background_task::render(index, task_id, label, summary, *percent, *done, &self.transcript_selection, window, cx).into_any_element()
             }
             Item::Tool {
                 call_id,
@@ -7021,7 +7021,7 @@ mod tests {
         assert_eq!(copied, "fn main() {\n    println!(\"hi\");\n}");
     }
 
-    /// Progress updates reuse a compact row, including long and multiline output.
+    /// Progress reuses a quiet row, then finishes as a compact result card.
     #[gpui::test]
     fn background_progress_updates_one_native_card(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -7058,10 +7058,15 @@ mod tests {
             let row = vcx
                 .debug_bounds("background-task-card")
                 .expect("task row paints");
-            assert!(
-                row.size.height <= px(28.0),
-                "background tasks stay one compact row: {row:?}"
-            );
+            if done {
+                assert!(vcx.debug_bounds("background-task-completed").is_some());
+                assert!(row.size.height > px(28.0) && row.size.height <= px(100.0),
+                    "finished tasks use a compact result card: {row:?}");
+            } else {
+                assert!(vcx.debug_bounds("background-task-completed").is_none());
+                assert!(row.size.height <= px(28.0),
+                    "running tasks stay one compact row: {row:?}");
+            }
         }
 
         assert!(vcx.debug_bounds("background-task-card").is_some());
