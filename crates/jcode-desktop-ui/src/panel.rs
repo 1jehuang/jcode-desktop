@@ -3341,7 +3341,7 @@ impl Panel {
         &self,
         index: usize,
         item: &Item,
-        show_avatar: bool,
+        _show_avatar: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -3420,7 +3420,7 @@ impl Panel {
                 .font_family(Theme::global().FONT_AI)
                 .px_1()
                 .text_color(Theme::global().TEXT)
-                .child(markdown::render_interactive_with_avatar(
+                .child(markdown::render_interactive(
                     text,
                     index,
                     &self.transcript_selection,
@@ -3428,7 +3428,6 @@ impl Panel {
                     cx,
                     false,
                     self.media_preview_handler(cx),
-                    show_avatar,
                 ))
                 .into_any_element(),
             // Thinking is secondary transcript text, not a separate card. Keep
@@ -7947,15 +7946,7 @@ mod tests {
             .debug_bounds("assistant-response")
             .expect("streamed assistant response should paint");
         assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
-        let avatar = vcx
-            .debug_bounds("assistant-avatar")
-            .expect("streamed assistant response should have the canonical avatar");
-        // The avatar indents only the first line. Continuation lines reclaim
-        // the full response width, so the avatar lives inside this container.
-        assert!(avatar.left() >= bounds.left());
-        assert!(avatar.right() <= bounds.right());
-        assert!(avatar.top() >= bounds.top());
-        assert!(avatar.origin.y < bounds.origin.y + bounds.size.height);
+        assert!(vcx.debug_bounds("assistant-avatar").is_none());
         assert!(vcx.debug_bounds("role-caption-jcode").is_none());
     }
 
