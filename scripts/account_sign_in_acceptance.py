@@ -29,8 +29,11 @@ def verify(output, env, root):
         return ui.wait_frame(label, check) if phrase else check(ui.capture(label))
 
     current = words("account-welcome", "Welcome to Jcode Desktop")
-    phrase_bounds(current, "Skip for now")
+    phrase_bounds(current, "Continue")
     phrase_bounds(current, "magic link")
+    phrase_bounds(current, "Subscribe to Jcode")
+    phrase_bounds(current, "Import less")
+    phrase_bounds(current, "Telemetry")
     ui.click(phrase_bounds(current, "Sign in with email"))
     current = words("account-waiting", "Finish signing")
     phrase_bounds(current, "Waiting for approval")
@@ -41,11 +44,11 @@ def verify(output, env, root):
     ui.click(phrase_bounds(current, "Start over"))
     current = words("account-back", "Welcome to Jcode Desktop")
     assert tomllib.loads(config.read_text()) == original
-    # Keyboard-only choice is as accessible as the visible Skip button.
+    # Keyboard-only: Shift+Tab wraps straight to Continue in the right half.
     ui.native("key", "--clearmodifiers", "Tab")
     ui.capture("account-keyboard-primary")
-    ui.native("key", "--clearmodifiers", "Tab")
-    ui.capture("account-keyboard-skip")
+    ui.native("key", "--clearmodifiers", "shift+Tab")
+    ui.capture("account-keyboard-continue")
     ui.native("key", "--clearmodifiers", "Return")
     # The beta notice is independently optional (for example after restoring a
     # snapshot). Prove Skip persisted and reached the workspace, not that a
@@ -70,15 +73,18 @@ def verify(output, env, root):
     current = words("account-workspace", "chat", sidebar=True)
     chat = phrase_bounds(current, "chat")
     nav_y = round((chat[1] + chat[3]) / 2)
+    # Folder-tab layout: hovering the section title opens the navigation menu.
+    ui.native("mousemove", round((chat[0] + chat[2]) / 2), nav_y)
     for step in range(15):
         current = words(f"account-tabs-{step}", sidebar=True)
         try:
             ui.click(phrase_bounds(current, "settings"))
             break
         except AssertionError:
-            ui.native("mousemove", 180, nav_y, "click", "5")
+            ui.native("mousemove", round((chat[0] + chat[2]) / 2), nav_y, "click", "5")
     else:
         raise AssertionError("Settings tab not reachable")
+    ui.native("mousemove", 130, 600)
     current = words("account-settings", "Jcode account", sidebar=True)
     ui.click(phrase_bounds(current, "Sign in with email"))
     current = words("account-reentry", "Welcome to Jcode Desktop")
@@ -96,7 +102,7 @@ def verify(output, env, root):
         "welcome_and_magic_link_copy": True,
         "native_sign_in_waiting_reopen_and_cancel": True,
         "copy_link_feedback": True,
-        "keyboard_skip_persisted": True,
+        "keyboard_continue_persisted": True,
         "other_configuration_unchanged": True,
         "settings_reentry_and_escape": True,
         "network_and_credential_writes": "disabled in offline fixture",

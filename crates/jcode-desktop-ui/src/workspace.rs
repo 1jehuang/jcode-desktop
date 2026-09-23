@@ -1183,6 +1183,7 @@ impl Workspace {
         }
         workspace.start_preview_control(cx);
         workspace.start_global_voice(window, cx);
+        workspace.detect_account_imports(cx);
         workspace
     }
 
@@ -7214,7 +7215,7 @@ impl Render for Workspace {
         }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
-            let content = self.render_account_sign_in(cx);
+            let content = self.render_account_sign_in(window, cx);
             return self.voice_modal_root(content, cx);
         }
         if self.resume.is_some() {

@@ -61,7 +61,7 @@ fn welcome_native_primary_waits_offline_and_cancel_returns(cx: &mut gpui::TestAp
     let (workspace, vcx) = setup(cx);
     assert!(vcx.debug_bounds("account-sign-in-card").is_some());
     assert!(vcx.debug_bounds("account-sign-in-brand").is_some());
-    assert!(vcx.debug_bounds("account-sign-in-skip").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
     workspace.read_with(vcx, |w, _| {
         assert!(w.account_sign_in.visible);
@@ -88,7 +88,7 @@ fn welcome_native_primary_waits_offline_and_cancel_returns(cx: &mut gpui::TestAp
 #[gpui::test]
 fn skip_and_escape_preserve_composer_draft_and_focus(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    click(vcx, "account-sign-in-skip");
+    click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
     workspace.update_in(vcx, |w, window, cx| w.open_account_sign_in(window, cx));
     vcx.run_until_parked();
@@ -98,47 +98,127 @@ fn skip_and_escape_preserve_composer_draft_and_focus(cx: &mut gpui::TestAppConte
     assert_draft_and_focus(&workspace, vcx);
 }
 
+fn choice(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) -> Option<Choice> {
+    workspace.read_with(vcx, |w, _| {
+        let state = &w.account_sign_in;
+        state.keyboard_choice.and_then(|index| state.choices().get(index).copied())
+    })
+}
+
 #[gpui::test]
 fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    for (key, expected) in [
-        ("tab", 0),
-        ("tab", 1),
-        ("tab", 0),
-        ("shift-tab", 1),
-        ("shift-tab", 0),
-    ] {
-        vcx.simulate_keystrokes(key);
-        vcx.run_until_parked();
-        workspace.read_with(vcx, |w, _| {
-            assert_eq!(w.account_sign_in.keyboard_choice, Some(expected))
-        });
-    }
-    vcx.simulate_keystrokes("enter");
+    vcx.simulate_keystrokes("tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Primary));
+    vcx.simulate_keystrokes("tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Subscribe));
+    vcx.simulate_keystrokes("shift-tab shift-tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
+    vcx.simulate_keystrokes("tab enter");
     vcx.run_until_parked();
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(w.account_sign_in.stage, Stage::Waiting { .. }))
     });
-    vcx.simulate_keystrokes("shift-tab");
-    vcx.run_until_parked();
-    workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.account_sign_in.keyboard_choice, Some(3))
-    });
+    vcx.simulate_keystrokes("tab tab tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::StartOver));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome))
     });
     vcx.simulate_keystrokes("shift-tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     assert_draft_and_focus(&workspace, vcx);
 }
 
 #[gpui::test]
+fn enter_without_focus_continues(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert_draft_and_focus(&workspace, vcx);
+}
+
+#[gpui::test]
+fn detected_logins_import_less_and_continue_recap(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.set_account_import_candidates(
+            vec![
+                ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
+                ExternalAuthReviewCandidate::fixture("Gemini", "Gemini CLI"),
+            ],
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("account-import-0").is_some());
+    assert!(vcx.debug_bounds("account-import-1").is_some());
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1])
+    });
+    // Rows are read-only until the user asks to import less.
+    click(vcx, "account-import-0");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1])
+    });
+    click(vcx, "account-import-less");
+    click(vcx, "account-import-0");
+    workspace.read_with(vcx, |w, _| {
+        assert!(w.account_sign_in.choosing);
+        assert_eq!(w.account_sign_in.selected_imports(), vec![1]);
+        assert!(w.account_sign_in.choices().contains(&Choice::Login(0)));
+    });
+    // Keyboard toggles the focused login row too.
+    workspace.update(vcx, |w, cx| {
+        let index = w.account_sign_in.choices().iter().position(|c| *c == Choice::Login(1));
+        w.account_sign_in.keyboard_choice = index;
+        cx.notify();
+    });
+    vcx.simulate_keystrokes("space");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.selected_imports().is_empty()));
+    // "Import all" restores the default of importing everything.
+    click(vcx, "account-import-less");
+    workspace.read_with(vcx, |w, _| {
+        assert!(!w.account_sign_in.choosing);
+        assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1]);
+    });
+    click(vcx, "account-sign-in-continue");
+    assert_draft_and_focus(&workspace, vcx);
+    workspace.read_with(vcx, |w, _| {
+        assert!(w.account_sign_in.candidates.is_empty());
+        assert!(w.account_sign_in.import_task.is_none(), "tests never import real credentials");
+    });
+}
+
+#[gpui::test]
+fn theme_swatches_and_telemetry_choices_apply(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    let original = Theme::active_preset();
+    let target = crate::theme::ThemePreset::ALL
+        .into_iter()
+        .position(|preset| preset != Theme::active_preset())
+        .unwrap();
+    click(vcx, Box::leak(format!("account-theme-{target}").into_boxed_str()));
+    assert_eq!(Theme::active_preset(), crate::theme::ThemePreset::ALL[target]);
+    for (selector, level) in [
+        ("account-telemetry-off", Telemetry::Off),
+        ("account-telemetry-everything", Telemetry::Everything),
+    ] {
+        click(vcx, selector);
+        workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.telemetry, level));
+    }
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.visible));
+    Theme::select(original);
+}
+
+#[gpui::test]
 fn settings_can_reopen_skipped_account_onboarding(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    click(vcx, "account-sign-in-skip");
+    click(vcx, "account-sign-in-continue");
     super::super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
     assert!(vcx.debug_bounds("workspace-settings").is_some());
     click(vcx, "settings-account-sign-in");
@@ -173,19 +253,13 @@ fn error_retry_and_complete_render_without_credentials(cx: &mut gpui::TestAppCon
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("account-sign-in-primary").is_some());
-    assert!(vcx.debug_bounds("account-sign-in-skip").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-primary").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
-    workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.account_sign_in.primary_label(), "Continue to workspace")
-    });
-    for key in ["tab", "shift-tab"] {
-        vcx.simulate_keystrokes(key);
-        vcx.run_until_parked();
-        workspace.read_with(vcx, |w, _| {
-            assert_eq!(w.account_sign_in.keyboard_choice, Some(0))
-        });
-    }
+    vcx.simulate_keystrokes("tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
+    vcx.simulate_keystrokes("shift-tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     assert_draft_and_focus(&workspace, vcx);
@@ -212,6 +286,9 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         });
         vcx.run_until_parked();
         let card = vcx.debug_bounds("account-sign-in-card").unwrap();
+        let proceed = vcx.debug_bounds("account-sign-in-continue").unwrap();
+        assert!(proceed.left() >= px(0.) && proceed.right() <= px(360.), "{proceed:?}");
+        assert!(proceed.bottom() <= px(800.) && proceed.top() >= card.bottom() - px(1.), "{proceed:?}");
         assert!(
             card.left() >= px(0.) && card.right() <= px(360.),
             "{card:?}"
@@ -222,17 +299,13 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         );
         for selector in [
             "account-sign-in-primary",
-            "account-sign-in-skip",
+            "account-sign-in-subscribe",
             "account-sign-in-back",
             "account-sign-in-copy",
         ] {
             if let Some(bounds) = vcx.debug_bounds(selector) {
                 assert!(
                     bounds.left() >= card.left() && bounds.right() <= card.right(),
-                    "{selector}: {bounds:?}"
-                );
-                assert!(
-                    bounds.top() >= card.top() && bounds.bottom() <= card.bottom(),
                     "{selector}: {bounds:?}"
                 );
             }
@@ -314,7 +387,7 @@ fn skip_cancels_pending_gpui_task_before_restoring_composer(cx: &mut gpui::TestA
     vcx.run_until_parked();
     assert!(!cancelled.load(Ordering::SeqCst));
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.task.is_some()));
-    click(vcx, "account-sign-in-skip");
+    click(vcx, "account-sign-in-continue");
     assert!(
         cancelled.load(Ordering::SeqCst),
         "Skip must drop the pending future, not just hide onboarding"
@@ -455,7 +528,7 @@ fn real_http_pending_retry_slowdown_and_free_account_approval(cx: &mut gpui::Tes
             .all(|request| request.starts_with("POST /v1/auth/token ")
                 && request.contains("isolated-device-secret"))
     );
-    click(vcx, "account-sign-in-primary");
+    click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
 }
 
@@ -490,7 +563,7 @@ fn real_http_denial_expiry_and_invalid_start_are_recoverable(cx: &mut gpui::Test
         });
         assert!(!requests.try_iter().collect::<Vec<_>>().is_empty());
     }
-    click(vcx, "account-sign-in-skip");
+    click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
 }
 
@@ -504,7 +577,7 @@ fn real_http_skip_cancels_polling_and_preserves_draft(cx: &mut gpui::TestAppCont
         assert!(matches!(w.account_sign_in.stage, Stage::Waiting { .. }));
         assert!(w.account_sign_in.task.is_some());
     });
-    click(vcx, "account-sign-in-skip");
+    click(vcx, "account-sign-in-continue");
     poll_after(vcx, 30);
     workspace.read_with(vcx, |w, _| {
         assert!(!w.account_sign_in.connected);

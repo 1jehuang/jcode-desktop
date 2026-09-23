@@ -148,6 +148,12 @@ impl Theme {
         };
     }
 
+    /// Settled palette for a preset, for swatch previews that should not
+    /// depend on the active theme.
+    pub fn preview(preset: ThemePreset) -> &'static Self {
+        &themes()[preset.index()]
+    }
+
     pub fn is_transitioning() -> bool {
         transition_state().lock().unwrap().is_some()
     }
