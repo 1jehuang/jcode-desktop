@@ -401,19 +401,14 @@ impl Panel {
         }
         jcode_base::voice::timing::begin();
         self.prepare_voice_attempt(hold_capture);
-        let token = self.voice.canceled.clone();
-        let attempt = token.clone();
-        let work = cx.background_executor().spawn(async move {
-            let key = voice::nari_api_key().ok_or(VoiceError::NariNotConfigured)?;
-            NariRecording::start_cancellable(token, &key)
-        });
-        self.voice.task = Some(cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |panel, cx| {
-                panel.finish_voice_startup(&attempt, result, cx);
-            });
-        }));
-        cx.notify();
+        // Starting is nonblocking: the microphone opens and the provider
+        // handshake runs in the background while PCM buffers. The press is
+        // the start of recording, so the UI shows Listening immediately.
+        let attempt = self.voice.canceled.clone();
+        let result = voice::nari_api_key()
+            .ok_or(VoiceError::NariNotConfigured)
+            .and_then(|key| NariRecording::start_cancellable(attempt.clone(), &key));
+        self.finish_voice_startup(&attempt, result, cx);
     }
 
     fn finish_voice_startup(
