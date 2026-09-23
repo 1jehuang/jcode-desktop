@@ -21,6 +21,9 @@ pub(super) struct State {
     candidates: Vec<ExternalAuthReviewCandidate>,
     /// Parallel to `candidates`. Everything starts checked, "Import less" opts out.
     checked: Vec<bool>,
+    /// Provider ids Jcode is already signed in to, synced from the accounts
+    /// feed each render. Detected logins that add nothing new are hidden.
+    in_jcode: Vec<String>,
     choosing: bool,
     detecting: bool,
     detect_task: Option<gpui::Task<()>>,
@@ -199,10 +202,11 @@ impl State {
         if !self.connected {
             choices.push(Choice::Subscribe);
         }
-        if !self.candidates.is_empty() {
+        let importable = self.importable();
+        if !importable.is_empty() {
             choices.push(Choice::ImportLess);
             if self.choosing {
-                choices.extend((0..self.candidates.len()).map(Choice::Login));
+                choices.extend(importable.into_iter().map(Choice::Login));
             }
         }
         choices.push(Choice::Theme);
@@ -222,8 +226,22 @@ impl State {
             == Some(choice)
     }
 
+    /// Detected logins that would add a provider Jcode does not have yet.
+    fn importable(&self) -> Vec<usize> {
+        self.candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                let ids = candidate.provider_ids();
+                ids.is_empty() || ids.iter().any(|id| !self.in_jcode.iter().any(|known| known == id))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     fn selected_imports(&self) -> Vec<usize> {
-        (0..self.candidates.len())
+        self.importable()
+            .into_iter()
             .filter(|&index| self.checked.get(index).copied().unwrap_or(false))
             .collect()
     }
@@ -674,6 +692,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         self.ensure_account_demo(cx);
+        self.account_sign_in.in_jcode = self
+            .accounts
+            .iter()
+            .filter(|account| account.available())
+            .map(|account| account.id.clone())
+            .collect();
         let theme = Theme::global();
         let narrow = window.viewport_size().width < px(760.0);
         let info = div()
@@ -874,28 +898,29 @@ impl Workspace {
         section.child(actions)
     }
 
+    /// Two sets: what Jcode can already use, then what other tools have
+    /// that Jcode could import. Logins Jcode already has are not offered again.
     fn account_onboarding_logins(&self, cx: &mut Context<Self>) -> gpui::Div {
         let state = &self.account_sign_in;
         let theme = Theme::global();
-        let connected: Vec<_> = self
+        let in_jcode: Vec<_> = self
             .accounts
             .iter()
             .filter(|account| account.available() && account.id != "jcode")
             .collect();
+        let importable = state.importable();
         let mut section = section("AI provider logins");
-        if connected.is_empty() && state.candidates.is_empty() {
-            return section.child(
-                div()
-                    .debug_selector(|| "account-logins-empty".into())
-                    .text_size(px(13.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child(if state.detecting { "Looking…" } else { "None found" }),
-            );
-        }
-        if !connected.is_empty() {
-            section = section.child(subheading("Connected"));
-            let mut list = div().flex().flex_col().gap_1();
-            for account in connected {
+
+        section = section.child(subheading("In Jcode"));
+        if in_jcode.is_empty() {
+            section = section.child(empty_note("account-logins-in-jcode-empty", "None yet"));
+        } else {
+            let mut list = div()
+                .debug_selector(|| "account-logins-in-jcode".into())
+                .flex()
+                .flex_col()
+                .gap_1();
+            for account in in_jcode {
                 list = list.child(login_row(
                     &account.id,
                     account.display_name.clone(),
@@ -905,56 +930,66 @@ impl Workspace {
             }
             section = section.child(list);
         }
-        if !state.candidates.is_empty() {
-            section = section.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(subheading("Found in other tools"))
-                    .child(
-                        account_button(
-                            "account-import-less",
-                            if state.choosing { "Import all" } else { "Import less" },
-                            false,
-                            state.focused(Choice::ImportLess),
-                        )
-                        .text_size(px(12.0))
-                        .py_1()
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_account_import_less(cx))),
-                    ),
-            );
-            let mut list = div().flex().flex_col().gap_1();
-            for (index, candidate) in state.candidates.iter().enumerate() {
-                let checked = state.checked.get(index).copied().unwrap_or(false);
-                let trailing = if state.choosing {
-                    checkbox(checked, state.focused(Choice::Login(index)))
-                } else {
-                    div().text_color(theme.TEXT_DIM).child("Will import")
-                };
-                let mut row = login_row(
-                    candidate_logo(candidate.provider_summary()),
-                    candidate.provider_summary().to_string(),
-                    format!("from {}", candidate.source_name()),
-                    trailing,
+
+        let mut header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(subheading("Can import"));
+        if !importable.is_empty() {
+            header = header.child(
+                account_button(
+                    "account-import-less",
+                    if state.choosing { "Import all" } else { "Import less" },
+                    false,
+                    state.focused(Choice::ImportLess),
                 )
-                .id(("account-import", index))
-                .debug_selector(move || format!("account-import-{index}"))
-                .when(state.choosing && !checked, |el| el.opacity(0.55));
-                if state.choosing {
-                    row = row
-                        .cursor_pointer()
-                        .hover(move |el| el.bg(theme.TOOL_BG))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_account_import(index, cx)
-                        }));
-                }
-                list = list.child(row);
-            }
-            section = section.child(list);
+                .text_size(px(12.0))
+                .py_1()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_account_import_less(cx))),
+            );
         }
-        section
+        section = section.child(header);
+        if importable.is_empty() {
+            let note = if state.detecting {
+                "Looking in other tools…"
+            } else if state.candidates.is_empty() {
+                "Nothing found in other tools"
+            } else {
+                "Nothing new. Jcode already has these."
+            };
+            return section.child(empty_note("account-logins-import-empty", note));
+        }
+        let mut list = div().flex().flex_col().gap_1();
+        for index in importable {
+            let candidate = &state.candidates[index];
+            let checked = state.checked.get(index).copied().unwrap_or(false);
+            let trailing = if state.choosing {
+                checkbox(checked, state.focused(Choice::Login(index)))
+            } else {
+                div().text_color(theme.TEXT_DIM).child("Will import")
+            };
+            let mut row = login_row(
+                candidate_logo(candidate.provider_summary()),
+                candidate.provider_summary().to_string(),
+                format!("from {}", candidate.source_name()),
+                trailing,
+            )
+            .id(("account-import", index))
+            .debug_selector(move || format!("account-import-{index}"))
+            .when(state.choosing && !checked, |el| el.opacity(0.55));
+            if state.choosing {
+                row = row
+                    .cursor_pointer()
+                    .hover(move |el| el.bg(theme.TOOL_BG))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_account_import(index, cx)
+                    }));
+            }
+            list = list.child(row);
+        }
+        section.child(list)
     }
 
     fn account_onboarding_theme(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1158,6 +1193,14 @@ fn section(title: &'static str) -> gpui::Div {
 fn subheading(text: &'static str) -> gpui::Div {
     div()
         .text_size(px(11.0))
+        .text_color(Theme::global().TEXT_DIM)
+        .child(text)
+}
+
+fn empty_note(id: &'static str, text: &'static str) -> gpui::Div {
+    div()
+        .debug_selector(move || id.into())
+        .text_size(px(13.0))
         .text_color(Theme::global().TEXT_DIM)
         .child(text)
 }

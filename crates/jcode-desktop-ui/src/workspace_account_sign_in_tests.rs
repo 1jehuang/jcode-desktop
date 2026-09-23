@@ -633,3 +633,51 @@ fn real_http_skip_cancels_polling_and_preserves_draft(cx: &mut gpui::TestAppCont
     assert_eq!(requests.try_iter().count(), 1);
     assert_draft_and_focus(&workspace, vcx);
 }
+
+#[gpui::test]
+fn logins_split_into_in_jcode_and_importable(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.accounts = accounts::parse(
+            r#"{"providers":[
+                {"id":"claude","display_name":"Claude","status":"available","auth_kind":"OAuth"},
+                {"id":"gemini","display_name":"Gemini","status":"not_configured","auth_kind":"OAuth"}
+            ]}"#,
+        )
+        .unwrap();
+        w.set_account_import_candidates(
+            vec![
+                ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
+                ExternalAuthReviewCandidate::fixture("Gemini", "Gemini CLI"),
+                ExternalAuthReviewCandidate::fixture("Claude, Gemini", "OpenCode"),
+            ],
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("account-logins-in-jcode").is_some());
+    // Claude is already in Jcode, so only sources adding something new remain.
+    assert!(vcx.debug_bounds("account-import-0").is_none());
+    assert!(vcx.debug_bounds("account-import-1").is_some());
+    assert!(vcx.debug_bounds("account-import-2").is_some());
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.account_sign_in.selected_imports(), vec![1, 2]);
+        assert!(!w.account_sign_in.choices().contains(&Choice::Login(0)));
+    });
+
+    // Once everything detected is already in Jcode, nothing is offered.
+    workspace.update(vcx, |w, cx| {
+        w.accounts = accounts::parse(
+            r#"{"providers":[
+                {"id":"claude","display_name":"Claude","status":"available","auth_kind":"OAuth"},
+                {"id":"gemini","display_name":"Gemini","status":"available","auth_kind":"OAuth"}
+            ]}"#,
+        )
+        .unwrap();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("account-logins-import-empty").is_some());
+    assert!(vcx.debug_bounds("account-import-less").is_none());
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.selected_imports().is_empty()));
+}
