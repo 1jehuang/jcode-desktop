@@ -257,16 +257,13 @@ mod tests {
                     // Three bounded groups may wrap, but long metadata/status
                     // text must never create unbounded footer height.
                     assert!(
-                        row.size.height >= px(30.) && row.size.height <= px(90.),
+                        row.size.height >= px(22.) && row.size.height <= px(90.),
                         "width={width}, status={status}: {row:?}"
                     );
                     for selector in [
-                        "panel-identity",
                         "panel-build",
                         "panel-status",
                         "panel-usage",
-                        "voice-toggle",
-                        "voice-shortcut",
                     ] {
                         if let Some(child) = vcx.debug_bounds(selector) {
                             assert!(child.top() >= row.top(), "{selector}: {child:?}");

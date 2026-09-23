@@ -42,6 +42,8 @@ mod activity_state;
 #[path = "panel_scroll_motion.rs"]
 mod scroll_motion;
 use scroll_motion::WheelGlide;
+#[path = "panel_composer.rs"]
+mod composer;
 #[path = "panel_diff.rs"]
 mod diff_review;
 #[path = "panel_flicker.rs"]
@@ -4195,7 +4197,7 @@ impl Render for Panel {
                                 .flex_col()
                                 .gap_2()
                                 .children(self.render_prompt_queue(cx))
-                                .child(self.render_voice_input_slot(cx))
+                                .child(self.render_composer(window, cx))
                                 .child(startup::input_marker(input_bounds.clone())),
                         ),
                 )
@@ -4306,7 +4308,7 @@ impl Render for Panel {
                                     .flex_col()
                                     .gap_2()
                                     .children(self.render_prompt_queue(cx))
-                                    .child(self.render_voice_input_slot(cx))
+                                    .child(self.render_composer(window, cx))
                                     .child(startup::input_marker(input_bounds.clone())),
                             ),
                     )
@@ -4321,30 +4323,6 @@ impl Render for Panel {
         let status_line = self.status_line();
         let theme = Theme::global();
         let usage_meters = self.render_usage_meters(cx);
-        let account_label =
-            account_method_label(self.provider.as_deref(), self.auth_method.as_deref());
-        let identity_control = |id: &'static str, label: String| {
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .min_w(px(48.))
-                .max_w_full()
-                .flex()
-                .items_center()
-                .gap_1()
-                .h(px(22.))
-                .px_2()
-                .rounded_md()
-                .border_1()
-                .border_color(theme.PANEL_BORDER)
-                .bg(theme.HEADER_BG)
-                .text_color(theme.TEXT_DIM)
-                .cursor_pointer()
-                .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                .child(div().min_w_0().truncate().child(label))
-                .child(div().flex_none().child("⌄"))
-        };
-
         let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
 
         let chat = div()
@@ -4596,106 +4574,6 @@ impl Render for Panel {
             .when(self.recovery_picker_open, |el| {
                 el.child(self.render_recovery_model_picker(cx))
             })
-            // Keep controls together, wrapping the status group on narrow panels
-            // rather than clipping the voice button or its shortcut.
-            .children((!self.transcript_only).then(|| {
-                div()
-                    .debug_selector(|| "panel-meta".into())
-                    .flex_none()
-                    .min_h(px(30.))
-                    .min_w_0()
-                    .px_3()
-                    .py_1()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_wrap()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(px(10.0))
-                    .font_family(Theme::global().FONT_MONO)
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(
-                        div()
-                            .debug_selector(|| "panel-identity".into())
-                            .flex_1()
-                            // Reserve both controls and gaps when optional labels collapse.
-                            .min_w(px(120.))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .flex_nowrap()
-                            .overflow_hidden()
-                            .children(
-                                self.working_dir
-                                    .as_deref()
-                                    .filter(|dir| !dir.is_empty())
-                                    .map(|dir| {
-                                        div()
-                                            .min_w_0()
-                                            .max_w(px(180.))
-                                            .truncate()
-                                            .child(compact_dir(dir))
-                                    }),
-                            )
-                            .child(
-                                identity_control(
-                                    "panel-model",
-                                    self.model.clone().unwrap_or_else(|| "Choose model".into()),
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.toggle_model_picker(window, cx);
-                                        cx.stop_propagation();
-                                    },
-                                )),
-                            )
-                            .child(identity_control("panel-login", account_label).on_click(
-                                cx.listener(|_, _, window, cx| {
-                                    window.dispatch_action(
-                                        Box::new(crate::workspace::OpenAccounts {
-                                            source: cx.entity_id(),
-                                            login_command: None,
-                                        }),
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }),
-                            ))
-                            .children(
-                                self.reasoning_effort
-                                    .clone()
-                                    .map(|effort| div().min_w_0().truncate().child(effort)),
-                            ),
-                    )
-                    .when(self.show_build_footer, |el| {
-                        el.child(
-                            div()
-                                .id("panel-build")
-                                .debug_selector(|| "panel-build".into())
-                                .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
-                                // Build metadata must yield space to interactive controls.
-                                .flex_shrink_1()
-                                .min_w(px(24.))
-                                .truncate()
-                                .child(crate::build_info::label()),
-                        )
-                    })
-                    .child(
-                        div()
-                            .debug_selector(|| "panel-status".into())
-                            .flex_1()
-                            .min_w(px(200.))
-                            .flex()
-                            .justify_end()
-                            .items_center()
-                            .gap_2()
-                            .overflow_hidden()
-                            .children(usage_meters)
-                            .child(self.render_image_pane_toggle(cx))
-                            .child(self.render_voice_controls(status_line, cx)),
-                    )
-            }))
             .children(self.render_voice_overlay(window, cx))
             .children(self.render_preview_badge(cx))
             // Input
@@ -4710,11 +4588,83 @@ impl Render for Panel {
                             .flex_col()
                             .gap_2()
                             .children(self.render_prompt_queue(cx))
-                            .child(self.render_voice_input_slot(cx))
+                            .child(self.render_composer(window, cx))
                             .child(startup::input_marker(input_bounds.clone())),
                     ),
                 )
             })
+            // Slim bottom bar under the composer. Model, credential method,
+            // and voice live in folder tabs on the input itself.
+            .children((!self.transcript_only).then(|| {
+                div()
+                    .debug_selector(|| "panel-meta".into())
+                    .flex_none()
+                    .min_h(px(22.))
+                    .min_w_0()
+                    .px_3()
+                    .pb_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_wrap()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(10.0))
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_color(Theme::global().TEXT_FAINT)
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-location".into())
+                            .flex_1()
+                            .min_w(px(60.))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .flex_nowrap()
+                            .overflow_hidden()
+                            .children(
+                                self.working_dir
+                                    .as_deref()
+                                    .filter(|dir| !dir.is_empty())
+                                    .map(|dir| {
+                                        div()
+                                            .min_w_0()
+                                            .max_w(px(240.))
+                                            .truncate()
+                                            .child(compact_dir(dir))
+                                    }),
+                            )
+                            .when(self.show_build_footer, |el| {
+                                el.child(
+                                    div()
+                                        .id("panel-build")
+                                        .debug_selector(|| "panel-build".into())
+                                        .tooltip(|_, cx| {
+                                            cx.new(|_| crate::build_info::BuildTooltip).into()
+                                        })
+                                        // Build metadata yields space to the path.
+                                        .flex_shrink_1()
+                                        .min_w(px(24.))
+                                        .truncate()
+                                        .child(crate::build_info::label()),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "panel-status".into())
+                            .flex_1()
+                            .min_w(px(120.))
+                            .flex()
+                            .justify_end()
+                            .items_center()
+                            .gap_2()
+                            .overflow_hidden()
+                            .children(usage_meters)
+                            .child(self.render_image_pane_toggle(cx))
+                            .children(self.render_voice_status(status_line)),
+                    )
+            }))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -7883,11 +7833,12 @@ mod tests {
             vcx.debug_bounds("panel-build").is_none(),
             "build metadata belongs in the workspace header, not each panel"
         );
-        let identity = vcx.debug_bounds("panel-identity").expect("identity paints");
+        let identity = vcx.debug_bounds("panel-identity").expect("identity tabs paint");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
-        assert_eq!(identity.center().y, status.center().y);
-        assert!(identity.left() >= bounds.left());
-        assert!(identity.right() <= status.left());
+        let input = vcx.debug_bounds("prompt-input").expect("input paints");
+        // Identity lives in folder tabs on the input, status in the bar below.
+        assert!(identity.bottom() <= input.top() + gpui::px(1.));
+        assert!(input.bottom() <= bounds.top());
         assert!(status.right() <= bounds.right());
         assert!(vcx.debug_bounds("panel-status-pulse").is_none());
     }

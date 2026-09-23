@@ -423,9 +423,36 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn render_voice_controls(
+    /// Footer status text. Active work is shown by the transcript activity
+    /// indicator instead, so the footer does not duplicate it.
+    pub(super) fn render_voice_status(&self, status: String) -> Option<gpui::AnyElement> {
+        if self.activity_active() {
+            return None;
+        }
+        Some(
+            div()
+                .debug_selector(|| "panel-status-badge".into())
+                .flex()
+                .items_center()
+                .flex_shrink_1()
+                .min_w(px(40.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(
+                    div()
+                        .debug_selector(|| "voice-ready-status".into())
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .truncate()
+                        .child(status),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Voice folder tab on the right of the composer's top edge.
+    pub(super) fn render_voice_tab(
         &self,
-        status: String,
+        border: gpui::Rgba,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
@@ -436,77 +463,38 @@ impl Panel {
             Phase::Recording => "Stop voice",
             Phase::Transcribing | Phase::Routing => "Cancel voice request",
         };
-        let active = self.activity_active();
-        let tooltip_status = voice_tooltip(label, &status);
-        div()
-            .debug_selector(move || {
-                if active {
-                    "panel-voice-active".into()
-                } else {
-                    "panel-status-badge".into()
-                }
-            })
-            .flex()
-            .items_center()
-            .gap_2()
-            .justify_end()
-            .flex_shrink_1()
-            .min_w(px(160.))
-            .text_size(px(10.5))
-            .text_color(theme.TEXT_DIM)
-            .when(!active, |el| {
-                el.child(
-                    div()
-                        .debug_selector(|| "voice-ready-status".into())
-                        .min_w_0()
-                        .flex_shrink_1()
-                        .truncate()
-                        .child(status),
-                )
-            })
+        let tooltip_status = voice_tooltip(label, &self.status_line());
+        let color = if phase != Phase::Idle {
+            theme.ACCENT
+        } else {
+            theme.TEXT_DIM
+        };
+        super::composer::composer_tab("voice-toggle", border)
+            .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
+            .flex_none()
+            .w(px(36.))
+            .px_0()
+            .justify_center()
+            .text_color(color)
+            .when(phase != Phase::Idle, |el| el.bg(theme.ACCENT_DIM))
+            .on_click(cx.listener(|panel, _, window, cx| {
+                // All controls use the same action path. Workspace captures
+                // this before the panel fallback to stop the existing owner,
+                // even if this button belongs to another conversation.
+                panel.focus_input(window, cx);
+                window.dispatch_action(Box::new(ToggleVoice), cx);
+                cx.stop_propagation();
+            }))
             .child(
                 div()
-                    .id("voice-toggle")
-                    .debug_selector(|| "voice-toggle".into())
-                    .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
-                    .flex_none()
-                    .w(px(28.))
-                    .h(px(22.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .bg(theme.HEADER_BG)
-                    .text_color(if phase != Phase::Idle {
-                        theme.ACCENT
-                    } else {
-                        theme.TEXT_DIM
-                    })
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                    .on_click(cx.listener(|panel, _, window, cx| {
-                        // All controls use the same action path. Workspace captures
-                        // this before the panel fallback to stop the existing owner,
-                        // even if this button belongs to another conversation.
-                        panel.focus_input(window, cx);
-                        window.dispatch_action(Box::new(ToggleVoice), cx);
-                        cx.stop_propagation();
-                    }))
+                    .debug_selector(|| "voice-microphone-icon".into())
+                    .size(px(14.))
                     .child(
-                        div()
-                            .debug_selector(|| "voice-microphone-icon".into())
-                            .size(px(16.))
-                            .child(
-                                gpui::svg()
-                                    .data(include_bytes!("../../../assets/icons/microphone.svg")
-                                        as &'static [u8])
-                                    .text_color(if phase != Phase::Idle {
-                                        theme.ACCENT
-                                    } else {
-                                        theme.TEXT_DIM
-                                    })
-                                    .size(px(16.)),
-                            ),
+                        gpui::svg()
+                            .data(include_bytes!("../../../assets/icons/microphone.svg")
+                                as &'static [u8])
+                            .text_color(color)
+                            .size(px(14.)),
                     ),
             )
             .into_any_element()
@@ -911,24 +899,24 @@ mod tests {
                     cx.notify();
                 });
                 vcx.run_until_parked();
-                let footer = vcx.debug_bounds("panel-meta").unwrap();
+                let input = vcx.debug_bounds("prompt-input").unwrap();
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
                 assert!(vcx.debug_bounds("voice-shortcut").is_none());
-                let status = vcx.debug_bounds("voice-ready-status").unwrap();
+                // The microphone is a folder tab on the input's top-right edge.
                 assert!(
-                    button.left() >= footer.left() && button.right() <= footer.right(),
-                    "voice at {width}: {button:?} outside {footer:?}"
+                    button.left() >= input.left() && button.right() <= input.right(),
+                    "voice at {width}: {button:?} outside {input:?}"
                 );
-                assert!(button.top() >= footer.top() && button.bottom() <= footer.bottom());
+                assert!((f32::from(button.bottom() - input.top()) - 1.).abs() < 0.5);
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert_eq!(icon.size.width, px(16.));
-                assert_eq!(button.size.width, px(28.));
-                assert!(
-                    button.left() - status.right() >= px(7.),
-                    "Ready needs breathing room"
-                );
-                assert_eq!(button.size.height, px(22.));
+                assert_eq!(icon.size.width, px(14.));
+                assert_eq!(button.size.width, px(36.));
+                assert_eq!(button.size.height, px(25.));
+                if phase == Phase::Idle {
+                    let status = vcx.debug_bounds("voice-ready-status").unwrap();
+                    assert!(status.top() >= input.bottom(), "status sits in the bottom bar");
+                }
             }
         }
     }
