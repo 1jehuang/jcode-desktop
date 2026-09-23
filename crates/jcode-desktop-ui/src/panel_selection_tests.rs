@@ -344,10 +344,18 @@ fn finish_drag_copy(vcx: &mut gpui::VisualTestContext, position: gpui::Point<gpu
         modifiers: Default::default(),
         click_count: 1,
     });
-    vcx.simulate_keystrokes("ctrl-c");
-    vcx.update(|_, cx| cx.read_from_clipboard())
+    // Releasing the pointer copies without an explicit shortcut.
+    let auto = vcx
+        .update(|_, cx| cx.read_from_clipboard())
         .and_then(|item| item.text())
-        .unwrap()
+        .unwrap();
+    vcx.simulate_keystrokes("ctrl-c");
+    let copied = vcx
+        .update(|_, cx| cx.read_from_clipboard())
+        .and_then(|item| item.text())
+        .unwrap();
+    assert_eq!(auto, copied, "mouse release must auto-copy the selection");
+    copied
 }
 
 #[gpui::test]

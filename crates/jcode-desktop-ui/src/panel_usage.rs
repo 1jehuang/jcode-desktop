@@ -33,7 +33,10 @@ fn meter(
     let theme = Theme::global();
     let used = percent.filter(|p| p.is_finite()).map(|p| p.clamp(0., 100.));
     let selector = id.clone();
-    let (name, value) = label.rsplit_once(' ').unwrap_or((&label, ""));
+    let (name, value) = match percent {
+        Some(_) => label.rsplit_once(' ').unwrap_or((&label, "")),
+        None => (label.as_str(), ""),
+    };
     let name = name.to_owned();
     let value = value.to_owned();
     div()
@@ -47,7 +50,7 @@ fn meter(
         .text_color(theme.TEXT_DIM)
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
         .child(div().min_w_0().truncate().child(name))
-        .child(div().flex_none().child(value))
+        .when(!value.is_empty(), |el| el.child(div().flex_none().child(value)))
         .children(used.map(|used| {
             let color = if used >= 90. {
                 theme.ERROR
@@ -256,10 +259,8 @@ impl Panel {
         let percent = used
             .zip(window)
             .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
-        let label = match percent {
-            Some(percent) => format!("{:.0}%", percent.min(100.)),
-            None => "—".into(),
-        };
+        // Unknown usage shows only the empty ring, never a placeholder dash.
+        let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
         let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
             .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
             .unwrap_or_else(|| "Context usage is not reported yet.".into());
@@ -275,7 +276,7 @@ impl Panel {
                 .text_color(theme.TEXT_DIM)
                 .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
                 .child(context_ring(percent))
-                .child(label),
+                .children(label),
         );
         if let Some((cost, turns)) = self.session_api_cost() {
             let detail = format!(
@@ -295,6 +296,11 @@ impl Panel {
                     .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
                     .child(format_cost(cost)),
             );
+            return Some(row);
+        }
+        // Per-token routes have no quota. When the model cannot be priced,
+        // show nothing rather than a misleading "Limits" placeholder.
+        if metered_source_key(self.provider.as_deref(), self.auth_method.as_deref()).is_some() {
             return Some(row);
         }
         // Local account snapshots cannot describe credentials on a remote host.
@@ -317,15 +323,16 @@ impl Panel {
                     .then_some(limit.usage_percent);
                 let label = percent
                     .map(|p| format!("{} {:.0}%", limit.name, p.clamp(0., 100.)))
-                    .unwrap_or_else(|| format!("{} —", limit.name));
+                    .unwrap_or_else(|| limit.name.clone());
                 let reset = limit
                     .reset_in
                     .as_deref()
                     .map(|reset| format!(" Resets in {reset}."))
                     .unwrap_or_default();
                 let detail = format!(
-                    "{}: {label} used.{reset}",
-                    account_method_label(self.provider.as_deref(), self.auth_method.as_deref())
+                    "{}: {label}{}.{reset}",
+                    account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
+                    if percent.is_some() { " used" } else { " usage not reported" },
                 );
                 row = row.child(meter(
                     format!("panel-limit-{index}"),
@@ -334,9 +341,6 @@ impl Panel {
                     detail,
                 ));
             }
-        } else {
-            row = row.child(meter("panel-limits-unavailable".into(), "Limits —".into(), None,
-                "Usage limits are unavailable for the current connection method. Open Accounts for details.".into()));
         }
         Some(row)
     }
@@ -503,8 +507,8 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("panel-limit-0").is_none());
-        // Unpriced API routes stay honest instead of claiming $0.
-        assert!(vcx.debug_bounds("panel-limits-unavailable").is_some());
+        // Unpriced API routes stay honest: no fake $0 and no "Limits" label.
+        assert!(vcx.debug_bounds("panel-limits-unavailable").is_none());
         assert!(vcx.debug_bounds("panel-api-cost").is_none());
         // Priced API routes show session spend instead of quota limits.
         workspace.update(vcx, |workspace, cx| {

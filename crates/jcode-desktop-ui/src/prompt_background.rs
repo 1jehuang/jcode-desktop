@@ -53,32 +53,7 @@ pub(crate) fn wrap(child: AnyElement, layout: TextLayout, color: Rgba) -> AnyEle
                 |_, _, _| (),
                 move |_, _, window, _| {
                     let lines = visual_lines(&layout, window.text_style().text_align);
-                    let vertices = contour(&lines);
-                    if vertices.len() < 3 {
-                        return;
-                    }
-                    let mut path = PathBuilder::fill();
-                    for i in 0..vertices.len() {
-                        let previous = vertices[(i + vertices.len() - 1) % vertices.len()];
-                        let vertex = vertices[i];
-                        let next = vertices[(i + 1) % vertices.len()];
-                        let radius = RADIUS
-                            .min(distance(previous, vertex) / 2.)
-                            .min(distance(vertex, next) / 2.);
-                        let enter = toward(vertex, previous, radius);
-                        let exit = toward(vertex, next, radius);
-                        if i == 0 {
-                            path.move_to(point(px(enter.0), px(enter.1)));
-                        } else {
-                            path.line_to(point(px(enter.0), px(enter.1)));
-                        }
-                        path.curve_to(
-                            point(px(exit.0), px(exit.1)),
-                            point(px(vertex.0), px(vertex.1)),
-                        );
-                    }
-                    path.close();
-                    if let Ok(path) = path.build() {
+                    if let Some(path) = rounded_union(&lines, RADIUS) {
                         window.paint_path(path, color);
                     }
                 },
@@ -88,6 +63,37 @@ pub(crate) fn wrap(child: AnyElement, layout: TextLayout, color: Rgba) -> AnyEle
         )
         .child(child)
         .into_any_element()
+}
+
+/// One rounded fill around vertically stacked, horizontally overlapping line
+/// rectangles, as used by prompt cards and the matching text selection.
+pub(crate) fn rounded_union(lines: &[Bounds<Pixels>], radius: f32) -> Option<gpui::Path<Pixels>> {
+    let vertices = contour(lines);
+    if vertices.len() < 3 {
+        return None;
+    }
+    let mut path = PathBuilder::fill();
+    for i in 0..vertices.len() {
+        let previous = vertices[(i + vertices.len() - 1) % vertices.len()];
+        let vertex = vertices[i];
+        let next = vertices[(i + 1) % vertices.len()];
+        let radius = radius
+            .min(distance(previous, vertex) / 2.)
+            .min(distance(vertex, next) / 2.);
+        let enter = toward(vertex, previous, radius);
+        let exit = toward(vertex, next, radius);
+        if i == 0 {
+            path.move_to(point(px(enter.0), px(enter.1)));
+        } else {
+            path.line_to(point(px(enter.0), px(enter.1)));
+        }
+        path.curve_to(
+            point(px(exit.0), px(exit.1)),
+            point(px(vertex.0), px(vertex.1)),
+        );
+    }
+    path.close();
+    path.build().ok()
 }
 
 fn visual_lines(layout: &TextLayout, align: TextAlign) -> Vec<Bounds<Pixels>> {

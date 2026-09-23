@@ -357,6 +357,9 @@ pub struct Panel {
     accepted_users: HashMap<usize, Instant>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
     arriving_tools: HashMap<String, Instant>,
+    /// Live tool timing: start instants while running, final durations after.
+    tool_started: HashMap<String, Instant>,
+    tool_durations: HashMap<String, Duration>,
     terminal: Option<Entity<TerminalPanel>>,
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
     unfinished_session_opener: Option<SessionOpener>,
@@ -915,6 +918,8 @@ impl Panel {
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
+            tool_started: HashMap::new(),
+            tool_durations: HashMap::new(),
             terminal: None,
             unfinished_work: None,
             unfinished_session_opener: None,
@@ -2934,6 +2939,7 @@ impl Panel {
                 self.flush_reasoning();
                 self.flush_streaming();
                 self.arriving_tools.insert(call_id.clone(), Instant::now());
+                self.tool_started.insert(call_id.clone(), Instant::now());
                 self.items.push(Item::Tool {
                     call_id: call_id.clone(),
                     name: name.clone(),
@@ -2965,6 +2971,9 @@ impl Panel {
                     *done = true;
                     *slot = error.clone();
                     *output_slot = output.clone();
+                    if let Some(started) = self.tool_started.remove(call_id) {
+                        self.tool_durations.insert(call_id.clone(), started.elapsed());
+                    }
                 } else {
                     self.arriving_tools.insert(call_id.clone(), Instant::now());
                     self.items.push(Item::Tool {
@@ -3459,6 +3468,39 @@ impl Panel {
         rows
     }
 
+    /// Compact elapsed time: ticking while a tool runs, final duration after.
+    fn render_tool_clock(
+        &self,
+        index: usize,
+        call_id: &str,
+        finished: bool,
+    ) -> Option<gpui::AnyElement> {
+        let clock = div()
+            .debug_selector(|| "tool-elapsed".into())
+            .flex_none()
+            .text_size(px(11.0))
+            .text_color(Theme::global().TEXT_FAINT);
+        if finished {
+            let duration = self.tool_durations.get(call_id)?;
+            // Instant tools need no badge.
+            (duration.as_millis() >= 1_000)
+                .then(|| clock.child(format_tool_elapsed(*duration)).into_any_element())
+        } else {
+            let started = *self.tool_started.get(call_id)?;
+            Some(
+                gpui::AnimationExt::with_animation(
+                    clock,
+                    ("tool-elapsed", index),
+                    gpui::Animation::new(Duration::from_secs(1))
+                        .repeat()
+                        .with_max_fps(2.0),
+                    move |clock, _| clock.child(format_tool_elapsed(started.elapsed())),
+                )
+                .into_any_element(),
+            )
+        }
+    }
+
     fn render_item(
         &self,
         index: usize,
@@ -3719,14 +3761,7 @@ impl Panel {
                                         )),
                                 )
                             })
-                            .when(!*done && error.is_none(), |el| {
-                                el.child(
-                                    div()
-                                        .flex_none()
-                                        .text_color(Theme::global().TEXT_FAINT)
-                                        .child("running"),
-                                )
-                            })
+                            .children(self.render_tool_clock(index, &call_id, *done || error.is_some()))
                             // The token pill is the sole expansion control,
                             // including while a tool is still running.
                             .when(has_detail, |el| {
@@ -5085,6 +5120,18 @@ fn model_logo_provider<'a>(model: &str, api_method: &'a str) -> &'a str {
 
 /// Label the account control with the current provider and credential method.
 /// Keep account setup discoverable before runtime identity arrives.
+/// "4s", "1m 12s", "1h 03m". Whole seconds keep the row width stable.
+fn format_tool_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+    }
+}
+
 fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> String {
     let provider = provider
         .map(str::trim)
@@ -6564,6 +6611,14 @@ mod tests {
             vcx.debug_bounds("transcript-row-0").is_none(),
             "offscreen rows must not be painted"
         );
+    }
+
+    #[test]
+    fn tool_elapsed_labels_are_compact() {
+        assert_eq!(format_tool_elapsed(Duration::from_millis(900)), "0s");
+        assert_eq!(format_tool_elapsed(Duration::from_secs(42)), "42s");
+        assert_eq!(format_tool_elapsed(Duration::from_secs(72)), "1m 12s");
+        assert_eq!(format_tool_elapsed(Duration::from_secs(3_780)), "1h 03m");
     }
 
     #[test]

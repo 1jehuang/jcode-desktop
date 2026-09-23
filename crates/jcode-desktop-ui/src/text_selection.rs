@@ -213,8 +213,10 @@ impl TextSelection {
         (!range.is_empty()).then(|| {
             (
                 range,
+                // The rounded card behind the text is painted by the leaf.
+                // Keep text legible on it with the prompt card's text color.
                 HighlightStyle {
-                    background_color: Some(to_hsla(Theme::global().ACCENT_DIM)),
+                    color: Some(to_hsla(Theme::global().TEXT_USER)),
                     ..Default::default()
                 },
             )
@@ -240,6 +242,16 @@ impl TextSelection {
 
     pub fn copy(&self, cx: &mut App) {
         if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// End a pointer gesture and, like a terminal, copy what it selected.
+    fn finish_and_copy(&mut self, cx: &mut App) {
+        self.finish();
+        if let Some(text) = self.selected_text() {
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            cx.write_to_primary(ClipboardItem::new_string(text.clone()));
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -556,6 +568,16 @@ pub(crate) fn selectable_with_prefix(
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
+                    if let Some(range) = model.read(cx).range_for(&key, text.len())
+                        && !range.is_empty()
+                    {
+                        let lines = selected_line_bounds(
+                            &layout,
+                            range.start + prefix_len..range.end + prefix_len,
+                            window.text_style().text_align,
+                        );
+                        paint_selection(&lines, window);
+                    }
                     model.update(cx, |selection, _| {
                         selection.register_geometry(
                             key.clone(),
@@ -593,7 +615,7 @@ pub(crate) fn selectable_with_prefix(
                             && model.read(cx).is_selecting(&key)
                         {
                             model.update(cx, |selection, cx| {
-                                selection.finish();
+                                selection.finish_and_copy(cx);
                                 cx.notify();
                             });
                         }
@@ -646,7 +668,7 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
                         if selection.drag_at(event.position) {
                             cx.notify();
                         }
-                        selection.finish();
+                        selection.finish_and_copy(cx);
                     });
                 }
             });
@@ -698,6 +720,83 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
     .absolute()
     .size_full()
     .into_any_element()
+}
+
+const SELECTION_PAD_X: f32 = 3.;
+const SELECTION_RADIUS: f32 = 6.;
+
+/// Visual line rectangles covering a display-index range of a shaped layout.
+fn selected_line_bounds(
+    layout: &TextLayout,
+    range: Range<usize>,
+    align: gpui::TextAlign,
+) -> Vec<Bounds<Pixels>> {
+    let bounds = layout.bounds();
+    let height = layout.line_height();
+    let mut result = Vec::new();
+    if height <= px(0.) {
+        return result;
+    }
+    let mut y = bounds.top();
+    let mut line_start = 0;
+    for line in layout.line_layouts().iter() {
+        let unwrapped = &line.unwrapped_layout;
+        let ends = line
+            .wrap_boundaries
+            .iter()
+            .map(|boundary| unwrapped.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index)
+            .chain([line.len()]);
+        let mut start = 0;
+        for end in ends {
+            let segment = line_start + start..line_start + end;
+            // A selected newline keeps a blank line visibly selected.
+            let includes_break = end == line.len() && range.end > segment.end;
+            let from = range.start.max(segment.start);
+            let to = range.end.min(segment.end);
+            if from < to || (includes_break && range.start <= segment.end) {
+                let line_width = unwrapped.x_for_index(end) - unwrapped.x_for_index(start);
+                let offset = match align {
+                    gpui::TextAlign::Left => px(0.),
+                    gpui::TextAlign::Center => (bounds.size.width - line_width) / 2.,
+                    gpui::TextAlign::Right => bounds.size.width - line_width,
+                };
+                let base = unwrapped.x_for_index(start);
+                let left = unwrapped.x_for_index(from.min(segment.end) - line_start) - base;
+                let mut right = unwrapped.x_for_index(to.max(from) - line_start) - base;
+                if includes_break {
+                    right = right.max(left + px(4.));
+                }
+                result.push(Bounds::new(
+                    gpui::point(bounds.left() + offset + left - px(SELECTION_PAD_X), y),
+                    gpui::size(right - left + px(2. * SELECTION_PAD_X), height),
+                ));
+            }
+            start = end;
+            y += height;
+        }
+        line_start += line.len() + 1;
+    }
+    result
+}
+
+/// Paint the selection as rounded cards in the prompt card style. Lines that
+/// share horizontal extent form one stepped shape, others get their own.
+fn paint_selection(lines: &[Bounds<Pixels>], window: &mut Window) {
+    let color = Theme::global().SELECTION;
+    let mut group_start = 0;
+    for i in 1..=lines.len() {
+        let split = i == lines.len()
+            || lines[i].right() <= lines[i - 1].left()
+            || lines[i].left() >= lines[i - 1].right();
+        if split {
+            if let Some(path) =
+                crate::prompt_background::rounded_union(&lines[group_start..i], SELECTION_RADIUS)
+            {
+                window.paint_path(path, color);
+            }
+            group_start = i;
+        }
+    }
 }
 
 fn edge_scroll_speed(pointer: Point<Pixels>, bounds: Bounds<Pixels>) -> f32 {
