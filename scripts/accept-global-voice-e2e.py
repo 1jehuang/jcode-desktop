@@ -257,7 +257,7 @@ def main():
         capture('closed')
         check('app still running', app.poll() is None)
 
-        # 6. Focused chat: the in-panel pill is the only indicator, no OS pill.
+        # 6. Focused chat: the in-panel pill is the only live indicator.
         ipc('[app_id="jcode-desktop"] focus') if any(n.get('app_id') == 'jcode-desktop' for n in walk(ipc('-t', 'get_tree'))) \
             else ipc('[app_id="e2e-foreign-app"] kill')
         wait(lambda: not foreign_focused(), 'jcode focused')
@@ -275,9 +275,11 @@ def main():
         key.stdin.write('release\n'); key.stdin.flush()
         wait(lambda: app_log().count('global voice: inserted') > done_before, 'focused transcript', timeout=40)
         check('focused hold still inserted a transcript', True)
-        check('no OS pill for the whole focused hold', os_pills() == pills_before)
+        # The final outcome (Jev's decision) is always shown globally, even when
+        # focused, so at most one OS pill appears and only after capture ended.
+        check('focused hold shows at most the final decision pill', os_pills() - pills_before <= 1)
         evidence['result'] = 'passed'
-        print('PASS: unfocused hold shows the OS pill, focused hold shows only the chat pill, both insert transcripts')
+        print('PASS: unfocused hold shows the OS pill, focused hold shows the chat pill while live, both insert transcripts')
     finally:
         (root / 'acceptance.json').write_text(json.dumps(evidence, indent=2, default=str) + '\n')
         if key and key.poll() is None:

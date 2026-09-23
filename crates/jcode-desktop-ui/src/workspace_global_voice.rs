@@ -45,10 +45,12 @@ pub(super) struct State {
     window_active: bool,
 }
 
-/// The OS-level pill is only for when the chat itself is not in front of you.
-/// A focused window already shows the in-panel pill, so never duplicate it.
-fn os_pill_wanted(window_active: bool, has_status: bool) -> bool {
-    has_status && !window_active
+/// The OS-level pill mirrors live capture only when the chat is not in front
+/// of you, since a focused window already shows the in-panel pill. Jev's
+/// final decision is always shown globally: a global hold's user is often
+/// looking elsewhere, and focus alone does not prove they saw the panel.
+fn os_pill_wanted(window_active: bool, has_status: bool, decided: bool) -> bool {
+    has_status && (!window_active || decided)
 }
 
 /// Whether a host global-shortcut press should use the dictation-only global
@@ -374,7 +376,7 @@ impl Workspace {
         // Prove a visible indicator exists before opening the microphone.
         // Focused: the chat's in-panel pill. Unfocused: a non-focusing OS pill.
         // Unsupported compositors must not record invisibly.
-        if os_pill_wanted(self.global_voice.window_active, true)
+        if os_pill_wanted(self.global_voice.window_active, true, false)
             && !self.show_global_voice_overlay(
                 Snapshot {
                     title: "Connecting…".into(),
@@ -444,10 +446,15 @@ impl Workspace {
             }
         }
         let Some(snapshot) = snapshot else { return };
-        if !os_pill_wanted(self.global_voice.window_active, true) {
+        let decided = snapshot.decided;
+        if !os_pill_wanted(self.global_voice.window_active, true, decided) {
             // Focus moved to this window mid-hold: the in-panel pill takes over.
             self.global_voice.hide_overlay(cx);
             return;
+        }
+        if decided && self.global_voice.overlay.is_none() {
+            // Route only, never transcript content.
+            eprintln!("global voice: showing decision: {}", snapshot.title);
         }
         let shown = match self.global_voice.overlay {
             Some(handle) => handle
@@ -456,7 +463,10 @@ impl Workspace {
             // Focus left mid-hold: mirror the in-panel pill at the OS level.
             None => self.show_global_voice_overlay(snapshot, cx),
         };
-        if !shown {
+        if !shown && decided {
+            // Nothing is recording. Keep the in-panel decision intact.
+            self.global_voice.hide_overlay(cx);
+        } else if !shown {
             // Never keep recording without a visible indicator.
             panel.update(cx, |panel, cx| {
                 panel.cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
@@ -487,17 +497,36 @@ mod pill_tests {
     #[test]
     fn host_shortcut_only_takes_global_path_while_unfocused_with_a_pill() {
         assert!(host_press_uses_global_owner(false, true));
-        assert!(!host_press_uses_global_owner(true, true), "focused keeps its native hold");
-        assert!(!host_press_uses_global_owner(false, false), "never record invisibly");
+        assert!(
+            !host_press_uses_global_owner(true, true),
+            "focused keeps its native hold"
+        );
+        assert!(
+            !host_press_uses_global_owner(false, false),
+            "never record invisibly"
+        );
         assert!(!host_press_uses_global_owner(true, false));
     }
 
     #[test]
-    fn os_pill_only_mirrors_the_chat_pill_while_unfocused() {
-        assert!(os_pill_wanted(false, true));
-        assert!(!os_pill_wanted(true, true), "focused chat already shows its own pill");
-        assert!(!os_pill_wanted(false, false));
-        assert!(!os_pill_wanted(true, false));
+    fn os_pill_mirrors_live_capture_only_while_unfocused() {
+        assert!(os_pill_wanted(false, true, false));
+        assert!(
+            !os_pill_wanted(true, true, false),
+            "focused chat already shows its own live pill"
+        );
+        assert!(!os_pill_wanted(false, false, false));
+        assert!(!os_pill_wanted(true, false, false));
+    }
+
+    #[test]
+    fn jev_decision_is_always_shown_globally() {
+        assert!(os_pill_wanted(false, true, true));
+        assert!(
+            os_pill_wanted(true, true, true),
+            "a focused window still shows Jev's decision in the OS pill"
+        );
+        assert!(!os_pill_wanted(true, false, true));
     }
 }
 
@@ -514,7 +543,8 @@ mod host_action_tests {
             workspace.push_test_panel("second", cx);
             // Preview panels never open a microphone.
             for slot in &mut workspace.slots {
-                slot.panel = cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
+                slot.panel =
+                    cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
             }
             workspace
         })
@@ -528,30 +558,44 @@ mod host_action_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, vcx) = workspace_with_two_chats(cx);
-        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-            workspace.set_active(1, cx);
-            workspace.focus_active(window, cx);
-        }));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_active(1, cx);
+                workspace.focus_active(window, cx);
+            })
+        });
         vcx.deactivate_window();
         vcx.update(|window, cx| {
             assert!(!window.is_window_active());
             assert!(!overlay::available(cx));
-            let press = cx.build_action("workspace::BeginGlobalVoiceHold", None).unwrap();
+            let press = cx
+                .build_action("workspace::BeginGlobalVoiceHold", None)
+                .unwrap();
             window.focus_next(cx);
             assert!(window.is_action_available(press.as_ref(), cx));
             window.dispatch_action(press, cx);
         });
         vcx.run_until_parked();
         vcx.update(|window, cx| {
-            assert!(!window.is_window_active(), "host press must not activate the window");
+            assert!(
+                !window.is_window_active(),
+                "host press must not activate the window"
+            );
             workspace.read_with(cx, |workspace, cx| {
                 assert!(!workspace.global_voice.held);
                 assert!(workspace.global_voice.owner.is_none());
                 assert!(workspace.global_voice.overlay.is_none(), "no OS pill");
                 assert_eq!(workspace.active, 1, "press must not move the active chat");
-                assert!(workspace.slots.iter().all(|slot| !slot.panel.read(cx).voice_active()));
+                assert!(
+                    workspace
+                        .slots
+                        .iter()
+                        .all(|slot| !slot.panel.read(cx).voice_active())
+                );
             });
-            let release = cx.build_action("workspace::EndGlobalVoiceHold", None).unwrap();
+            let release = cx
+                .build_action("workspace::EndGlobalVoiceHold", None)
+                .unwrap();
             assert!(window.is_action_available(release.as_ref(), cx));
             window.dispatch_action(release, cx);
         });
@@ -568,7 +612,9 @@ mod host_action_tests {
         vcx.run_until_parked();
         vcx.update(|window, cx| {
             assert!(window.is_window_active());
-            let press = cx.build_action("workspace::BeginGlobalVoiceHold", None).unwrap();
+            let press = cx
+                .build_action("workspace::BeginGlobalVoiceHold", None)
+                .unwrap();
             window.focus_next(cx);
             window.dispatch_action(press, cx);
         });
