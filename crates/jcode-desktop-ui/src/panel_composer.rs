@@ -1,66 +1,85 @@
-//! Composer chrome: folder tabs attached to the top edge of the prompt input.
+//! Composer chrome: a plain location line and compact pills above the input.
 //!
-//! The model tab (pretty name plus reasoning effort) and the credential method
-//! tab sit on the left, the voice tab on the right. Tabs share the input's
-//! background and border, and overlap its top border by one pixel so each tab
-//! reads as part of the input rather than a floating chip.
+//! The location line (repo or directory) sits flush left as plain text. Below
+//! it, the model pill (pretty name, then reasoning effort) and the credential
+//! method pill sit on the left, and the round voice button sits on the right.
+//! Pills are detached from the input and shaped like the transcript's user
+//! prompt cards, so nothing reads as a folder tab.
 use super::*;
 
-/// Tab height, excluding the one pixel that overlaps the input border.
-pub(super) const TAB_HEIGHT: f32 = 24.;
+/// Pill height.
+pub(super) const TAB_HEIGHT: f32 = 22.;
+/// Gap between the pill row and the input.
+const PILL_GAP: f32 = 4.;
 
 impl Panel {
-    /// Prompt input with its attached folder tabs. Every composer location
-    /// (fresh session, startup layout, docked) uses this so the tabs never
+    /// Prompt input with its location line and pills. Every composer location
+    /// (fresh session, startup layout, docked) uses this so the pills never
     /// drift apart from the input they label.
     pub(super) fn render_composer(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let _ = window;
         let theme = Theme::global();
-        let focused = self.input.read(cx).focus_handle.is_focused(window);
-        let border = if focused {
-            theme.PANEL_BORDER_FOCUS
-        } else {
-            theme.INPUT_BORDER
-        };
         let account_label =
             account_method_label(self.provider.as_deref(), self.auth_method.as_deref());
-        let model_label = model_tab_label(self.model.as_deref(), self.reasoning_effort.as_deref());
-        let tabs = div()
+        let model_label = pretty_model_label(self.model.as_deref());
+        let effort = self
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty() && self.model.is_some())
+            .map(str::to_string);
+        let location = self
+            .working_dir
+            .as_deref()
+            .filter(|dir| !dir.is_empty())
+            .map(location_label);
+        let pills = div()
             .debug_selector(|| "composer-tabs".into())
             .w_full()
             .min_w_0()
             .flex()
-            .items_end()
+            .items_center()
             .gap_1()
-            .px_2()
-            // Overlap the input's top border so tab fills erase it below each tab.
-            .mb(px(-1.))
+            .px_1()
+            .mb(px(PILL_GAP))
             .child(
                 div()
                     .debug_selector(|| "panel-identity".into())
                     .flex_1()
                     .min_w_0()
                     .flex()
-                    .items_end()
+                    .items_center()
                     .gap_1()
                     .overflow_hidden()
                     .child(
-                        composer_tab("panel-model", border)
+                        composer_pill("panel-model")
                             .flex_shrink_1()
                             .min_w(px(56.))
-                            .child(model_icon())
-                            .child(div().min_w_0().truncate().child(model_label))
-                            .child(div().flex_none().text_color(theme.TEXT_FAINT).child("⌄"))
+                            .child(
+                                div()
+                                    .debug_selector(|| "panel-model-name".into())
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(model_label),
+                            )
+                            .children(effort.map(|effort| {
+                                div()
+                                    .debug_selector(|| "panel-model-effort".into())
+                                    .flex_none()
+                                    .text_color(theme.TEXT_FAINT)
+                                    .child(effort)
+                            }))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_model_picker(window, cx);
                                 cx.stop_propagation();
                             })),
                     )
                     .child(
-                        composer_tab("panel-login", border)
+                        composer_pill("panel-login")
                             .flex_shrink(2.)
                             .min_w(px(48.))
                             .text_color(theme.TEXT_FAINT)
@@ -77,71 +96,119 @@ impl Panel {
                             })),
                     ),
             )
-            .child(self.render_voice_tab(border, cx));
+            .child(self.render_voice_tab(cx));
         div()
             .debug_selector(|| "composer".into())
             .w_full()
             .min_w_0()
             .flex()
-            // Reverse order paints the tabs after the input, so their fills
-            // cover the input border where they join it.
-            .flex_col_reverse()
+            .flex_col()
+            .children(location.map(|(name, detail)| {
+                div()
+                    .debug_selector(|| "composer-location".into())
+                    .w_full()
+                    .min_w_0()
+                    .px_2()
+                    .pb_1()
+                    .flex()
+                    .items_baseline()
+                    .gap_1p5()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(11.5))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.TEXT_DIM)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(name),
+                    )
+                    .children(detail.map(|detail| {
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(10.5))
+                            .font_family(theme.FONT_MONO)
+                            .text_color(theme.TEXT_FAINT)
+                            .child(detail)
+                    }))
+            }))
+            .child(pills)
             .child(self.render_voice_input_slot(cx))
-            .child(tabs)
             .into_any_element()
     }
 }
 
-/// A folder tab: rounded top corners, open bottom, input-colored fill.
-pub(super) fn composer_tab(id: &'static str, border: gpui::Rgba) -> gpui::Stateful<gpui::Div> {
+/// A compact rounded pill, filled like the transcript's user prompt cards.
+pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     div()
         .id(id)
         .debug_selector(move || id.into())
-        .h(px(TAB_HEIGHT + 1.))
-        .pb(px(1.))
+        .h(px(TAB_HEIGHT))
         .px_2p5()
         .flex()
         .items_center()
         .gap_1p5()
-        .rounded_t_md()
-        .border_t_1()
-        .border_l_1()
-        .border_r_1()
-        .border_color(border)
-        .bg(theme.INPUT_BG)
+        .rounded_full()
+        .bg(theme.prompt_background(usize::MAX))
         .text_size(px(10.5))
         .font_family(theme.FONT_MONO)
         .text_color(theme.TEXT_DIM)
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(|el| el.text_color(theme.TEXT))
+        .hover(|el| el.text_color(theme.TEXT).bg(theme.USER_BG))
 }
 
-fn model_icon() -> impl IntoElement {
-    div()
-        .flex_none()
-        .size(px(6.))
-        .rounded_full()
-        .bg(Theme::global().ACCENT)
-}
-
-/// `claude-opus-4-8` + `high` reads `Opus 4.8 · high`. The provider already
-/// appears in the method tab, so the redundant `Claude` family prefix is
-/// dropped, matching the TUI's compact model label.
-pub(super) fn model_tab_label(model: Option<&str>, effort: Option<&str>) -> String {
+/// `claude-opus-4-8` reads `Opus 4.8`. The provider already appears in the
+/// method pill, so the redundant `Claude` family prefix is dropped, matching
+/// the TUI's compact model label.
+pub(super) fn pretty_model_label(model: Option<&str>) -> String {
     let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
         return "Choose model".into();
     };
     let pretty = jcode_provider_core::model_names::pretty_model_display_name(model);
-    let pretty = match pretty.strip_prefix("Claude ") {
+    match pretty.strip_prefix("Claude ") {
         Some(rest) if !rest.trim().is_empty() => rest.to_string(),
         _ => pretty,
-    };
-    match effort.map(str::trim).filter(|effort| !effort.is_empty()) {
-        Some(effort) => format!("{pretty} · {effort}"),
-        None => pretty,
     }
+}
+
+/// Model label plus effort, used where a single string is needed.
+#[cfg(test)]
+pub(super) fn model_tab_label(model: Option<&str>, effort: Option<&str>) -> String {
+    let pretty = pretty_model_label(model);
+    match effort.map(str::trim).filter(|effort| !effort.is_empty()) {
+        Some(effort) if model.is_some_and(|m| !m.trim().is_empty()) => format!("{pretty} {effort}"),
+        _ => pretty,
+    }
+}
+
+/// Repo name (the last path component) plus its home-relative parent path.
+/// `/home/me/src/jcode` reads `jcode` then `~/src`.
+pub(super) fn location_label(path: &str) -> (String, Option<String>) {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return ("/".into(), None);
+    }
+    let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
+    if home.as_deref() == Some(trimmed) {
+        return ("~".into(), None);
+    }
+    let (parent, name) = match trimmed.rsplit_once('/') {
+        Some((parent, name)) => (parent, name),
+        None => return (trimmed.into(), None),
+    };
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let parent = match home.as_deref() {
+        Some(home) if parent == home => "~".to_string(),
+        Some(home) => match parent.strip_prefix(&format!("{home}/")) {
+            Some(rest) => format!("~/{rest}"),
+            None => parent.to_string(),
+        },
+        None => parent.to_string(),
+    };
+    (name.to_string(), Some(parent))
 }
 
 #[cfg(test)]
@@ -153,44 +220,65 @@ mod tests {
         assert_eq!(model_tab_label(None, Some("high")), "Choose model");
         assert_eq!(model_tab_label(Some(" "), None), "Choose model");
         assert_eq!(model_tab_label(Some("claude-opus-4-8"), None), "Opus 4.8");
-        assert_eq!(model_tab_label(Some("gpt-5.5"), Some("high")), "GPT-5.5 · high");
+        assert_eq!(model_tab_label(Some("gpt-5.5"), Some("high")), "GPT-5.5 high");
+        assert_eq!(model_tab_label(None, Some("high")), "Choose model");
         assert_eq!(
             model_tab_label(Some("gpt-5.1-codex-max"), Some("")),
             "GPT-5.1 Codex Max"
         );
     }
 
+    #[test]
+    fn location_label_splits_repo_name_from_parent() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            location_label(&format!("{home}/jcode")),
+            ("jcode".into(), Some("~".into()))
+        );
+        assert_eq!(
+            location_label(&format!("{home}/src/jcode/")),
+            ("jcode".into(), Some("~/src".into()))
+        );
+        assert_eq!(location_label(&home), ("~".into(), None));
+        assert_eq!(location_label("/srv/app"), ("app".into(), Some("/srv".into())));
+        assert_eq!(location_label("/"), ("/".into(), None));
+    }
+
     #[gpui::test]
-    fn tabs_attach_to_the_input_top_edge(cx: &mut gpui::TestAppContext) {
+    fn pills_sit_above_the_input_with_location_and_effort(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [240., 480., 1440.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
             panel.update(vcx, |panel, cx| {
                 panel.model = Some("claude-opus-4-8".into());
+                panel.reasoning_effort = Some("high".into());
                 panel.provider = Some("anthropic".into());
                 panel.auth_method = Some("oauth".into());
+                panel.working_dir = Some("/srv/projects/jcode".into());
                 panel.items = vec![Item::User("Hello".into())];
                 cx.notify();
             });
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
+            let location = vcx.debug_bounds("composer-location").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
+            let name = vcx.debug_bounds("panel-model-name").unwrap();
+            let effort = vcx.debug_bounds("panel-model-effort").unwrap();
             let login = vcx.debug_bounds("panel-login").unwrap();
             let voice = vcx.debug_bounds("voice-toggle").unwrap();
-            for (name, tab) in [("model", model), ("login", login), ("voice", voice)] {
+            assert!(location.bottom() <= model.top(), "location sits above the pills");
+            for (tab_name, tab) in [("model", model), ("login", login), ("voice", voice)] {
                 assert!(
-                    (f32::from(tab.bottom() - input.top()) - 1.).abs() < 0.5,
-                    "{name} tab overlaps the input border at {width}: {tab:?} {input:?}"
+                    tab.bottom() < input.top(),
+                    "{tab_name} pill is detached from the input at {width}: {tab:?} {input:?}"
                 );
                 assert!(tab.left() >= input.left() && tab.right() <= input.right());
             }
+            assert!(name.right() <= effort.left(), "effort follows the model name");
             assert!(model.right() <= login.left(), "method follows model");
             assert!(login.right() <= voice.left(), "voice sits on the right");
-            assert!(
-                (f32::from(input.right() - voice.right()) - 8.).abs() < 1.,
-                "voice tab hugs the right edge"
-            );
+            assert_eq!(voice.size.width, voice.size.height, "voice is a circle");
         }
     }
 }

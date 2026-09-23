@@ -666,14 +666,13 @@ impl Panel {
         )
     }
 
-    /// Voice folder tab on the right of the composer's top edge.
-    pub(super) fn render_voice_tab(
-        &self,
-        border: gpui::Rgba,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    /// Round voice button on the right of the composer's pill row. While
+    /// voice is active it fills with the accent, a soft ring breathes around
+    /// it, and the ring swells with the live microphone level.
+    pub(super) fn render_voice_tab(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
+        let active = phase != Phase::Idle;
         let label = match phase {
             Phase::Idle => "Start voice",
             Phase::Checking => "Cancel microphone connection",
@@ -681,19 +680,34 @@ impl Panel {
             Phase::Transcribing | Phase::Routing => "Cancel voice request",
         };
         let tooltip_status = voice_tooltip(label, &self.status_line());
-        let color = if phase != Phase::Idle {
-            theme.ACCENT
+        let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
+        let reduce_motion = cx.reduce_motion() || crate::config::get().appearance.reduce_motion;
+        // Recent average level, so the ring follows speech without jitter.
+        let level = if phase == Phase::Recording {
+            let recent = &self.voice.levels[18..];
+            (recent.iter().sum::<f32>() / recent.len() as f32).clamp(0., 1.)
         } else {
-            theme.TEXT_DIM
+            0.
         };
-        super::composer::composer_tab("voice-toggle", border)
-            .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
+        let size = super::composer::TAB_HEIGHT;
+        let button = div()
+            .id("voice-toggle")
+            .debug_selector(|| "voice-toggle".into())
+            .relative()
             .flex_none()
-            .w(px(36.))
-            .px_0()
+            .size(px(size))
+            .rounded_full()
+            .flex()
+            .items_center()
             .justify_center()
-            .text_color(color)
-            .when(phase != Phase::Idle, |el| el.bg(theme.ACCENT_DIM))
+            .cursor_pointer()
+            .bg(if active {
+                theme.ACCENT
+            } else {
+                theme.prompt_background(usize::MAX)
+            })
+            .when(!active, |el| el.hover(|el| el.bg(theme.USER_BG)))
+            .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip_status.clone())).into())
             .on_click(cx.listener(|panel, _, window, cx| {
                 // All controls use the same action path. Workspace captures
                 // this before the panel fallback to stop the existing owner,
@@ -705,15 +719,57 @@ impl Panel {
             .child(
                 div()
                     .debug_selector(|| "voice-microphone-icon".into())
-                    .size(px(14.))
+                    .size(px(12.))
                     .child(
                         gpui::svg()
                             .data(include_bytes!("../../../assets/icons/microphone.svg")
                                 as &'static [u8])
-                            .text_color(color)
-                            .size(px(14.)),
+                            .text_color(icon_color)
+                            .size(px(12.)),
                     ),
-            )
+            );
+        // The ring is a sibling behind the button so it never changes layout.
+        let ring = |spread: f32, alpha: f32| {
+            div()
+                .absolute()
+                .top(px(-spread))
+                .left(px(-spread))
+                .size(px(size + spread * 2.))
+                .rounded_full()
+                .bg(theme.ACCENT.opacity(alpha))
+        };
+        let halo = active.then(|| {
+            let base = 2. + level * 5.;
+            if reduce_motion {
+                ring(base, 0.22).into_any_element()
+            } else {
+                use gpui::AnimationExt as _;
+                ring(base, 0.22)
+                    .debug_selector(|| "voice-pulse".into())
+                    .with_animation(
+                        ("voice-pulse", phase as usize),
+                        gpui::Animation::new(Duration::from_millis(1600))
+                            .repeat()
+                            .with_max_fps(30.),
+                        move |ring, t| {
+                            // Breathe outward and fade, like a ripple.
+                            let eased = 1. - (1. - t).powi(2);
+                            let spread = base + eased * 5.;
+                            ring.top(px(-spread))
+                                .left(px(-spread))
+                                .size(px(size + spread * 2.))
+                                .opacity(0.9 * (1. - t))
+                        },
+                    )
+                    .into_any_element()
+            }
+        });
+        div()
+            .flex_none()
+            .relative()
+            .size(px(size))
+            .children(halo)
+            .child(button)
             .into_any_element()
     }
 }
@@ -1203,16 +1259,16 @@ mod tests {
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
                 assert!(vcx.debug_bounds("voice-shortcut").is_none());
-                // The microphone is a folder tab on the input's top-right edge.
+                // The microphone is a round button detached above the input.
                 assert!(
                     button.left() >= input.left() && button.right() <= input.right(),
                     "voice at {width}: {button:?} outside {input:?}"
                 );
-                assert!((f32::from(button.bottom() - input.top()) - 1.).abs() < 0.5);
+                assert!(button.bottom() < input.top(), "voice is detached from the input");
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert_eq!(icon.size.width, px(14.));
-                assert_eq!(button.size.width, px(36.));
-                assert_eq!(button.size.height, px(25.));
+                assert_eq!(icon.size.width, px(12.));
+                assert_eq!(button.size.width, px(crate::panel::composer::TAB_HEIGHT));
+                assert_eq!(button.size.width, button.size.height);
                 if phase == Phase::Idle {
                     let status = vcx.debug_bounds("voice-ready-status").unwrap();
                     assert!(status.top() >= input.bottom(), "status sits in the bottom bar");

@@ -756,6 +756,7 @@ impl Panel {
                     });
                 },
             )
+            .with_example_prompts()
         });
         // Local echo is appended by the workspace when submit fires; simplest
         // is to observe our own input entity... but the closure above has no
@@ -804,7 +805,7 @@ impl Panel {
             model: usage_fixture.then(|| "gpt-5.6-sol".into()),
             provider: usage_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
-            reasoning_effort: None,
+            reasoning_effort: usage_fixture.then(|| "high".into()),
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
             items: demo_items(),
@@ -2271,6 +2272,7 @@ impl Panel {
                         }
                     },
                 )
+                .with_example_prompts()
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
@@ -2973,11 +2975,17 @@ impl Panel {
                 self.connection_phase = phase.clone();
             }
             ApiEvent::ModelInfo {
-                provider, model, ..
+                provider,
+                model,
+                reasoning_effort,
+                ..
             } => {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
+                // Identity events always carry the current effort, and `None`
+                // means the provider has none, so a stale label never lingers.
+                self.reasoning_effort = reasoning_effort.clone();
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
                 // current model and must not wipe a still-correct label.
@@ -2992,12 +3000,14 @@ impl Panel {
             ApiEvent::RuntimeInfo {
                 provider,
                 model,
+                reasoning_effort,
                 routes,
                 ..
             } => {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
+                self.reasoning_effort = reasoning_effort.clone();
                 if model.is_some() {
                     self.model = model.clone();
                 }
@@ -4593,8 +4603,8 @@ impl Render for Panel {
                     ),
                 )
             })
-            // Slim bottom bar under the composer. Model, credential method,
-            // and voice live in folder tabs on the input itself.
+            // Slim bottom bar under the composer. Location, model,
+            // credential method, and voice live above the input.
             .children((!self.transcript_only).then(|| {
                 div()
                     .debug_selector(|| "panel-meta".into())
@@ -4622,18 +4632,6 @@ impl Render for Panel {
                             .gap_2()
                             .flex_nowrap()
                             .overflow_hidden()
-                            .children(
-                                self.working_dir
-                                    .as_deref()
-                                    .filter(|dir| !dir.is_empty())
-                                    .map(|dir| {
-                                        div()
-                                            .min_w_0()
-                                            .max_w(px(240.))
-                                            .truncate()
-                                            .child(compact_dir(dir))
-                                    }),
-                            )
                             .when(self.show_build_footer, |el| {
                                 el.child(
                                     div()
@@ -4905,15 +4903,61 @@ fn model_logo_provider<'a>(model: &str, api_method: &'a str) -> &'a str {
 /// Label the account control with the current provider and credential method.
 /// Keep account setup discoverable before runtime identity arrives.
 fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> String {
-    let parts: Vec<_> = [provider, auth_method]
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.is_empty())
-        .collect();
-    if parts.is_empty() {
-        "Accounts".into()
-    } else {
-        parts.join(" · ")
+    let provider = provider
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(pretty_provider_name);
+    let method = auth_method
+        .map(str::trim)
+        .filter(|method| !method.is_empty())
+        .map(pretty_auth_method);
+    match (provider, method) {
+        (Some(provider), Some(method)) => format!("{provider} · {method}"),
+        (Some(provider), None) => provider,
+        (None, Some(method)) => method,
+        (None, None) => "Accounts".into(),
+    }
+}
+
+/// Provider display name without redundant credential words. The runtime may
+/// report a canonical id (`anthropic`, `claude-api`) or a display name that
+/// already names the method (`Anthropic API`). The method pill says how you
+/// are signed in, so the provider half stays a plain brand name.
+fn pretty_provider_name(provider: &str) -> String {
+    let lower = provider.to_ascii_lowercase();
+    let base = lower
+        .trim_end_matches(" api key")
+        .trim_end_matches(" api")
+        .trim_end_matches(" oauth")
+        .trim_end_matches("-api-key")
+        .trim_end_matches("-api")
+        .trim_end_matches("-oauth")
+        .trim_end_matches("-key");
+    match base {
+        "anthropic" | "claude" => "Anthropic".into(),
+        "openai" | "chatgpt" => "OpenAI".into(),
+        "openrouter" => "OpenRouter".into(),
+        "copilot" | "github copilot" | "github-copilot" => "Copilot".into(),
+        "gemini" | "google" | "code-assist" => "Gemini".into(),
+        "antigravity" => "Antigravity".into(),
+        "cursor" => "Cursor".into(),
+        "bedrock" | "aws bedrock" | "aws-bedrock" => "Bedrock".into(),
+        "xai" | "grok" => "xAI".into(),
+        "jcode" => "Jcode".into(),
+        _ => {
+            // Keep unknown names readable, but drop the credential suffix.
+            let len = base.len().min(provider.len());
+            let kept = provider[..len].trim();
+            if kept.is_empty() { provider.to_string() } else { kept.to_string() }
+        }
+    }
+}
+
+fn pretty_auth_method(method: &str) -> String {
+    match method.to_ascii_lowercase().as_str() {
+        "oauth" => "OAuth".into(),
+        "api key" | "api-key" | "api_key" => "API key".into(),
+        other => other.to_string(),
     }
 }
 
@@ -6764,14 +6808,30 @@ mod tests {
     fn footer_labels_keep_model_account_and_context_separate() {
         assert_eq!(
             account_method_label(Some("openai"), Some("oauth")),
-            "openai · oauth"
+            "OpenAI · OAuth"
         );
         assert_eq!(
             account_method_label(Some("anthropic"), Some("api key")),
-            "anthropic · api key"
+            "Anthropic · API key"
         );
-        assert_eq!(account_method_label(None, Some("oauth")), "oauth");
-        assert_eq!(account_method_label(Some("openai"), None), "openai");
+        assert_eq!(
+            account_method_label(Some("Anthropic API"), Some("api key")),
+            "Anthropic · API key"
+        );
+        assert_eq!(
+            account_method_label(Some("claude-api"), Some("api key")),
+            "Anthropic · API key"
+        );
+        assert_eq!(
+            account_method_label(Some("OpenAI API"), None),
+            "OpenAI"
+        );
+        assert_eq!(
+            account_method_label(Some("My Local Router"), Some("custom-acp")),
+            "My Local Router · custom-acp"
+        );
+        assert_eq!(account_method_label(None, Some("oauth")), "OAuth");
+        assert_eq!(account_method_label(Some("openai"), None), "OpenAI");
         assert_eq!(account_method_label(None, None), "Accounts");
         assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
         assert_eq!(context_usage_label(None, None), None);

@@ -21,6 +21,9 @@ use unicode_segmentation::UnicodeSegmentation;
 #[path = "input_popup.rs"]
 mod popup;
 
+#[path = "input_motion.rs"]
+mod motion;
+
 #[path = "input_model_menu.rs"]
 mod model_menu;
 #[path = "input_model_picker.rs"]
@@ -179,6 +182,42 @@ pub struct PromptInput {
     submission_enabled: bool,
     pending_session: bool,
     spacious: bool,
+    /// Cycle example prompts behind an empty chat composer.
+    example_prompts: bool,
+    motion: MotionState,
+}
+
+/// Placeholder typewriter and caret motion. Never snapshotted.
+struct MotionState {
+    /// Last content or caret change. Motion settles relative to this.
+    epoch: Instant,
+    key: Option<(SharedString, usize)>,
+    seed: usize,
+    glide: Option<motion::Glide>,
+    live: bool,
+    ticker: Option<gpui::Task<()>>,
+}
+
+impl Default for MotionState {
+    fn default() -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.subsec_nanos() as usize);
+        Self {
+            epoch: Instant::now(),
+            key: None,
+            seed,
+            glide: None,
+            live: false,
+            ticker: None,
+        }
+    }
+}
+
+fn motion_reduced(cx: &App) -> bool {
+    cx.reduce_motion()
+        || crate::config::get().appearance.reduce_motion
+        || crate::harness::screenshot_mode()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -448,7 +487,31 @@ impl PromptInput {
             submission_enabled: true,
             pending_session: false,
             spacious: false,
+            example_prompts: false,
+            motion: MotionState::default(),
         }
+    }
+
+    /// Chat composers show animated example prompts while empty.
+    pub(crate) fn with_example_prompts(mut self) -> Self {
+        self.example_prompts = true;
+        self
+    }
+
+    /// Placeholder shown at `now`, and whether it is still animating.
+    fn placeholder_text(&self, now: Instant, cx: &App) -> (SharedString, Option<&'static str>, bool) {
+        if !self.example_prompts {
+            return (self.placeholder.clone(), None, false);
+        }
+        let reduced = motion_reduced(cx);
+        let elapsed = now.saturating_duration_since(self.motion.epoch);
+        let (shown, live) = motion::placeholder_at(elapsed, self.motion.seed, reduced);
+        let full = motion::EXAMPLE_PROMPTS
+            .iter()
+            .copied()
+            .find(|prompt| prompt.starts_with(shown) && !shown.is_empty())
+            .unwrap_or(shown);
+        (SharedString::new_static(shown), Some(full), live)
     }
 
     pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
@@ -1467,14 +1530,27 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let now = Instant::now();
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
         let style = window.text_style();
 
+        let mut placeholder_full = None;
+        let mut placeholder_live = false;
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), to_hsla(Theme::global().TEXT_DIM))
+            let (mut text, full, live) = input.placeholder_text(now, cx);
+            placeholder_full = full;
+            // Only an active window animates. Background windows show the
+            // whole example rather than freezing mid-word.
+            placeholder_live = live && window.is_window_active();
+            if live && !placeholder_live {
+                if let Some(full) = full {
+                    text = SharedString::new_static(full);
+                }
+            }
+            (text, to_hsla(Theme::global().TEXT_DIM))
         } else {
             (content, style.color)
         };
@@ -1529,20 +1605,75 @@ impl Element for TextElement {
             .next()
             .expect("shape_text always returns a line");
         let line_height = window.line_height();
-        let cursor_pos = line
+        let target = line
             .position_for_index(cursor, line_height)
             .unwrap_or_default();
-        let visual_line_count = line.wrap_boundaries().len() + 1;
+        let mut visual_line_count = line.visual_line_count();
+        if let Some(full) = placeholder_full.filter(|full| !full.is_empty()) {
+            // Reserve the fully typed prompt's height so typing never resizes
+            // the composer mid-word at narrow widths.
+            let full_lines = window
+                .text_system()
+                .shape_text(
+                    SharedString::new_static(full),
+                    font_size,
+                    &[TextRun {
+                        len: full.len(),
+                        font: style.font(),
+                        color: text_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    Some(bounds.size.width),
+                    None,
+                )
+                .map(|lines| PromptLayout::new(lines).visual_line_count())
+                .unwrap_or(1);
+            visual_line_count = visual_line_count.max(full_lines);
+        }
         let text_bounds = Bounds::new(
             bounds.origin,
             size(bounds.size.width, line_height * visual_line_count),
         );
+        let focused = self.input.read(cx).focus_handle.is_focused(window);
+        let reduced = motion_reduced(cx);
+        let (cursor_pos, caret_alpha, caret_live) = self.input.update(cx, |input, _| {
+            let key = (input.content.clone(), cursor);
+            if input.motion.key.as_ref() != Some(&key) {
+                if key.0.is_empty()
+                    && input.motion.key.as_ref().is_some_and(|(old, _)| !old.is_empty())
+                {
+                    // Emptying the composer starts a fresh example.
+                    input.motion.seed = input.motion.seed.wrapping_add(1);
+                }
+                input.motion.key = Some(key);
+                input.motion.epoch = now;
+            }
+            let glide = input
+                .motion
+                .glide
+                .get_or_insert_with(|| motion::Glide::new(target, now));
+            glide.retarget(target, line_height, now, reduced);
+            let (position, gliding) = glide.position(now);
+            let (alpha, breathing) =
+                motion::caret_alpha(now.saturating_duration_since(input.motion.epoch), reduced);
+            (position, alpha, focused && (gliding || breathing))
+        });
+        let motion_live = caret_live || placeholder_live;
+        self.input.update(cx, |input, _| input.motion.live = motion_live);
         let (selection, cursor) = if selected_range.is_empty() {
+            let mut color = to_hsla(Theme::global().CURSOR);
+            color.a *= caret_alpha;
             (
                 Vec::new(),
-                Some(fill(
+                Some(gpui::quad(
                     Bounds::new(text_bounds.origin + cursor_pos, size(px(2.), line_height)),
-                    to_hsla(Theme::global().CURSOR),
+                    px(1.),
+                    color,
+                    px(0.),
+                    gpui::transparent_black(),
+                    gpui::BorderStyle::default(),
                 )),
             )
         } else {
@@ -1627,6 +1758,29 @@ impl Element for TextElement {
             }
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
+            if input.motion.live && input.motion.ticker.is_none() {
+                // One bounded ticker drives placeholder typing and caret
+                // breathing. It exits as soon as motion settles.
+                input.motion.ticker = Some(_cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(motion::TICK).await;
+                        let keep = this
+                            .update(cx, |input, cx| {
+                                if !input.motion.live {
+                                    input.motion.ticker = None;
+                                    return false;
+                                }
+                                input.motion.live = false;
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
+                    }
+                }));
+            }
             if input.visual_line_count != prepaint.visual_line_count {
                 input.visual_line_count = prepaint.visual_line_count;
                 let entity = _cx.entity();
