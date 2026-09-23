@@ -71,6 +71,8 @@ mod queue;
 mod recovery;
 #[path = "panel_stop_reason.rs"]
 mod stop_reason;
+#[path = "panel_stream_reveal.rs"]
+mod stream_reveal;
 #[cfg(test)]
 #[path = "panel_scroll_momentum_tests.rs"]
 mod scroll_momentum_tests;
@@ -286,6 +288,11 @@ pub struct Panel {
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
     streaming_reasoning: String,
+    /// Paced, fading reveal of the live rows above. Presentation only.
+    text_reveal: stream_reveal::StreamReveal,
+    reasoning_reveal: stream_reveal::StreamReveal,
+    #[cfg(test)]
+    animate_stream_in_tests: bool,
     sound_events: crate::sound_events::SoundEvents,
     activity_spinner: Entity<activity::Spinner>,
     latest_activity_spinner: Entity<activity::Spinner>,
@@ -815,6 +822,10 @@ impl Panel {
                 String::new()
             },
             streaming_reasoning: String::new(),
+            text_reveal: Default::default(),
+            reasoning_reveal: Default::default(),
+            #[cfg(test)]
+            animate_stream_in_tests: false,
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(activity::Spinner::new),
             show_build_footer: true,
@@ -3074,6 +3085,28 @@ impl Panel {
         }
     }
 
+    /// Advance the paced reveal of live reasoning and response text. Only the
+    /// visible prefix is rendered, so bursts flow in instead of jumping.
+    fn tick_stream_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Render tests assert on painted text from a single frame.
+        #[cfg(test)]
+        let test_snap = !self.animate_stream_in_tests;
+        #[cfg(not(test))]
+        let test_snap = false;
+        let instant = test_snap
+            || self.preview_state.is_some()
+            || cx.reduce_motion()
+            || crate::config::get().appearance.reduce_motion;
+        let now = Instant::now();
+        let text = self.text_reveal.tick(self.streaming_text.len(), now, instant);
+        let reasoning =
+            self.reasoning_reveal
+                .tick(self.streaming_reasoning.len(), now, instant);
+        if text || reasoning {
+            window.request_animation_frame();
+        }
+    }
+
     fn find_tool(&mut self, call_id: &str) -> Option<&mut Item> {
         // The legacy harness protocol streams `tool_input` without an id. The
         // bridge preserves that fact as an empty call_id, so associate those
@@ -3341,11 +3374,19 @@ impl Panel {
             (!self.streaming_reasoning.is_empty()).then(|| {
                 (
                     usize::MAX - 1,
-                    Item::Reasoning(self.streaming_reasoning.clone()),
+                    Item::Reasoning(
+                        self.reasoning_reveal
+                            .visible(&self.streaming_reasoning)
+                            .to_owned(),
+                    ),
                 )
             }),
-            (!self.streaming_text.is_empty())
-                .then(|| (usize::MAX, Item::Assistant(self.streaming_text.clone()))),
+            (!self.streaming_text.is_empty()).then(|| {
+                (
+                    usize::MAX,
+                    Item::Assistant(self.text_reveal.visible(&self.streaming_text).to_owned()),
+                )
+            }),
         ]
         .into_iter()
         .flatten()
@@ -3436,14 +3477,20 @@ impl Panel {
                 .font_family(Theme::global().FONT_AI)
                 .px_1()
                 .text_color(Theme::global().TEXT)
-                .child(markdown::render_interactive(
-                    text,
-                    index,
-                    &self.transcript_selection,
-                    window,
-                    cx,
-                    false,
-                    self.media_preview_handler(cx),
+                .child(markdown::with_stream_fade(
+                    if index == usize::MAX { self.text_reveal.fading() } else { 0 },
+                    || {
+                        markdown::render_interactive(
+                            text,
+                            index,
+                            &self.transcript_selection,
+                            window,
+                            cx,
+                            false,
+                            self.media_preview_handler(cx),
+                        )
+                        .into_any_element()
+                    },
                 ))
                 .into_any_element(),
             // Thinking is secondary transcript text, not a separate card. Keep
@@ -3456,14 +3503,20 @@ impl Panel {
                 .px_1()
                 .text_size(px(12.0))
                 .text_color(Theme::global().REASONING)
-                .child(markdown::render_interactive(
-                    text,
-                    index,
-                    &self.transcript_selection,
-                    window,
-                    cx,
-                    true,
-                    self.media_preview_handler(cx),
+                .child(markdown::with_stream_fade(
+                    if index == usize::MAX - 1 { self.reasoning_reveal.fading() } else { 0 },
+                    || {
+                        markdown::render_interactive(
+                            text,
+                            index,
+                            &self.transcript_selection,
+                            window,
+                            cx,
+                            true,
+                            self.media_preview_handler(cx),
+                        )
+                        .into_any_element()
+                    },
                 ))
                 .into_any_element(),
             Item::Todos(payload) => render_todo_card_with_style(payload, false, &format!("todo-{index}"), &self.transcript_selection, window, cx),
@@ -4084,6 +4137,7 @@ impl Render for Panel {
             .latest_todo_payload()
             .filter(|payload| !payload.todos.is_empty());
         let has_pinned_todo = pinned_todo.is_some();
+        self.tick_stream_reveal(window, cx);
         let rows = Arc::new(self.transcript_render_rows());
         let prompt_rows: Vec<(usize, usize)> = rows
             .iter()
@@ -4137,7 +4191,12 @@ impl Render for Panel {
         if let Some(range) = self.transcript_measurements.take_range(
             self.items.len(),
             row_count,
-            (self.streaming_reasoning.len(), self.streaming_text.len()),
+            (
+                self.reasoning_reveal.visible(&self.streaming_reasoning).len()
+                    + self.reasoning_reveal.fading(),
+                self.text_reveal.visible(&self.streaming_text).len()
+                    + self.text_reveal.fading(),
+            ),
             (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
         ) {
             self.transcript_list.remeasure_items(range);

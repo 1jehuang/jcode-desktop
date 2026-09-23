@@ -68,6 +68,9 @@ impl Panel {
         }
         self.streaming_text = snapshot.streaming_text;
         self.streaming_reasoning = snapshot.streaming_reasoning;
+        // Restored text was already read. Do not replay its reveal.
+        self.text_reveal.snap(self.streaming_text.len());
+        self.reasoning_reveal.snap(self.streaming_reasoning.len());
         self.history_loaded = snapshot.history_loaded;
         self.status = snapshot.status;
         self.connection_phase = snapshot.connection_phase;

@@ -900,6 +900,63 @@ fn styled_line_with_avatar(
     styled_line_layout(source, selection, key, _window, cx, avatar).0
 }
 
+thread_local! {
+    /// Bytes of freshly streamed text still fading in, for the document being
+    /// rendered. Set by the panel around a live row and consumed by the last
+    /// prose block, so the tail of a streaming response eases into view.
+    static STREAM_FADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The fade handed to the next inline text leaf of the final block.
+    static LEAF_FADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Render `f` with the trailing `bytes` of its markdown fading in.
+pub(crate) fn with_stream_fade<R>(bytes: usize, f: impl FnOnce() -> R) -> R {
+    STREAM_FADE.set(bytes);
+    let result = f();
+    STREAM_FADE.set(0);
+    LEAF_FADE.set(0);
+    result
+}
+
+/// Steps of the fading tail. More steps read as a smoother gradient, while
+/// each step is only a highlight run, so layout and shaping are unaffected.
+const FADE_STEPS: usize = 8;
+
+/// Alpha ramp over the trailing `fade` bytes of `text`: oldest bytes almost
+/// opaque, newest nearly transparent. Ranges fall on char boundaries.
+pub(crate) fn fade_tail_highlights(
+    text: &str,
+    fade: usize,
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    let fade = fade.min(text.len());
+    if fade == 0 {
+        return Vec::new();
+    }
+    let start = text.floor_char_boundary(text.len() - fade);
+    let span = text.len() - start;
+    let mut ranges = Vec::with_capacity(FADE_STEPS);
+    let mut from = start;
+    for step in 0..FADE_STEPS {
+        let to = if step + 1 == FADE_STEPS {
+            text.len()
+        } else {
+            text.floor_char_boundary(start + span * (step + 1) / FADE_STEPS)
+        };
+        if to > from {
+            let progress = (step as f32 + 1.0) / FADE_STEPS as f32;
+            ranges.push((
+                from..to,
+                HighlightStyle {
+                    fade_out: Some(0.9 * progress * progress),
+                    ..Default::default()
+                },
+            ));
+            from = to;
+        }
+    }
+    ranges
+}
+
 /// Retain the native layout alongside the interactive leaf, so geometry tests
 /// exercise exactly the same shaping, highlighting and links as the renderer.
 fn styled_line_layout(
@@ -912,6 +969,7 @@ fn styled_line_layout(
 ) -> (gpui::AnyElement, gpui::TextLayout) {
     let inline = inline_spans(source);
     let mut highlights = inline.highlights.clone();
+    highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
     }
@@ -1626,8 +1684,20 @@ fn render_document_with_prompt_background(
     };
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
+    let stream_fade = STREAM_FADE.take();
+    let last_block = blocks.len().saturating_sub(1);
 
     for (block_index, block) in blocks.into_iter().enumerate() {
+        // Only prose leaves fade. Table cells and code keep full contrast.
+        let prose = matches!(
+            block,
+            Block::Heading(..)
+                | Block::Paragraph(..)
+                | Block::Bullet { .. }
+                | Block::Numbered { .. }
+                | Block::Quote(..)
+        );
+        LEAF_FADE.set(if prose && block_index == last_block { stream_fade } else { 0 });
         let block = match block {
             Block::Paragraph(ref text) if reasoning => reasoning_section_title(text)
                 .map(|title| Block::Heading(3, title.to_owned()))
@@ -1797,22 +1867,26 @@ fn render_document_with_prompt_background(
                         .text_color(Theme::global().TEXT_DIM)
                         .italic()
                         .line_height(relative(1.5))
-                        .children(
+                        .children({
+                            let fade = LEAF_FADE.take();
+                            let lines: Vec<&String> =
+                                lines.iter().filter(|line| !line.trim().is_empty()).collect();
+                            let last_line = lines.len().saturating_sub(1);
                             lines
-                                .iter()
-                                .filter(|line| !line.trim().is_empty())
+                                .into_iter()
                                 .enumerate()
-                                .map(|(line_index, line)| {
+                                .map(move |(line_index, line)| {
+                                    LEAF_FADE.set(if line_index == last_line { fade } else { 0 });
                                     div().child(styled_line_with_avatar(
                                         line,
                                         selection,
-                                        format!("{row}-{block_index}-{line_index}").into(),
+                                        format!("{key_prefix}-{block_index}-{line_index}").into(),
                                         window,
                                         cx,
                                         first_line_avatar && line_index == 0,
                                     ))
-                                }),
-                        ),
+                                })
+                        }),
                 )
                 .into_any_element(),
             Block::Code { lang, body }
@@ -1839,6 +1913,8 @@ fn render_document_with_prompt_background(
                 .bg(Theme::global().PANEL_BORDER)
                 .into_any_element(),
         };
+        // Code, tables, and diagrams do not consume the fade. Never leak it.
+        LEAF_FADE.set(0);
         // Structured blocks retain their native rectangular geometry. Prose
         // instead gets a contour from the actual shaped visual line widths.
         children.push(match prompt_background {
