@@ -66,7 +66,7 @@ use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
     FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
     MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
-    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenTodoist, Quit, ToggleHints,
+    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOrchestration, OpenTodoist, Quit, ToggleHints,
     ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1, WidthPreset2, WidthPreset3,
     WidthPreset4, Workspace,
 };
@@ -114,6 +114,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-t", NewTerminal, None),
         KeyBinding::new("super-shift-g", OpenGmail, None),
         KeyBinding::new("super-shift-d", OpenTodoist, None),
+        KeyBinding::new("super-shift-a", OpenOrchestration, None),
         // Enter and ; use the configured fixed favorite. ' explicitly uses
         // home. Super+T remains the terminal shortcut.
         #[cfg(not(target_os = "macos"))]
@@ -192,6 +193,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-g", OpenGmail, None),
         KeyBinding::new("cmd-shift-t", CycleTheme, None),
         KeyBinding::new("cmd-shift-d", OpenTodoist, None),
+        KeyBinding::new("cmd-shift-a", OpenOrchestration, None),
         KeyBinding::new("cmd-enter", NewPanelInPinnedDirectory, None),
         KeyBinding::new("cmd-;", NewPanelInPinnedDirectory, None),
         KeyBinding::new("cmd-'", NewPanel, None),

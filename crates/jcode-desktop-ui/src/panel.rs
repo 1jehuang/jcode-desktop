@@ -103,9 +103,11 @@ pub(crate) mod voice;
 mod side_document;
 #[path = "panel_demo_replay.rs"]
 pub(crate) mod demo_replay;
+#[path = "panel_orchestration.rs"]
+pub(crate) mod orchestration;
 pub use side_document::SideDocumentSnapshot;
 
-type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
+pub(crate) type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
 // Keep the last message/card clear of the composer and its metadata. This is
 // outside the scrolling list so it remains visible even while reading history.
@@ -383,6 +385,8 @@ pub struct Panel {
     /// A native Todoist-backed task view. The existing session todo cards remain
     /// independent and continue to represent the agent's current work.
     todoist: Option<TodoistPanelState>,
+    /// Live sessions, their run state and todos. Never shows chat content.
+    orchestration: Option<orchestration::State>,
     recovery_picker_open: bool,
     model_picker_open: bool,
     focus_pending: bool,
@@ -722,6 +726,7 @@ impl Panel {
             || self.gmail_inbox.is_some()
             || self.gmail_message.is_some()
             || self.todoist.is_some()
+            || self.orchestration.is_some()
             || self.terminal.is_some()
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
@@ -951,6 +956,10 @@ impl Panel {
             todoist: (crate::harness::screenshot_mode()
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos"))
             .then(|| TodoistPanelState::fixture(80)),
+            orchestration: (crate::harness::screenshot_mode()
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
+                    == Ok("orchestration"))
+            .then(orchestration::State::fixture),
             recovery_picker_open: false,
             model_picker_open: false,
             focus_pending: false,
@@ -1139,7 +1148,10 @@ impl Panel {
     }
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
-        self.can_fork() && self.gmail_inbox.is_none() && self.todoist.is_none()
+        self.can_fork()
+            && self.gmail_inbox.is_none()
+            && self.todoist.is_none()
+            && self.orchestration.is_none()
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {
@@ -2188,6 +2200,7 @@ impl Panel {
             && self.code_file.is_none()
             && !self.is_side_document()
             && self.session_id != "unfinished-work"
+            && self.orchestration.is_none()
             && !self.is_pending_session()
     }
 
@@ -3935,6 +3948,7 @@ impl Panel {
         } else if let Some(terminal) = &self.terminal {
             terminal.read(cx).focus_handle(cx)
         } else if self.unfinished_work.is_some()
+            || self.orchestration.is_some()
             || self.is_changelog()
             || self.code_file.is_some()
             || self.is_side_document()
@@ -4171,6 +4185,9 @@ impl Render for Panel {
         }
         if self.todoist.is_some() {
             return self.render_todoist(window, cx);
+        }
+        if self.orchestration.is_some() {
+            return self.render_orchestration(window, cx);
         }
         if let Some(sessions) = &self.unfinished_work {
             let mut list = div()

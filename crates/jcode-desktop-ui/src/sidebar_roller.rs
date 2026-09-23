@@ -1,7 +1,7 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
 
-const COUNT: usize = 11;
+const COUNT: usize = 12;
 const STEP: f32 = 48.0;
 const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
     ("sidebar-sessions-tab", "chat", Some(SidebarView::Sessions)),
@@ -18,6 +18,7 @@ const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
         "settings",
         Some(SidebarView::Settings),
     ),
+    ("sidebar-orchestration", "orchestration", None),
     ("sidebar-unfinished-work", "todos", None),
     ("open-todoist", "todoist", None),
     ("open-gmail", "email", None),
@@ -118,11 +119,12 @@ impl Workspace {
             self.sidebar_roller.view = Some(view);
         } else {
             match index {
-                6 => self.new_unfinished_work(&NewUnfinishedWork, window, cx),
-                7 => self.open_todoist(&OpenTodoist, window, cx),
-                8 => self.open_gmail(&OpenGmail, window, cx),
-                9 => self.open_folder(&OpenFolder, window, cx),
-                10 => {
+                6 => self.open_orchestration(&OpenOrchestration, window, cx),
+                7 => self.new_unfinished_work(&NewUnfinishedWork, window, cx),
+                8 => self.open_todoist(&OpenTodoist, window, cx),
+                9 => self.open_gmail(&OpenGmail, window, cx),
+                10 => self.open_folder(&OpenFolder, window, cx),
+                11 => {
                     self.missed("new_panel", cx);
                     self.open_new_session(cx);
                 }
@@ -415,7 +417,7 @@ mod tests {
         ];
         for expected in pages
             .into_iter()
-            .chain(std::iter::repeat_n(SidebarView::Settings, 5))
+            .chain(std::iter::repeat_n(SidebarView::Settings, 6))
             .chain([SidebarView::Sessions])
         {
             vcx.simulate_event(gpui::ScrollWheelEvent {
@@ -552,9 +554,9 @@ mod tests {
         for (dx, dy, expected) in [
             (-48.0, 0.0, SidebarView::Learn),
             (0.0, -96.0, SidebarView::Accounts),
-            (-384.0, -1.0, SidebarView::Sessions),
+            (-432.0, -1.0, SidebarView::Sessions),
             (48.0, 1.0, SidebarView::Sessions),
-            (0.0, 480.0, SidebarView::Sessions),
+            (0.0, 528.0, SidebarView::Sessions),
         ] {
             vcx.simulate_event(gpui::ScrollWheelEvent {
                 position: tabs.center(),
@@ -647,8 +649,8 @@ mod tests {
         assert_eq!(roller.target, 1.0);
         roller.scroll(96.0);
         assert_eq!(roller.target, -1.0);
-        assert_eq!(distance(10, roller.target), 0.0);
-        assert_eq!(distance(0, 10.0), 1.0);
+        assert_eq!(distance(COUNT - 1, roller.target), 0.0);
+        assert_eq!(distance(0, (COUNT - 1) as f32), 1.0);
         assert_eq!(roller.view, None);
     }
 }

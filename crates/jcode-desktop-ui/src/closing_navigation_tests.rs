@@ -327,6 +327,7 @@ fn all_super_shortcuts_have_handlers(cx: &mut gpui::TestAppContext) {
         ("super-t", Box::new(NewTerminal)),
         ("super-shift-g", Box::new(OpenGmail)),
         ("super-shift-d", Box::new(OpenTodoist)),
+        ("super-shift-a", Box::new(OpenOrchestration)),
         ("super-enter", Box::new(NewPanelInPinnedDirectory)),
         ("super-;", Box::new(NewPanelInPinnedDirectory)),
         ("super-'", Box::new(NewPanel)),

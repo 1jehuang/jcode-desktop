@@ -788,6 +788,100 @@ pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
         .collect()
 }
 
+/// One session a live process owns, for the orchestration panel. Built from
+/// presence markers and durable todo snapshots only, never from a transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveSession {
+    pub session_id: String,
+    pub title: String,
+    pub working_dir: Option<String>,
+    /// A model turn is in flight right now.
+    pub running: bool,
+    pub todos: Vec<UnfinishedTodo>,
+}
+
+impl LiveSession {
+    pub fn completed_todos(&self) -> usize {
+        self.todos
+            .iter()
+            .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
+            .count()
+    }
+
+    pub fn as_unfinished(&self) -> UnfinishedSession {
+        UnfinishedSession {
+            session_id: self.session_id.clone(),
+            title: self.title.clone(),
+            working_dir: self.working_dir.clone(),
+            todos: self.todos.clone(),
+        }
+    }
+}
+
+/// Every local session whose owning process is alive. Running sessions sort
+/// first, then the most recently created. Cheap enough to poll each second:
+/// it reads presence markers, bounded session metadata and todo files.
+pub fn live_sessions() -> Vec<LiveSession> {
+    let Some(home) = jcode_home() else {
+        return Vec::new();
+    };
+    let presence = jcode_base::session::session_presence()
+        .into_iter()
+        .map(|presence| (presence.session_id, presence.streaming));
+    live_sessions_from(&home, presence)
+}
+
+pub(crate) fn live_sessions_from(
+    home: &Path,
+    presence: impl IntoIterator<Item = (String, bool)>,
+) -> Vec<LiveSession> {
+    let todos_dir = home.join("todos");
+    let mut sessions = presence
+        .into_iter()
+        .filter(|(session_id, _)| !remote::is_remote(session_id))
+        .map(|(session_id, running)| {
+            let path = home.join("sessions").join(format!("{session_id}.json"));
+            let record = std::fs::metadata(&path)
+                .ok()
+                .and_then(|metadata| read_persisted_session(&path, metadata.len()));
+            let todos: Vec<PersistedTodoTitleItem> =
+                std::fs::read(todos_dir.join(format!("{session_id}.json")))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                    .unwrap_or_default();
+            let non_empty = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+            let title = record
+                .as_ref()
+                .and_then(|record| {
+                    non_empty(record.custom_title.clone()).or_else(|| non_empty(record.title.clone()))
+                })
+                .or_else(|| persisted_todo_title(home, &session_id))
+                .unwrap_or_else(|| session_id.clone());
+            LiveSession {
+                title,
+                working_dir: record.and_then(|record| record.working_dir),
+                running,
+                todos: todos
+                    .into_iter()
+                    .map(|todo| UnfinishedTodo {
+                        content: todo.content,
+                        status: todo.status,
+                        group: todo.group,
+                    })
+                    .collect(),
+                session_id,
+            }
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by(|a, b| {
+        b.running
+            .cmp(&a.running)
+            .then_with(|| session_recency_ms(&b.session_id).cmp(&session_recency_ms(&a.session_id)))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    sessions
+}
+
 #[derive(serde::Deserialize, Default)]
 struct PersistedTodoTitlePlan {
     #[serde(default)]

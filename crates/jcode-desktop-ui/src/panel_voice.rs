@@ -272,6 +272,7 @@ impl Panel {
             && self.gmail_inbox.is_none()
             && self.gmail_message.is_none()
             && self.todoist.is_none()
+            && self.orchestration.is_none()
     }
 
     pub(crate) fn voice_active(&self) -> bool {

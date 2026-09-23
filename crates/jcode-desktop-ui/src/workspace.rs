@@ -169,6 +169,7 @@ actions!(
         NewTerminal,
         OpenGmail,
         OpenTodoist,
+        OpenOrchestration,
         NewUnfinishedWork,
         OpenFolder,
         ClosePanel,
@@ -240,6 +241,10 @@ mod workspace_pull;
 #[cfg(test)]
 #[path = "workspace_scroll_tests.rs"]
 mod workspace_scroll_tests;
+
+#[cfg(test)]
+#[path = "workspace_orchestration_tests.rs"]
+mod workspace_orchestration_tests;
 
 #[path = "tutorial.rs"]
 mod tutorial;
@@ -1572,6 +1577,9 @@ impl Workspace {
                 cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx))
             } else if panel_state.session_id == "todoist://tasks" {
                 cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx))
+            } else if panel_state.session_id == crate::panel::orchestration::SESSION_ID {
+                let opener = self.orchestration_opener(cx);
+                cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx))
             } else {
                 let session_id = panel_state.session_id.clone();
                 let title = Some(panel_state.title.clone());
@@ -3208,6 +3216,78 @@ impl Workspace {
             }
             return;
         }
+        let insert_at = if self.slots.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.slots.insert(
+            insert_at,
+            Slot {
+                panel,
+                row: self.active_row,
+                width_fraction,
+                animated_width: AnimatedValue::new(
+                    width_fraction,
+                    transition::policy(Transition::PanelOpen).duration,
+                ),
+                order_offset: AnimatedValue::new(
+                    0.0,
+                    transition::policy(Transition::PanelOrder).duration,
+                ),
+                order_distance_fraction: width_fraction,
+                close_progress: AnimatedValue::new(
+                    1.0,
+                    transition::policy(Transition::PanelClose).duration,
+                ),
+                closing: false,
+                restore_fraction: None,
+            },
+        );
+        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
+        self.set_active(insert_at, cx);
+        self.retarget_camera();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn orchestration_opener(&self, cx: &mut Context<Self>) -> crate::panel::SessionOpener {
+        let workspace = cx.weak_entity();
+        std::sync::Arc::new(move |session, window, cx| {
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.activate_unfinished_session(session, window, cx);
+            });
+        })
+    }
+
+    /// One orchestration panel per workspace: live sessions, whether each is
+    /// running, and their todos.
+    fn open_orchestration(
+        &mut self,
+        _: &OpenOrchestration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self.slots.iter().position(|slot| {
+            slot.panel.read(cx).session_id == crate::panel::orchestration::SESSION_ID
+        }) {
+            self.set_active(index, cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        let opener = self.orchestration_opener(cx);
+        let panel = cx.new(|cx| Panel::new_orchestration(opener, self.bridge.clone(), cx));
+        self.insert_spawned_panel(panel, window, cx);
+    }
+
+    fn insert_spawned_panel(&mut self, panel: Entity<Panel>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.single_panel {
+            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+                eprintln!("Could not open panel window: {error:#}");
+            }
+            return;
+        }
+        let width_fraction = spawned_panel_width(self.slots.len());
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -5574,6 +5654,34 @@ impl Workspace {
                                     ))
                                     .child(
                                         div()
+                                            .id("sidebar-orchestration")
+                                            .debug_selector(|| "sidebar-orchestration".into())
+                                            .flex_none()
+                                            .border_1()
+                                            .border_color(Theme::global().PANEL_BORDER)
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_t_md()
+                                            .h(px(30.0))
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .text_color(Theme::global().TEXT_DIM)
+                                            .hover(|el| {
+                                                el.bg(Theme::global().HEADER_BG)
+                                                    .text_color(Theme::global().TEXT)
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.open_orchestration(&OpenOrchestration, window, cx)
+                                                }),
+                                            )
+                                            .child("orchestration"),
+                                    )
+                                    .child(
+                                        div()
                                             .id("sidebar-unfinished-work")
                                             .debug_selector(|| "sidebar-unfinished-work".into())
                                             .flex_none()
@@ -7544,6 +7652,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::rename_session))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
+            .on_action(cx.listener(Self::open_orchestration))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::publish_desktop))
             .on_action(cx.listener(Self::open_model_window_or_picker))
