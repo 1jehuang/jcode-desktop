@@ -284,8 +284,9 @@ impl Workspace {
     }
 
     /// Start the live chat replay behind Continue, once per visible page.
-    /// A recent transcript from another harness replaces the built-in demo
-    /// when one exists. It is only read, never imported or sent.
+    /// The user's own longest recent session (Jcode, Claude Code, Codex,
+    /// Cursor or Pi) replaces the built-in demo when one exists. It is only
+    /// read, never imported or sent.
     fn ensure_account_demo(&mut self, cx: &mut Context<Self>) {
         if self.account_sign_in.demo.is_some() {
             return;

@@ -256,7 +256,9 @@ mod tests {
             SampleTurn::Assistant("All done.".into()),
         ];
         let task = vcx.update(|_, cx| run(panel.clone(), script, cx));
-        vcx.executor().advance_clock(Duration::from_secs(4));
+        // One lap is about 0.8s, then LAP_GAP. Sample inside the gap, before
+        // the next lap clears the transcript.
+        vcx.executor().advance_clock(Duration::from_secs(2));
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
             assert!(panel.demo);
