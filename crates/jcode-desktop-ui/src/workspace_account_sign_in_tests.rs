@@ -109,17 +109,17 @@ fn choice(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) -> O
 fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     vcx.simulate_keystrokes("tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
+    vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Primary));
     vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Subscribe));
-    vcx.simulate_keystrokes("shift-tab shift-tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
-    vcx.simulate_keystrokes("tab enter");
+    vcx.simulate_keystrokes("shift-tab enter");
     vcx.run_until_parked();
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(w.account_sign_in.stage, Stage::Waiting { .. }))
     });
-    vcx.simulate_keystrokes("tab tab tab");
+    vcx.simulate_keystrokes("tab tab tab tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::StartOver));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
@@ -142,7 +142,7 @@ fn enter_without_focus_continues(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn detected_logins_import_less_and_continue_recap(cx: &mut gpui::TestAppContext) {
+fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     workspace.update(vcx, |w, cx| {
         w.set_account_import_candidates(
@@ -159,19 +159,17 @@ fn detected_logins_import_less_and_continue_recap(cx: &mut gpui::TestAppContext)
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1])
     });
-    // Rows are read-only until the user asks to import less.
-    click(vcx, "account-import-0");
+    // Each row has its own Skip button, and clicking it again restores it.
+    click(vcx, "account-import-toggle-0");
     workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1])
-    });
-    click(vcx, "account-import-less");
-    click(vcx, "account-import-0");
-    workspace.read_with(vcx, |w, _| {
-        assert!(w.account_sign_in.choosing);
         assert_eq!(w.account_sign_in.selected_imports(), vec![1]);
         assert!(w.account_sign_in.choices().contains(&Choice::Login(0)));
     });
-    // Keyboard toggles the focused login row too.
+    click(vcx, "account-import-toggle-0");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1])
+    });
+    // Keyboard toggles the focused row too.
     workspace.update(vcx, |w, cx| {
         let index = w.account_sign_in.choices().iter().position(|c| *c == Choice::Login(1));
         w.account_sign_in.keyboard_choice = index;
@@ -179,13 +177,7 @@ fn detected_logins_import_less_and_continue_recap(cx: &mut gpui::TestAppContext)
     });
     vcx.simulate_keystrokes("space");
     vcx.run_until_parked();
-    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.selected_imports().is_empty()));
-    // "Import all" restores the default of importing everything.
-    click(vcx, "account-import-less");
-    workspace.read_with(vcx, |w, _| {
-        assert!(!w.account_sign_in.choosing);
-        assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1]);
-    });
+    workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.selected_imports(), vec![0]));
     click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
     workspace.read_with(vcx, |w, _| {
@@ -195,7 +187,7 @@ fn detected_logins_import_less_and_continue_recap(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
-fn theme_swatches_and_telemetry_choices_apply(cx: &mut gpui::TestAppContext) {
+fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     let original = Theme::active_preset();
     let target = crate::theme::ThemePreset::ALL
@@ -204,20 +196,9 @@ fn theme_swatches_and_telemetry_choices_apply(cx: &mut gpui::TestAppContext) {
         .unwrap();
     click(vcx, Box::leak(format!("account-theme-{target}").into_boxed_str()));
     assert_eq!(Theme::active_preset(), crate::theme::ThemePreset::ALL[target]);
-    // Telemetry is a collapsed dropdown until opened.
-    assert!(vcx.debug_bounds("account-telemetry-off").is_none());
-    for (selector, level) in [
-        ("account-telemetry-off", Telemetry::Off),
-        ("account-telemetry-everything", Telemetry::Everything),
-    ] {
-        click(vcx, "account-telemetry-menu");
-        click(vcx, selector);
-        workspace.read_with(vcx, |w, _| {
-            assert_eq!(w.account_sign_in.telemetry, level);
-            assert!(!w.account_sign_in.telemetry_open, "choosing collapses the menu");
-        });
-        assert!(vcx.debug_bounds(selector).is_none());
-    }
+    // Telemetry keeps its default, and there is no Subscribe upsell here.
+    assert!(vcx.debug_bounds("account-telemetry-menu").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-subscribe").is_none());
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.visible));
     Theme::select(original);
 }
@@ -246,9 +227,15 @@ fn theme_hover_previews_until_a_theme_is_clicked(cx: &mut gpui::TestAppContext) 
 }
 
 #[gpui::test]
-fn continue_is_a_check_over_a_live_chat_panel(cx: &mut gpui::TestAppContext) {
+fn continue_button_and_sign_in_sit_over_a_live_chat_panel(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    assert!(vcx.debug_bounds("account-sign-in-check").is_some());
+    let right = vcx.debug_bounds("account-sign-in-right").unwrap();
+    for selector in ["account-sign-in-continue", "account-sign-in-primary"] {
+        let bounds = vcx.debug_bounds(selector).expect(selector);
+        assert!(right.contains(&bounds.center()), "{selector} is on the right: {bounds:?}");
+    }
+    let card = vcx.debug_bounds("account-sign-in-card").unwrap();
+    assert!(vcx.debug_bounds("account-sign-in-primary").unwrap().left() >= card.right());
     assert!(vcx.debug_bounds("account-sign-in-demo").is_some());
     vcx.executor().advance_clock(Duration::from_secs(5));
     vcx.run_until_parked();
@@ -257,7 +244,7 @@ fn continue_is_a_check_over_a_live_chat_panel(cx: &mut gpui::TestAppContext) {
         assert!(panel.demo);
         assert!(!panel.items.is_empty(), "the replay is actively streaming");
     });
-    click(vcx, "account-sign-in-check");
+    click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.demo.is_none()));
 }
@@ -346,13 +333,16 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         );
         for selector in [
             "account-sign-in-primary",
-            "account-sign-in-subscribe",
             "account-sign-in-back",
             "account-sign-in-copy",
         ] {
             if let Some(bounds) = vcx.debug_bounds(selector) {
                 assert!(
-                    bounds.left() >= card.left() && bounds.right() <= card.right(),
+                    bounds.left() >= px(0.) && bounds.right() <= px(360.),
+                    "{selector}: {bounds:?}"
+                );
+                assert!(
+                    bounds.top() >= card.bottom() - px(1.) && bounds.bottom() <= px(800.),
                     "{selector}: {bounds:?}"
                 );
             }
@@ -457,7 +447,8 @@ fn copy_link_uses_only_public_flow_and_resets_on_restart(cx: &mut gpui::TestAppC
     click(vcx, "account-sign-in-back");
     click(vcx, "account-sign-in-primary");
     workspace.read_with(vcx, |w, _| assert!(!w.account_sign_in.link_copied));
-    vcx.simulate_keystrokes("tab tab enter");
+    // Theme, Open browser again, then Copy link.
+    vcx.simulate_keystrokes("tab tab tab enter");
     vcx.run_until_parked();
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.link_copied));
 }

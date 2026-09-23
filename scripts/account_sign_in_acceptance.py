@@ -29,11 +29,16 @@ def verify(output, env, root):
         return ui.wait_frame(label, check) if phrase else check(ui.capture(label))
 
     current = words("account-welcome", "Welcome to Jcode")
-    phrase_bounds(current, "Continue")
-    phrase_bounds(current, "magic link")
-    phrase_bounds(current, "Subscribe")
-    phrase_bounds(current, "Import less")
-    phrase_bounds(current, "Telemetry")
+    # Dark text on the accent button: OCR sometimes reads "Continuve".
+    assert any(word["text"].startswith("Contin") for word in current), current
+    phrase_bounds(current, "Can import")
+    phrase_bounds(current, "Skip")
+    for removed in ("Subscribe", "Import less", "Telemetry"):
+        try:
+            phrase_bounds(current, removed)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{removed} should not be on the onboarding screen")
     ui.click(phrase_bounds(current, "Sign in with email"))
     current = words("account-waiting", "Finish signing")
     phrase_bounds(current, "Waiting for approval")
@@ -99,7 +104,7 @@ def verify(output, env, root):
     ui.click(phrase_bounds(current, "Sign in with email"))
     words("account-final", "Welcome to Jcode")
     ui.artifact("account-result.json").write_text(json.dumps({
-        "welcome_and_magic_link_copy": True,
+        "welcome_without_subscribe_or_telemetry": True,
         "native_sign_in_waiting_reopen_and_cancel": True,
         "copy_link_feedback": True,
         "keyboard_continue_persisted": True,
