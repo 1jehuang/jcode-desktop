@@ -387,7 +387,8 @@ fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpu
     vcx.run_until_parked();
     let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
     let last = vcx.debug_bounds("selectable-text-3-0").unwrap();
-    let expected = "Prompt βeta\nFirst paragraph.\nSecond paragraph.\nprintf hello\nFinal answer.";
+    // The tool name pill reads inline with its command.
+    let expected = "Prompt βeta\nFirst paragraph.\nSecond paragraph.\nbash printf hello\nFinal answer.";
     begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
     assert_eq!(
         finish_drag_copy(vcx, point(last.right() - px(0.1), last.center().y)),
@@ -398,6 +399,7 @@ fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpu
             ("0-0", 12),
             ("1-0", 16),
             ("1-1", 17),
+            ("tool-name-2", 4),
             ("tool-summary-2", 12),
             ("3-0", 13),
         ] {
@@ -453,7 +455,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
     assert_eq!(
         copied,
         format!(
-            "Check this\ncargo check\n{}\nlet βeta = 1;\nDone.",
+            "Check this\nbash cargo check\n{}\nlet βeta = 1;\nDone.",
             tool_detail("bash", input, "Finished")
         )
     );

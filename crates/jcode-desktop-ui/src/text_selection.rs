@@ -4,12 +4,16 @@
 //! default. This controller keeps the selection state shared by all selectable
 //! leaves in a transcript while each leaf retains its own styling and links.
 
-use std::{collections::HashMap, ops::Range, time::Instant};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    time::{Duration, Instant},
+};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, HighlightStyle,
     KeyBinding, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
-    StyledText, TextLayout, Window, actions, canvas, div, prelude::*, px,
+    StyledText, Task, TextLayout, Window, actions, canvas, div, prelude::*, px,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -68,7 +72,19 @@ pub struct TextSelection {
     cross_head: Option<Endpoint>,
     pointer: Option<Point<Pixels>>,
     last_scroll: Option<Instant>,
+    /// Painted bounds of the last selected visual line, in window space.
+    tail_bounds: Option<Bounds<Pixels>>,
+    /// A brief confirmation beside the text that was just copied.
+    copied: Option<Copied>,
 }
+
+struct Copied {
+    at: Instant,
+    _clear: Task<()>,
+}
+
+/// How long the "Copied" confirmation stays beside the selection.
+pub(crate) const COPIED_DURATION: Duration = Duration::from_millis(1000);
 
 impl TextSelection {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -83,6 +99,8 @@ impl TextSelection {
             cross_head: None,
             pointer: None,
             last_scroll: None,
+            tail_bounds: None,
+            copied: None,
         }
     }
 
@@ -225,12 +243,18 @@ impl TextSelection {
 
     fn selected_text(&self) -> Option<String> {
         if let Some((first, _, last, _)) = self.document_range() {
-            let mut parts = Vec::new();
-            for (key, text) in &self.document[first..=last] {
-                let range = self.range_for(key, text.len())?;
-                parts.push(text.get(range)?);
+            let mut text = String::new();
+            let mut previous: Option<&SharedString> = None;
+            for (key, segment) in &self.document[first..=last] {
+                let range = self.range_for(key, segment.len())?;
+                let part = segment.get(range)?;
+                if let Some(previous) = previous {
+                    // A tool's name pill reads inline with its command.
+                    text.push(if is_inline_label(previous) { ' ' } else { '\n' });
+                }
+                text.push_str(part);
+                previous = Some(key);
             }
-            let text = parts.join("\n");
             return (!text.is_empty()).then_some(text);
         }
         let selection = self.selection.as_ref()?;
@@ -240,20 +264,50 @@ impl TextSelection {
             .map(str::to_owned)
     }
 
-    pub fn copy(&self, cx: &mut App) {
+    pub fn copy(&mut self, cx: &mut Context<Self>) {
         if let Some(text) = self.selected_text() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.show_copied(cx);
         }
     }
 
     /// End a pointer gesture and, like a terminal, copy what it selected.
-    fn finish_and_copy(&mut self, cx: &mut App) {
+    fn finish_and_copy(&mut self, cx: &mut Context<Self>) {
         self.finish();
         if let Some(text) = self.selected_text() {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             cx.write_to_primary(ClipboardItem::new_string(text.clone()));
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.show_copied(cx);
         }
+    }
+
+    fn show_copied(&mut self, cx: &mut Context<Self>) {
+        let at = Instant::now();
+        let clear = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_DURATION).await;
+            let _ = this.update(cx, |selection, cx| {
+                if selection.copied.as_ref().is_some_and(|copied| copied.at == at) {
+                    selection.copied = None;
+                    cx.notify();
+                }
+            });
+        });
+        self.copied = Some(Copied { at, _clear: clear });
+        cx.notify();
+    }
+
+    /// Whether the brief "Copied" confirmation is showing.
+    pub(crate) fn copied_visible(&self) -> bool {
+        self.copied.is_some() && !self.selecting
+    }
+
+    /// The leaf holding the selection's end, beside which feedback appears.
+    fn tail_key(&self) -> Option<&SharedString> {
+        if let Some((_, _, last, _)) = self.document_range() {
+            return self.document.get(last).map(|(key, _)| key);
+        }
+        self.selection.as_ref().map(|selection| &selection.key)
     }
 
     pub fn finish(&mut self) {
@@ -389,6 +443,8 @@ impl TextSelection {
             return;
         }
         self.cross_head = None;
+        self.copied = None;
+        self.tail_bounds = None;
         let (range, reversed, mode) = match click_count {
             1 if shift => {
                 if let Some(previous) = self.selection.as_ref().filter(|item| item.key == key) {
@@ -522,6 +578,13 @@ pub(crate) fn selectable_with_prefix(
     let text = text.into();
     let focus_handle = model.read(cx).focus_handle();
     let element_id: SharedString = format!("selectable-text-{key}").into();
+    let copied = {
+        let selection = model.read(cx);
+        (selection.copied_visible() && selection.tail_key() == Some(&key))
+            .then_some(selection.tail_bounds)
+            .flatten()
+            .map(copied_pill)
+    };
 
     div()
         .relative()
@@ -577,6 +640,15 @@ pub(crate) fn selectable_with_prefix(
                             window.text_style().text_align,
                         );
                         paint_selection(&lines, window);
+                        if let Some((last, _, row_end)) = lines.last() {
+                            let mut last = *last;
+                            last.size.width = (*row_end - last.left()).max(last.size.width);
+                            model.update(cx, |selection, _| {
+                                if selection.tail_key() == Some(&key) {
+                                    selection.tail_bounds = Some(last);
+                                }
+                            });
+                        }
                     }
                     model.update(cx, |selection, _| {
                         selection.register_geometry(
@@ -626,7 +698,57 @@ pub(crate) fn selectable_with_prefix(
             .size_full(),
         )
         .child(child)
+        .children(copied)
         .into_any_element()
+}
+
+/// A small pill after the end of the copied text, drawn above other content.
+fn copied_pill(tail: Bounds<Pixels>) -> gpui::AnyElement {
+    let theme = Theme::global();
+    let height = 18.;
+    let origin = gpui::point(
+        tail.right() + px(6.),
+        tail.top() + (tail.size.height - px(height)) / 2.,
+    );
+    use gpui::AnimationExt as _;
+    let pill = div()
+        .debug_selector(|| "selection-copied".into())
+        .flex()
+        .items_center()
+        .h(px(height))
+        .px(px(7.))
+        .rounded_full()
+        .bg(theme.INLINE_CODE_BG)
+        .border_1()
+        .border_color(theme.TOOL_BORDER)
+        .font_family(theme.FONT_MONO)
+        .font_weight(gpui::FontWeight::NORMAL)
+        .text_size(px(10.5))
+        .line_height(px(14.))
+        .text_color(theme.TEXT_DIM)
+        .whitespace_nowrap()
+        .child("Copied")
+        .with_animation(
+            "selection-copied-fade",
+            gpui::Animation::new(COPIED_DURATION),
+            |pill, progress| {
+                // Hold, then fade during the final fifth.
+                pill.opacity(((1. - progress) / 0.2).clamp(0., 1.))
+            },
+        );
+    gpui::deferred(
+        gpui::anchored()
+            .position(origin)
+            .snap_to_window_with_margin(px(4.))
+            .child(pill),
+    )
+    .with_priority(80)
+    .into_any_element()
+}
+
+/// Keys whose text reads inline with the following segment when copied.
+fn is_inline_label(key: &str) -> bool {
+    key.starts_with("tool-name-")
 }
 
 /// Install once, before the text children, on the scrollable transcript. The
@@ -665,7 +787,12 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
                 {
                     released.update(cx, |selection, cx| {
                         // A fast drag may finish before its last move is delivered.
-                        if selection.drag_at(event.position) {
+                        // A release outside the transcript keeps the last head.
+                        if selection
+                            .surface_bounds
+                            .is_some_and(|surface| surface.contains(&event.position))
+                            && selection.drag_at(event.position)
+                        {
                             cx.notify();
                         }
                         selection.finish_and_copy(cx);
@@ -724,13 +851,14 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
 
 const SELECTION_PAD_X: f32 = 3.;
 const SELECTION_RADIUS: f32 = 6.;
+const SELECTION_GAP: f32 = 2.;
 
 /// Visual line rectangles covering a display-index range of a shaped layout.
 fn selected_line_bounds(
     layout: &TextLayout,
     range: Range<usize>,
     align: gpui::TextAlign,
-) -> Vec<Bounds<Pixels>> {
+) -> Vec<(Bounds<Pixels>, usize, Pixels)> {
     let bounds = layout.bounds();
     let height = layout.line_height();
     let mut result = Vec::new();
@@ -739,7 +867,7 @@ fn selected_line_bounds(
     }
     let mut y = bounds.top();
     let mut line_start = 0;
-    for line in layout.line_layouts().iter() {
+    for (logical, line) in layout.line_layouts().iter().enumerate() {
         let unwrapped = &line.unwrapped_layout;
         let ends = line
             .wrap_boundaries
@@ -766,9 +894,15 @@ fn selected_line_bounds(
                 if includes_break {
                     right = right.max(left + px(4.));
                 }
-                result.push(Bounds::new(
-                    gpui::point(bounds.left() + offset + left - px(SELECTION_PAD_X), y),
-                    gpui::size(right - left + px(2. * SELECTION_PAD_X), height),
+                result.push((
+                    Bounds::new(
+                        gpui::point(bounds.left() + offset + left - px(SELECTION_PAD_X), y),
+                        gpui::size(right - left + px(2. * SELECTION_PAD_X), height),
+                    ),
+                    logical,
+                    // The whole visual row's end, where feedback never
+                    // covers unselected text.
+                    bounds.left() + offset + line_width,
                 ));
             }
             start = end;
@@ -779,24 +913,46 @@ fn selected_line_bounds(
     result
 }
 
-/// Paint the selection as rounded cards in the prompt card style. Lines that
-/// share horizontal extent form one stepped shape, others get their own.
-fn paint_selection(lines: &[Bounds<Pixels>], window: &mut Window) {
+/// Paint the selection as rounded cards in the prompt card style. Soft-wrapped
+/// rows of one source line form one stepped shape. Every explicit newline
+/// starts a new card, so the highlight follows the text's own line structure.
+fn paint_selection(lines: &[(Bounds<Pixels>, usize, Pixels)], window: &mut Window) {
     let color = Theme::global().SELECTION;
-    let mut group_start = 0;
-    for i in 1..=lines.len() {
-        let split = i == lines.len()
-            || lines[i].right() <= lines[i - 1].left()
-            || lines[i].left() >= lines[i - 1].right();
-        if split {
-            if let Some(path) =
-                crate::prompt_background::rounded_union(&lines[group_start..i], SELECTION_RADIUS)
-            {
-                window.paint_path(path, color);
-            }
-            group_start = i;
+    let lines: Vec<_> = lines.iter().map(|(bounds, logical, _)| (*bounds, *logical)).collect();
+    for group in selection_groups(&lines) {
+        if let Some(path) = crate::prompt_background::rounded_union(&group, SELECTION_RADIUS) {
+            window.paint_path(path, color);
         }
     }
+}
+
+/// Split visual rows into cards at explicit newlines and horizontal gaps.
+/// A hairline inset keeps vertically adjacent cards visibly separate.
+fn selection_groups(lines: &[(Bounds<Pixels>, usize)]) -> Vec<Vec<Bounds<Pixels>>> {
+    let mut groups: Vec<Vec<Bounds<Pixels>>> = Vec::new();
+    for (i, (bounds, logical)) in lines.iter().enumerate() {
+        let joins = i > 0 && {
+            let (previous, previous_logical) = &lines[i - 1];
+            previous_logical == logical
+                && bounds.right() > previous.left()
+                && bounds.left() < previous.right()
+        };
+        match groups.last_mut() {
+            Some(group) if joins => group.push(*bounds),
+            _ => groups.push(vec![*bounds]),
+        }
+    }
+    for group in &mut groups {
+        let inset = px(SELECTION_GAP / 2.);
+        if let Some(first) = group.first_mut() {
+            first.origin.y += inset;
+            first.size.height -= inset;
+        }
+        if let Some(last) = group.last_mut() {
+            last.size.height -= inset;
+        }
+    }
+    groups
 }
 
 fn edge_scroll_speed(pointer: Point<Pixels>, bounds: Bounds<Pixels>) -> f32 {
@@ -1002,6 +1158,56 @@ mod tests {
             assert!(!selection.is_dragging());
             selection
         });
+    }
+
+    #[test]
+    fn explicit_newlines_split_selection_cards_but_soft_wraps_join() {
+        let row = |x: f32, y: f32, w: f32| {
+            Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(20.)))
+        };
+        // Two soft-wrapped rows of line 0, then line 1, then line 2.
+        let lines = [
+            (row(0., 0., 200.), 0),
+            (row(0., 20., 120.), 0),
+            (row(0., 40., 180.), 1),
+            (row(0., 60., 60.), 2),
+        ];
+        let groups = selection_groups(&lines);
+        assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1, 1]);
+        // Adjacent cards never touch, so each newline reads as a break.
+        for pair in groups.windows(2) {
+            let above = pair[0].last().unwrap().bottom();
+            let below = pair[1].first().unwrap().top();
+            assert!(below - above >= px(SELECTION_GAP) - px(0.01));
+        }
+    }
+
+    #[gpui::test]
+    fn tool_name_joins_its_command_and_copy_shows_feedback(cx: &mut gpui::TestAppContext) {
+        let selection = cx.new(|cx| {
+            let mut selection = TextSelection::new(cx);
+            selection.set_document(vec![
+                ("tool-name-1".into(), "bash".into()),
+                ("tool-summary-1".into(), "cargo test".into()),
+                ("2-0".into(), "Done".into()),
+            ]);
+            selection.begin("tool-name-1".into(), "bash".into(), 0, 1, false);
+            selection.drag_to_endpoint("2-0".into(), 4);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some("bash cargo test\nDone")
+            );
+            assert_eq!(selection.tail_key().map(|key| key.as_ref()), Some("2-0"));
+            selection
+        });
+        selection.update(cx, |selection, cx| {
+            assert!(!selection.copied_visible());
+            selection.finish_and_copy(cx);
+            assert!(selection.copied_visible());
+        });
+        cx.executor().advance_clock(COPIED_DURATION + Duration::from_millis(50));
+        cx.run_until_parked();
+        selection.read_with(cx, |selection, _| assert!(!selection.copied_visible()));
     }
 
     #[test]

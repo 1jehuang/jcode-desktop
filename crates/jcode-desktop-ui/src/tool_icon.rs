@@ -30,6 +30,16 @@ pub(crate) fn render_status(name: &str, done: bool, failed: bool) -> Div {
 /// Keep the tool identity together in a quiet, non-interactive pill.
 /// The intent remains outside so it stays the primary label.
 pub(crate) fn render_badge(name: &str, done: bool, failed: bool) -> Div {
+    render_badge_with_label(name, done, failed, name.to_owned().into_any_element())
+}
+
+/// The badge with a caller-supplied name leaf, such as a selectable one.
+pub(crate) fn render_badge_with_label(
+    name: &str,
+    done: bool,
+    failed: bool,
+    label: gpui::AnyElement,
+) -> Div {
     let theme = Theme::global();
     div()
         .debug_selector(|| "tool-identity-pill".into())
@@ -50,7 +60,7 @@ pub(crate) fn render_badge(name: &str, done: bool, failed: bool) -> Div {
                 .text_size(px(11.0))
                 .line_height(px(14.0))
                 .text_color(theme.TEXT_DIM)
-                .child(name.to_owned()),
+                .child(label),
         )
 }
 

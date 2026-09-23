@@ -3747,7 +3747,18 @@ impl Panel {
                             .text_size(px(14.0))
                             // Match the token pill's 14px line plus 2px padding per side.
                             .line_height(px(18.0))
-                            .child(crate::tool_icon::render_badge(name, *done, error.is_some()))
+                            .child(crate::tool_icon::render_badge_with_label(
+                                name,
+                                *done,
+                                error.is_some(),
+                                text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    format!("tool-name-{index}"),
+                                    name.clone(),
+                                    window,
+                                    cx,
+                                ),
+                            ))
                             .when(!summary.is_empty(), |el| {
                                 el.child(
                                     div()

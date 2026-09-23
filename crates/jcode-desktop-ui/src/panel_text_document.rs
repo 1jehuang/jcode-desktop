@@ -139,6 +139,7 @@ fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: boo
                 }
                 push(format!("tool-edit-{index}"), text);
             } else {
+                push(format!("tool-name-{index}"), name.clone());
                 push(format!("tool-summary-{index}"), tool_summary(input));
                 if tool_expanded {
                     push(
