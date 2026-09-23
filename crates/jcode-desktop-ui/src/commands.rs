@@ -70,6 +70,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::hidden("/commit-and-push", "Alias for /commit-push"),
     RegisteredCommand::public(
+        "/publish",
+        "Desktop selfdev: commit, push, release, and publish, tracked in a new panel",
+    ),
+    RegisteredCommand::public(
         "/fast-release",
         "Publish Linux immediately from the warm selfdev cache; CI adds other platforms",
     ),

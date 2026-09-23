@@ -4341,6 +4341,7 @@ dependencies = [
  "jcode-provider-core",
  "jcode-render-core",
  "jcode-sdk",
+ "jcode-selfdev-types",
  "libc",
  "mermaid-rs-renderer",
  "ratex-layout",

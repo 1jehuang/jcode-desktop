@@ -239,6 +239,8 @@ impl Workspace {
                 .starts_with("startup://draft/help/")
             {
                 request_id = request_id.replacen("startup://draft/", "startup://draft/help/", 1);
+            } else if crate::publish::is_publish_draft(&panel.read(cx).session_id) {
+                request_id = request_id.replacen("startup://draft/", crate::publish::DRAFT_PREFIX, 1);
             }
             panel.update(cx, |panel, cx| {
                 panel.session_id = request_id.clone();

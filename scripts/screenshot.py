@@ -108,7 +108,7 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "publish"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")
@@ -519,6 +519,9 @@ def main():
                     expected_widths = "widths=" + ",".join(
                         ["0.50", "0.50"] + [f"{1 / args.panels:.2f}"] * (args.panels - 1)
                     )
+                if args.transcript == "publish":
+                    # The fixture adds the publish tracker beside the selfdev panel.
+                    expected_widths = "widths="
                 while not state.exists() or expected_widths not in state.read_text():
                     if app.poll() is not None or time.monotonic() > deadline:
                         app_log.seek(0)

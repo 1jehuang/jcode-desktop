@@ -57,3 +57,22 @@ Desktop on Xvfb, invokes the real Desktop tool, and verifies a new UI generation
 with the same host, window, sessions, and draft. It also exercises the tool's
 fresh-build screenshot action. It never reloads the shared daemon or restarts
 the user's Desktop host.
+
+## Publish button
+
+Chats whose working directory is a Desktop checkout show a **Publish** pill in
+the composer row, next to the microphone. The first click arms it. A second
+click within four seconds opens a new **Publish Jcode Desktop** session in the
+checkout root. `/publish` does the same thing. Pressing it again while a run is
+active brings you back to that run instead of starting a second release.
+
+The tracker session commits current work, pushes it and lands it on
+`origin/main`, prepares the version and changelog, and then runs
+`scripts/release-desktop.py <version> --apply` through builds, public downloads,
+macOS acceptance, and the announcement. The agent keeps a six-item todo list
+(Commit, Push, Release, Tag, Build, Publish). The panel shows it as a pinned
+stage tracker with a progress bar and done, running, or blocked labels. The
+release script and its workflows still own every gate. Nothing is bypassed or
+retried automatically.
+
+Offline preview: `python3 scripts/screenshot.py --transcript publish target/publish.png`.

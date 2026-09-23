@@ -18,6 +18,7 @@ jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode-provider-core = { path = "../../../jcode/crates/jcode-provider-core" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-render-core = { path = "../../../jcode/crates/jcode-render-core" }
+jcode-selfdev-types = { path = "../../../jcode/crates/jcode-selfdev-types" }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 anyhow = "1"

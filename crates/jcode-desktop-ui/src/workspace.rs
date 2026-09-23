@@ -28,6 +28,9 @@ mod preview;
 #[path = "workspace_changelog.rs"]
 mod changelog_panel;
 
+#[path = "workspace_publish.rs"]
+mod publish_panel;
+
 #[path = "workspace_responsive.rs"]
 mod responsive;
 
@@ -128,6 +131,13 @@ mod default_directory_tests;
 pub(crate) struct OpenAccounts {
     pub source: gpui::EntityId,
     pub login_command: Option<String>,
+}
+
+/// Commit, push, release and publish Desktop from the source panel's checkout.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct PublishDesktop {
+    pub source: gpui::EntityId,
 }
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -1124,6 +1134,9 @@ impl Workspace {
                     workspace.sessions.push(child);
                 }
             }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("publish") {
+                workspace.open_publish_fixture(cx);
+            }
             let panel_count = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANELS")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
@@ -1474,6 +1487,7 @@ impl Workspace {
                 // result to this workspace. Restart with a fresh correlation ID
                 // and original destination, not today's machine default.
                 let help = panel_state.session_id.starts_with("startup://draft/help/");
+                let publish = crate::publish::is_publish_draft(&panel_state.session_id);
                 let remote_host =
                     pending::remote_draft_host(&panel_state.session_id).map(str::to_owned);
                 if let Some(host) = remote_host {
@@ -1489,6 +1503,12 @@ impl Workspace {
                         panel_state.session_id = panel_state.session_id.replacen(
                             "startup://draft/",
                             "startup://draft/help/",
+                            1,
+                        );
+                    } else if publish {
+                        panel_state.session_id = panel_state.session_id.replacen(
+                            "startup://draft/",
+                            crate::publish::DRAFT_PREFIX,
                             1,
                         );
                     }
@@ -1927,9 +1947,15 @@ impl Workspace {
                                 == request_id.as_deref()
                     }) {
                         let session_id = session.session_id.clone();
+                        let working_dir = session.working_dir.clone();
                         slot.panel
                             .update(cx, |panel, cx| panel.attach_startup_session(session, cx));
                         if request_id
+                            .as_deref()
+                            .is_some_and(crate::publish::is_publish_draft)
+                        {
+                            self.start_publish_session(session_id, working_dir.as_deref());
+                        } else if request_id
                             .as_deref()
                             .is_some_and(|id| id.starts_with("startup://draft/help/"))
                         {
@@ -7509,6 +7535,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
             .on_action(cx.listener(Self::open_accounts))
+            .on_action(cx.listener(Self::publish_desktop))
             .on_action(cx.listener(Self::open_model_window_or_picker))
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))

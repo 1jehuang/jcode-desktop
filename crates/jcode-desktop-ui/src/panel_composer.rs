@@ -130,6 +130,7 @@ impl Panel {
                             }))
                     })),
             )
+            .children(self.render_publish_button(cx))
             .child(self.render_voice_tab(cx));
         div()
             .debug_selector(|| "composer".into())

@@ -102,7 +102,7 @@ impl Workspace {
         self.create_remote_draft_session(host, request_id, cx);
     }
 
-    fn mount_session_draft(
+    pub(super) fn mount_session_draft(
         &mut self,
         request_id: String,
         directory: Option<String>,

@@ -333,6 +333,10 @@ pub struct Panel {
     /// Inline and pinned prompts expand independently so the reminder stays compact.
     expanded_prompts: HashSet<(usize, bool)>,
     pinned_todo_expanded: bool,
+    /// Tracks a Desktop publish pipeline. Hot reloads recover it from the title.
+    publish_tracker: bool,
+    /// The Publish button needs a second click within a short window.
+    publish_armed_at: Option<Instant>,
     transcript_selection: Entity<TextSelection>,
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
@@ -666,6 +670,9 @@ async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<Gmai
 #[path = "panel_changelog.rs"]
 mod changelog_panel;
 
+#[path = "panel_publish.rs"]
+mod publish_panel;
+
 impl Panel {
     pub(crate) const CHANGELOG_SESSION_ID: &str = "desktop://changelog";
 
@@ -906,6 +913,8 @@ impl Panel {
             offscreen_prompt_clip: None,
             expanded_prompts: HashSet::new(),
             pinned_todo_expanded: false,
+            publish_tracker: false,
+            publish_armed_at: None,
             transcript_selection,
             transcript_text_document: Default::default(),
             transcript_dragging: false,
@@ -2311,6 +2320,18 @@ impl Panel {
                             _window.dispatch_action(Box::new(crate::workspace::OpenChangelog), app);
                             return;
                         }
+                        if images.is_empty()
+                            && content.trim() == "/publish"
+                            && let Some(panel) = weak.upgrade()
+                            && panel.read(app).publish_checkout().is_some()
+                        {
+                            _window.dispatch_action(
+                                Box::new(crate::workspace::PublishDesktop {
+                                    source: panel.entity_id(),
+                                }),
+                                app,
+                            );
+                        }
                         if let Some(panel) = weak.upgrade() {
                             // Login owns a separate, transient panel just like the
                             // Accounts footer. Never cover the source conversation.
@@ -2606,6 +2627,14 @@ impl Panel {
                     "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
                     cx,
                 ),
+                "/publish" => self.items.push(match self.publish_checkout() {
+                    Some(_) => Item::Assistant(
+                        "Opened the publish tracker. Commit, push, release, and publish progress appears in its panel.".into(),
+                    ),
+                    None => Item::Error(
+                        "`/publish` is only available in Jcode Desktop self-development sessions.".into(),
+                    ),
+                }),
                 "/commit-push" | "/commit-and-push" => self.submit_command_prompt(
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
@@ -4283,10 +4312,13 @@ impl Render for Panel {
         // Todo state is persistent session chrome rather than transcript history.
         // Keep only the latest snapshot pinned above the scroller instead of
         // leaving stale cards interspersed through the conversation.
-        let pinned_todo = self
-            .latest_todo_payload()
-            .filter(|payload| !payload.todos.is_empty());
-        let has_pinned_todo = pinned_todo.is_some();
+        let latest_todo = self.latest_todo_payload();
+        // The publish tracker replaces the collapsible todo summary with
+        // fixed, always-visible pipeline stages fed by the same snapshot.
+        let publish_tracker = self.render_publish_tracker(latest_todo.as_ref());
+        let pinned_todo = latest_todo
+            .filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
+        let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         self.tick_stream_reveal(window, cx);
         let rows = Arc::new(self.transcript_render_rows());
         if let Some(document) = self.transcript_text_document.sync(
@@ -4600,6 +4632,7 @@ impl Render for Panel {
                     .bg(theme.ACCENT_DIM)
                     .child(format!("SSH · {host}"))
             }))
+            .children(publish_tracker)
             .children(pinned_todo.map(|payload| {
                 div()
                     .id("pinned-todo-toggle")
