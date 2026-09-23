@@ -58,13 +58,8 @@ impl ReloadManager {
             active: 0,
             activation_history: Vec::new(),
             staging: source
-                .as_ref()
-                .map(|_| {
-                    tempfile::Builder::new()
-                        .prefix("jcode-desktop-ui-")
-                        .tempdir()
-                        .context("create UI staging directory")
-                })
+                .as_deref()
+                .map(create_staging_dir)
                 .transpose()?,
             source,
             window: Some(window),
@@ -272,13 +267,19 @@ impl ReloadManager {
             "jcode-desktop-ui-{:04}.{extension}",
             self.next_generation
         ));
-        fs::copy(source, &staged_path).with_context(|| {
+        let staged_bytes = fs::copy(source, &staged_path).with_context(|| {
             format!(
                 "copy UI plugin {} to {}",
                 source.display(),
                 staged_path.display()
             )
         })?;
+        eprintln!(
+            "staged UI generation {} ({:.1} MiB) at {}",
+            self.next_generation,
+            staged_bytes as f64 / (1024.0 * 1024.0),
+            staged_path.display()
+        );
         let library = unsafe { Library::new(&staged_path) }
             .with_context(|| format!("load {}", staged_path.display()))?;
         let api = {
@@ -288,6 +289,81 @@ impl ReloadManager {
         };
         Ok((library, staged_path, api))
     }
+}
+
+const STAGING_DIR_NAME: &str = "ui-staging";
+const STAGING_PREFIX: &str = "jcode-desktop-ui-";
+
+/// Stage retained UI copies beside the build output instead of the system
+/// temporary directory. `/tmp` is commonly RAM-backed tmpfs, where every
+/// retained 100-500 MiB generation silently consumed physical memory, and
+/// directories from crashed or killed hosts were never reclaimed. Staging on
+/// the build filesystem also lets `fs::copy` use reflinks where supported.
+fn create_staging_dir(source: &Path) -> Result<TempDir> {
+    let root = source
+        .parent()
+        .map(|parent| parent.join(STAGING_DIR_NAME))
+        .unwrap_or_else(|| env::temp_dir().join(STAGING_DIR_NAME));
+    fs::create_dir_all(&root)
+        .with_context(|| format!("create UI staging root {}", root.display()))?;
+    let removed = sweep_stale_staging(&root);
+    if removed > 0 {
+        eprintln!(
+            "removed {removed} stale UI staging directories from {}",
+            root.display()
+        );
+    }
+    tempfile::Builder::new()
+        .prefix(&format!("{STAGING_PREFIX}{}-", std::process::id()))
+        .tempdir_in(&root)
+        .with_context(|| format!("create UI staging directory in {}", root.display()))
+}
+
+/// Remove staging directories whose owning host process no longer exists.
+/// Normal exit drops the `TempDir`, but crashes, SIGKILL, and `exit()` paths
+/// skip destructors, so each launch reclaims what earlier hosts left behind.
+fn sweep_stale_staging(root: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(staging_owner_pid) else {
+            continue;
+        };
+        if pid == std::process::id() || process_alive(pid) {
+            continue;
+        }
+        if fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+fn staging_owner_pid(name: &str) -> Option<u32> {
+    name.strip_prefix(STAGING_PREFIX)?
+        .split_once('-')?
+        .0
+        .parse()
+        .ok()
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 performs only the existence and permission check.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    alive
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_: u32) -> bool {
+    true
 }
 
 fn validate_api(api: PluginApi) -> Result<()> {
@@ -486,6 +562,32 @@ mod tests {
             assert!(manager.suspended.is_none());
             assert_eq!(manager.window.unwrap().window_id(), replacement.window_id());
         }
+    }
+
+    #[test]
+    fn staging_is_beside_source_and_sweeps_only_dead_owners() {
+        let build = tempfile::tempdir().unwrap();
+        let source = build.path().join("libjcode_desktop_ui.so");
+        let root = build.path().join(STAGING_DIR_NAME);
+        fs::create_dir_all(&root).unwrap();
+        // PIDs above the kernel maximum can never be alive.
+        let dead = root.join(format!("{STAGING_PREFIX}4294967294-abc"));
+        let foreign = root.join("unrelated");
+        fs::create_dir_all(&dead).unwrap();
+        fs::create_dir_all(&foreign).unwrap();
+
+        let staging = create_staging_dir(&source).unwrap();
+
+        assert_eq!(staging.path().parent(), Some(root.as_path()));
+        assert_eq!(
+            staging_owner_pid(staging.path().file_name().unwrap().to_str().unwrap()),
+            Some(std::process::id())
+        );
+        assert!(!dead.exists());
+        assert!(foreign.exists());
+        // A second host must not remove a live host's directory.
+        let second = create_staging_dir(&source).unwrap();
+        assert!(staging.path().exists() && second.path().exists());
     }
 
     #[test]
