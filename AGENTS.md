@@ -10,8 +10,9 @@
 
 ## Jcode Repository Ownership
 
-- This project also owns and maintains the adjacent Jcode TUI, SDK, harness API, and supporting crates in `/home/jeremy/jcode`.
-- When desktop work requires an SDK, protocol, TUI, or shared-runtime change, make the correct change in the Jcode repository directly rather than adding a desktop-only workaround or asking the user to coordinate it.
+- This project also owns and maintains the adjacent Jcode SDK, harness API, and supporting crates in `/home/jeremy/jcode`.
+- New desktop functionality usually requires SDK changes. When desktop work requires an SDK, protocol, or shared-runtime change, make the correct change in the Jcode repository directly rather than adding a desktop-only workaround or asking the user to coordinate it.
+- Do not change the Jcode TUI unless the task explicitly requires it. Desktop features should normally be delivered through the SDK, not TUI changes.
 - Keep cross-repository behavior aligned and commit and push the changes in each affected repository.
 
 ## Handterm Repository Ownership
