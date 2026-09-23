@@ -1649,7 +1649,7 @@ impl Element for TextElement {
         );
         let focused = self.input.read(cx).focus_handle.is_focused(window);
         let reduced = motion_reduced(cx);
-        let (cursor_pos, caret_alpha, caret_live) = self.input.update(cx, |input, _| {
+        let (cursor_pos, caret_alpha, caret_live, caret_gliding) = self.input.update(cx, |input, _| {
             let key = (input.content.clone(), cursor);
             if input.motion.key.as_ref() != Some(&key) {
                 if key.0.is_empty()
@@ -1669,8 +1669,12 @@ impl Element for TextElement {
             let (position, gliding) = glide.position(now);
             let (alpha, breathing) =
                 motion::caret_alpha(now.saturating_duration_since(input.motion.epoch), reduced);
-            (position, alpha, focused && (gliding || breathing))
+            (position, alpha, focused && (gliding || breathing), focused && gliding)
         });
+        if caret_gliding {
+            // The 33ms ticker is too coarse for a 55ms glide. Draw every frame.
+            window.request_animation_frame();
+        }
         let motion_live = caret_live || placeholder_live;
         self.input.update(cx, |input, _| input.motion.live = motion_live);
         let (selection, cursor) = if selected_range.is_empty() {

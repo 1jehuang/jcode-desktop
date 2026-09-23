@@ -42,7 +42,8 @@ const CARET_SOLID: Duration = Duration::from_millis(550);
 const CARET_PERIOD: f32 = 1.25;
 /// Breathing stops (solid caret) after this long without input.
 pub(super) const CARET_ACTIVE: Duration = Duration::from_secs(20);
-const GLIDE: Duration = Duration::from_millis(90);
+/// Short enough that the caret never trails the character just typed.
+const GLIDE: Duration = Duration::from_millis(55);
 
 /// Tick interval while any motion is live.
 pub(super) const TICK: Duration = Duration::from_millis(33);
@@ -147,7 +148,8 @@ impl Glide {
         if t >= 1. {
             return (self.to, false);
         }
-        let eased = 1. - (1. - t).powi(3);
+        // Quartic ease-out: most of the travel lands in the first frame or two.
+        let eased = 1. - (1. - t).powi(4);
         (
             point(
                 self.from.x + (self.to.x - self.from.x) * eased,
