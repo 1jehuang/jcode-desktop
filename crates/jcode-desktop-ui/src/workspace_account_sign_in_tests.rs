@@ -56,33 +56,78 @@ fn account_offer_is_optional_and_fixture_safe() {
     assert!(crate::config::persist_account_sign_in_handled().is_ok());
 }
 
+fn type_into_field(vcx: &mut gpui::VisualTestContext, text: &str) {
+    click(vcx, "account-sign-in-field");
+    vcx.simulate_input(text);
+    vcx.run_until_parked();
+}
+
 #[gpui::test]
-fn welcome_native_primary_waits_offline_and_cancel_returns(cx: &mut gpui::TestAppContext) {
+fn email_field_sends_offline_code_and_start_over_returns(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     assert!(vcx.debug_bounds("account-sign-in-card").is_some());
     assert!(vcx.debug_bounds("account-sign-in-brand").is_some());
     assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-field").is_some());
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
     workspace.read_with(vcx, |w, _| {
-        assert!(w.account_sign_in.visible);
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
         assert_eq!(w.account_sign_in.primary_label(), "Sign in with email");
     });
+    // Empty and malformed emails stay on the field with a message.
     click(vcx, "account-sign-in-primary");
-    workspace.read_with(vcx, |w, _| {
-        assert!(matches!(&w.account_sign_in.stage, Stage::Waiting { url } if url == "https://jcode.sh/account"));
-        assert!(w.account_sign_in.task.is_none(), "offline primary must not spawn authentication");
-        assert_eq!(w.account_sign_in.primary_label(), "Open browser again");
+    assert!(vcx.debug_bounds("account-sign-in-error").is_some());
+    type_into_field(vcx, "not-an-email");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
+        assert_eq!(w.account_sign_in.error.as_deref(), Some("Enter a valid email address."));
+        assert_eq!(w.account_sign_in.input.as_ref().unwrap().read(cx).content, "not-an-email");
     });
-    click(vcx, "account-sign-in-primary"); // Reopening is also inert in tests.
+    workspace.update(vcx, |w, cx| {
+        w.account_sign_in.input.as_ref().unwrap().update(cx, |i, cx| i.set_content(String::new(), cx))
+    });
+    type_into_field(vcx, "me@example.com");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, login: None } if email == "me@example.com"));
+        assert!(w.account_sign_in.task.is_none(), "offline fixture must not spawn authentication");
+        assert_eq!(w.account_sign_in.primary_label(), "Verify");
+        assert!(w.account_sign_in.input.as_ref().unwrap().read(cx).content.is_empty());
+    });
+    assert!(vcx.debug_bounds("account-sign-in-sent").is_some());
     click(vcx, "account-sign-in-back");
-    workspace.read_with(vcx, |w, _| {
-        assert!(w.account_sign_in.visible);
+    workspace.read_with(vcx, |w, cx| {
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
         assert!(w.account_sign_in.error.is_none());
-        assert!(w.account_sign_in.keyboard_choice.is_none());
+        assert_eq!(w.account_sign_in.input.as_ref().unwrap().read(cx).content, "me@example.com");
     });
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
+}
+
+#[gpui::test]
+fn typing_six_digits_signs_in_offline(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    type_into_field(vcx, "me@example.com");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    type_into_field(vcx, "123");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| {
+        assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }));
+        assert!(w.account_sign_in.error.as_deref().unwrap().contains("6-digit"));
+    });
+    vcx.simulate_input("456");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| {
+        assert!(matches!(&w.account_sign_in.stage, Stage::Complete { email } if email == "me@example.com"));
+        assert!(w.account_sign_in.connected);
+    });
+    assert!(vcx.debug_bounds("account-sign-in-status").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-field").is_none());
 }
 
 #[gpui::test]
@@ -92,7 +137,7 @@ fn skip_and_escape_preserve_composer_draft_and_focus(cx: &mut gpui::TestAppConte
     assert_draft_and_focus(&workspace, vcx);
     workspace.update_in(vcx, |w, window, cx| w.open_account_sign_in(window, cx));
     vcx.run_until_parked();
-    click(vcx, "account-sign-in-primary");
+    type_into_field(vcx, "draft@example.com");
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert_draft_and_focus(&workspace, vcx);
@@ -111,13 +156,13 @@ fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAp
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
     vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Primary));
-    vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
-    vcx.simulate_keystrokes("shift-tab enter");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Field));
+    // Tab puts the caret in the field, so typing and Enter go to it.
+    vcx.simulate_input("me@example.com");
+    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     workspace.read_with(vcx, |w, _| {
-        assert!(matches!(w.account_sign_in.stage, Stage::Waiting { .. }))
+        assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }))
     });
     vcx.simulate_keystrokes("tab tab tab tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::StartOver));
@@ -159,7 +204,7 @@ fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppCont
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.account_sign_in.selected_imports(), vec![0, 1])
     });
-    // Each row has its own Skip button, and clicking it again restores it.
+    // Each row has its own Import/Skip slider, and clicking it again restores it.
     click(vcx, "account-import-toggle-0");
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.account_sign_in.selected_imports(), vec![1]);
@@ -227,16 +272,23 @@ fn theme_hover_previews_until_a_theme_is_clicked(cx: &mut gpui::TestAppContext) 
 }
 
 #[gpui::test]
-fn continue_button_and_sign_in_sit_over_a_live_chat_panel(cx: &mut gpui::TestAppContext) {
+fn sign_in_bar_and_skip_leave_the_live_demo_unobstructed(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     let right = vcx.debug_bounds("account-sign-in-right").unwrap();
-    for selector in ["account-sign-in-continue", "account-sign-in-primary"] {
+    for selector in ["account-sign-in-continue", "account-sign-in-primary", "account-sign-in-field"] {
         let bounds = vcx.debug_bounds(selector).expect(selector);
         assert!(right.contains(&bounds.center()), "{selector} is on the right: {bounds:?}");
     }
     let card = vcx.debug_bounds("account-sign-in-card").unwrap();
     assert!(vcx.debug_bounds("account-sign-in-primary").unwrap().left() >= card.right());
-    assert!(vcx.debug_bounds("account-sign-in-demo").is_some());
+    // The demo fills the space above the sign-in bar, and nothing covers it
+    // except the tiny skip icon.
+    let demo = vcx.debug_bounds("account-sign-in-demo").unwrap();
+    let bar = vcx.debug_bounds("account-sign-in-panel").unwrap();
+    assert!(demo.bottom() <= bar.top() + px(1.), "{demo:?} {bar:?}");
+    assert!(demo.size.height > right.size.height * 0.7, "{demo:?}");
+    let skip = vcx.debug_bounds("account-sign-in-continue").unwrap();
+    assert!(skip.size.width <= px(32.) && skip.size.height <= px(32.), "{skip:?}");
     vcx.executor().advance_clock(Duration::from_secs(5));
     vcx.run_until_parked();
     let panel = workspace.read_with(vcx, |w, _| w.account_sign_in.demo.as_ref().unwrap().panel.clone());
@@ -264,21 +316,16 @@ fn settings_can_reopen_skipped_account_onboarding(cx: &mut gpui::TestAppContext)
 }
 
 #[gpui::test]
-fn error_retry_and_complete_render_without_credentials(cx: &mut gpui::TestAppContext) {
+fn error_and_complete_render_without_credentials(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     workspace.update(vcx, |w, cx| {
         w.account_sign_in_failed("Offline test failure".into(), cx)
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("account-sign-in-error").is_some());
-    workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.account_sign_in.primary_label(), "Try again")
-    });
-    click(vcx, "account-sign-in-primary");
+    // Typing clears the message.
+    type_into_field(vcx, "a");
     assert!(vcx.debug_bounds("account-sign-in-error").is_none());
-    workspace.read_with(vcx, |w, _| {
-        assert!(matches!(w.account_sign_in.stage, Stage::Waiting { .. }))
-    });
     workspace.update(vcx, |w, cx| {
         w.account_sign_in.stage = Stage::Complete {
             email: "offline@example.invalid".into(),
@@ -290,6 +337,7 @@ fn error_retry_and_complete_render_without_credentials(cx: &mut gpui::TestAppCon
     assert!(vcx.debug_bounds("account-sign-in-primary").is_none());
     assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
+    workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
     vcx.simulate_keystrokes("shift-tab");
@@ -306,9 +354,10 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
     vcx.simulate_window_resize(handle, gpui::size(px(360.), px(800.)));
     for stage in [
         Stage::Welcome,
-        Stage::Starting,
-        Stage::Waiting {
-            url: "https://example.invalid/offline".into(),
+        Stage::Sending,
+        Stage::Code {
+            email: "offline@example.invalid".into(),
+            login: None,
         },
         Stage::Complete {
             email: "offline@example.invalid".into(),
@@ -323,6 +372,8 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         let proceed = vcx.debug_bounds("account-sign-in-continue").unwrap();
         assert!(proceed.left() >= px(0.) && proceed.right() <= px(360.), "{proceed:?}");
         assert!(proceed.bottom() <= px(800.) && proceed.top() >= card.bottom() - px(1.), "{proceed:?}");
+        let bar = vcx.debug_bounds("account-sign-in-panel").unwrap();
+        assert!(bar.bottom() <= px(800.) + px(1.), "{bar:?}");
         assert!(
             card.left() >= px(0.) && card.right() <= px(360.),
             "{card:?}"
@@ -334,7 +385,7 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         for selector in [
             "account-sign-in-primary",
             "account-sign-in-back",
-            "account-sign-in-copy",
+            "account-sign-in-field",
         ] {
             if let Some(bounds) = vcx.debug_bounds(selector) {
                 assert!(
@@ -361,8 +412,9 @@ fn snapshots_exclude_all_transient_account_state(cx: &mut gpui::TestAppContext) 
     workspace.update(vcx, |w, _| w.account_sign_in.visible = false);
     let baseline = snapshot(vcx);
     for stage in [
-        Stage::Waiting {
-            url: "https://example.invalid/flow?device_code=FAKE_DEVICE_SECRET".into(),
+        Stage::Code {
+            email: "FAKE_DEVICE_SECRET@example.invalid".into(),
+            login: None,
         },
         Stage::Complete {
             email: "private-offline@example.invalid".into(),
@@ -413,7 +465,7 @@ fn skip_cancels_pending_gpui_task_before_restoring_composer(cx: &mut gpui::TestA
     let cancelled = Arc::new(AtomicBool::new(false));
     let probe = CancellationProbe(cancelled.clone());
     workspace.update(vcx, |w, cx| {
-        w.account_sign_in.stage = Stage::Starting;
+        w.account_sign_in.stage = Stage::Sending;
         w.account_sign_in.task = Some(cx.spawn(async move |_, _| {
             let _probe = probe;
             // Model an in-flight request without constructing a client or touching credentials.
@@ -432,28 +484,7 @@ fn skip_cancels_pending_gpui_task_before_restoring_composer(cx: &mut gpui::TestA
     assert_draft_and_focus(&workspace, vcx);
 }
 
-#[gpui::test]
-fn copy_link_uses_only_public_flow_and_resets_on_restart(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx) = setup(cx);
-    click(vcx, "account-sign-in-primary");
-    click(vcx, "account-sign-in-copy");
-    vcx.update(|_, cx| {
-        assert_eq!(
-            cx.read_from_clipboard().unwrap().text().as_deref(),
-            Some("https://jcode.sh/account")
-        );
-        assert!(workspace.read(cx).account_sign_in.link_copied);
-    });
-    click(vcx, "account-sign-in-back");
-    click(vcx, "account-sign-in-primary");
-    workspace.read_with(vcx, |w, _| assert!(!w.account_sign_in.link_copied));
-    // Theme, Open browser again, then Copy link.
-    vcx.simulate_keystrokes("tab tab tab enter");
-    vcx.run_until_parked();
-    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.link_copied));
-}
-
-const HTTP_DEVICE: &str = r#"{"device_code":"isolated-device-secret","flow_id":"test-public-flow","verification_uri":"https://jcode.sh/account","verification_uri_complete":"https://jcode.sh/account?flow=test-public-flow","expires_in":600,"interval":3}"#;
+const HTTP_STARTED: &str = r#"{"login_token":"isolated-login-token-000000000000000000000000","expires_in":900,"code_length":6}"#;
 const HTTP_APPROVED: &str = r#"{"api_key":"isolated-account-secret","account_id":"test_account","email":"local@example.invalid","tier":"none","status":"inactive"}"#;
 
 /// The production reqwest/Tokio adapter talks to an actual loopback TCP server.
@@ -499,129 +530,74 @@ fn account_http_server(
     (endpoint, rx)
 }
 
-fn poll_after(vcx: &mut gpui::VisualTestContext, seconds: u64) {
-    vcx.executor().advance_clock(Duration::from_secs(seconds));
+fn submit_email(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext, endpoint: String) {
+    workspace.update(vcx, |w, _| w.account_sign_in.test_api_base = Some(endpoint));
+    type_into_field(vcx, "local@example.invalid");
+    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
 }
 
 #[gpui::test]
-fn real_http_pending_retry_slowdown_and_free_account_approval(cx: &mut gpui::TestAppContext) {
+fn real_http_email_code_wrong_then_right_signs_in(cx: &mut gpui::TestAppContext) {
     let (endpoint, requests) = account_http_server(vec![
-        (200, HTTP_DEVICE),
-        (428, r#"{"error":"authorization_pending"}"#),
-        (503, "{}"),
-        (429, "{}"),
+        (200, HTTP_STARTED),
+        (400, r#"{"error":{"code":"invalid_code","message":"no","attempts_remaining":4}}"#),
         (200, HTTP_APPROVED),
     ]);
     let (workspace, vcx) = setup(cx);
-    workspace.update(vcx, |w, _| w.account_sign_in.test_api_base = Some(endpoint));
-    click(vcx, "account-sign-in-primary");
+    submit_email(&workspace, vcx, endpoint);
     workspace.read_with(vcx, |w, _| {
-        assert!(matches!(&w.account_sign_in.stage, Stage::Waiting { url } if url == "https://jcode.sh/account?flow=test-public-flow"));
-        assert_eq!(w.account_sign_in.remaining, Some(Duration::from_secs(600)));
+        assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, login: Some(_) } if email == "local@example.invalid"));
     });
-    assert!(vcx.debug_bounds("account-sign-in-progress").is_some());
-    click(vcx, "account-sign-in-copy");
-    vcx.update(|_, cx| {
-        assert_eq!(
-            cx.read_from_clipboard().unwrap().text().as_deref(),
-            Some("https://jcode.sh/account?flow=test-public-flow")
-        )
+    type_into_field(vcx, "000000");
+    workspace.read_with(vcx, |w, cx| {
+        assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }));
+        assert!(w.account_sign_in.error.as_deref().unwrap().contains("4 tries left"));
+        assert!(w.account_sign_in.input.as_ref().unwrap().read(cx).content.is_empty());
     });
-    poll_after(vcx, 3);
-    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.error.is_none()));
-    poll_after(vcx, 3);
-    workspace.read_with(vcx, |w, _| {
-        assert!(
-            w.account_sign_in
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("Connection interrupted")
-        )
-    });
-    poll_after(vcx, 5);
-    workspace.read_with(vcx, |w, _| {
-        assert!(
-            w.account_sign_in
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("service is busy")
-        )
-    });
-    poll_after(vcx, 8);
+    type_into_field(vcx, "123456");
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(&w.account_sign_in.stage, Stage::Complete { email } if email == "local@example.invalid"));
         assert!(w.account_sign_in.connected);
         assert!(w.account_sign_in.error.is_none());
     });
     let wire: Vec<_> = requests.try_iter().collect();
-    assert_eq!(wire.len(), 5);
-    assert!(wire[0].starts_with("POST /v1/auth/device "));
-    assert!(wire[0].contains(r#""client_name":"jcode-cli""#));
-    assert!(
-        wire[1..]
-            .iter()
-            .all(|request| request.starts_with("POST /v1/auth/token ")
-                && request.contains("isolated-device-secret"))
-    );
+    assert_eq!(wire.len(), 3);
+    assert!(wire[0].starts_with("POST /v1/auth/email/start "));
+    assert!(wire[0].contains(r#""email":"local@example.invalid""#));
+    assert!(wire[1..].iter().all(|r| r.starts_with("POST /v1/auth/email/verify ")
+        && r.contains("isolated-login-token")));
     click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
 }
 
 #[gpui::test]
-fn real_http_denial_expiry_and_invalid_start_are_recoverable(cx: &mut gpui::TestAppContext) {
+fn real_http_send_failure_and_expired_code_are_recoverable(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    for (responses, expected) in [
-        (
-            vec![(200, HTTP_DEVICE), (403, r#"{"error":"access_denied"}"#)],
-            "not approved",
-        ),
-        (
-            vec![(200, HTTP_DEVICE), (400, r#"{"error":"expired_token"}"#)],
-            "expired",
-        ),
-        (vec![(200, "{not-json}")], "invalid response"),
-    ] {
-        let (endpoint, requests) = account_http_server(responses);
-        workspace.update(vcx, |w, _| w.account_sign_in.test_api_base = Some(endpoint));
-        click(vcx, "account-sign-in-primary");
-        poll_after(vcx, 3);
-        workspace.read_with(vcx, |w, _| {
-            assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
-            assert!(
-                w.account_sign_in
-                    .error
-                    .as_deref()
-                    .unwrap()
-                    .contains(expected)
-            );
-            assert!(!w.account_sign_in.connected);
-        });
-        assert!(!requests.try_iter().collect::<Vec<_>>().is_empty());
-    }
-    click(vcx, "account-sign-in-continue");
-    assert_draft_and_focus(&workspace, vcx);
-}
-
-#[gpui::test]
-fn real_http_skip_cancels_polling_and_preserves_draft(cx: &mut gpui::TestAppContext) {
-    let (endpoint, requests) = account_http_server(vec![(200, HTTP_DEVICE)]);
-    let (workspace, vcx) = setup(cx);
-    workspace.update(vcx, |w, _| w.account_sign_in.test_api_base = Some(endpoint));
-    click(vcx, "account-sign-in-primary");
-    workspace.read_with(vcx, |w, _| {
-        assert!(matches!(w.account_sign_in.stage, Stage::Waiting { .. }));
-        assert!(w.account_sign_in.task.is_some());
+    let (endpoint, _requests) =
+        account_http_server(vec![(429, r#"{"error":{"code":"rate_limited","message":"no"}}"#)]);
+    submit_email(&workspace, vcx, endpoint);
+    workspace.read_with(vcx, |w, cx| {
+        assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
+        assert!(w.account_sign_in.error.as_deref().unwrap().contains("Too many"));
+        assert_eq!(w.account_sign_in.input.as_ref().unwrap().read(cx).content, "local@example.invalid");
     });
-    click(vcx, "account-sign-in-continue");
-    poll_after(vcx, 30);
-    workspace.read_with(vcx, |w, _| {
+    let (endpoint, _requests) = account_http_server(vec![
+        (200, HTTP_STARTED),
+        (400, r#"{"error":{"code":"expired_code","message":"no"}}"#),
+    ]);
+    workspace.update(vcx, |w, cx| {
+        w.account_sign_in.input.as_ref().unwrap().update(cx, |i, cx| i.set_content(String::new(), cx))
+    });
+    submit_email(&workspace, vcx, endpoint);
+    type_into_field(vcx, "123456");
+    workspace.read_with(vcx, |w, cx| {
+        assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
+        assert!(w.account_sign_in.error.as_deref().unwrap().contains("expired"));
+        assert_eq!(w.account_sign_in.input.as_ref().unwrap().read(cx).content, "local@example.invalid");
         assert!(!w.account_sign_in.connected);
-        assert!(w.account_sign_in.error.is_none());
     });
-    assert_eq!(requests.try_iter().count(), 1);
+    click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
 }
 

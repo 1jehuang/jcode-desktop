@@ -1,7 +1,7 @@
 //! Optional account onboarding. Device secrets stay in memory, never in workspace snapshots.
 use super::*;
 use crate::theme::ThemePreset;
-use jcode_base::account_login::{self as auth, LoginPoll};
+use jcode_base::account_login::{self as auth, EmailCodeResult, EmailLogin};
 use jcode_base::external_auth::{self, ExternalAuthReviewCandidate};
 use std::sync::Arc;
 
@@ -13,8 +13,8 @@ pub(super) struct State {
     error: Option<String>,
     keyboard_choice: Option<usize>,
     task: Option<gpui::Task<()>>,
-    link_copied: bool,
-    remaining: Option<Duration>,
+    /// Single-line field for the email, then the emailed code.
+    input: Option<Entity<PromptInput>>,
     /// Logins left behind by other tools that Jcode can reuse in place.
     candidates: Vec<ExternalAuthReviewCandidate>,
     /// Parallel to `candidates`. Everything imports unless the row is skipped.
@@ -45,8 +45,8 @@ struct Demo {
 enum Choice {
     Login(usize),
     Theme,
+    Field,
     Primary,
-    CopyLink,
     StartOver,
     Continue,
 }
@@ -76,13 +76,44 @@ fn candidate_logo(summary: &str) -> &'static str {
 enum Stage {
     #[default]
     Welcome,
-    Starting,
-    Waiting {
-        url: String,
+    Sending,
+    /// The code was emailed. `login` is None only for offline fixtures.
+    Code {
+        email: String,
+        login: Option<Arc<EmailLogin>>,
+    },
+    Verifying {
+        email: String,
+        login: Option<Arc<EmailLogin>>,
     },
     Complete {
         email: String,
     },
+}
+
+impl Stage {
+    fn code_step(&self) -> Option<(&str, Option<Arc<EmailLogin>>)> {
+        match self {
+            Stage::Code { email, login } | Stage::Verifying { email, login } => {
+                Some((email.as_str(), login.clone()))
+            }
+            _ => None,
+        }
+    }
+}
+
+fn looks_like_email(text: &str) -> bool {
+    let text = text.trim();
+    let Some((local, domain)) = text.split_once('@') else { return false };
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !text.chars().any(char::is_whitespace)
+}
+
+fn code_digits(text: &str) -> String {
+    text.chars().filter(char::is_ascii_digit).collect()
 }
 
 fn should_offer(handled: bool, connected: bool, fixture: bool) -> bool {
@@ -108,11 +139,11 @@ impl State {
         choices.push(Choice::Theme);
         match self.stage {
             Stage::Complete { .. } => {}
-            Stage::Waiting { .. } => {
-                choices.extend([Choice::Primary, Choice::CopyLink, Choice::StartOver])
+            Stage::Code { .. } | Stage::Verifying { .. } => {
+                choices.extend([Choice::Field, Choice::Primary, Choice::StartOver])
             }
             _ if self.connected => {}
-            _ => choices.push(Choice::Primary),
+            _ => choices.extend([Choice::Field, Choice::Primary]),
         }
         choices.push(Choice::Continue);
         choices
@@ -146,10 +177,10 @@ impl State {
 
     fn primary_label(&self) -> &'static str {
         match self.stage {
-            Stage::Welcome if self.error.is_some() => "Try again",
             Stage::Welcome => "Sign in with email",
-            Stage::Starting => "Connecting securely…",
-            Stage::Waiting { .. } => "Open browser again",
+            Stage::Sending => "Sending code…",
+            Stage::Code { .. } => "Verify",
+            Stage::Verifying { .. } => "Verifying…",
             Stage::Complete { .. } => "Signed in",
         }
     }
@@ -311,9 +342,9 @@ impl Workspace {
 
     fn activate_account_choice(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
         match choice {
+            Choice::Field => self.focus_account_input(window, cx),
             Choice::Primary => self.account_sign_in_primary(window, cx),
-            Choice::CopyLink => self.copy_account_sign_in_link(cx),
-            Choice::StartOver => self.reset_account_sign_in(cx),
+            Choice::StartOver => self.reset_account_sign_in(window, cx),
             Choice::Login(index) => self.toggle_account_import(index, cx),
             Choice::Theme => self.pick_account_theme(Theme::active_preset().next(), cx),
             Choice::Continue => self.continue_account_sign_in(window, cx),
@@ -331,171 +362,271 @@ impl Workspace {
         self.account_sign_in.task = None;
         self.account_sign_in.detect_task = None;
         self.account_sign_in.demo = None;
+        self.account_sign_in.input = None;
         self.account_sign_in.stage = Stage::Welcome;
         self.account_sign_in.error = None;
         self.restore_focus(window, cx);
         cx.notify();
     }
 
-    fn reset_account_sign_in(&mut self, cx: &mut Context<Self>) {
+    /// Back to the email field, keeping what was typed.
+    fn reset_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let email = self.account_sign_in.stage.code_step().map(|(email, _)| email.to_owned());
         self.account_sign_in.task = None;
         self.account_sign_in.stage = Stage::Welcome;
         self.account_sign_in.error = None;
         self.account_sign_in.keyboard_choice = None;
-        self.account_sign_in.link_copied = false;
-        self.account_sign_in.remaining = None;
+        self.replace_account_input(email.unwrap_or_default(), window, cx);
         cx.notify();
     }
 
-    fn copy_account_sign_in_link(&mut self, cx: &mut Context<Self>) {
-        if let Stage::Waiting { url } = &self.account_sign_in.stage {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
-            self.account_sign_in.link_copied = true;
-            cx.notify();
+    /// Single-line field reused for the email and then the code.
+    fn ensure_account_input(&mut self, cx: &mut Context<Self>) -> Entity<PromptInput> {
+        if let Some(input) = &self.account_sign_in.input {
+            return input.clone();
+        }
+        let input = self.new_account_input(String::new(), cx);
+        self.account_sign_in.input = Some(input.clone());
+        input
+    }
+
+    fn new_account_input(&mut self, content: String, cx: &mut Context<Self>) -> Entity<PromptInput> {
+        let code = self.account_sign_in.stage.code_step().is_some();
+        let submit = cx.weak_entity();
+        let change = cx.weak_entity();
+        cx.new(|cx| {
+            let mut input = PromptInput::new(
+                cx,
+                if code { "6-digit code" } else { "you@example.com" },
+                move |text, _, window, app| {
+                    // Deferred: the field is still mid-update when Enter fires.
+                    let submit = submit.clone();
+                    let handle = window.window_handle();
+                    app.defer(move |app| {
+                        let _ = handle.update(app, |_, window, app| {
+                            let _ = submit
+                                .update(app, |this, cx| this.submit_account_field(text, window, cx));
+                        });
+                    });
+                },
+            )
+            .without_command_completion()
+            .with_on_change(move |text, app| {
+                // Six digits verify without an extra click. Deferred so the
+                // field is not borrowed while the workspace reacts.
+                let text = text.to_owned();
+                let change = change.clone();
+                app.defer(move |app| {
+                    let _ = change.update(app, |this, cx| {
+                        if this.account_sign_in.error.take().is_some() {
+                            cx.notify();
+                        }
+                        if matches!(this.account_sign_in.stage, Stage::Code { .. })
+                            && code_digits(&text).len() == 6
+                        {
+                            this.verify_account_code(code_digits(&text), cx);
+                        }
+                    });
+                });
+            });
+            if !content.is_empty() {
+                input.set_content(content, cx);
+            }
+            input
+        })
+    }
+
+    fn replace_account_input(&mut self, content: String, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.new_account_input(content, cx);
+        let focus = input.read(cx).focus_handle.clone();
+        self.account_sign_in.input = Some(input);
+        window.focus(&focus, cx);
+    }
+
+    fn focus_account_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.ensure_account_input(cx).read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+    }
+
+    /// Enter in the field, or the primary button with the field's text.
+    fn submit_account_field(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.account_sign_in.stage {
+            Stage::Welcome => self.start_account_sign_in(text, window, cx),
+            Stage::Code { .. } => {
+                let digits = code_digits(&text);
+                if digits.len() == 6 {
+                    self.verify_account_code(digits, cx);
+                } else {
+                    self.account_sign_in.error = Some("Enter the 6-digit code from the email.".into());
+                    if let Some(input) = self.account_sign_in.input.clone() {
+                        input.update(cx, |input, cx| input.set_content(text, cx));
+                    }
+                    cx.notify();
+                }
+            }
+            _ => {}
         }
     }
 
     fn account_sign_in_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &self.account_sign_in.stage {
-            Stage::Welcome => self.start_account_sign_in(cx),
-            Stage::Starting => {}
-            Stage::Waiting { url } => {
-                if !harness::screenshot_mode() && !cfg!(test) {
-                    cx.open_url(url);
-                }
+            Stage::Welcome | Stage::Code { .. } => {
+                let text = self.ensure_account_input(cx).read(cx).content.to_string();
+                self.submit_account_field(text, window, cx);
             }
             Stage::Complete { .. } => self.continue_account_sign_in(window, cx),
+            Stage::Sending | Stage::Verifying { .. } => {}
         }
     }
 
     fn account_sign_in_failed(&mut self, error: String, cx: &mut Context<Self>) {
-        self.account_sign_in.stage = Stage::Welcome;
         self.account_sign_in.error = Some(error);
         self.account_sign_in.keyboard_choice = None;
         cx.notify();
     }
 
-    fn start_account_sign_in(&mut self, cx: &mut Context<Self>) {
-        self.account_sign_in.error = None;
+    fn start_account_sign_in(&mut self, email: String, window: &mut Window, cx: &mut Context<Self>) {
+        let email = email.trim().to_owned();
         self.account_sign_in.keyboard_choice = None;
-        self.account_sign_in.link_copied = false;
-        self.account_sign_in.remaining = None;
+        if !looks_like_email(&email) {
+            self.account_sign_in.error = Some(if email.is_empty() {
+                "Enter your email to sign in.".into()
+            } else {
+                "Enter a valid email address.".into()
+            });
+            if let Some(input) = self.account_sign_in.input.clone() {
+                input.update(cx, |input, cx| input.set_content(email, cx));
+            }
+            cx.notify();
+            return;
+        }
+        self.account_sign_in.error = None;
         #[cfg(test)]
         let offline = self.account_sign_in.test_api_base.is_none();
         #[cfg(not(test))]
         let offline = false;
         if harness::screenshot_mode() || offline {
             // Explicit offline fixture, never send email or read/write credentials.
-            self.account_sign_in.stage = Stage::Waiting {
-                url: "https://jcode.sh/account".into(),
-            };
+            self.account_sign_in.stage = Stage::Code { email, login: None };
+            self.replace_account_input(String::new(), window, cx);
             cx.notify();
             return;
         }
-        self.account_sign_in.stage = Stage::Starting;
+        self.account_sign_in.stage = Stage::Sending;
         #[cfg(test)]
         let api_base = self
             .account_sign_in
             .test_api_base
             .clone()
             .expect("explicit test endpoint");
+        let address = email.clone();
         let request = cx.background_executor().spawn(async move {
             #[cfg(test)]
             let result = network(async {
-                auth::start_with_api_base(&reqwest::Client::new(), &api_base).await
+                auth::start_email_with_api_base(&reqwest::Client::new(), &api_base, &address).await
             });
             #[cfg(not(test))]
-            let result = network(async { auth::start(&reqwest::Client::new()).await });
-            result?.map_err(|error| error.to_string())
+            let result = network(async { auth::start_email(&reqwest::Client::new(), &address).await });
+            result?.map_err(|error| auth::email_start_error_message(&error))
+        });
+        self.account_sign_in.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = request.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.account_sign_in.task = None;
+                match result {
+                    Ok(login) => {
+                        this.account_sign_in.stage = Stage::Code {
+                            email: login.email().to_owned(),
+                            login: Some(Arc::new(login)),
+                        };
+                        this.replace_account_input(String::new(), window, cx);
+                    }
+                    Err(error) => {
+                        this.account_sign_in.stage = Stage::Welcome;
+                        this.replace_account_input(email, window, cx);
+                        this.account_sign_in_failed(error, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn verify_account_code(&mut self, code: String, cx: &mut Context<Self>) {
+        let Stage::Code { email, login } = std::mem::take(&mut self.account_sign_in.stage) else {
+            return;
+        };
+        self.account_sign_in.error = None;
+        let Some(login) = login else {
+            // Offline fixture: any six digits sign in without touching credentials.
+            self.account_sign_in_approved(email, cx);
+            return;
+        };
+        self.account_sign_in.stage = Stage::Verifying { email: email.clone(), login: Some(login.clone()) };
+        let pending = login.clone();
+        let request = cx.background_executor().spawn(async move {
+            network(async { auth::verify_email(&reqwest::Client::new(), &pending, &code).await })
         });
         self.account_sign_in.task = Some(cx.spawn(async move |this, cx| {
-            let flow = match request.await {
-                Ok(flow) => Arc::new(flow),
-                Err(error) => {
-                    let _ = this.update(cx, |this, cx| this.account_sign_in_failed(error, cx));
-                    return;
-                }
-            };
-            let url = flow.auth_url().to_owned();
-            if this.update(cx, |this, cx| {
-                this.account_sign_in.stage = Stage::Waiting { url: url.clone() };
-                this.account_sign_in.remaining = Some(flow.expires_in());
-                if !cfg!(test) { cx.open_url(&url); }
-                cx.notify();
-            }).is_err() { return; }
-            let mut interval = flow.interval();
-            let expires_at = Instant::now() + flow.expires_in();
-            loop {
-                cx.background_executor().timer(interval.min(expires_at.saturating_duration_since(Instant::now()))).await;
-                let _ = this.update(cx, |this, cx| {
-                    this.account_sign_in.remaining = Some(expires_at.saturating_duration_since(Instant::now()));
-                    cx.notify();
-                });
-                if flow.is_expired() {
-                    let _ = this.update(cx, |this, cx| this.account_sign_in_failed(
-                        "This sign-in expired. Try again for a new link, or skip for now.".into(), cx));
-                    return;
-                }
-                let pending = flow.clone();
-                let result = cx.background_executor().spawn(async move {
-                    network(async { auth::poll(&reqwest::Client::new(), &pending).await })
-                }).await;
+            let result = request.await;
+            let _ = this.update(cx, |this, cx| {
+                this.account_sign_in.task = None;
+                let retry = |this: &mut Self, message: String, cx: &mut Context<Self>| {
+                    this.account_sign_in.stage = Stage::Code { email: email.clone(), login: Some(login.clone()) };
+                    if let Some(input) = this.account_sign_in.input.clone() {
+                        input.update(cx, |input, cx| input.set_content(String::new(), cx));
+                    }
+                    this.account_sign_in_failed(message, cx);
+                };
                 match result {
-                    Ok(Ok(LoginPoll::Pending)) => {
-                        let _ = this.update(cx, |this, cx| {
-                            if this.account_sign_in.error.take().is_some() { cx.notify(); }
-                        });
-                    },
-                    Ok(Ok(LoginPoll::SlowDown { retry_after })) => {
-                        interval = retry_after.max(interval);
-                        let _ = this.update(cx, |this, cx| {
-                            this.account_sign_in.error = Some(format!("The service is busy. Checking again in {} seconds.", interval.as_secs()));
-                            cx.notify();
-                        });
-                    },
-                    Ok(Err(error)) if error.is_temporary() => {
-                        interval = (interval + Duration::from_secs(2)).min(Duration::from_secs(30)).max(interval);
-                        let _ = this.update(cx, |this, cx| {
-                            this.account_sign_in.error = Some("Connection interrupted. Retrying until this sign-in expires. You can still skip.".into());
-                            cx.notify();
-                        });
-                    },
-                    Ok(Ok(LoginPoll::Approved(approved))) => {
-                        let _ = this.update(cx, |this, cx| {
-                            // Only the still-live UI operation may commit credentials.
-                            // Integrated tests exercise real HTTP but never touch a user credential.
-                            #[cfg(test)]
-                            let saved: Result<(), auth::AccountLoginError> = Ok(());
-                            #[cfg(not(test))]
-                            let saved = auth::save(&approved);
-                            match saved {
-                                Ok(()) => {
-                                    this.account_sign_in.connected = true;
-                                    this.account_sign_in.stage = Stage::Complete { email: approved.email };
-                                    this.account_sign_in.error = crate::config::persist_account_sign_in_handled().err()
-                                        .map(|_| "Signed in, but the welcome preference could not be saved.".into());
-                                    this.account_sign_in.keyboard_choice = None;
-                                    cx.notify();
-                                },
-                                Err(error) => this.account_sign_in_failed(error.to_string(), cx),
-                            }
-                        });
-                        return;
-                    },
-                    other => {
-                        let message = match other {
-                            Ok(Ok(LoginPoll::Expired)) => "This sign-in expired. Try again for a new link, or skip for now.".into(),
-                            Ok(Ok(LoginPoll::Denied)) => "Sign-in was not approved. Try again, or skip for now.".into(),
-                            Ok(Err(error)) => error.to_string(),
-                            Err(error) => error,
-                            _ => unreachable!(),
-                        };
-                        let _ = this.update(cx, |this, cx| this.account_sign_in_failed(message, cx));
-                        return;
-                    },
+                    Ok(Ok(EmailCodeResult::Approved(approved))) => {
+                        // Only the still-live UI operation may commit credentials.
+                        #[cfg(test)]
+                        let saved: Result<(), auth::AccountLoginError> = Ok(());
+                        #[cfg(not(test))]
+                        let saved = auth::save(&approved);
+                        match saved {
+                            Ok(()) => this.account_sign_in_approved(approved.email, cx),
+                            Err(error) => retry(this, error.to_string(), cx),
+                        }
+                    }
+                    Ok(Ok(EmailCodeResult::Incorrect { attempts_remaining })) => retry(
+                        this,
+                        match attempts_remaining {
+                            Some(1) => "That code is not right. 1 try left.".into(),
+                            Some(n) => format!("That code is not right. {n} tries left."),
+                            None => "That code is not right.".into(),
+                        },
+                        cx,
+                    ),
+                    Ok(Ok(EmailCodeResult::Expired)) => {
+                        this.account_sign_in.stage = Stage::Welcome;
+                        this.account_sign_in.input = None;
+                        this.account_sign_in.input = Some(this.new_account_input(email.clone(), cx));
+                        this.account_sign_in_failed(
+                            "That code expired. Send a new one, or skip for now.".into(),
+                            cx,
+                        );
+                    }
+                    Ok(Err(error)) => retry(this, error.to_string(), cx),
+                    Err(error) => retry(this, error, cx),
                 }
-            }
+                cx.notify();
+            });
         }));
+        cx.notify();
+    }
+
+    fn account_sign_in_approved(&mut self, email: String, cx: &mut Context<Self>) {
+        self.account_sign_in.connected = true;
+        self.account_sign_in.stage = Stage::Complete { email };
+        self.account_sign_in.input = None;
+        self.account_sign_in.error = crate::config::persist_account_sign_in_handled()
+            .err()
+            .map(|_| "Signed in, but the welcome preference could not be saved.".into());
+        self.account_sign_in.keyboard_choice = None;
+        accounts::request_refresh();
         cx.notify();
     }
 
@@ -593,8 +724,15 @@ impl Workspace {
                 if event.is_held {
                     return;
                 }
+                let typing = this
+                    .account_sign_in
+                    .input
+                    .as_ref()
+                    .is_some_and(|input| input.read(cx).focus_handle.is_focused(window));
                 match event.keystroke.key.as_str() {
                     "escape" => this.finish_account_sign_in(window, cx),
+                    // The field owns Enter (submit) and Space (text).
+                    "enter" | "space" if typing => return,
                     "enter" | "space" => {
                         let state = &this.account_sign_in;
                         let choice = state
@@ -612,6 +750,16 @@ impl Workspace {
                                 None => 0,
                                 Some(index) => (index + if back { count - 1 } else { 1 }) % count,
                             });
+                        let state = &this.account_sign_in;
+                        let field = state
+                            .keyboard_choice
+                            .and_then(|index| state.choices().get(index).copied())
+                            == Some(Choice::Field);
+                        if field {
+                            this.focus_account_input(window, cx);
+                        } else {
+                            window.focus(&this.focus_handle, cx);
+                        }
                         cx.notify();
                     }
                     _ => return,
@@ -625,7 +773,7 @@ impl Workspace {
     fn account_onboarding_header(&self) -> gpui::Div {
         let theme = Theme::global();
         let title = match &self.account_sign_in.stage {
-            Stage::Waiting { .. } => "Finish signing in",
+            Stage::Code { .. } | Stage::Verifying { .. } => "Check your email",
             Stage::Complete { .. } => "You're signed in",
             _ => "Welcome to Jcode",
         };
@@ -661,97 +809,109 @@ impl Workspace {
             )
     }
 
-    /// Jcode account sign-in, shown on the right above Continue.
-    fn account_onboarding_account(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let state = &self.account_sign_in;
+    /// Jcode account sign-in: one email field, then the emailed code.
+    fn account_onboarding_account(&mut self, narrow: bool, cx: &mut Context<Self>) -> gpui::Div {
         let theme = Theme::global();
-        let waiting = matches!(state.stage, Stage::Waiting { .. });
+        let signed_in = match &self.account_sign_in.stage {
+            Stage::Complete { email } => Some(format!("Signed in as {email}")),
+            Stage::Welcome if self.account_sign_in.connected => Some("Signed in to Jcode".to_string()),
+            _ => None,
+        };
         let mut section = div()
             .debug_selector(|| "account-sign-in-account".into())
             .w_full()
             .flex()
             .flex_col()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child("Jcode account · optional"),
-            );
-        let status = match &state.stage {
-            Stage::Complete { email } => Some(format!("Signed in as {email}")),
-            Stage::Welcome if state.connected => Some("Signed in to Jcode".to_string()),
-            _ => None,
-        };
-        if let Some(status) = status {
-            section = section.child(div().text_size(px(13.0)).text_color(theme.OK).child(status));
-        }
-        if !matches!(state.stage, Stage::Complete { .. }) && !state.connected {
+            .gap_2();
+        if let Some(status) = signed_in {
             section = section.child(
-                account_button(
-                    "account-sign-in-primary",
-                    state.primary_label(),
-                    false,
-                    state.focused(Choice::Primary),
-                )
-                .w_full()
-                .border_color(if state.focused(Choice::Primary) { theme.ACCENT } else { theme.PANEL_BORDER })
-                .when(matches!(state.stage, Stage::Starting), |el| el.opacity(0.6))
-                .on_click(cx.listener(|this, _, window, cx| this.account_sign_in_primary(window, cx))),
+                div()
+                    .debug_selector(|| "account-sign-in-status".into())
+                    .px_2()
+                    .text_size(px(13.0))
+                    .text_color(theme.OK)
+                    .child(status),
             );
-        }
-        if waiting {
-            let progress = state
-                .remaining
-                .map(|remaining| {
-                    let seconds = remaining.as_secs();
-                    format!("Waiting for approval · {}:{:02}", seconds / 60, seconds % 60)
-                })
-                .unwrap_or_else(|| "Waiting for approval".into());
+        } else {
+            let input = self.ensure_account_input(cx);
+            let state = &self.account_sign_in;
+            let busy = matches!(state.stage, Stage::Sending | Stage::Verifying { .. });
+            let code = state.stage.code_step().map(|(email, _)| email.to_owned());
+            let field_focused = state.focused(Choice::Field);
             section = section
-                .child(
-                    div()
-                        .debug_selector(|| "account-sign-in-progress".into())
-                        .text_size(px(12.0))
-                        .text_color(theme.TEXT_DIM)
-                        .child(progress),
-                )
+                .when_some(code.clone(), |el, email| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "account-sign-in-sent".into())
+                            .px_2()
+                            .text_size(px(12.0))
+                            .text_color(theme.TEXT_DIM)
+                            .child(format!("We emailed a code to {email}")),
+                    )
+                })
                 .child(
                     div()
                         .flex()
+                        .when(narrow, |el| el.flex_col())
+                        .items_center()
                         .gap_2()
                         .child(
-                            account_button(
-                                "account-sign-in-copy",
-                                if state.link_copied { "Link copied" } else { "Copy link" },
-                                false,
-                                state.focused(Choice::CopyLink),
-                            )
-                            .text_size(px(12.0))
-                            .py_1()
-                            .on_click(cx.listener(|this, _, _, cx| this.copy_account_sign_in_link(cx))),
+                            div()
+                                .id("account-sign-in-field")
+                                .debug_selector(|| "account-sign-in-field".into())
+                                .flex_1()
+                                .w_full()
+                                .min_w_0()
+                                .rounded(px(19.0))
+                                .border_1()
+                                .border_color(if field_focused {
+                                    theme.ACCENT
+                                } else {
+                                    gpui::transparent_black().into()
+                                })
+                                .when(busy, |el| el.opacity(0.6))
+                                .child(input),
                         )
                         .child(
                             account_button(
+                                "account-sign-in-primary",
+                                state.primary_label(),
+                                true,
+                                state.focused(Choice::Primary),
+                            )
+                            .flex_none()
+                            .when(narrow, |el| el.w_full())
+                            .when(busy, |el| el.opacity(0.6))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.account_sign_in_primary(window, cx)
+                            })),
+                        ),
+                )
+                .when(code.is_some(), |el| {
+                    el.child(
+                        div().flex().px_1().child(
+                            account_button(
                                 "account-sign-in-back",
-                                "Start over",
+                                "Use another email",
                                 false,
                                 state.focused(Choice::StartOver),
                             )
                             .text_size(px(12.0))
+                            .px_3()
                             .py_1()
-                            .on_click(cx.listener(|this, _, _, cx| this.reset_account_sign_in(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reset_account_sign_in(window, cx)
+                            })),
                         ),
-                );
+                    )
+                });
         }
-        if let Some(error) = &state.error {
+        if let Some(error) = &self.account_sign_in.error {
             section = section.child(
                 div()
                     .debug_selector(|| "account-sign-in-error".into())
-                    .max_w(px(320.0))
-                    .text_center()
-                    .text_size(px(13.0))
+                    .px_2()
+                    .text_size(px(12.0))
                     .text_color(theme.ERROR)
                     .child(error.clone()),
             );
@@ -814,26 +974,16 @@ impl Workspace {
         for index in importable {
             let candidate = &state.candidates[index];
             let checked = state.checked.get(index).copied().unwrap_or(false);
-            let toggle = account_button(
-                if checked { "account-import-skip" } else { "account-import-undo" },
-                if checked { "Skip" } else { "Import" },
-                false,
-                state.focused(Choice::Login(index)),
-            )
-            .id(("account-import-toggle", index))
-            .debug_selector(move || format!("account-import-toggle-{index}"))
-            .text_size(px(12.0))
-            .px_3()
-            .py_1()
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle_account_import(index, cx)));
+            let toggle = div()
+                .id(("account-import-toggle", index))
+                .debug_selector(move || format!("account-import-toggle-{index}"))
+                .cursor_pointer()
+                .child(import_slider(checked, state.focused(Choice::Login(index))))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_account_import(index, cx)));
             let row = login_row(
                 candidate_logo(candidate.provider_summary()),
                 candidate.provider_summary().to_string(),
-                if checked {
-                    format!("from {}", candidate.source_name())
-                } else {
-                    format!("from {} · skipped", candidate.source_name())
-                },
+                format!("from {}", candidate.source_name()),
                 div().child(toggle),
             )
             .id(("account-import", index))
@@ -887,86 +1037,126 @@ impl Workspace {
         section("Theme").child(grid)
     }
 
-    /// The right half: a live chat replay behind a card holding the Jcode
-    /// account sign-in and a Continue button.
-    fn account_onboarding_continue(&self, narrow: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let state = &self.account_sign_in;
+    /// The right half: the live chat replay, fully visible, with a compact
+    /// sign-in bar pinned along the bottom and a tiny skip icon in the corner.
+    fn account_onboarding_continue(&mut self, narrow: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
-        let focused = state.focused(Choice::Continue);
+        let focused = self.account_sign_in.focused(Choice::Continue);
+        let complete = matches!(self.account_sign_in.stage, Stage::Complete { .. })
+            || self.account_sign_in.connected;
         let mut container = div()
             .id("account-sign-in-right")
             .debug_selector(|| "account-sign-in-right".into())
-            .when(narrow, |el| el.h(px(260.0)).flex_none().w_full())
+            .when(narrow, |el| el.h(px(340.0)).flex_none().w_full())
             .when(!narrow, |el| el.flex_1().h_full())
             .min_w(px(0.0))
             .relative()
+            .flex()
+            .flex_col()
             .overflow_hidden()
             .bg(theme.PANEL_BG);
-        if let Some(demo) = &state.demo {
-            container = container.child(
-                div()
-                    .debug_selector(|| "account-sign-in-demo".into())
-                    .absolute()
-                    .inset_0()
-                    .p(px(if narrow { 8.0 } else { 20.0 }))
-                    .child(demo.panel.clone()),
-            );
-        }
-        let proceed = div()
+        let demo = self.account_sign_in.demo.as_ref().map(|demo| demo.panel.clone());
+        container = container.child(
+            div()
+                .debug_selector(|| "account-sign-in-demo".into())
+                .flex_1()
+                .min_h(px(0.0))
+                .p(px(if narrow { 8.0 } else { 20.0 }))
+                .children(demo),
+        );
+        let skip = div()
             .id("account-sign-in-continue")
             .debug_selector(|| "account-sign-in-continue".into())
+            .absolute()
+            .top(px(if narrow { 8.0 } else { 14.0 }))
+            .right(px(if narrow { 8.0 } else { 14.0 }))
+            .size(px(28.0))
             .flex()
             .items_center()
             .justify_center()
-            .gap_3()
-            .px(px(28.0))
-            .py(px(12.0))
             .rounded_full()
-            .bg(theme.ACCENT)
-            .text_color(theme.BG)
-            .text_size(px(16.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .shadow_lg()
-            .border_2()
-            .border_color(if focused { theme.TEXT } else { theme.ACCENT })
+            .border_1()
+            .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
+            .bg(theme.BG.opacity(0.6))
+            .text_color(theme.TEXT_DIM)
             .cursor_pointer()
-            .hover(|el| el.opacity(0.9))
+            .hover(|el| el.bg(theme.TEXT.opacity(0.1)).text_color(theme.TEXT))
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    super::remotes::HeaderTooltip(if complete { "Continue" } else { "Skip for now" }.into())
+                })
+                .into()
+            })
             .on_click(cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx)))
-            .child("Continue")
-            .child("→");
-        container.child(
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/skip.svg") as &'static [u8])
+                    .size(px(12.0))
+                    .text_color(if focused { theme.TEXT } else { theme.TEXT_DIM }),
+            );
+        let bar = div()
+            .debug_selector(|| "account-sign-in-panel".into())
+            .flex_none()
+            .w_full()
+            .px(px(if narrow { 12.0 } else { 20.0 }))
+            .py(px(if narrow { 10.0 } else { 14.0 }))
+            .border_t_1()
+            .border_color(theme.PANEL_BORDER)
+            .bg(theme.BG)
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(520.0))
+                    .child(self.account_onboarding_account(narrow, cx)),
+            );
+        container.child(bar).child(skip)
+    }
+}
+
+/// Import on the left, Skip on the right, with a knob that slides between.
+fn import_slider(importing: bool, focused: bool) -> gpui::Div {
+    let theme = Theme::global();
+    let label = |text: &'static str, active: bool| {
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.0))
+            .text_color(if active { theme.BG } else { theme.TEXT_DIM })
+            .child(text)
+    };
+    let (width, knob) = (px(116.0), px(58.0));
+    div()
+        .relative()
+        .w(width)
+        .h(px(26.0))
+        .flex_none()
+        .rounded_full()
+        .border_1()
+        .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
+        .bg(theme.TEXT.opacity(0.08))
+        .child(
             div()
-                .id("account-sign-in-overlay")
+                .absolute()
+                .top(px(2.0))
+                .left(if importing { px(2.0) } else { width - knob - px(4.0) })
+                .w(knob)
+                .h(px(20.0))
+                .rounded_full()
+                .bg(if importing { theme.ACCENT } else { theme.TEXT_DIM }),
+        )
+        .child(
+            div()
                 .absolute()
                 .inset_0()
-                .occlude()
                 .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .p(px(if narrow { 12.0 } else { 32.0 }))
-                .bg(theme.BG.opacity(0.7))
-                .child(
-                    div()
-                        .debug_selector(|| "account-sign-in-panel".into())
-                        .w_full()
-                        .max_w(px(360.0))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(if narrow { 12.0 } else { 20.0 }))
-                        .px(px(if narrow { 16.0 } else { 28.0 }))
-                        .py(px(if narrow { 14.0 } else { 28.0 }))
-                        .rounded(px(28.0))
-                        .bg(theme.BG)
-                        .border_1()
-                        .border_color(theme.PANEL_BORDER)
-                        .shadow_lg()
-                        .child(self.account_onboarding_account(cx))
-                        .child(proceed.w_full()),
-                ),
+                .child(label("Import", importing))
+                .child(label("Skip", !importing)),
         )
-    }
 }
 
 fn section(title: &'static str) -> gpui::Div {
@@ -1090,20 +1280,18 @@ fn account_button(
         .rounded_full()
         .border_1()
         .border_color(if focused {
-            theme.ACCENT
+            if primary { theme.TEXT } else { theme.ACCENT }
         } else {
             gpui::transparent_black().into()
         })
-        .bg(if primary {
-            theme.ACCENT.opacity(0.16)
-        } else {
-            theme.TEXT.opacity(0.06)
-        })
+        .bg(if primary { theme.ACCENT } else { theme.TEXT.opacity(0.06) })
         .text_size(px(14.0))
-        .text_color(theme.TEXT)
+        .text_color(if primary { theme.BG } else { theme.TEXT })
         .text_center()
         .cursor_pointer()
-        .hover(move |el| el.bg(theme.ACCENT.opacity(if primary { 0.25 } else { 0.08 })))
+        .hover(move |el| {
+            if primary { el.opacity(0.9) } else { el.bg(theme.ACCENT.opacity(0.08)) }
+        })
         .child(label)
 }
 

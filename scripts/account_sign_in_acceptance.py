@@ -29,29 +29,23 @@ def verify(output, env, root):
         return ui.wait_frame(label, check) if phrase else check(ui.capture(label))
 
     current = words("account-welcome", "Welcome to Jcode")
-    # Dark text on the accent button: OCR sometimes reads "Continuve".
-    assert any(word["text"].startswith("Contin") for word in current), current
     phrase_bounds(current, "Can import")
-    phrase_bounds(current, "Skip")
     for removed in ("Subscribe", "Import less", "Telemetry"):
         try:
             phrase_bounds(current, removed)
         except AssertionError:
             continue
         raise AssertionError(f"{removed} should not be on the onboarding screen")
-    ui.click(phrase_bounds(current, "Sign in with email"))
-    current = words("account-waiting", "Finish signing")
-    phrase_bounds(current, "Waiting for approval")
-    ui.click(phrase_bounds(current, "Open browser again"))
-    current = words("account-reopen-browser", "Finish signing")
-    ui.click(phrase_bounds(current, "Copy link"))
-    current = words("account-copy-link", "Link copied")
-    ui.click(phrase_bounds(current, "Start over"))
+    # The email field is inline: click it, type, press Enter.
+    ui.click(phrase_bounds(current, "you@example.com"))
+    ui.native("type", "--delay", "20", "person@example.com")
+    ui.native("key", "Return")
+    current = words("account-code", "Check your email")
+    phrase_bounds(current, "6-digit code")
+    ui.click(phrase_bounds(current, "another"))
     current = words("account-back", "Welcome to Jcode")
     assert tomllib.loads(config.read_text()) == original
-    # Keyboard-only: Shift+Tab wraps straight to Continue in the right half.
-    ui.native("key", "--clearmodifiers", "Tab")
-    ui.capture("account-keyboard-primary")
+    # Keyboard-only: Shift+Tab wraps straight to the skip icon in the right half.
     ui.native("key", "--clearmodifiers", "shift+Tab")
     ui.capture("account-keyboard-continue")
     ui.native("key", "--clearmodifiers", "Return")
@@ -93,8 +87,10 @@ def verify(output, env, root):
     current = words("account-settings", "Jcode account", sidebar=True)
     ui.click(phrase_bounds(current, "Sign in with email"))
     current = words("account-reentry", "Welcome to Jcode")
-    ui.click(phrase_bounds(current, "Sign in with email"))
-    words("account-reentry-waiting", "Finish signing")
+    ui.click(phrase_bounds(current, "you@example.com"))
+    ui.native("type", "--delay", "20", "person@example.com")
+    ui.native("key", "Return")
+    words("account-reentry-code", "Check your email")
     ui.native("key", "Escape")
     words("account-escaped", "Jcode account", sidebar=True)
     assert tomllib.loads(config.read_text())["workspace"]["account_sign_in_handled"]
@@ -105,8 +101,7 @@ def verify(output, env, root):
     words("account-final", "Welcome to Jcode")
     ui.artifact("account-result.json").write_text(json.dumps({
         "welcome_without_subscribe_or_telemetry": True,
-        "native_sign_in_waiting_reopen_and_cancel": True,
-        "copy_link_feedback": True,
+        "inline_email_field_code_step_and_back": True,
         "keyboard_continue_persisted": True,
         "other_configuration_unchanged": True,
         "settings_reentry_and_escape": True,
