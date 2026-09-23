@@ -29,6 +29,15 @@ const VOICE_SHORTCUT: &str = "Ctrl+Shift+Space";
 #[cfg(target_os = "macos")]
 const VOICE_SHORTCUT: &str = "⌘⇧M (Command+Shift+M)";
 
+/// Compact keycap shown inside the voice pill so the shortcut is visible
+/// without hovering.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const VOICE_SHORTCUT_KEYCAP: &str = "Copilot key";
+#[cfg(target_os = "windows")]
+const VOICE_SHORTCUT_KEYCAP: &str = "Ctrl+Shift+Space";
+#[cfg(target_os = "macos")]
+const VOICE_SHORTCUT_KEYCAP: &str = "⌘⇧M";
+
 fn voice_tooltip(action: &str, status: &str) -> String {
     format!(
         "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. After transcription, Jev chooses a coding agent or a quick navigation action. Uncertain requests stay in the draft."
@@ -666,7 +675,8 @@ impl Panel {
         )
     }
 
-    /// Round voice button on the right of the composer's pill row. While
+    /// Voice pill on the right of the composer's pill row: microphone plus its
+    /// keybinding, so the shortcut is visible without hovering. While
     /// voice is active it fills with the accent, a soft ring breathes around
     /// it, and the ring swells with the live microphone level.
     pub(super) fn render_voice_tab(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -690,16 +700,19 @@ impl Panel {
             0.
         };
         let size = super::composer::TAB_HEIGHT;
+        let keycap_color = if active { theme.BG.opacity(0.8) } else { theme.TEXT_FAINT };
         let button = div()
             .id("voice-toggle")
             .debug_selector(|| "voice-toggle".into())
             .relative()
             .flex_none()
-            .size(px(size))
+            .h(px(size))
+            .pl(px(8.))
+            .pr(px(9.))
+            .gap(px(6.))
             .rounded_full()
             .flex()
             .items_center()
-            .justify_center()
             .cursor_pointer()
             .bg(if active {
                 theme.ACCENT
@@ -719,6 +732,7 @@ impl Panel {
             .child(
                 div()
                     .debug_selector(|| "voice-microphone-icon".into())
+                    .flex_none()
                     .size(px(12.))
                     .child(
                         gpui::svg()
@@ -727,14 +741,25 @@ impl Panel {
                             .text_color(icon_color)
                             .size(px(12.)),
                     ),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "voice-shortcut".into())
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .text_size(px(10.5))
+                    .font_family(theme.FONT_MONO)
+                    .text_color(keycap_color)
+                    .child(VOICE_SHORTCUT_KEYCAP),
             );
-        // The ring is a sibling behind the button so it never changes layout.
+        // The ring is a sibling behind the pill so it never changes layout.
         let ring = |spread: f32, alpha: f32| {
             div()
                 .absolute()
                 .top(px(-spread))
+                .bottom(px(-spread))
                 .left(px(-spread))
-                .size(px(size + spread * 2.))
+                .right(px(-spread))
                 .rounded_full()
                 .bg(theme.ACCENT.opacity(alpha))
         };
@@ -756,8 +781,9 @@ impl Panel {
                             let eased = 1. - (1. - t).powi(2);
                             let spread = base + eased * 5.;
                             ring.top(px(-spread))
+                                .bottom(px(-spread))
                                 .left(px(-spread))
-                                .size(px(size + spread * 2.))
+                                .right(px(-spread))
                                 .opacity(0.9 * (1. - t))
                         },
                     )
@@ -767,7 +793,7 @@ impl Panel {
         div()
             .flex_none()
             .relative()
-            .size(px(size))
+            .h(px(size))
             .children(halo)
             .child(button)
             .into_any_element()
@@ -1258,7 +1284,7 @@ mod tests {
                 let input = vcx.debug_bounds("prompt-input").unwrap();
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
-                assert!(vcx.debug_bounds("voice-shortcut").is_none());
+                let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
                 // The microphone is a round button detached above the input.
                 assert!(
                     button.left() >= input.left() && button.right() <= input.right(),
@@ -1267,8 +1293,10 @@ mod tests {
                 assert!(button.bottom() < input.top(), "voice is detached from the input");
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
                 assert_eq!(icon.size.width, px(12.));
-                assert_eq!(button.size.width, px(crate::panel::composer::TAB_HEIGHT));
-                assert_eq!(button.size.width, button.size.height);
+                assert_eq!(button.size.height, px(crate::panel::composer::TAB_HEIGHT));
+                // The keybinding sits inside the pill, right of the icon.
+                assert!(icon.right() <= shortcut.left());
+                assert!(shortcut.right() <= button.right());
                 if phase == Phase::Idle {
                     let status = vcx.debug_bounds("voice-ready-status").unwrap();
                     assert!(status.top() >= input.bottom(), "status sits in the bottom bar");

@@ -2,7 +2,8 @@
 //!
 //! The location line (repo or directory) sits flush left as plain text. Below
 //! it, the model pill (pretty name, then reasoning effort) and the credential
-//! method pill sit on the left, and the round voice button sits on the right.
+//! method pill sit on the left, and the voice pill (microphone plus its
+//! keybinding) sits on the right.
 //! Pills are detached from the input and shaped like the transcript's user
 //! prompt cards, so nothing reads as a folder tab.
 use super::*;
@@ -278,7 +279,7 @@ mod tests {
             assert!(name.right() <= effort.left(), "effort follows the model name");
             assert!(model.right() <= login.left(), "method follows model");
             assert!(login.right() <= voice.left(), "voice sits on the right");
-            assert_eq!(voice.size.width, voice.size.height, "voice is a circle");
+            assert!(voice.size.width > voice.size.height, "voice pill shows its shortcut");
         }
     }
 }
