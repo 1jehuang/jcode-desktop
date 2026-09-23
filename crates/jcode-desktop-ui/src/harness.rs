@@ -1318,6 +1318,35 @@ fn session_worker_with_transports(
     });
 }
 
+/// Longest wait between reconnect attempts for a session that keeps failing.
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+
+/// Exponential backoff for a failing session reconnect.
+///
+/// A panel whose session the daemon no longer knows (`unknown_session`) used to
+/// retry every 300 ms forever. Four such panels made ~40k attach attempts in an
+/// hour, each one a fresh bridge connection with its own translation state and
+/// daemon subscribe. Transport failures still retry promptly at first, so a
+/// restarting runtime reconnects fast, but everything backs off to 30 s.
+fn next_reconnect_delay(current: Duration, error: &jcode_sdk::Error) -> Duration {
+    let unknown_session = matches!(
+        error.kind,
+        jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::UnknownSession)
+    );
+    let next = if unknown_session {
+        current.saturating_mul(4)
+    } else {
+        current.saturating_mul(2)
+    };
+    next.min(MAX_RECONNECT_DELAY)
+}
+
+/// Log the first few failures, then only occasionally, so a permanently
+/// missing session cannot fill the diagnostics log.
+fn should_log_reconnect(failed_attempts: u32) -> bool {
+    failed_attempts < 3 || failed_attempts.is_power_of_two()
+}
+
 fn session_worker_with_connector(
     session_id: String,
     commands: Receiver<SessionCommand>,
@@ -1342,11 +1371,13 @@ fn session_worker_with_connector(
         }
     };
     let real_id = address.session_id.as_str();
-    let reconnect_delay = if address.host.is_some() {
+    let base_reconnect_delay = if address.host.is_some() {
         Duration::from_secs(2)
     } else {
         Duration::from_millis(300)
     };
+    let mut reconnect_delay = base_reconnect_delay;
+    let mut failed_attempts: u32 = 0;
 
     let mut pending = VecDeque::new();
     let mut reported_disconnected_events = false;
@@ -1365,23 +1396,43 @@ fn session_worker_with_connector(
         {
             Ok(client) => client,
             Err(error) => {
-                lost(format!("{error}; reconnecting"));
+                if should_log_reconnect(failed_attempts) {
+                    lost(format!("{error}; reconnecting"));
+                }
                 if collect_disconnected_commands(&commands, &mut pending) {
                     return;
                 }
-                std::thread::sleep(reconnect_delay);
+                failed_attempts = failed_attempts.saturating_add(1);
+                match wait_for_reconnect(&commands, &mut pending, reconnect_delay) {
+                    ReconnectWait::Stop => return,
+                    ReconnectWait::Woken => reconnect_delay = base_reconnect_delay,
+                    ReconnectWait::Elapsed => {
+                        reconnect_delay = next_reconnect_delay(reconnect_delay, &error);
+                    }
+                }
                 continue;
             }
         };
         let events = client.events(None);
         if !already_attached && let Err(error) = client.attach_session(real_id) {
-            lost(format!("{error}; reconnecting"));
+            if should_log_reconnect(failed_attempts) {
+                lost(format!("{error}; reconnecting"));
+            }
             if collect_disconnected_commands(&commands, &mut pending) {
                 return;
             }
-            std::thread::sleep(reconnect_delay);
+            failed_attempts = failed_attempts.saturating_add(1);
+            match wait_for_reconnect(&commands, &mut pending, reconnect_delay) {
+                ReconnectWait::Stop => return,
+                ReconnectWait::Woken => reconnect_delay = base_reconnect_delay,
+                ReconnectWait::Elapsed => {
+                    reconnect_delay = next_reconnect_delay(reconnect_delay, &error);
+                }
+            }
             continue;
         }
+        reconnect_delay = base_reconnect_delay;
+        failed_attempts = 0;
         let _detach = GracefulDetach {
             client: &client,
             session_id: real_id,
@@ -1866,6 +1917,42 @@ fn collect_disconnected_commands(
     false
 }
 
+/// Outcome of waiting between reconnect attempts.
+#[derive(Debug, PartialEq, Eq)]
+enum ReconnectWait {
+    /// The panel closed; end the worker.
+    Stop,
+    /// The user acted; retry now with the base delay.
+    Woken,
+    /// The delay elapsed with nothing to do.
+    Elapsed,
+}
+
+/// Wait out a reconnect delay, but wake at once on any command.
+///
+/// Backoff can reach 30 s. A Stop must still end the worker promptly, and a
+/// user action (sending a message) is a reason to retry now rather than later.
+fn wait_for_reconnect(
+    commands: &Receiver<SessionCommand>,
+    pending: &mut VecDeque<SessionCommand>,
+    delay: Duration,
+) -> ReconnectWait {
+    match commands.recv_timeout(delay) {
+        Ok(SessionCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            ReconnectWait::Stop
+        }
+        Ok(command) => {
+            pending.push_back(command);
+            if collect_disconnected_commands(commands, pending) {
+                ReconnectWait::Stop
+            } else {
+                ReconnectWait::Woken
+            }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ReconnectWait::Elapsed,
+    }
+}
+
 #[cfg(test)]
 #[path = "harness_submission_tests.rs"]
 mod submission_tests;
@@ -1878,6 +1965,58 @@ mod remote_tests;
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn unknown_session_reconnects_back_off_to_the_cap() {
+        let unknown = jcode_sdk::Error::new(
+            jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::UnknownSession),
+            "gone",
+        );
+        let transport = jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, "down");
+        let base = Duration::from_millis(300);
+        assert_eq!(next_reconnect_delay(base, &unknown), Duration::from_millis(1200));
+        assert_eq!(next_reconnect_delay(base, &transport), Duration::from_millis(600));
+        let mut delay = base;
+        for _ in 0..20 {
+            delay = next_reconnect_delay(delay, &unknown);
+        }
+        assert_eq!(delay, MAX_RECONNECT_DELAY);
+    }
+
+    #[test]
+    fn reconnect_logging_thins_out() {
+        let logged = (0..1000).filter(|&attempt| should_log_reconnect(attempt)).count();
+        assert!(logged <= 13, "{logged}");
+        assert!(should_log_reconnect(0));
+    }
+
+    #[test]
+    fn reconnect_wait_wakes_on_commands_and_stops() {
+        let (tx, rx) = channel();
+        let mut pending = VecDeque::new();
+        let started = Instant::now();
+        assert_eq!(
+            wait_for_reconnect(&rx, &mut pending, Duration::from_millis(20)),
+            ReconnectWait::Elapsed
+        );
+        tx.send(SessionCommand::Cancel).unwrap();
+        assert_eq!(
+            wait_for_reconnect(&rx, &mut pending, Duration::from_secs(30)),
+            ReconnectWait::Woken
+        );
+        assert_eq!(pending.len(), 1);
+        tx.send(SessionCommand::Stop).unwrap();
+        assert_eq!(
+            wait_for_reconnect(&rx, &mut pending, Duration::from_secs(30)),
+            ReconnectWait::Stop
+        );
+        drop(tx);
+        assert_eq!(
+            wait_for_reconnect(&rx, &mut pending, Duration::from_secs(30)),
+            ReconnectWait::Stop
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn bounded_bridge_batches_preserve_order_and_leave_backlog_queued() {
