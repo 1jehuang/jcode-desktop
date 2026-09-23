@@ -759,6 +759,54 @@ impl Panel {
         cx.notify();
     }
 
+    /// While Jev routes a finished utterance, show it above the composer as a
+    /// prompt that is on its way. Coding-agent routes then land as a normal
+    /// prompt card, so the wait is visible from release to send.
+    pub(super) fn render_voice_pending(&self) -> Option<gpui::AnyElement> {
+        if self.voice.phase != Phase::Routing || self.voice.live_transcript.trim().is_empty() {
+            return None;
+        }
+        let theme = Theme::global();
+        let pulse = gpui::Animation::new(Duration::from_millis(1200))
+            .repeat()
+            .with_easing(gpui::pulsating_between(0.45, 1.0));
+        Some(
+            div()
+                .id("voice-pending-prompt")
+                .debug_selector(|| "voice-pending-prompt".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .mx_2()
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .bg(theme.prompt_background(0))
+                .text_size(px(12.))
+                .child(gpui::AnimationExt::with_animation(
+                    div()
+                        .debug_selector(|| "voice-pending-status".into())
+                        .flex_none()
+                        .text_color(theme.ACCENT)
+                        .child("Jev routing…"),
+                    "voice-pending-pulse",
+                    pulse,
+                    |el, opacity| el.opacity(opacity),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.TEXT_USER)
+                        .child(self.voice.live_transcript.clone()),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Footer status text. Active work is shown by the transcript activity
     /// indicator instead, so the footer does not duplicate it.
     pub(super) fn render_voice_status(&self, status: String) -> Option<gpui::AnyElement> {
@@ -995,6 +1043,40 @@ mod tests {
         assert!(
             commands.try_recv().is_err(),
             "a duplicate completion must never send twice"
+        );
+    }
+
+    #[gpui::test]
+    fn voice_routing_shows_pending_prompt_until_sent(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            let mut panel = Panel::new("voice-pending".into(), None, None, bridge, cx);
+            panel.history_loaded = true;
+            panel.status = "idle".into();
+            panel
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-pending-prompt").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel.voice.phase = Phase::Routing;
+            panel.voice.live_transcript = "fix the flaky test".into();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let pending = vcx
+            .debug_bounds("voice-pending-prompt")
+            .expect("routing shows the utterance as it waits to send");
+        let composer = vcx.debug_bounds("prompt-editor").unwrap();
+        assert!(pending.bottom() <= composer.top(), "{pending:?} {composer:?}");
+        assert!(commands.try_recv().is_err(), "nothing sent while routing");
+        panel.update(vcx, |panel, cx| {
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("voice-pending-prompt").is_none());
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "fix the flaky test")
         );
     }
 

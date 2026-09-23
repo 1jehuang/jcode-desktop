@@ -4474,6 +4474,7 @@ impl Render for Panel {
                                 .flex_col()
                                 .gap_2()
                                 .children(self.render_prompt_queue(cx))
+                                .children(self.render_voice_pending())
                                 .child(self.render_composer(window, cx))
                                 .child(startup::input_marker(input_bounds.clone())),
                         ),
@@ -4585,6 +4586,7 @@ impl Render for Panel {
                                     .flex_col()
                                     .gap_2()
                                     .children(self.render_prompt_queue(cx))
+                                    .children(self.render_voice_pending())
                                     .child(self.render_composer(window, cx))
                                     .child(startup::input_marker(input_bounds.clone())),
                             ),
@@ -4892,6 +4894,7 @@ impl Render for Panel {
                             .flex_col()
                             .gap_2()
                             .children(self.render_prompt_queue(cx))
+                            .children(self.render_voice_pending())
                             .child(self.render_composer(window, cx))
                             .child(startup::input_marker(input_bounds.clone())),
                     ),
