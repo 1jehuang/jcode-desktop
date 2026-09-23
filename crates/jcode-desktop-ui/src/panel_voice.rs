@@ -751,9 +751,9 @@ impl Panel {
         self.voice.error = error;
         if coding_agent {
             // Send only this utterance, never text or attachments already in the composer.
-            self.voice.decision =
-                Some("Jev chose: Coding agent · Sent or queued for reasoning".into());
-            self.submit_or_queue(text, Vec::new(), true, cx);
+            // Send ASAP like Enter: an active turn is steered, not queued behind.
+            self.voice.decision = Some("Jev chose: Coding agent · Sent now".into());
+            self.submit_or_queue(text, Vec::new(), false, cx);
         } else if let Some(action) = quick_action {
             self.voice.decision = Some("Jev chose: Quick action · Navigation".into());
             cx.emit(VoiceActionRequested(action, text));
@@ -1009,7 +1009,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_coding_agent_queues_while_busy(cx: &mut gpui::TestAppContext) {
+    fn voice_coding_agent_steers_while_busy(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let panel = cx.new(|cx| {
             let mut panel = Panel::new("voice-agent".into(), None, None, bridge, cx);
@@ -1019,13 +1019,9 @@ mod tests {
         });
         panel.update(cx, |panel, cx| {
             panel.resolve_voice_for_test("then add tests", Ok(VoiceIntent::CodingAgent), cx);
-            assert!(
-                commands.try_recv().is_err(),
-                "do not interrupt the active turn"
-            );
-            panel.status = "idle".into();
-            panel.send_queued_prompts(cx);
         });
+        // Sent while still running, never held for the turn to finish. The
+        // harness delivers a Send during an active turn as an urgent steer.
         assert!(
             matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "then add tests")
         );

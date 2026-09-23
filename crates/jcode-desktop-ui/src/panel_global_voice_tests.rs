@@ -41,7 +41,7 @@ fn global_voice_routes_through_jev_and_pill_shows_the_decision(cx: &mut gpui::Te
 
         panel.voice.phase = Phase::Idle;
         for (decision, title) in [
-            ("Jev chose: Coding agent · Sent or queued for reasoning", "Jev → Coding agent"),
+            ("Jev chose: Coding agent · Sent now", "Jev → Coding agent"),
             ("Jev chose: Quick action · Navigation", "Jev → Quick action"),
             ("Jev chose: Quick action · New session", "Jev → New session"),
             ("Jev chose: Quick action · Open session", "Jev → Open session"),

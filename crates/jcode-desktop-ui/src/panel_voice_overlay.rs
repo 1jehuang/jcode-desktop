@@ -517,7 +517,7 @@ impl Panel {
             } else {
                 self.voice.decision = Some(
                     if coding {
-                        "Jev chose: Coding agent · Sent or queued for reasoning"
+                        "Jev chose: Coding agent · Sent now"
                     } else {
                         "Jev chose: Quick action · Open Terminal rendering"
                     }
