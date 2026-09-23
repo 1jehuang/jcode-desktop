@@ -2060,7 +2060,10 @@ impl Render for PromptInput {
             } else {
                 Theme::global().INPUT_BORDER
             })
-            .rounded_lg()
+            // Near-pill corners. A single-line composer is ~38px tall, so an
+            // 18px radius reads as fully round while multi-line drafts keep
+            // straight sides instead of turning into an ellipse.
+            .rounded(px(18.0))
             .when(!self.attachments.is_empty(), |el| {
                 el.child(
                     div()
@@ -2088,7 +2091,7 @@ impl Render for PromptInput {
                     .w_full()
                     .flex()
                     .items_start()
-                    .px_3()
+                    .px_4()
                     .py_2()
                     .text_size(px(14.0))
                     .when(spacious, |el| {
