@@ -4,6 +4,8 @@ use std::{cell::Cell, rc::Rc};
 // The card sits below the row's inter-message gap. The sticky boundary is
 // the card top, not the row top and not the disappearance of its bottom.
 pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
+const COLLAPSED_PROMPT_LINES: usize = 6;
+const COLLAPSED_PROMPT_MAX_HEIGHT: f32 = 140.;
 
 /// Bound both long pasted paragraphs and newline-heavy snippets. Return a
 /// source prefix, never alter the actual prompt sent to the harness or stored.
@@ -204,8 +206,23 @@ impl Panel {
                     .debug_selector(move || format!("prompt-content-{index}").into())
                     // Also bound rendered markdown (headings, tables, images)
                     // and wrapping in narrow chat panes, not just source length.
+                    // Clamp wrapped text to whole visual lines with an
+                    // ellipsis, so the stepped background is shaped from the
+                    // truncated layout instead of being sliced mid-line.
                     .when(collapsed, |content| {
-                        content.max_h(px(140.)).overflow_hidden()
+                        // The fill extends 8px/4px past the text. Grow the
+                        // clip box by the same amount with padding and cancel
+                        // it with negative margins, so layout is unchanged but
+                        // the rounded bottom edge is not sliced off.
+                        content
+                            .line_clamp(COLLAPSED_PROMPT_LINES)
+                            .text_ellipsis()
+                            .px(px(8.))
+                            .mx(px(-8.))
+                            .py(px(4.))
+                            .my(px(-4.))
+                            .max_h(px(COLLAPSED_PROMPT_MAX_HEIGHT + 8.))
+                            .overflow_hidden()
                     })
                     .child(markdown::render_prompt_with_prefix(
                         if collapsed { preview.unwrap() } else { text },
@@ -502,6 +519,42 @@ mod tests {
                 vcx.debug_bounds("user-prompt-0").unwrap().size,
                 compact.size
             );
+        }
+    }
+
+    #[gpui::test]
+    fn collapsed_wrapped_prompt_clamps_to_whole_lines(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "clamped-prompt".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        let text = "Wrapped words fill many visual lines here. ".repeat(40);
+        for width in [900., 600., 320.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
+            panel.update(vcx, |panel, cx| {
+                panel.items = vec![Item::User(text.clone())];
+                panel.expanded_prompts.clear();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            // The clip box adds 4px of fill padding above and below the text.
+            let content = vcx.debug_bounds("prompt-content-0").unwrap();
+            let line_height = 13.5 * 1.55;
+            let lines = (f32::from(content.size.height) - 8.) / line_height;
+            assert!(
+                (lines - lines.round()).abs() < 0.05,
+                "collapsed prompt at {width}px shows a partial line: {lines}"
+            );
+            assert!(lines.round() as usize <= COLLAPSED_PROMPT_LINES);
+            // The clip box is cancelled by margins, so the card still hugs text.
+            let card = vcx.debug_bounds("user-prompt-0").unwrap();
+            assert!(card.left() <= content.left() + px(0.5));
         }
     }
 
