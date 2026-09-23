@@ -4,8 +4,8 @@
 //! Keep the full runtime catalog so users can see both connected accounts and
 //! supported providers they have not configured yet.
 
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 static AUTH_REFRESH: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
@@ -253,6 +253,11 @@ impl Feed {
 
 /// Fetch accounts now and then refresh periodically. Login state changes
 /// rarely, so a slow poll keeps the surface honest without burning cycles.
+///
+/// Every window subscribes to one process-wide poller. A shared single-panel
+/// host used to run a thread and a `jcode auth status` subprocess per window,
+/// which scaled memory and CPU with the number of open panels for identical
+/// data. The poller survives hot reload only as long as this UI generation.
 pub fn spawn() -> Feed {
     let (tx, rx) = channel();
     if crate::harness::screenshot_mode() {
@@ -311,27 +316,62 @@ pub fn spawn() -> Feed {
             updates: Arc::new(Mutex::new(rx)),
         };
     }
-    std::thread::Builder::new()
-        .name("jcode-accounts".into())
-        .spawn(move || {
-            loop {
-                let generation = *AUTH_REFRESH.0.lock().unwrap();
-                if let Some(accounts) = fetch() {
-                    if tx.send(accounts).is_err() {
-                        return;
-                    }
-                }
-                let _ = AUTH_REFRESH.1.wait_timeout_while(
-                    AUTH_REFRESH.0.lock().unwrap(),
-                    Duration::from_secs(60),
-                    |current| *current == generation,
-                );
-            }
-        })
-        .expect("spawn accounts thread");
+    shared_poller().subscribe(tx);
     Feed {
         updates: Arc::new(Mutex::new(rx)),
     }
+}
+
+/// Process-wide account poller with fan-out to every window's feed.
+struct Poller {
+    subscribers: Mutex<Vec<Sender<Vec<Account>>>>,
+    latest: Mutex<Option<Vec<Account>>>,
+}
+
+impl Poller {
+    fn subscribe(&self, tx: Sender<Vec<Account>>) {
+        // A new window gets the current snapshot immediately instead of
+        // waiting up to a minute for the next poll.
+        if let Some(latest) = self.latest.lock().unwrap().clone() {
+            let _ = tx.send(latest);
+        }
+        self.subscribers.lock().unwrap().push(tx);
+    }
+
+    /// Deliver to live subscribers and drop closed windows' senders.
+    fn publish(&self, accounts: Vec<Account>) {
+        self.subscribers
+            .lock()
+            .unwrap()
+            .retain(|subscriber| subscriber.send(accounts.clone()).is_ok());
+        *self.latest.lock().unwrap() = Some(accounts);
+    }
+}
+
+fn shared_poller() -> &'static Poller {
+    static POLLER: OnceLock<Poller> = OnceLock::new();
+    POLLER.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("jcode-accounts".into())
+            .spawn(|| {
+                loop {
+                    let generation = *AUTH_REFRESH.0.lock().unwrap();
+                    if let Some(accounts) = fetch() {
+                        shared_poller().publish(accounts);
+                    }
+                    let _ = AUTH_REFRESH.1.wait_timeout_while(
+                        AUTH_REFRESH.0.lock().unwrap(),
+                        Duration::from_secs(60),
+                        |current| *current == generation,
+                    );
+                }
+            })
+            .expect("spawn accounts thread");
+        Poller {
+            subscribers: Mutex::new(Vec::new()),
+            latest: Mutex::new(None),
+        }
+    })
 }
 
 fn fetch() -> Option<Vec<Account>> {

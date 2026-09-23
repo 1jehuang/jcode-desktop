@@ -906,6 +906,11 @@ impl Workspace {
             let mut last_release_state = updates::release_status();
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
+                if crate::memory::claim_trim_slot() {
+                    cx.background_executor()
+                        .spawn(async { crate::memory::trim() })
+                        .detach();
+                }
                 let update_state = updates::current();
                 let release_state = updates::release_status();
                 if update_state != last_update_state || release_state != last_release_state {

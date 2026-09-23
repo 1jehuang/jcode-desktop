@@ -896,12 +896,22 @@ fn save_snapshot(snapshot: String) {
 /// Coalescing persistence worker. Interaction handlers only serialize the
 /// small model and enqueue it; directory creation and filesystem writes never
 /// consume the UI thread's frame budget.
+///
+/// All windows write the same state file, so they share one worker. That keeps
+/// a shared single-panel host at one thread regardless of open panels, and
+/// serializes writes so two windows cannot interleave stale snapshots.
+#[derive(Clone)]
 pub struct Persistence {
     sender: std::sync::mpsc::Sender<String>,
 }
 
 impl Persistence {
     pub fn spawn() -> Self {
+        static SHARED: std::sync::OnceLock<Persistence> = std::sync::OnceLock::new();
+        SHARED.get_or_init(Self::spawn_worker).clone()
+    }
+
+    fn spawn_worker() -> Self {
         let (sender, receiver) = std::sync::mpsc::channel::<String>();
         let _ = std::thread::Builder::new()
             .name("jcode-learning-save".into())

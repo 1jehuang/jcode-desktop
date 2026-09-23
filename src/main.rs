@@ -421,7 +421,27 @@ fn launch_quit_mode(mode: LaunchMode, screenshot: bool, lifecycle: bool) -> gpui
     }
 }
 
+/// Bound glibc's per-thread malloc arenas before any thread starts.
+///
+/// glibc allows eight arenas per core. The host runs GPUI's 16-thread
+/// executor, session workers, and terminal readers, and each thread that ever
+/// allocated pinned its own 64 MiB-aligned arena of freed-but-retained pages.
+/// On a 16-core laptop that retained slack was larger than the live UI heap.
+/// Four arenas keep allocation contention low for a UI process while the
+/// housekeeping trim returns what they free. `MALLOC_ARENA_MAX` still wins.
+fn configure_system_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: mallopt only adjusts allocator parameters and runs before
+        // any other thread exists.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 4);
+        }
+    }
+}
+
 fn main() {
+    configure_system_allocator();
     if env::args_os().any(|argument| argument == "--version" || argument == "-V") {
         println!("Jcode Desktop {}", jcode_desktop_ui::build_version());
         return;
