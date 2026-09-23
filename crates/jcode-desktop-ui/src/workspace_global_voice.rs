@@ -86,8 +86,13 @@ fn spawn_voice_window() {
 /// Keep this host's hot-reload choice. Never forward launch or voice flags.
 #[cfg(target_os = "linux")]
 fn spawn_args(own: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    let mut args: Vec<std::ffi::OsString> =
-        vec!["--single-panel".into(), SPAWNED_HOLD_FLAG.into()];
+    // Its own process: the hold flag and working directory must not be
+    // forwarded to, and dropped by, a shared single-panel host.
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--single-panel".into(),
+        "--new-process".into(),
+        SPAWNED_HOLD_FLAG.into(),
+    ];
     args.extend(own.filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"));
     args
 }
@@ -540,7 +545,7 @@ mod spawn_tests {
             .map(std::ffi::OsString::from);
         assert_eq!(
             spawn_args(own.into_iter()),
-            ["--single-panel", SPAWNED_HOLD_FLAG, "--hot-reload"]
+            ["--single-panel", "--new-process", SPAWNED_HOLD_FLAG, "--hot-reload"]
                 .map(std::ffi::OsString::from)
         );
     }
