@@ -74,6 +74,8 @@ pub struct TextSelection {
     last_scroll: Option<Instant>,
     /// Painted bounds of the last selected visual line, in window space.
     tail_bounds: Option<Bounds<Pixels>>,
+    /// Visible union of every painted selected line, in window space.
+    selection_bounds: Option<Bounds<Pixels>>,
     /// A brief confirmation beside the text that was just copied.
     copied: Option<Copied>,
 }
@@ -100,6 +102,7 @@ impl TextSelection {
             pointer: None,
             last_scroll: None,
             tail_bounds: None,
+            selection_bounds: None,
             copied: None,
         }
     }
@@ -445,6 +448,7 @@ impl TextSelection {
         self.cross_head = None;
         self.copied = None;
         self.tail_bounds = None;
+        self.selection_bounds = None;
         let (range, reversed, mode) = match click_count {
             1 if shift => {
                 if let Some(previous) = self.selection.as_ref().filter(|item| item.key == key) {
@@ -581,7 +585,7 @@ pub(crate) fn selectable_with_prefix(
     let copied = {
         let selection = model.read(cx);
         (selection.copied_visible() && selection.tail_key() == Some(&key))
-            .then_some(selection.tail_bounds)
+            .then(|| selection.selection_bounds.or(selection.tail_bounds))
             .flatten()
             .map(copied_pill)
     };
@@ -640,6 +644,21 @@ pub(crate) fn selectable_with_prefix(
                             window.text_style().text_align,
                         );
                         paint_selection(&lines, window);
+                        let mask = window.content_mask().bounds;
+                        let visible = lines
+                            .iter()
+                            .map(|(line, _, _)| line.intersect(&mask))
+                            .filter(|line| line.size.width > px(0.) && line.size.height > px(0.))
+                            .reduce(|a, b| a.union(&b));
+                        if let Some(visible) = visible {
+                            model.update(cx, |selection, _| {
+                                selection.selection_bounds = Some(
+                                    selection
+                                        .selection_bounds
+                                        .map_or(visible, |bounds| bounds.union(&visible)),
+                                );
+                            });
+                        }
                         if let Some((last, _, row_end)) = lines.last() {
                             let mut last = *last;
                             last.size.width = (*row_end - last.left()).max(last.size.width);
@@ -702,45 +721,56 @@ pub(crate) fn selectable_with_prefix(
         .into_any_element()
 }
 
-/// A small pill after the end of the copied text, drawn above other content.
-fn copied_pill(tail: Bounds<Pixels>) -> gpui::AnyElement {
+/// A pill centered over the copied text, drawn above other content.
+fn copied_pill(selected: Bounds<Pixels>) -> gpui::AnyElement {
     let theme = Theme::global();
-    let height = 18.;
-    let origin = gpui::point(
-        tail.right() + px(6.),
-        tail.top() + (tail.size.height - px(height)) / 2.,
-    );
+    let height = 22.;
+    // A fixed box centered on the selection centers the pill without
+    // measuring its text first.
+    let slot = gpui::size(px(160.), px(height));
+    let center = selected.center();
+    let origin = gpui::point(center.x - slot.width / 2., center.y - slot.height / 2.);
     use gpui::AnimationExt as _;
     let pill = div()
         .debug_selector(|| "selection-copied".into())
         .flex()
         .items_center()
+        .gap(px(5.))
         .h(px(height))
-        .px(px(7.))
+        .px(px(10.))
         .rounded_full()
-        .bg(theme.INLINE_CODE_BG)
-        .border_1()
-        .border_color(theme.TOOL_BORDER)
+        .bg(theme.ACCENT)
+        .shadow_md()
         .font_family(theme.FONT_MONO)
-        .font_weight(gpui::FontWeight::NORMAL)
-        .text_size(px(10.5))
-        .line_height(px(14.))
-        .text_color(theme.TEXT_DIM)
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .text_color(theme.BG)
         .whitespace_nowrap()
-        .child("Copied")
+        .child("\u{2713} Copied")
         .with_animation(
-            "selection-copied-fade",
+            "selection-copied-pop",
             gpui::Animation::new(COPIED_DURATION),
             |pill, progress| {
-                // Hold, then fade during the final fifth.
-                pill.opacity(((1. - progress) / 0.2).clamp(0., 1.))
+                // Pop in, hold, then fade during the final fifth.
+                let appear = (progress / 0.08).clamp(0., 1.);
+                let fade = ((1. - progress) / 0.2).clamp(0., 1.);
+                pill.opacity(appear.min(fade))
             },
         );
     gpui::deferred(
         gpui::anchored()
             .position(origin)
             .snap_to_window_with_margin(px(4.))
-            .child(pill),
+            .child(
+                div()
+                    .w(slot.width)
+                    .h(slot.height)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(pill),
+            ),
     )
     .with_priority(80)
     .into_any_element()
@@ -760,6 +790,8 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
             model.update(cx, |selection, _| {
                 selection.geometry.clear();
                 selection.surface_bounds = Some(bounds);
+                // Leaves repaint after the surface and rebuild the union.
+                selection.selection_bounds = None;
             });
             let moved = model.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
