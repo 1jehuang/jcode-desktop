@@ -4651,6 +4651,30 @@ impl Render for Panel {
                     )
                     .child(transcript)
                     .children(self.render_pinned_prompt(window, cx))
+                    // Mirror the pinned prompt's soft top edge at the bottom
+                    // while more transcript continues below the viewport.
+                    // Hidden at the live end so the newest line stays crisp.
+                    .when(show_jump_chip && self.startup_layout.is_none(), |el| {
+                        let background =
+                            Theme::global().panel_background(self.surface_focused);
+                        el.child(
+                            div()
+                                .debug_selector(|| "transcript-bottom-fade".into())
+                                .absolute()
+                                .left_0()
+                                .bottom_0()
+                                .w_full()
+                                .h(px(18.))
+                                .bg(gpui::linear_gradient(
+                                    0.,
+                                    gpui::linear_color_stop(background, 0.),
+                                    gpui::linear_color_stop(
+                                        gpui::Rgba { a: 0., ..background },
+                                        1.,
+                                    ),
+                                )),
+                        )
+                    })
                     .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))
