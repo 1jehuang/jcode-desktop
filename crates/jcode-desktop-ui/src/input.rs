@@ -1456,8 +1456,14 @@ struct PrepaintState {
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
     text_bounds: Bounds<Pixels>,
+    /// Horizontal gap between the caret and placeholder text, so the caret
+    /// never overlaps the first placeholder glyph.
+    text_indent: Pixels,
     visual_line_count: usize,
 }
+
+/// Space kept between the caret and the example placeholder.
+const PLACEHOLDER_INDENT: Pixels = px(6.);
 
 fn selection_quads(
     line: &PromptLayout,
@@ -1543,6 +1549,8 @@ impl Element for TextElement {
 
         let mut placeholder_full = None;
         let mut placeholder_live = false;
+        let text_indent = if content.is_empty() { PLACEHOLDER_INDENT } else { px(0.) };
+        let wrap_width = (bounds.size.width - text_indent).max(px(0.));
         let (display_text, text_color) = if content.is_empty() {
             let (mut text, full, live) = input.placeholder_text(now, cx);
             placeholder_full = full;
@@ -1602,7 +1610,7 @@ impl Element for TextElement {
                     display_text,
                     font_size,
                     &runs,
-                    Some(bounds.size.width),
+                    Some(wrap_width),
                     None,
                 )
                 .expect("prompt text should shape"),
@@ -1628,7 +1636,7 @@ impl Element for TextElement {
                         underline: None,
                         strikethrough: None,
                     }],
-                    Some(bounds.size.width),
+                    Some(wrap_width),
                     None,
                 )
                 .map(|lines| PromptLayout::new(lines).visual_line_count())
@@ -1690,6 +1698,7 @@ impl Element for TextElement {
             cursor,
             selection,
             text_bounds,
+            text_indent,
             visual_line_count,
         }
     }
@@ -1715,7 +1724,7 @@ impl Element for TextElement {
         }
         let line = prepaint.line.take().unwrap();
         line.paint(
-            prepaint.text_bounds.origin,
+            prepaint.text_bounds.origin + point(prepaint.text_indent, px(0.)),
             window.line_height(),
             window,
             cx,

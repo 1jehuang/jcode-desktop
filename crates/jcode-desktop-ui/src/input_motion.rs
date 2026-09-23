@@ -1,4 +1,4 @@
-//! Composer motion: a typewriter placeholder that cycles example prompts and
+//! Composer motion: a typewriter placeholder that shows two example prompts and
 //! a caret that glides between positions and breathes instead of blinking.
 //!
 //! Both are time functions evaluated at paint, driven by one bounded ticker.
@@ -32,10 +32,10 @@ const TYPE_PER_CHAR: Duration = Duration::from_millis(42);
 const HOLD: Duration = Duration::from_millis(2300);
 const DELETE_PER_CHAR: Duration = Duration::from_millis(16);
 const GAP: Duration = Duration::from_millis(420);
-/// Typewriter cycling stops this long after the composer was last touched.
-pub(super) const PLACEHOLDER_ACTIVE: Duration = Duration::from_secs(60);
-/// Reduced motion swaps whole prompts at this interval instead of typing.
+/// Reduced motion swaps to the second prompt after this long.
 const STILL_ROTATE: Duration = Duration::from_secs(5);
+/// How many catalog prompts one idle composer shows before settling.
+const SHOWN_PROMPTS: usize = 2;
 
 /// Caret stays fully solid this long after it moves, so typing never flickers.
 const CARET_SOLID: Duration = Duration::from_millis(550);
@@ -47,40 +47,39 @@ const GLIDE: Duration = Duration::from_millis(90);
 /// Tick interval while any motion is live.
 pub(super) const TICK: Duration = Duration::from_millis(33);
 
-/// Placeholder text at `elapsed` since the cycle began. Returns the visible
-/// prefix and whether the cycle is still animating.
+/// Two prompts drawn from the catalog by `seed`: the first is typed, held
+/// and deleted, then the second is typed and stays. Returns the visible
+/// prefix and whether the placeholder is still animating.
 pub(super) fn placeholder_at(
     elapsed: Duration,
     seed: usize,
     reduce_motion: bool,
 ) -> (&'static str, bool) {
     let count = EXAMPLE_PROMPTS.len();
+    let pick = |step: usize| EXAMPLE_PROMPTS[(seed + step) % count];
+    let last = pick(SHOWN_PROMPTS - 1);
     if reduce_motion {
-        let index = (seed + (elapsed.as_millis() / STILL_ROTATE.as_millis()) as usize) % count;
-        return (EXAMPLE_PROMPTS[index], elapsed < PLACEHOLDER_ACTIVE);
-    }
-    if elapsed >= PLACEHOLDER_ACTIVE {
-        // Settle on the prompt the cycle would show fully typed.
-        return (EXAMPLE_PROMPTS[seed % count], false);
+        return if elapsed < STILL_ROTATE { (pick(0), true) } else { (last, false) };
     }
     let mut t = elapsed;
-    let mut index = seed;
-    loop {
-        let prompt = EXAMPLE_PROMPTS[index % count];
+    for step in 0..SHOWN_PROMPTS {
+        let prompt = pick(step);
         let chars = prompt.chars().count() as u32;
         let typing = TYPE_PER_CHAR * chars;
-        let deleting = DELETE_PER_CHAR * chars;
-        let total = typing + HOLD + deleting + GAP;
-        if t >= total {
+        let final_prompt = step + 1 == SHOWN_PROMPTS;
+        if final_prompt && t >= typing {
+            return (prompt, false);
+        }
+        let total = typing + HOLD + DELETE_PER_CHAR * chars + GAP;
+        if !final_prompt && t >= total {
             t -= total;
-            index += 1;
             continue;
         }
         let shown = if t < typing {
             (t.as_millis() / TYPE_PER_CHAR.as_millis()) as usize + 1
         } else if t < typing + HOLD {
             chars as usize
-        } else if t < typing + HOLD + deleting {
+        } else if t < total - GAP {
             let gone = ((t - typing - HOLD).as_millis() / DELETE_PER_CHAR.as_millis()) as usize;
             (chars as usize).saturating_sub(gone + 1)
         } else {
@@ -92,6 +91,7 @@ pub(super) fn placeholder_at(
             .map_or(prompt.len(), |(byte, _)| byte);
         return (&prompt[..end], true);
     }
+    (last, false)
 }
 
 /// Caret opacity at `since` the caret last moved. Smooth breathing, not an
@@ -177,12 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_settles_on_a_full_prompt_and_stops_ticking() {
-        let (text, live) = placeholder_at(PLACEHOLDER_ACTIVE, 3, false);
-        assert!(!live);
-        assert_eq!(text, EXAMPLE_PROMPTS[3]);
-        let (text, _) = placeholder_at(Duration::from_secs(6), 0, true);
-        assert_eq!(text, EXAMPLE_PROMPTS[1], "reduced motion swaps whole prompts");
+    fn placeholder_settles_on_the_second_prompt_and_stops_ticking() {
+        let first = EXAMPLE_PROMPTS[3].chars().count() as u32;
+        let second = EXAMPLE_PROMPTS[4].chars().count() as u32;
+        let settled = TYPE_PER_CHAR * first + HOLD + DELETE_PER_CHAR * first + GAP
+            + TYPE_PER_CHAR * second;
+        assert_eq!(placeholder_at(settled, 3, false), (EXAMPLE_PROMPTS[4], false));
+        assert_eq!(
+            placeholder_at(settled * 10, 3, false),
+            (EXAMPLE_PROMPTS[4], false),
+            "never rotates to a third prompt"
+        );
+        assert_eq!(placeholder_at(Duration::from_secs(1), 0, true), (EXAMPLE_PROMPTS[0], true));
+        assert_eq!(placeholder_at(Duration::from_secs(6), 0, true), (EXAMPLE_PROMPTS[1], false));
     }
 
     #[test]
