@@ -29,6 +29,14 @@ impl LaunchMode {
         args.into_iter().any(|arg| arg.as_ref() == "--resume")
     }
 
+    /// Session to open directly on a fresh launch, from `--session=<id>`.
+    pub fn requested_session(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Option<String> {
+        args.into_iter().find_map(|arg| {
+            let id = arg.as_ref().to_str()?.strip_prefix("--session=")?.trim();
+            (!id.is_empty()).then(|| id.to_string())
+        })
+    }
+
     /// Auxiliary windows never acquire the main instance's global shortcut.
     pub fn instance_name(self, pid: u32) -> Option<String> {
         match self {
@@ -75,6 +83,17 @@ mod tests {
             "--single-panel",
             "--resume-other"
         ]));
+    }
+
+    #[test]
+    fn session_flag_names_the_session_to_open() {
+        assert_eq!(
+            LaunchMode::requested_session(["--single-panel", "--session=session_a"]).as_deref(),
+            Some("session_a")
+        );
+        assert_eq!(LaunchMode::requested_session(["--session="]), None);
+        assert_eq!(LaunchMode::requested_session(["--session"]), None);
+        assert_eq!(LaunchMode::requested_session(["--resume"]), None);
     }
 
     #[test]

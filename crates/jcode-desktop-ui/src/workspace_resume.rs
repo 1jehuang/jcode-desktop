@@ -358,6 +358,48 @@ impl Workspace {
             return;
         };
         self.resume = None;
+        self.resume_session(session, window, cx);
+    }
+
+    /// Open a session named on the command line. The catalog has not loaded
+    /// yet, so the title and directory arrive with the next session list.
+    pub(super) fn open_requested_session(
+        &mut self,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .cloned()
+            .unwrap_or(jcode_sdk::SessionInfo {
+                edit_stats: None,
+                session_id,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
+                working_dir: None,
+                title: None,
+                status: "idle".into(),
+                transcript_bytes: None,
+                saved: false,
+                save_label: None,
+                updated_at_ms: None,
+                last_active_at_ms: None,
+                archived: false,
+                archived_at_ms: None,
+            });
+        self.resume_session(session, window, cx);
+    }
+
+    fn resume_session(
+        &mut self,
+        session: jcode_sdk::SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.activate_session(session, window, cx);
         if self.slots[self.active].panel.read(cx).is_startup_draft()
             && (self.connected || self.remotes.default_host.is_some())

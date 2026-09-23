@@ -1190,7 +1190,17 @@ impl Workspace {
         }
         workspace.init_resume_fixture(cx);
         // Restore the picker after slots, but before a default remote can start.
+        let fresh_launch = resume_snapshot.is_none();
         workspace.restore_resume(resume_snapshot, resume_requested, window, cx);
+        // A reload snapshot already records which chat is open. Only a fresh
+        // `--session=<id>` launch opens the requested session.
+        if fresh_launch
+            && let Some(session_id) =
+                jcode_desktop_api::LaunchMode::requested_session(std::env::args_os())
+        {
+            workspace.resume = None;
+            workspace.open_requested_session(session_id, window, cx);
+        }
         if workspace.resume.is_none() && workspace.remotes.default_host.is_some() {
             workspace.start_default_startup(cx);
         }
