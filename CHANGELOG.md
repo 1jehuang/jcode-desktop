@@ -1,6 +1,6 @@
 ## What's new
 
-### Jcode Desktop 0.3.0
+### Jcode Desktop 0.3.1
 
 Clearer navigation and richer session feedback
 
@@ -11,6 +11,9 @@ Clearer navigation and richer session feedback
 
 #### Highlights
 
+- Compact window chrome, immediately visible live sidebar sessions, and tighter adjacent session rows.
+- Background tasks appear as compact inline status rows, with clearer shortcut pictograms and special-key icons.
+- Corrected bundled-runtime build for the native release pipeline. Version 0.3.1 supersedes the immutable 0.3.0 tag, whose native runtime compilation failed.
 - Nested swarm navigation with clearer indentation, stable session selection, and bounded sidebar rendering.
 - Native Thinking Orbs, eagerly streamed tool names and arguments, and clear explanations for interrupted or failed responses.
 - A CLI-style resume panel, numbered prompt cards, compact queued prompts, and Shift+Space to return to the latest output.
@@ -18,7 +21,7 @@ Clearer navigation and richer session feedback
 #### Improvements
 
 - Improved Markdown and PDF panels, text selection, and inline images.
-- Workspace-wide version and update status.
+- Workspace-wide version and update status. Development builds retain the intended release version, such as `0.3.1-dev.12`, instead of turning the Git commit count into a misleading patch number.
 - Personal cloud model-access synchronization before connecting, with fresh readiness checks and fail-closed recovery. This remains an experimental Unix-only integration.
 - A resumable, single-command release workflow with verified native builds, signed macOS packages, website downloads, and installation acceptance.
 

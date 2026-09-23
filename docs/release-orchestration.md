@@ -3,7 +3,7 @@
 From a clean, reviewed checkout of current `origin/main`, on Linux or macOS:
 
 ```sh
-python3 scripts/release-desktop.py 0.3.0 --apply
+python3 scripts/release-desktop.py 0.3.1 --apply
 ```
 
 Without `--apply`, the command only checks the source/pins and reports its plan.

@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn bundled_editorial_notes_are_desktop_specific_and_version_bounded() {
-        let current = overview(fallback(), "0.3.0").unwrap();
+        let current = overview(fallback(), "0.3.1").unwrap();
         assert_eq!(
             current.sections.iter().map(|s| s.label).collect::<Vec<_>>(),
             ["Themes", "Highlights", "Improvements", "Fixes"]

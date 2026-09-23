@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import tomllib
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -241,7 +242,8 @@ Development builds additionally report uncommitted files.
         body = (ROOT / "CHANGELOG.md").read_text()
         notes = D.release_notes_for_discord(body)
         current, history = body.split("## Previous releases", 1)
-        self.assertIn("### Jcode Desktop 0.3.0", current)
+        version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
+        self.assertIn(f"### Jcode Desktop {version}", current)
         self.assertIn("### Jcode Desktop 0.2.1", history)
         expected = [line for line in current.splitlines() if line.startswith("- ")]
         self.assertTrue(expected)
