@@ -19,7 +19,7 @@ const PREFERRED: &[&str] = &[
 
 // Return only decoded string content. An unfinished escape (including either
 // half of a surrogate pair) is withheld until it can be decoded atomically.
-fn progressive_string(input: &str) -> (String, Option<usize>) {
+pub(super) fn progressive_string(input: &str) -> (String, Option<usize>) {
     debug_assert!(input.starts_with('"'));
     let mut text = String::new();
     let mut offset = 1;

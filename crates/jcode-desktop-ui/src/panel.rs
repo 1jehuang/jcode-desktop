@@ -93,6 +93,8 @@ mod tab_emoji;
 mod task_label;
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
+#[path = "panel_gmail_draft_card.rs"]
+mod gmail_draft_card;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
 #[path = "panel_voice.rs"]
@@ -3602,6 +3604,36 @@ impl Panel {
                         .ml(px(offset))
                         .opacity(opacity)
                         .child(preview)
+                        .into_any_element();
+                }
+                if let Some(compose) = gmail_draft_card::parse(name, input) {
+                    let expanded = self.expanded_tools.contains(call_id);
+                    let toggle_id = call_id.clone();
+                    let card = gmail_draft_card::render(
+                        index,
+                        &compose,
+                        &gmail_draft_card::outcome(output, *done),
+                        error.as_deref(),
+                        expanded,
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            if !this.expanded_tools.remove(&toggle_id) {
+                                this.expanded_tools.insert(toggle_id.clone());
+                            }
+                            this.transcript_measurements.dirty = true;
+                            cx.notify();
+                        }),
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    );
+                    return div()
+                        .id(("tool", index))
+                        .debug_selector(|| "tool-gmail-compose".into())
+                        .flex_none()
+                        .ml(px(offset))
+                        .opacity(opacity)
+                        .child(card)
                         .into_any_element();
                 }
                 let expanded = self.expanded_tools.contains(call_id);
@@ -8884,6 +8916,11 @@ fn demo_items() -> Vec<Item> {
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("prompts")
     {
         return prompt::fixture_items();
+    }
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gmail-draft")
+    {
+        return gmail_draft_card::fixture_items();
     }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-icons")
