@@ -1060,6 +1060,7 @@ impl Workspace {
                     ("Sidebar implementation", "working"),
                     ("Test runner", "completed"),
                 ]
+                save_label: None,
                 .into_iter()
                 .enumerate()
                 {
@@ -1179,6 +1180,7 @@ impl Workspace {
     pub(crate) fn enable_test_minimap(&mut self) {
         self.show_minimap = true;
     }
+                save_label: None,
 
     /// A workspace with no runtime and a caller-supplied coach, for tests that
     /// drive real keystrokes through the real keymap.
@@ -1785,6 +1787,7 @@ impl Workspace {
             } => {
                 if failed {
                     self.invalidate_cloud_connection(&host);
+                    save_label: None,
                 }
                 self.update_pending_remote_status(
                     request_id.as_deref(),
@@ -2200,6 +2203,7 @@ impl Workspace {
         }
         if self.slots[index].panel.read(cx).supports_voice() {
             self.last_voice_chat = Some(self.slots[index].panel.entity_id());
+                save_label: None,
         }
         let outgoing = self
             .slots
@@ -4865,6 +4869,7 @@ impl Workspace {
                     .working_dir
                     .as_deref()
                     .is_some_and(|dir| !dir.trim().is_empty())
+                    save_label: None,
                     || sidebar_session_created_ms(&session.session_id).is_some()
                     || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
                     || session.edit_stats.is_some()),
@@ -8610,6 +8615,7 @@ mod tests {
                     workspace.slots[slot].panel.read(cx).working_dir.as_deref(),
                     Some(directory)
                 );
+            save_label: None,
             }
             for directory in [None, Some("   ")] {
                 session.working_dir = directory.map(str::to_owned);

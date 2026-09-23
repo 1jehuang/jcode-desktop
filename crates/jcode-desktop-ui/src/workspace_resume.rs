@@ -54,6 +54,7 @@ fn filtered_sessions(
             "{} {} {} {} {}",
             session.session_id,
             session.title.as_deref().unwrap_or_default(),
+            session.save_label.as_deref().unwrap_or_default(),
             session.working_dir.as_deref().unwrap_or_default(),
             session.status,
             session.agent_label.as_deref().unwrap_or_default()
@@ -158,6 +159,7 @@ impl Workspace {
                     last_active_at_ms: None,
                     archived: false,
                     archived_at_ms: None,
+                    save_label: None,
                     parent_session_id: None,
                     agent_label: None,
                     swarm_status: None,
@@ -344,9 +346,14 @@ impl Workspace {
             let id = session.session_id.clone();
             let is_selected = selected.as_ref() == Some(&id);
             let (icon, title) = sidebar_session_title(session);
+            let saved_marker = match session.save_label.as_deref() {
+                Some(label) if session.saved => format!("★ {label} · "),
+                _ if session.saved => "★ ".to_string(),
+                _ => String::new(),
+            };
             let metadata = format!(
                 "{}{} · {}",
-                if session.saved { "★ " } else { "" },
+                saved_marker,
                 session.status,
                 sidebar_session_meta(session).unwrap_or_else(|| "Session history".into())
             );
@@ -875,6 +882,19 @@ mod tests {
         ] {
             assert!(load_preview_history(id).is_err(), "{id}");
         }
+    }
+
+    #[test]
+    fn resume_search_matches_save_label() {
+        let mut labelled = session_info("session_labelled", Some("Fundraising catch-up"));
+        labelled.saved = true;
+        labelled.save_label = Some("Investor Catch Up Work".into());
+        let other = session_info("session_other", Some("Other"));
+        let matches = filtered_sessions(vec![labelled, other], "investor work", Filter::All);
+        assert_eq!(
+            matches.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+            vec!["session_labelled"]
+        );
     }
 
     #[test]

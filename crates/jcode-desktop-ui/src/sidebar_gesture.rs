@@ -218,6 +218,7 @@ mod tests {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                save_label: None,
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,

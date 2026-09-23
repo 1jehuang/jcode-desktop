@@ -313,6 +313,7 @@ fn super_shift_slash_creates_correlated_help_and_records_its_prompt(cx: &mut gpu
                         last_active_at_ms: None,
                         archived: false,
                         archived_at_ms: None,
+                        save_label: None,
                         parent_session_id: None,
                         agent_label: None,
                         swarm_status: None,
