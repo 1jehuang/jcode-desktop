@@ -194,6 +194,7 @@ impl Panel {
         if self.voice.phase != Phase::Idle {
             return;
         }
+        jcode_base::voice::timing::begin();
         self.prepare_voice_attempt(hold_capture);
         let token = self.voice.canceled.clone();
         let attempt = token.clone();
@@ -225,6 +226,7 @@ impl Panel {
         }
         match result {
             Ok(recording) => {
+                jcode_base::voice::timing::mark("ui shows recording");
                 self.voice.phase = Phase::Recording;
                 self.voice.recording = Some(recording);
                 self.voice.started = Some(Instant::now());
