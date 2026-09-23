@@ -367,3 +367,11 @@ The running hot-reload hosts are release builds, so every Ctrl+R costs about
 LLVM codegen, 18.4s ThinLTO, 12.3s LLVM passes, 11.4s codegen, 5.6s
 monomorphization, and under 5s in the frontend. Nearly all the time goes to
 optimized code generation for one large crate. The frontend is cheap.
+
+Experiment: `CARGO_PROFILE_RELEASE_INCREMENTAL=true
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256` brings a release UI-leaf rebuild down
+from 48s to 12-15s after one cold rebuild (about 7 minutes). This does not change
+type layout, so it is ABI-compatible with a normally built release host. It
+does produce less optimized UI code, so it should apply only to Ctrl+R builds,
+not shipped releases. Doing that needs a host change (a dedicated profile or env
+in `rebuild_ui`) and a host restart, so it has not been adopted yet.
