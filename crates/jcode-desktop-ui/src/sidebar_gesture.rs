@@ -235,9 +235,6 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| fixture(cx));
         vcx.run_until_parked();
-        let group = vcx.debug_bounds("sidebar-workspace-group-1").unwrap();
-        vcx.simulate_click(group.center(), Default::default());
-        vcx.run_until_parked();
         let bounds = vcx.debug_bounds("sidebar-session-1").unwrap();
         let start = gpui::point(bounds.right() - px(50.), bounds.center().y);
         let end = start - gpui::point(px(80.), px(0.));
@@ -267,11 +264,9 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| fixture(cx));
         vcx.run_until_parked();
-        let group = vcx.debug_bounds("sidebar-workspace-group-1").unwrap();
-        vcx.simulate_click(group.center(), Default::default());
-        vcx.run_until_parked();
         let bounds = vcx.debug_bounds("sidebar-session-1").unwrap();
-        let start = gpui::point(bounds.right() - px(50.), bounds.center().y);
+        // Press on the title, clear of the hover close button.
+        let start = gpui::point(bounds.left() + px(110.), bounds.center().y);
         for (dx, dy, wheel) in [(30., 0., false), (80., 30., false), (80., 0., true)] {
             vcx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
             if wheel {
@@ -299,9 +294,6 @@ mod tests {
     #[gpui::test]
     fn rendered_sidebar_close_button_does_not_start_a_row_gesture(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| fixture(cx));
-        vcx.run_until_parked();
-        let group = vcx.debug_bounds("sidebar-workspace-group-1").unwrap();
-        vcx.simulate_click(group.center(), Default::default());
         vcx.run_until_parked();
         let close = vcx.debug_bounds("sidebar-close-1").unwrap().center();
         vcx.simulate_mouse_move(close, None, Default::default());
