@@ -28,23 +28,36 @@ impl Panel {
         cx.notify();
     }
 
+    /// Icon-only toggle: the footer never shows an image count.
     pub(super) fn render_image_pane_toggle(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let count = self.session_image_indices().len();
+        let theme = Theme::global();
+        let color = if self.image_pane_open {
+            theme.TEXT
+        } else {
+            theme.TEXT_DIM
+        };
         div()
             .id("panel-images")
             .debug_selector(|| "panel-images".into())
             .flex_none()
-            .px_2()
-            .py_1()
+            .size(px(22.))
+            .flex()
+            .items_center()
+            .justify_center()
             .rounded_md()
             .cursor_pointer()
-            .text_color(Theme::global().TEXT_DIM)
-            .when(self.image_pane_open, |el| {
-                el.bg(Theme::global().ACCENT_DIM)
-                    .text_color(Theme::global().TEXT)
+            .when(self.image_pane_open, |el| el.bg(theme.ACCENT_DIM))
+            .hover(|el| el.bg(theme.QUOTE_BG))
+            .tooltip(|_, cx| {
+                cx.new(|_| super::usage::MeterTooltip("Session images".into()))
+                    .into()
             })
-            .hover(|el| el.bg(Theme::global().QUOTE_BG))
-            .child(format!("Images {count}"))
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/image.svg") as &'static [u8])
+                    .text_color(color)
+                    .size(px(13.)),
+            )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.set_image_pane_open(!this.image_pane_open, cx);
                 cx.stop_propagation();
