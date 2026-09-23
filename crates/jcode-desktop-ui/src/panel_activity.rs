@@ -104,6 +104,15 @@ impl Spinner {
         spinner
     }
 
+    /// A sidebar mark for a session the daemon is running but no Desktop panel
+    /// owns. There is no panel to observe, so it always shows generic work.
+    pub(super) fn for_daemon_session(cx: &mut Context<Self>) -> Self {
+        let mut spinner = Self::new(cx);
+        spinner.sidebar_mark = true;
+        spinner.set_activity(Activity::Working, cx);
+        spinner
+    }
+
     pub(super) fn set_activity(&mut self, activity: Activity, cx: &mut Context<Self>) {
         if self.activity == activity {
             return;

@@ -645,6 +645,14 @@ impl WorkspaceSnapshot {
     }
 }
 
+/// Local sessions some jcode process, normally the shared daemon, is running a
+/// turn for right now. Reads only the small streaming-marker directory.
+fn daemon_running_sessions() -> HashSet<String> {
+    jcode_base::session::streaming_session_ids()
+        .into_iter()
+        .collect()
+}
+
 pub struct Workspace {
     global_voice: global_voice::State,
     voice_key: voice::CopilotLatch,
@@ -722,6 +730,10 @@ pub struct Workspace {
     coach_expiry_task: Option<gpui::Task<()>>,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
+    /// Sessions the shared daemon is running a turn for right now, from its
+    /// streaming markers, with the sidebar mark shown while no panel is open.
+    /// Marks persist across polls so the orb animates instead of restarting.
+    daemon_running: HashMap<String, gpui::AnyView>,
     /// Never rerank an established shortcut, including after session refreshes.
     pinned_working_dir: Option<String>,
     /// Configured logins and API keys, refreshed in the background.
@@ -822,6 +834,9 @@ impl Workspace {
         // slow-changing data and only need a low-frequency housekeeping wake.
         let housekeeping_bridge = bridge.clone();
         let session_refresh_interval = crate::config::get().session_refresh_interval();
+        // Streaming markers are local files, so only poll them for a real
+        // local daemon, never in tests or offline screenshot fixtures.
+        let poll_daemon_running = !cfg!(test) && !harness::screenshot_mode();
         let housekeeping_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
             // The first catalog read queues cached legacy edit statistics.
@@ -837,6 +852,20 @@ impl Workspace {
                     last_update_state = update_state;
                     last_release_state = release_state;
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+                if poll_daemon_running {
+                    let running = cx
+                        .background_executor()
+                        .spawn(async { daemon_running_sessions() })
+                        .await;
+                    if this
+                        .update(cx, |workspace: &mut Workspace, cx| {
+                            workspace.set_daemon_running(running, cx)
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -971,6 +1000,7 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             remotes: remotes::Machines::from_config(),
             accounts: Vec::new(),
@@ -1265,6 +1295,7 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            daemon_running: HashMap::new(),
             pinned_working_dir: None,
             remotes: remotes::Machines::default(),
             accounts: Vec::new(),
@@ -4816,6 +4847,28 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Replace the set of sessions the daemon is running. Retains the existing
+    /// mark of a session that is still running so its animation continues.
+    fn set_daemon_running(&mut self, running: HashSet<String>, cx: &mut Context<Self>) {
+        if running.len() == self.daemon_running.len()
+            && running.iter().all(|id| self.daemon_running.contains_key(id))
+        {
+            return;
+        }
+        self.daemon_running.retain(|id, _| running.contains(id));
+        for id in running {
+            self.daemon_running
+                .entry(id)
+                .or_insert_with(|| Panel::daemon_sidebar_mark(cx));
+        }
+        cx.notify();
+    }
+
+    /// Sidebar activity for a session without an open panel.
+    fn daemon_running_mark(&self, session_id: &str) -> Option<gpui::AnyView> {
+        self.daemon_running.get(session_id).cloned()
+    }
+
     fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let active_id = self
             .slots
@@ -5096,10 +5149,14 @@ impl Workspace {
                                 (None, Some(meta)) => Some(meta),
                                 (None, None) => None,
                             };
-                            let activity = open_marks
-                                .get(&session.session_id)
-                                .cloned()
-                                .flatten();
+                            // An open panel owns its richer live mark. Otherwise
+                            // show the daemon's view, so sessions running in the
+                            // background (other clients, swarm workers, closed
+                            // panels) still spin in the sidebar.
+                            let activity = match open_marks.get(&session.session_id) {
+                                Some(mark) => mark.clone(),
+                                None => this.daemon_running_mark(&session.session_id),
+                            };
 
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
                             let close_id = session.session_id.clone();
@@ -8855,6 +8912,57 @@ mod tests {
                     .is_some_and(|value| value > 1)
             );
         });
+    }
+
+    #[gpui::test]
+    fn sidebar_spins_for_daemon_running_sessions_without_open_panels(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sessions = vec![
+                session_info("background-run", Some("Running in the daemon")),
+                session_info("history", Some("Previous session")),
+            ];
+            workspace
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_none());
+
+        let running = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<HashSet<_>>();
+        workspace.update(vcx, |workspace, cx| {
+            workspace.set_daemon_running(running(&["background-run", "not-listed"]), cx)
+        });
+        vcx.run_until_parked();
+        let row = workspace.read_with(vcx, |workspace, _| {
+            workspace
+                .sidebar_session_layout
+                .iter()
+                .position(|row| row.session_id == "background-run")
+                .unwrap()
+        });
+        let spinner = |index: usize| format!("sidebar-session-spinner-{index}");
+        assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
+        assert!(vcx.debug_bounds(spinner(1 - row).leak()).is_none());
+        let mark = workspace.read_with(vcx, |workspace, _| {
+            workspace.daemon_running_mark("background-run").unwrap().entity_id()
+        });
+
+        // A repeated poll keeps the same mark so its animation never restarts.
+        workspace.update(vcx, |workspace, cx| {
+            workspace.set_daemon_running(running(&["background-run", "not-listed"]), cx)
+        });
+        workspace.read_with(vcx, |workspace, _| {
+            assert_eq!(
+                workspace.daemon_running_mark("background-run").unwrap().entity_id(),
+                mark
+            );
+        });
+
+        workspace.update(vcx, |workspace, cx| workspace.set_daemon_running(running(&[]), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds(spinner(row).leak()).is_none());
     }
 
     #[gpui::test]

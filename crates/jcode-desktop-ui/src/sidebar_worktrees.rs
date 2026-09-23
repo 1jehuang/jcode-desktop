@@ -725,7 +725,10 @@ impl Workspace {
                         open.map(|panel| panel.title.as_ref()),
                     )
                     .1;
-                    let activity = open.and_then(|panel| panel.sidebar_mark());
+                    let activity = match open {
+                        Some(panel) => panel.sidebar_mark(),
+                        None => self.daemon_running_mark(&session.session_id),
+                    };
                     let focused = active_id.as_deref() == Some(session.session_id.as_str());
                     let timestamp = sidebar_session_recency_ms(&session);
                     let age = if timestamp > 0 {

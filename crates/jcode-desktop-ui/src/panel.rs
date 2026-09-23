@@ -674,6 +674,12 @@ impl Panel {
             .then(|| self.tab_emoji.clone().into())
     }
 
+    /// Sidebar spinner for a session running in the shared daemon without an
+    /// open panel. Created once per running session and reused while it runs.
+    pub(crate) fn daemon_sidebar_mark(cx: &mut gpui::App) -> gpui::AnyView {
+        cx.new(activity::Spinner::for_daemon_session).into()
+    }
+
     pub(crate) fn sidebar_mark(&self) -> Option<gpui::AnyView> {
         self.supports_voice().then(|| self.sidebar_spinner.clone().into())
     }
