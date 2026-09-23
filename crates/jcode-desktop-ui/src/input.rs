@@ -186,6 +186,8 @@ pub struct PromptInput {
     submission_enabled: bool,
     pending_session: bool,
     spacious: bool,
+    /// False when a host container draws the box (onboarding email tab).
+    chrome: bool,
     /// Cycle example prompts behind an empty chat composer.
     example_prompts: bool,
     motion: MotionState,
@@ -491,6 +493,7 @@ impl PromptInput {
             submission_enabled: true,
             pending_session: false,
             spacious: false,
+            chrome: true,
             example_prompts: false,
             motion: MotionState::default(),
         }
@@ -523,6 +526,12 @@ impl PromptInput {
             self.spacious = spacious;
             cx.notify();
         }
+    }
+
+    /// The host draws the fill, border and corners around this field.
+    pub(crate) fn without_chrome(mut self) -> Self {
+        self.chrome = false;
+        self
     }
 
     /// Plain metadata editors should not interpret titles as slash commands.
@@ -2088,9 +2097,11 @@ impl Render for PromptInput {
             .w_full()
             .min_w_0()
             .flex_none()
-            .bg(Theme::global().INPUT_BG)
+            .when(self.chrome, |el| el.bg(Theme::global().INPUT_BG))
             .border_1()
-            .border_color(if focused {
+            .border_color(if !self.chrome {
+                gpui::transparent_black().into()
+            } else if focused {
                 Theme::global().PANEL_BORDER_FOCUS
             } else {
                 Theme::global().INPUT_BORDER

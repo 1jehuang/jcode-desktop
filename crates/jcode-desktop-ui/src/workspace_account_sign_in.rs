@@ -30,6 +30,10 @@ pub(super) struct State {
     theme_picked: bool,
     /// Live chat replay behind Continue. Dropped with the page.
     demo: Option<Demo>,
+    /// When the sign-in tab left the right edge for the demo composer.
+    docked: Option<Instant>,
+    /// Right half, measured at paint so the tab can slide onto the composer.
+    right_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     #[cfg(test)]
     test_api_base: Option<String>,
     #[cfg(test)]
@@ -129,10 +133,13 @@ impl State {
         let connected = !fixture && auth::has_credentials();
         let preview = fixture
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN").as_deref() == Ok("1");
+        let docked = preview
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_DOCKED").as_deref() == Ok("1");
         Self {
             visible: preview
                 || should_offer(crate::config::account_sign_in_handled(), connected, fixture),
             connected,
+            docked: docked.then(|| Instant::now() - DOCK_DURATION),
             ..Self::default()
         }
     }
@@ -176,6 +183,11 @@ impl State {
             .into_iter()
             .filter(|&index| self.checked.get(index).copied().unwrap_or(false))
             .collect()
+    }
+
+    /// Only the email and code steps have a field worth docking.
+    fn can_dock(&self) -> bool {
+        !self.connected && !matches!(self.stage, Stage::Complete { .. })
     }
 
     fn primary_label(&self) -> &'static str {
@@ -415,6 +427,7 @@ impl Workspace {
                 },
             )
             .without_command_completion()
+            .without_chrome()
             .with_on_change(move |text, app| {
                 // Six digits verify without an extra click. Deferred so the
                 // field is not borrowed while the workspace reacts.
@@ -448,6 +461,9 @@ impl Workspace {
     }
 
     fn focus_account_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.account_sign_in.can_dock() {
+            self.dock_account_tab(cx);
+        }
         let focus = self.ensure_account_input(cx).read(cx).focus_handle.clone();
         window.focus(&focus, cx);
     }
@@ -724,7 +740,7 @@ impl Workspace {
                     .child(self.account_onboarding_logins(cx))
                     .child(self.account_onboarding_theme(cx)),
             );
-        let proceed = self.account_onboarding_continue(narrow, cx);
+        let proceed = self.account_onboarding_continue(narrow, window, cx);
         div()
             .debug_selector(|| "account-sign-in".into())
             .size_full()
@@ -759,6 +775,29 @@ impl Workspace {
                             .and_then(|index| state.choices().get(index).copied())
                             .unwrap_or(Choice::Continue);
                         this.activate_account_choice(choice, window, cx);
+                    }
+                    _ if !typing
+                        && this.account_sign_in.can_dock()
+                        && !event.keystroke.modifiers.control
+                        && !event.keystroke.modifiers.platform
+                        && !event.keystroke.modifiers.alt
+                        && event
+                            .keystroke
+                            .key_char
+                            .as_deref()
+                            .is_some_and(|text| text.chars().all(|c| !c.is_control())) =>
+                    {
+                        // Typing anywhere means "let me type": dock the tab over
+                        // the demo composer and keep the keystroke.
+                        let text = event.keystroke.key_char.clone().unwrap_or_default();
+                        let input = this.ensure_account_input(cx);
+                        input.update(cx, |input, cx| {
+                            let content = format!("{}{text}", input.content);
+                            input.set_content(content, cx);
+                        });
+                        this.focus_account_input(window, cx);
+                        this.account_sign_in.keyboard_choice = None;
+                        cx.notify();
                     }
                     "tab" => {
                         let count = this.account_sign_in.choices().len();
@@ -826,128 +865,6 @@ impl Workspace {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(title),
             )
-    }
-
-    /// Jcode account sign-in: one email field, then the emailed code.
-    fn account_onboarding_account(&mut self, narrow: bool, cx: &mut Context<Self>) -> gpui::Div {
-        let theme = Theme::global();
-        let signed_in = match &self.account_sign_in.stage {
-            Stage::Complete { email } => Some(format!("Signed in as {email}")),
-            Stage::Welcome if self.account_sign_in.connected => Some("Signed in to Jcode".to_string()),
-            _ => None,
-        };
-        let mut section = div()
-            .debug_selector(|| "account-sign-in-account".into())
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_2();
-        if let Some(status) = signed_in {
-            section = section.child(
-                div()
-                    .debug_selector(|| "account-sign-in-status".into())
-                    .px_2()
-                    .text_size(px(13.0))
-                    .text_color(theme.OK)
-                    .child(status),
-            );
-        } else {
-            let input = self.ensure_account_input(cx);
-            let state = &self.account_sign_in;
-            let busy = matches!(state.stage, Stage::Sending | Stage::Verifying { .. });
-            let code = state.stage.code_step().map(|(email, _)| email.to_owned());
-            let field_focused = state.focused(Choice::Field);
-            section = section
-                .when_some(code.clone(), |el, email| {
-                    el.child(
-                        div()
-                            .debug_selector(|| "account-sign-in-sent".into())
-                            .px_2()
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT_DIM)
-                            .child(format!("We emailed a code to {email}")),
-                    )
-                })
-                .child(
-                    div()
-                        .flex()
-                        .when(narrow, |el| el.flex_col())
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .id("account-sign-in-field")
-                                .debug_selector(|| "account-sign-in-field".into())
-                                .flex_1()
-                                .w_full()
-                                .min_w_0()
-                                .rounded(px(19.0))
-                                .border_1()
-                                .border_color(if field_focused {
-                                    theme.ACCENT
-                                } else {
-                                    gpui::transparent_black().into()
-                                })
-                                .when(busy, |el| el.opacity(0.6))
-                                .child(input),
-                        )
-                        .child(
-                            account_button(
-                                "account-sign-in-primary",
-                                state.primary_label(),
-                                true,
-                                state.focused(Choice::Primary),
-                            )
-                            .flex_none()
-                            .when(narrow, |el| el.w_full())
-                            .when(busy, |el| el.opacity(0.6))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.account_sign_in_primary(window, cx)
-                            })),
-                        ),
-                )
-                .when(code.is_some(), |el| {
-                    el.child(
-                        div().flex().gap_2().px_1().child(
-                            account_button(
-                                "account-sign-in-gmail",
-                                "Open Gmail",
-                                false,
-                                state.focused(Choice::OpenGmail),
-                            )
-                            .text_size(px(12.0))
-                            .px_3()
-                            .py_1()
-                            .on_click(cx.listener(|this, _, _, cx| this.open_account_gmail(cx))),
-                        )
-                        .child(
-                            account_button(
-                                "account-sign-in-back",
-                                "Use another email",
-                                false,
-                                state.focused(Choice::StartOver),
-                            )
-                            .text_size(px(12.0))
-                            .px_3()
-                            .py_1()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.reset_account_sign_in(window, cx)
-                            })),
-                        ),
-                    )
-                });
-        }
-        if let Some(error) = &self.account_sign_in.error {
-            section = section.child(
-                div()
-                    .debug_selector(|| "account-sign-in-error".into())
-                    .px_2()
-                    .text_size(px(12.0))
-                    .text_color(theme.ERROR)
-                    .child(error.clone()),
-            );
-        }
-        section
     }
 
     /// Two sets: what Jcode can already use, then what other tools have
@@ -1068,14 +985,64 @@ impl Workspace {
         section("Theme").child(grid)
     }
 
-    /// The right half: the live chat replay, fully visible, with a compact
-    /// sign-in bar pinned along the bottom and a tiny skip icon in the corner.
-    fn account_onboarding_continue(&mut self, narrow: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    /// The right half: the live chat replay, fully visible, with the sign-in
+    /// folder tab clipped to the right edge. Trying to type docks the tab
+    /// over the demo composer so the chat input becomes the email field.
+    fn account_onboarding_continue(&mut self, narrow: bool, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
-        let focused = self.account_sign_in.focused(Choice::Continue);
-        let complete = matches!(self.account_sign_in.stage, Stage::Complete { .. })
-            || self.account_sign_in.connected;
-        let mut container = div()
+        let measured = self.account_sign_in.right_bounds.clone();
+        let demo = self.account_sign_in.demo.as_ref().map(|demo| demo.panel.clone());
+        let composer = demo
+            .as_ref()
+            .and_then(|panel| panel.read(cx).input.read(cx).voice_bounds());
+        let progress = self.account_dock_progress(window, cx);
+        let geometry = measured.get().map(|right| {
+            let (width, height) = (f32::from(right.size.width), f32::from(right.size.height));
+            let tab_w = TAB_WIDTH.min(width - 16.0).max(0.0);
+            let rest = (width - tab_w, height - TAB_BOTTOM - TAB_HEIGHT, tab_w, TAB_HEIGHT);
+            let target = composer
+                .map(|c| {
+                    (
+                        f32::from(c.origin.x - right.origin.x),
+                        f32::from(c.origin.y - right.origin.y),
+                        f32::from(c.size.width),
+                        f32::from(c.size.height),
+                    )
+                })
+                .unwrap_or((16.0, rest.1, width - 32.0, TAB_HEIGHT));
+            let mix = |a: f32, b: f32| a + (b - a) * progress;
+            (
+                mix(rest.0, target.0),
+                mix(rest.1, target.1),
+                mix(rest.2, target.2),
+                mix(rest.3, target.3),
+                height,
+            )
+        });
+        let tab = self
+            .account_onboarding_tab(progress, cx)
+            .absolute()
+            .map(|el| match geometry {
+                Some((left, top, width, height, _)) => el
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(width))
+                    .h(px(height)),
+                None => el.right_0().bottom(px(TAB_BOTTOM)).w(px(TAB_WIDTH)).h(px(TAB_HEIGHT)),
+            });
+        let notes = self.account_onboarding_notes(cx).map(|notes| {
+            notes.absolute().map(|el| match geometry {
+                Some((left, top, width, _, height)) => el
+                    .left(px(left + 8.0))
+                    .w(px((width - 16.0).max(0.0)))
+                    .bottom(px(height - top + 8.0)),
+                None => el
+                    .right(px(8.0))
+                    .w(px(TAB_WIDTH - 16.0))
+                    .bottom(px(TAB_BOTTOM + TAB_HEIGHT + 8.0)),
+            })
+        });
+        div()
             .id("account-sign-in-right")
             .debug_selector(|| "account-sign-in-right".into())
             .when(narrow, |el| el.h(px(340.0)).flex_none().w_full())
@@ -1085,66 +1052,278 @@ impl Workspace {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(theme.PANEL_BG);
-        let demo = self.account_sign_in.demo.as_ref().map(|demo| demo.panel.clone());
-        container = container.child(
-            div()
-                .debug_selector(|| "account-sign-in-demo".into())
-                .flex_1()
-                .min_h(px(0.0))
-                .p(px(if narrow { 8.0 } else { 20.0 }))
-                .children(demo),
-        );
-        let skip = div()
-            .id("account-sign-in-continue")
-            .debug_selector(|| "account-sign-in-continue".into())
-            .absolute()
-            .top(px(if narrow { 8.0 } else { 14.0 }))
-            .right(px(if narrow { 8.0 } else { 14.0 }))
-            .size(px(28.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .border_1()
-            .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
-            .bg(theme.BG.opacity(0.6))
-            .text_color(theme.TEXT_DIM)
-            .cursor_pointer()
-            .hover(|el| el.bg(theme.TEXT.opacity(0.1)).text_color(theme.TEXT))
-            .tooltip(move |_, cx| {
-                cx.new(|_| {
-                    super::remotes::HeaderTooltip(if complete { "Continue" } else { "Skip for now" }.into())
-                })
-                .into()
-            })
-            .on_click(cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx)))
+            .bg(theme.PANEL_BG)
             .child(
-                gpui::svg()
-                    .data(include_bytes!("../../../assets/icons/skip.svg") as &'static [u8])
-                    .size(px(12.0))
-                    .text_color(if focused { theme.TEXT } else { theme.TEXT_DIM }),
-            );
-        let bar = div()
-            .debug_selector(|| "account-sign-in-panel".into())
-            .flex_none()
-            .w_full()
-            .px(px(if narrow { 12.0 } else { 20.0 }))
-            .py(px(if narrow { 10.0 } else { 14.0 }))
-            .border_t_1()
-            .border_color(theme.PANEL_BORDER)
-            .bg(theme.BG)
-            .flex()
-            .flex_col()
-            .items_center()
+                gpui::canvas(|_, _, _| (), move |rect, _, _, _| measured.set(Some(rect)))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
             .child(
                 div()
-                    .w_full()
-                    .max_w(px(520.0))
-                    .child(self.account_onboarding_account(narrow, cx)),
-            );
-        container.child(bar).child(skip)
+                    .id("account-sign-in-demo")
+                    .debug_selector(|| "account-sign-in-demo".into())
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .p(px(if narrow { 8.0 } else { 20.0 }))
+                    .pb(px(if narrow { 8.0 } else { TAB_BOTTOM + TAB_HEIGHT + 16.0 }))
+                    // The demo is read-only. Reaching for its composer means
+                    // "let me type", so the sign-in tab takes its place.
+                    .capture_any_mouse_down(cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        if this.account_sign_in.can_dock()
+                            && composer.is_some_and(|bounds| bounds.contains(&event.position))
+                        {
+                            this.focus_account_input(window, cx);
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .children(demo),
+            )
+            .children(notes)
+            .child(tab)
     }
+
+    /// 0 at the right edge, 1 over the demo composer. Keeps drawing frames
+    /// only while the slide is in flight.
+    fn account_dock_progress(&self, window: &mut Window, cx: &App) -> f32 {
+        let Some(started) = self.account_sign_in.docked else { return 0.0 };
+        if cx.reduce_motion() || crate::config::get().appearance.reduce_motion {
+            return 1.0;
+        }
+        let t = started.elapsed().as_secs_f32() / DOCK_DURATION.as_secs_f32();
+        if t < 1.0 {
+            window.request_animation_frame();
+        }
+        transition::ease_out_cubic(t)
+    }
+
+    /// Email field, sign-in icon and skip icon in one folder tab.
+    fn account_onboarding_tab(&mut self, progress: f32, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::global();
+        let state = &self.account_sign_in;
+        let continue_focused = state.focused(Choice::Continue);
+        let signed_in = match &state.stage {
+            Stage::Complete { email } => Some(format!("Signed in as {email}")),
+            Stage::Welcome if state.connected => Some("Signed in to Jcode".to_string()),
+            _ => None,
+        };
+        let complete = signed_in.is_some();
+        // The flush right corners round off as the tab leaves the edge.
+        let edge_radius = px(COMPOSER_RADIUS * progress);
+        let mut tab = div()
+            .id("account-sign-in-panel")
+            .debug_selector(|| "account-sign-in-panel".into())
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .pl(px(6.0))
+            .pr(px(6.0 + 4.0 * (1.0 - progress)))
+            .rounded_l(px(TAB_HEIGHT / 2.0 + (COMPOSER_RADIUS - TAB_HEIGHT / 2.0) * progress))
+            .rounded_tr(edge_radius)
+            .rounded_br(edge_radius)
+            .border_1()
+            // Clipped by the window edge at rest, like a folder tab.
+            .when(progress < 1.0, |el| el.border_r_0())
+            .border_color(theme.PANEL_BORDER)
+            .bg(theme.BG)
+            .shadow_md()
+            .occlude();
+        if let Some(status) = signed_in {
+            tab = tab.child(
+                div()
+                    .debug_selector(|| "account-sign-in-status".into())
+                    .flex_1()
+                    .min_w_0()
+                    .pl_3()
+                    .truncate()
+                    .text_size(px(13.0))
+                    .text_color(theme.OK)
+                    .child(status),
+            );
+        } else {
+            let input = self.ensure_account_input(cx);
+            let state = &self.account_sign_in;
+            let busy = matches!(state.stage, Stage::Sending | Stage::Verifying { .. });
+            let label = state.primary_label();
+            tab = tab
+                .child(
+                    div()
+                        .id("account-sign-in-field")
+                        .debug_selector(|| "account-sign-in-field".into())
+                        .flex_1()
+                        .min_w_0()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(if state.focused(Choice::Field) {
+                            theme.ACCENT
+                        } else {
+                            gpui::transparent_black().into()
+                        })
+                        .when(busy, |el| el.opacity(0.6))
+                        .on_any_mouse_down(cx.listener(|this, _, window, cx| {
+                            if this.account_sign_in.can_dock() {
+                                this.dock_account_tab(cx);
+                            }
+                        }))
+                        .child(input),
+                )
+                .child(
+                    icon_button(
+                        "account-sign-in-primary",
+                        include_bytes!("../../../assets/icons/arrow-right.svg"),
+                        label,
+                        true,
+                        state.focused(Choice::Primary),
+                    )
+                    .when(busy, |el| el.opacity(0.6))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.account_sign_in_primary(window, cx)
+                    })),
+                );
+        }
+        tab.child(
+            icon_button(
+                "account-sign-in-continue",
+                if complete {
+                    include_bytes!("../../../assets/icons/arrow-right.svg") as &'static [u8]
+                } else {
+                    include_bytes!("../../../assets/icons/skip.svg")
+                },
+                if complete { "Continue" } else { "Skip for now" },
+                complete,
+                continue_focused,
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx))),
+        )
+    }
+
+    /// Code-sent hint, mailbox shortcuts and errors, floating above the tab.
+    fn account_onboarding_notes(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+        let theme = Theme::global();
+        let state = &self.account_sign_in;
+        let code = state.stage.code_step().map(|(email, _)| email.to_owned());
+        if code.is_none() && state.error.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .id("account-sign-in-account")
+                .debug_selector(|| "account-sign-in-account".into())
+                .occlude()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when_some(code, |el, email| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "account-sign-in-sent".into())
+                            .px_2()
+                            .text_size(px(12.0))
+                            .text_color(theme.TEXT_DIM)
+                            .child(format!("We emailed a code to {email}")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                account_button(
+                                    "account-sign-in-gmail",
+                                    "Open Gmail",
+                                    false,
+                                    state.focused(Choice::OpenGmail),
+                                )
+                                .text_size(px(12.0))
+                                .px_3()
+                                .py_1()
+                                .on_click(cx.listener(|this, _, _, cx| this.open_account_gmail(cx))),
+                            )
+                            .child(
+                                account_button(
+                                    "account-sign-in-back",
+                                    "Use another email",
+                                    false,
+                                    state.focused(Choice::StartOver),
+                                )
+                                .text_size(px(12.0))
+                                .px_3()
+                                .py_1()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reset_account_sign_in(window, cx)
+                                })),
+                            ),
+                    )
+                })
+                .when_some(state.error.clone(), |el, error| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "account-sign-in-error".into())
+                            .px_2()
+                            .text_size(px(12.0))
+                            .text_color(theme.ERROR)
+                            .child(error),
+                    )
+                }),
+        )
+    }
+
+    fn dock_account_tab(&mut self, cx: &mut Context<Self>) {
+        if self.account_sign_in.docked.is_none() {
+            self.account_sign_in.docked = Some(Instant::now());
+            cx.notify();
+        }
+    }
+}
+
+const TAB_WIDTH: f32 = 380.0;
+const TAB_HEIGHT: f32 = 46.0;
+const TAB_BOTTOM: f32 = 28.0;
+/// Matches the chat composer's near-pill corners.
+const COMPOSER_RADIUS: f32 = 18.0;
+const DOCK_DURATION: Duration = Duration::from_millis(320);
+
+fn icon_button(
+    id: &'static str,
+    icon: &'static [u8],
+    tooltip: &'static str,
+    primary: bool,
+    focused: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let theme = Theme::global();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .size(px(32.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .border_1()
+        .border_color(if focused {
+            if primary { theme.TEXT } else { theme.ACCENT }
+        } else {
+            gpui::transparent_black().into()
+        })
+        .bg(if primary { theme.ACCENT } else { theme.TEXT.opacity(0.06) })
+        .text_color(if primary { theme.BG } else { theme.TEXT_DIM })
+        .cursor_pointer()
+        .hover(move |el| {
+            if primary {
+                el.opacity(0.9)
+            } else {
+                el.bg(theme.TEXT.opacity(0.12)).text_color(theme.TEXT)
+            }
+        })
+        .tooltip(move |_, cx| cx.new(|_| super::remotes::HeaderTooltip(tooltip.into())).into())
+        .child(
+            gpui::svg()
+                .data(icon)
+                .size(px(14.0))
+                .text_color(if primary { theme.BG } else if focused { theme.TEXT } else { theme.TEXT_DIM }),
+        )
 }
 
 /// Import on the left, Skip on the right, with a knob that slides between.

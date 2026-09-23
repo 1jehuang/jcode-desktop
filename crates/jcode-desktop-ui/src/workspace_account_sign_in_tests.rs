@@ -281,23 +281,26 @@ fn theme_hover_previews_until_a_theme_is_clicked(cx: &mut gpui::TestAppContext) 
 }
 
 #[gpui::test]
-fn sign_in_bar_and_skip_leave_the_live_demo_unobstructed(cx: &mut gpui::TestAppContext) {
+fn sign_in_tab_holds_email_icon_and_skip_on_the_right_edge(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     let right = vcx.debug_bounds("account-sign-in-right").unwrap();
-    for selector in ["account-sign-in-continue", "account-sign-in-primary", "account-sign-in-field"] {
+    let tab = vcx.debug_bounds("account-sign-in-panel").unwrap();
+    // A folder tab clipped by the right edge, below the demo.
+    assert!((tab.right() - right.right()).abs() < px(1.), "{tab:?} {right:?}");
+    assert!(tab.size.width < right.size.width * 0.7, "{tab:?}");
+    for selector in ["account-sign-in-field", "account-sign-in-primary", "account-sign-in-continue"] {
         let bounds = vcx.debug_bounds(selector).expect(selector);
-        assert!(right.contains(&bounds.center()), "{selector} is on the right: {bounds:?}");
+        assert!(tab.contains(&bounds.center()), "{selector} is inside the tab: {bounds:?}");
+    }
+    // Sign in and skip are icons, not labelled buttons.
+    for selector in ["account-sign-in-primary", "account-sign-in-continue"] {
+        let bounds = vcx.debug_bounds(selector).unwrap();
+        assert!(bounds.size.width <= px(34.) && bounds.size.height <= px(34.), "{selector}: {bounds:?}");
     }
     let card = vcx.debug_bounds("account-sign-in-card").unwrap();
-    assert!(vcx.debug_bounds("account-sign-in-primary").unwrap().left() >= card.right());
-    // The demo fills the space above the sign-in bar, and nothing covers it
-    // except the tiny skip icon.
+    assert!(tab.left() >= card.right());
     let demo = vcx.debug_bounds("account-sign-in-demo").unwrap();
-    let bar = vcx.debug_bounds("account-sign-in-panel").unwrap();
-    assert!(demo.bottom() <= bar.top() + px(1.), "{demo:?} {bar:?}");
     assert!(demo.size.height > right.size.height * 0.7, "{demo:?}");
-    let skip = vcx.debug_bounds("account-sign-in-continue").unwrap();
-    assert!(skip.size.width <= px(32.) && skip.size.height <= px(32.), "{skip:?}");
     vcx.executor().advance_clock(Duration::from_secs(5));
     vcx.run_until_parked();
     let panel = workspace.read_with(vcx, |w, _| w.account_sign_in.demo.as_ref().unwrap().panel.clone());
@@ -308,6 +311,36 @@ fn sign_in_bar_and_skip_leave_the_live_demo_unobstructed(cx: &mut gpui::TestAppC
     click(vcx, "account-sign-in-continue");
     assert_draft_and_focus(&workspace, vcx);
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.demo.is_none()));
+}
+
+#[gpui::test]
+fn typing_docks_the_tab_over_the_demo_composer(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.docked.is_none()));
+    let rest = vcx.debug_bounds("account-sign-in-panel").unwrap();
+    // Typing with nothing focused keeps the keystroke and docks the tab.
+    workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
+    vcx.simulate_keystrokes("m e");
+    workspace.read_with(vcx, |w, cx| {
+        assert!(w.account_sign_in.docked.is_some());
+        assert_eq!(w.account_sign_in.input.as_ref().unwrap().read(cx).content, "me");
+    });
+    vcx.executor().advance_clock(Duration::from_secs(1));
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    let docked = vcx.debug_bounds("account-sign-in-panel").unwrap();
+    let composer = vcx.debug_bounds("prompt-input").or_else(|| vcx.debug_bounds("composer"));
+    assert!(docked.top() < rest.top() - px(100.), "{docked:?} {rest:?}");
+    assert!(docked.size.width > rest.size.width, "{docked:?} {rest:?}");
+    if let Some(composer) = composer {
+        assert!(docked.intersects(&composer), "{docked:?} {composer:?}");
+    }
+    vcx.simulate_input("@example.com");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| {
+        assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, .. } if email == "me@example.com"));
+    });
 }
 
 #[gpui::test]
@@ -379,7 +412,7 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         vcx.run_until_parked();
         let card = vcx.debug_bounds("account-sign-in-card").unwrap();
         let proceed = vcx.debug_bounds("account-sign-in-continue").unwrap();
-        assert!(proceed.left() >= px(0.) && proceed.right() <= px(360.), "{proceed:?}");
+        assert!(proceed.left() >= px(0.) && proceed.right() <= px(360.) + px(1.), "{proceed:?}");
         assert!(proceed.bottom() <= px(800.) && proceed.top() >= card.bottom() - px(1.), "{proceed:?}");
         let bar = vcx.debug_bounds("account-sign-in-panel").unwrap();
         assert!(bar.bottom() <= px(800.) + px(1.), "{bar:?}");
