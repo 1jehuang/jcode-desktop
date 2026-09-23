@@ -27,8 +27,19 @@ pub(super) struct State {
     /// Outlives the page so Continue can close immediately while importing.
     import_task: Option<gpui::Task<()>>,
     telemetry: Telemetry,
+    telemetry_open: bool,
+    /// Hovering a swatch previews it until the user clicks one.
+    theme_picked: bool,
+    /// Live chat replay behind Continue. Dropped with the page.
+    demo: Option<Demo>,
     #[cfg(test)]
     test_api_base: Option<String>,
+}
+
+struct Demo {
+    panel: Entity<Panel>,
+    _replay: gpui::Task<()>,
+    _load: Option<gpui::Task<()>>,
 }
 
 /// Mirrors the CLI onboarding's three telemetry levels, most sharing first.
@@ -51,11 +62,11 @@ impl Telemetry {
         }
     }
 
-    fn detail(self) -> &'static str {
+    fn hint(self) -> &'static str {
         match self {
-            Self::Everything => "Usage stats, crash reports, and prompt content. Helps us improve Jcode the most.",
-            Self::UsageOnly => "Anonymous usage stats and crash reports. Never your prompts or code.",
-            Self::Off => "Nothing is sent.",
+            Self::Everything => "Usage + prompts",
+            Self::UsageOnly => "Anonymous usage",
+            Self::Off => "Nothing sent",
         }
     }
 
@@ -121,6 +132,7 @@ enum Choice {
     ImportLess,
     Login(usize),
     Theme,
+    TelemetryMenu,
     Telemetry(Telemetry),
     Continue,
 }
@@ -168,6 +180,9 @@ impl State {
                 || should_offer(crate::config::account_sign_in_handled(), connected, fixture),
             connected,
             telemetry: Telemetry::current(),
+            // Offline screenshots can show the expanded telemetry menu.
+            telemetry_open: fixture
+                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TELEMETRY_OPEN").as_deref() == Ok("1"),
             ..Self::default()
         }
     }
@@ -192,7 +207,10 @@ impl State {
         }
         choices.push(Choice::Theme);
         if !Telemetry::locked() {
-            choices.extend(Telemetry::ALL.map(Choice::Telemetry));
+            choices.push(Choice::TelemetryMenu);
+            if self.telemetry_open {
+                choices.extend(Telemetry::ALL.map(Choice::Telemetry));
+            }
         }
         choices.push(Choice::Continue);
         choices
@@ -310,9 +328,70 @@ impl Workspace {
         if Telemetry::locked() {
             return;
         }
-        self.account_sign_in.telemetry = level;
+        let state = &mut self.account_sign_in;
+        state.telemetry = level;
+        state.telemetry_open = false;
+        state.keyboard_choice = state
+            .keyboard_choice
+            .and(state.choices().iter().position(|choice| *choice == Choice::TelemetryMenu));
         level.persist();
         cx.notify();
+    }
+
+    fn toggle_account_telemetry_menu(&mut self, cx: &mut Context<Self>) {
+        if Telemetry::locked() {
+            return;
+        }
+        let state = &mut self.account_sign_in;
+        state.telemetry_open = !state.telemetry_open;
+        state.keyboard_choice = state
+            .keyboard_choice
+            .and(state.choices().iter().position(|choice| *choice == Choice::TelemetryMenu));
+        cx.notify();
+    }
+
+    fn pick_account_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
+        self.account_sign_in.theme_picked = true;
+        self.select_theme(preset, cx);
+    }
+
+    fn hover_account_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
+        if !self.account_sign_in.theme_picked {
+            self.select_theme(preset, cx);
+        }
+    }
+
+    /// Start the live chat replay behind Continue, once per visible page.
+    /// A recent transcript from another harness replaces the built-in demo
+    /// when one exists. It is only read, never imported or sent.
+    fn ensure_account_demo(&mut self, cx: &mut Context<Self>) {
+        if self.account_sign_in.demo.is_some() {
+            return;
+        }
+        let panel = cx.new(|cx| Panel::new_demo("Demo", cx));
+        let replay = crate::panel::demo_replay::run(
+            panel.clone(),
+            crate::panel::demo_replay::builtin_script(),
+            cx,
+        );
+        let load = Telemetry::live().then(|| {
+            let sample = cx
+                .background_executor()
+                .spawn(async { jcode_base::transcript_sample::recent_external_transcript() });
+            cx.spawn(async move |this, cx| {
+                let Some(sample) = sample.await else { return };
+                let _ = this.update(cx, |this, cx| {
+                    let Some(demo) = this.account_sign_in.demo.as_mut() else { return };
+                    demo.panel.update(cx, |panel, cx| {
+                        panel.title = format!("From {}", sample.source).into();
+                        cx.notify();
+                    });
+                    demo._replay = crate::panel::demo_replay::run(demo.panel.clone(), sample.turns, cx);
+                    demo._load = None;
+                });
+            })
+        });
+        self.account_sign_in.demo = Some(Demo { panel, _replay: replay, _load: load });
     }
 
     fn open_account_pricing(&mut self, cx: &mut Context<Self>) {
@@ -365,7 +444,8 @@ impl Workspace {
             Choice::Subscribe => self.open_account_pricing(cx),
             Choice::ImportLess => self.toggle_account_import_less(cx),
             Choice::Login(index) => self.toggle_account_import(index, cx),
-            Choice::Theme => self.select_theme(Theme::active_preset().next(), cx),
+            Choice::Theme => self.pick_account_theme(Theme::active_preset().next(), cx),
+            Choice::TelemetryMenu => self.toggle_account_telemetry_menu(cx),
             Choice::Telemetry(level) => self.select_account_telemetry(level, cx),
             Choice::Continue => self.continue_account_sign_in(window, cx),
         }
@@ -381,6 +461,7 @@ impl Workspace {
         self.account_sign_in.visible = false;
         self.account_sign_in.task = None;
         self.account_sign_in.detect_task = None;
+        self.account_sign_in.demo = None;
         self.account_sign_in.stage = Stage::Welcome;
         self.account_sign_in.error = None;
         self.restore_focus(window, cx);
@@ -588,10 +669,11 @@ impl Workspace {
     }
 
     pub(super) fn render_account_sign_in(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        self.ensure_account_demo(cx);
         let theme = Theme::global();
         let narrow = window.viewport_size().width < px(760.0);
         let info = div()
@@ -612,18 +694,12 @@ impl Workspace {
                     .max_w(px(520.0))
                     .flex()
                     .flex_col()
-                    .gap(px(36.0))
+                    .gap(px(32.0))
                     .child(self.account_onboarding_header())
                     .child(self.account_onboarding_account(cx))
                     .child(self.account_onboarding_logins(cx))
                     .child(self.account_onboarding_theme(cx))
-                    .child(self.account_onboarding_telemetry(cx))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.TEXT_DIM)
-                            .child("Everything here can be changed later in Settings. Esc skips without importing."),
-                    ),
+                    .child(self.account_onboarding_telemetry(cx)),
             );
         let proceed = self.account_onboarding_continue(narrow, cx);
         div()
@@ -675,19 +751,10 @@ impl Workspace {
 
     fn account_onboarding_header(&self) -> gpui::Div {
         let theme = Theme::global();
-        let (title, description) = match &self.account_sign_in.stage {
-            Stage::Waiting { .. } => (
-                "Finish signing in",
-                "Approve this device in your browser. You can keep setting up while you wait.",
-            ),
-            Stage::Complete { .. } => (
-                "You're signed in",
-                "Your Jcode account is connected. Review the rest, then continue.",
-            ),
-            _ => (
-                "Welcome to Jcode Desktop",
-                "A few choices before you start. Defaults are fine, so you can just continue.",
-            ),
+        let title = match &self.account_sign_in.stage {
+            Stage::Waiting { .. } => "Finish signing in",
+            Stage::Complete { .. } => "You're signed in",
+            _ => "Welcome to Jcode",
         };
         div()
             .flex()
@@ -719,47 +786,35 @@ impl Workspace {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(title),
             )
-            .child(div().text_size(px(14.0)).text_color(theme.TEXT_DIM).child(description))
     }
 
     fn account_onboarding_account(&self, cx: &mut Context<Self>) -> gpui::Div {
         let state = &self.account_sign_in;
         let theme = Theme::global();
         let waiting = matches!(state.stage, Stage::Waiting { .. });
-        let mut section = section("Jcode account").child(
-            div().text_size(px(13.0)).child(match &state.stage {
-                Stage::Waiting { .. } => "Enter your email in the browser, open the magic link in that same browser, then approve this device.".to_string(),
-                Stage::Complete { email } => format!("Signed in as {email}"),
-                _ if state.connected => "Signed in on this computer.".to_string(),
-                _ => "Optional. Sign in with an email magic link, no password. Subscribe for Jcode's hosted models and cloud features.".to_string(),
-            }),
-        );
+        let mut section = section("Jcode account");
+        let status = match &state.stage {
+            Stage::Complete { email } => Some(format!("Signed in as {email}")),
+            Stage::Welcome if state.connected => Some("Signed in".to_string()),
+            _ => None,
+        };
+        if let Some(status) = status {
+            section = section.child(div().text_size(px(13.0)).text_color(theme.OK).child(status));
+        }
         if waiting {
             let progress = state
                 .remaining
                 .map(|remaining| {
                     let seconds = remaining.as_secs();
-                    format!(
-                        "Waiting for approval · Link expires in {}:{:02}",
-                        seconds / 60,
-                        seconds % 60
-                    )
+                    format!("Waiting for approval · {}:{:02}", seconds / 60, seconds % 60)
                 })
                 .unwrap_or_else(|| "Waiting for approval".into());
             section = section.child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
+                    .debug_selector(|| "account-sign-in-progress".into())
                     .text_size(px(12.0))
-                    .child(
-                        div()
-                            .debug_selector(|| "account-sign-in-progress".into())
-                            .child(progress),
-                    )
-                    .child(div().text_color(theme.TEXT_DIM).child(
-                        "Desktop connects automatically. Copy the link if your browser did not open.",
-                    )),
+                    .text_color(theme.TEXT_DIM)
+                    .child(progress),
             );
         }
         if let Some(error) = &state.error {
@@ -809,7 +864,7 @@ impl Workspace {
             actions = actions.child(
                 account_button(
                     "account-sign-in-subscribe",
-                    "Subscribe to Jcode",
+                    "Subscribe",
                     false,
                     state.focused(Choice::Subscribe),
                 )
@@ -834,15 +889,11 @@ impl Workspace {
                     .debug_selector(|| "account-logins-empty".into())
                     .text_size(px(13.0))
                     .text_color(theme.TEXT_DIM)
-                    .child(if state.detecting {
-                        "Looking for existing logins…"
-                    } else {
-                        "No existing logins found. Connect Claude, OpenAI, and others later from Accounts in the sidebar."
-                    }),
+                    .child(if state.detecting { "Looking…" } else { "None found" }),
             );
         }
         if !connected.is_empty() {
-            section = section.child(subheading("Already connected to Jcode"));
+            section = section.child(subheading("Connected"));
             let mut list = div().flex().flex_col().gap_1();
             for account in connected {
                 list = list.child(login_row(
@@ -901,12 +952,7 @@ impl Workspace {
                 }
                 list = list.child(row);
             }
-            section = section.child(list).child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child("Jcode reads these in place when you continue. The originals are never moved or changed."),
-            );
+            section = section.child(list);
         }
         section
     }
@@ -936,7 +982,12 @@ impl Workspace {
                     .flex_col()
                     .gap_1()
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_theme(preset, cx)))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.hover_account_theme(preset, cx);
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| this.pick_account_theme(preset, cx)))
                     .child(theme_swatch(preset, preset == active))
                     .child(
                         div()
@@ -946,112 +997,152 @@ impl Workspace {
                     ),
             );
         }
-        section("Theme")
-            .child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child(format!("{} · Applies instantly, so this page is the preview.", active.label())),
-            )
-            .child(grid)
+        section("Theme").child(grid)
     }
 
+    /// A collapsed dropdown: one row showing the current level, expanding
+    /// in place to the three choices.
     fn account_onboarding_telemetry(&self, cx: &mut Context<Self>) -> gpui::Div {
         let state = &self.account_sign_in;
         let theme = Theme::global();
-        if Telemetry::locked() {
-            return section("Telemetry").child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child("Off. Disabled by JCODE_NO_TELEMETRY or DO_NOT_TRACK in your environment."),
-            );
-        }
-        let mut options = div()
+        let locked = Telemetry::locked();
+        let open = state.telemetry_open && !locked;
+        let current = if locked { Telemetry::Off } else { state.telemetry };
+        let header = div()
+            .id("account-telemetry-menu")
+            .debug_selector(|| "account-telemetry-menu".into())
             .flex()
-            .flex_wrap()
-            .gap_1()
-            .p_1()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .py_2()
             .rounded_md()
-            .bg(theme.PANEL_BG);
-        for level in Telemetry::ALL {
-            let selected = state.telemetry == level;
-            let focused = state.focused(Choice::Telemetry(level));
-            options = options.child(
-                div()
-                    .id(level.id())
-                    .debug_selector(move || level.id().into())
-                    .flex_1()
-                    .min_w(px(96.0))
-                    .px_3()
-                    .py_1p5()
-                    .rounded_sm()
-                    .text_center()
-                    .text_size(px(13.0))
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
-                    .when(selected, |el| el.bg(theme.ACCENT.opacity(0.18)))
-                    .when(!selected, |el| el.hover(move |el| el.bg(theme.TOOL_BG)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_account_telemetry(level, cx)))
-                    .child(level.label()),
-            );
+            .bg(theme.PANEL_BG)
+            .border_1()
+            .border_color(if state.focused(Choice::TelemetryMenu) {
+                theme.ACCENT
+            } else {
+                gpui::transparent_black().into()
+            })
+            .text_size(px(13.0))
+            .child(div().flex_1().child("Telemetry"))
+            .child(div().text_color(theme.TEXT_DIM).child(if locked {
+                "Off · set by environment"
+            } else {
+                current.label()
+            }))
+            .when(!locked, |el| {
+                el.cursor_pointer()
+                    .hover(move |el| el.bg(theme.TOOL_BG))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_account_telemetry_menu(cx)))
+                    .child(
+                        div()
+                            .text_color(theme.TEXT_DIM)
+                            .child(if open { "▴" } else { "▾" }),
+                    )
+            });
+        let mut menu = div().flex().flex_col().gap_1().child(header);
+        if open {
+            let mut options = div()
+                .debug_selector(|| "account-telemetry-options".into())
+                .flex()
+                .flex_col()
+                .p_1()
+                .rounded_md()
+                .bg(theme.PANEL_BG);
+            for level in Telemetry::ALL {
+                let selected = state.telemetry == level;
+                let focused = state.focused(Choice::Telemetry(level));
+                options = options.child(
+                    div()
+                        .id(level.id())
+                        .debug_selector(move || level.id().into())
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .px_2()
+                        .py_1p5()
+                        .rounded_sm()
+                        .text_size(px(13.0))
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
+                        .when(selected, |el| el.bg(theme.ACCENT.opacity(0.14)))
+                        .when(!selected, |el| el.hover(move |el| el.bg(theme.TOOL_BG)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.select_account_telemetry(level, cx)))
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .text_color(theme.ACCENT)
+                                .child(if selected { "✓" } else { "" }),
+                        )
+                        .child(div().flex_1().child(level.label()))
+                        .child(div().text_size(px(12.0)).text_color(theme.TEXT_DIM).child(level.hint())),
+                );
+            }
+            menu = menu.child(options);
         }
-        section("Telemetry").child(options).child(
-            div()
-                .text_size(px(12.0))
-                .text_color(theme.TEXT_DIM)
-                .child(state.telemetry.detail()),
-        )
+        menu
     }
 
+    /// Continue is a check mark floating over a real chat panel that replays
+    /// a session, so the first thing behind the welcome page is the product.
     fn account_onboarding_continue(&self, narrow: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let state = &self.account_sign_in;
         let theme = Theme::global();
-        let imports = state.selected_imports().len();
-        let mut recap = Vec::new();
-        if imports > 0 {
-            recap.push(format!("Import {imports} login{}", if imports == 1 { "" } else { "s" }));
-        }
-        recap.push(format!("{} theme", Theme::active_preset().label()));
-        recap.push(format!("Telemetry: {}", state.telemetry.label().to_lowercase()));
         let focused = state.focused(Choice::Continue);
-        div()
+        let size = if narrow { 64.0 } else { 96.0 };
+        let mut container = div()
             .id("account-sign-in-continue")
             .debug_selector(|| "account-sign-in-continue".into())
             .when(narrow, |el| el.h(px(150.0)).flex_none().w_full())
             .when(!narrow, |el| el.flex_1().h_full())
             .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .p(px(32.0))
-            .bg(theme.PANEL_BG)
-            .border_1()
-            .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
-            .cursor_pointer()
-            .hover(move |el| el.bg(theme.ACCENT.opacity(0.10)))
-            .on_click(cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx)))
-            .child(
+            .relative()
+            .overflow_hidden()
+            .bg(theme.PANEL_BG);
+        if let Some(demo) = &state.demo {
+            container = container.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .text_size(px(if narrow { 24.0 } else { 32.0 }))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("Continue")
-                    .child(div().text_color(theme.ACCENT).child("→")),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "account-sign-in-recap".into())
-                    .text_center()
-                    .text_size(px(12.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child(recap.join(" · ")),
-            )
+                    .debug_selector(|| "account-sign-in-demo".into())
+                    .absolute()
+                    .inset_0()
+                    .p(px(if narrow { 8.0 } else { 20.0 }))
+                    .child(demo.panel.clone()),
+            );
+        }
+        container.child(
+            div()
+                .id("account-sign-in-continue-overlay")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme.BG.opacity(0.28))
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx)))
+                .child(
+                    div()
+                        .id("account-sign-in-check")
+                        .debug_selector(|| "account-sign-in-check".into())
+                        .size(px(size))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(theme.ACCENT)
+                        .text_color(theme.BG)
+                        .text_size(px(size * 0.5))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .shadow_lg()
+                        .border_4()
+                        .border_color(if focused { theme.TEXT } else { theme.ACCENT.opacity(0.35) })
+                        .hover(|el| el.opacity(0.9))
+                        .child("✓"),
+                ),
+        )
     }
 }
 

@@ -204,15 +204,62 @@ fn theme_swatches_and_telemetry_choices_apply(cx: &mut gpui::TestAppContext) {
         .unwrap();
     click(vcx, Box::leak(format!("account-theme-{target}").into_boxed_str()));
     assert_eq!(Theme::active_preset(), crate::theme::ThemePreset::ALL[target]);
+    // Telemetry is a collapsed dropdown until opened.
+    assert!(vcx.debug_bounds("account-telemetry-off").is_none());
     for (selector, level) in [
         ("account-telemetry-off", Telemetry::Off),
         ("account-telemetry-everything", Telemetry::Everything),
     ] {
+        click(vcx, "account-telemetry-menu");
         click(vcx, selector);
-        workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.telemetry, level));
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.account_sign_in.telemetry, level);
+            assert!(!w.account_sign_in.telemetry_open, "choosing collapses the menu");
+        });
+        assert!(vcx.debug_bounds(selector).is_none());
     }
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.visible));
     Theme::select(original);
+}
+
+#[gpui::test]
+fn theme_hover_previews_until_a_theme_is_clicked(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    let original = Theme::active_preset();
+    let all = crate::theme::ThemePreset::ALL;
+    let others: Vec<usize> = (0..all.len()).filter(|&i| all[i] != original).collect();
+    let hover = |vcx: &mut gpui::VisualTestContext, index: usize| {
+        let selector: &'static str = Box::leak(format!("account-theme-{index}").into_boxed_str());
+        let bounds = vcx.debug_bounds(selector).expect(selector);
+        vcx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::default());
+        vcx.run_until_parked();
+    };
+    hover(vcx, others[0]);
+    assert_eq!(Theme::active_preset(), all[others[0]], "hover previews before any click");
+    let picked: &'static str = Box::leak(format!("account-theme-{}", others[1]).into_boxed_str());
+    click(vcx, picked);
+    assert_eq!(Theme::active_preset(), all[others[1]]);
+    hover(vcx, others[0]);
+    assert_eq!(Theme::active_preset(), all[others[1]], "a click locks the choice");
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.theme_picked));
+    Theme::select(original);
+}
+
+#[gpui::test]
+fn continue_is_a_check_over_a_live_chat_panel(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    assert!(vcx.debug_bounds("account-sign-in-check").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-demo").is_some());
+    vcx.executor().advance_clock(Duration::from_secs(5));
+    vcx.run_until_parked();
+    let panel = workspace.read_with(vcx, |w, _| w.account_sign_in.demo.as_ref().unwrap().panel.clone());
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.demo);
+        assert!(!panel.items.is_empty(), "the replay is actively streaming");
+    });
+    click(vcx, "account-sign-in-check");
+    assert_draft_and_focus(&workspace, vcx);
+    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.demo.is_none()));
 }
 
 #[gpui::test]

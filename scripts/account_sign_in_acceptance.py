@@ -28,10 +28,10 @@ def verify(output, env, root):
             return current
         return ui.wait_frame(label, check) if phrase else check(ui.capture(label))
 
-    current = words("account-welcome", "Welcome to Jcode Desktop")
+    current = words("account-welcome", "Welcome to Jcode")
     phrase_bounds(current, "Continue")
     phrase_bounds(current, "magic link")
-    phrase_bounds(current, "Subscribe to Jcode")
+    phrase_bounds(current, "Subscribe")
     phrase_bounds(current, "Import less")
     phrase_bounds(current, "Telemetry")
     ui.click(phrase_bounds(current, "Sign in with email"))
@@ -42,7 +42,7 @@ def verify(output, env, root):
     ui.click(phrase_bounds(current, "Copy link"))
     current = words("account-copy-link", "Link copied")
     ui.click(phrase_bounds(current, "Start over"))
-    current = words("account-back", "Welcome to Jcode Desktop")
+    current = words("account-back", "Welcome to Jcode")
     assert tomllib.loads(config.read_text()) == original
     # Keyboard-only: Shift+Tab wraps straight to Continue in the right half.
     ui.native("key", "--clearmodifiers", "Tab")
@@ -87,7 +87,7 @@ def verify(output, env, root):
     ui.native("mousemove", 130, 600)
     current = words("account-settings", "Jcode account", sidebar=True)
     ui.click(phrase_bounds(current, "Sign in with email"))
-    current = words("account-reentry", "Welcome to Jcode Desktop")
+    current = words("account-reentry", "Welcome to Jcode")
     ui.click(phrase_bounds(current, "Sign in with email"))
     words("account-reentry-waiting", "Finish signing")
     ui.native("key", "Escape")
@@ -97,7 +97,7 @@ def verify(output, env, root):
     # Leave the welcome screen visible in the final artifact.
     current = words("account-settings-final", "Jcode account", sidebar=True)
     ui.click(phrase_bounds(current, "Sign in with email"))
-    words("account-final", "Welcome to Jcode Desktop")
+    words("account-final", "Welcome to Jcode")
     ui.artifact("account-result.json").write_text(json.dumps({
         "welcome_and_magic_link_copy": True,
         "native_sign_in_waiting_reopen_and_cancel": True,

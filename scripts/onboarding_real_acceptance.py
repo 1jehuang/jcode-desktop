@@ -190,7 +190,7 @@ def run(output, binary=None, no_build=False, size="1440x1000", jcode_binary=None
                 assert endpoints["jcode-desktop.sock"] == result["pid"]
                 report["endpoints"] = endpoints
                 report["checks"]["owned_private_runtime_endpoints"] = True
-                welcome = ui.text("welcome", "Welcome to Jcode Desktop")
+                welcome = ui.text("welcome", "Welcome to Jcode")
                 phrase_bounds(welcome, "Skip for now")
                 text = normalized(" ".join(word["text"] for word in welcome))
                 assert "simulat" not in text and "rehearse" not in text

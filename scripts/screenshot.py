@@ -117,6 +117,8 @@ def main():
     parser.add_argument("--mermaid-source", type=Path,
                         help="custom Mermaid source file for the mermaid transcript fixture")
     parser.add_argument("--size", default="1440x1000")
+    parser.add_argument("--telemetry-open", action="store_true",
+                        help="with --account-sign-in, expand the telemetry dropdown")
     parser.add_argument("--scroll-up", type=int, default=0, metavar="STEPS",
                         help="scroll the transcript upward on the private display before capture")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
@@ -457,6 +459,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP"] = args.cloud_startup
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
+        if args.telemetry_open:
+            env["JCODE_DESKTOP_SCREENSHOT_TELEMETRY_OPEN"] = "1"
         if args.preview_state is not None:
             env["JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE"] = args.preview_state
         if args.preview_interact:

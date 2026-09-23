@@ -101,6 +101,8 @@ pub(crate) mod usage;
 pub(crate) mod voice;
 #[path = "panel_side_document.rs"]
 mod side_document;
+#[path = "panel_demo_replay.rs"]
+pub(crate) mod demo_replay;
 pub use side_document::SideDocumentSnapshot;
 
 type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
@@ -273,6 +275,8 @@ impl gpui::EventEmitter<AccountsPanelClosed> for Panel {}
 
 pub struct Panel {
     pub preview_state: Option<PreviewState>,
+    /// Scripted onboarding replay: real rendering and motion, never sounds.
+    pub(crate) demo: bool,
     pub session_id: String,
     pub title: SharedString,
     pub working_dir: Option<String>,
@@ -914,6 +918,7 @@ impl Panel {
             pending_history_scroll: None,
             bridge,
             preview_state: None,
+            demo: false,
             history_loaded: false,
             reconnect_response: None,
             restored_transcript: false,
@@ -2920,6 +2925,7 @@ impl Panel {
         self.observe_activity_state(event);
         if let Some(cue) = self.sound_events.observe(event)
             && self.preview_state.is_none()
+            && !self.demo
         {
             crate::sounds::play(cue, cx);
         }
