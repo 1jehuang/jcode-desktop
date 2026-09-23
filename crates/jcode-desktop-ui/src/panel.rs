@@ -2460,6 +2460,8 @@ impl Panel {
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
             const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
             if EFFORTS.contains(&effort) {
+                let input = self.input.clone();
+                cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
                 self.run_session_operation(
                     SessionOperation::SetEffort(effort.to_string()),
                     format!("Reasoning effort set to `{effort}`."),
@@ -2636,6 +2638,28 @@ impl Panel {
                 input.open_model_menu(models, cx);
             });
         });
+    }
+
+    /// Toggle the `/effort` suggestion menu from the effort pill.
+    pub(super) fn toggle_effort_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_side_document() {
+            return;
+        }
+        if self.model_picker_open {
+            self.close_model_picker(cx);
+        }
+        let input = self.input.clone();
+        cx.defer(move |cx| {
+            input.update(cx, |input, cx| {
+                if input.effort_menu_open() {
+                    input.close_effort_menu(cx);
+                } else {
+                    input.open_effort_menu(cx);
+                }
+            });
+        });
+        self.focus_input(window, cx);
+        cx.notify();
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {

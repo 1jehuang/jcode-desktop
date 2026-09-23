@@ -1,6 +1,6 @@
 //! Composer chrome: a plain location line and compact pills above the input.
 //!
-//! The model pill (pretty name, then reasoning effort) and the credential
+//! The model pill, a separate reasoning effort pill, and the credential
 //! method pill sit on the left, followed by the location (repo or directory)
 //! as plain text that truncates first. The voice pill (microphone plus its
 //! keybinding) sits on the right.
@@ -67,18 +67,22 @@ impl Panel {
                                     .truncate()
                                     .child(model_label),
                             )
-                            .children(effort.map(|effort| {
-                                div()
-                                    .debug_selector(|| "panel-model-effort".into())
-                                    .flex_none()
-                                    .text_color(theme.TEXT_FAINT)
-                                    .child(effort)
-                            }))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_model_picker(window, cx);
                                 cx.stop_propagation();
                             })),
                     )
+                    .children(effort.map(|effort| {
+                        composer_pill("panel-model-effort")
+                            .flex_shrink(3.)
+                            .min_w(px(24.))
+                            .text_color(theme.TEXT_FAINT)
+                            .child(div().min_w_0().truncate().child(effort))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_effort_picker(window, cx);
+                                cx.stop_propagation();
+                            }))
+                    }))
                     .child(
                         composer_pill("panel-login")
                             .flex_shrink(2.)
@@ -279,7 +283,7 @@ mod tests {
             );
             assert!(
                 location.right() <= voice.left(),
-                "location stays left of voice"
+                "location stays left of voice at {width}: {location:?} {voice:?} {login:?} {effort:?} {model:?}"
             );
             for (tab_name, tab) in [("model", model), ("login", login), ("voice", voice)] {
                 assert!(
@@ -288,11 +292,12 @@ mod tests {
                 );
                 assert!(tab.left() >= input.left() && tab.right() <= input.right());
             }
+            assert!(name.right() <= model.right());
             assert!(
-                name.right() <= effort.left(),
-                "effort follows the model name"
+                model.right() <= effort.left(),
+                "effort is its own pill after the model"
             );
-            assert!(model.right() <= login.left(), "method follows model");
+            assert!(effort.right() <= login.left(), "method follows effort");
             assert!(login.right() <= voice.left(), "voice sits on the right");
             assert!(
                 voice.size.width > voice.size.height,

@@ -1122,6 +1122,30 @@ impl PromptInput {
         self.set_content("/model ".into(), cx);
     }
 
+    /// Show the `/effort` suggestions, stashing the draft like the model menu.
+    pub(crate) fn open_effort_menu(&mut self, cx: &mut Context<Self>) {
+        if self.model_menu_draft.is_none() && !self.effort_menu_open() {
+            self.model_menu_draft = Some((self.content.clone(), std::mem::take(&mut self.attachments)));
+            self.attachment_preview = None;
+        }
+        self.set_content("/effort ".into(), cx);
+    }
+
+    pub(crate) fn effort_menu_open(&self) -> bool {
+        let content = self.content.trim_start();
+        content == "/effort" || content.starts_with("/effort ")
+    }
+
+    /// Restore the stashed draft after the effort menu closes or submits.
+    pub(crate) fn close_effort_menu(&mut self, cx: &mut Context<Self>) {
+        if let Some((draft, attachments)) = self.model_menu_draft.take() {
+            self.attachments = attachments;
+            self.set_content(draft.to_string(), cx);
+        } else if self.effort_menu_open() {
+            self.set_content(String::new(), cx);
+        }
+    }
+
     pub(crate) fn close_model_menu(&mut self, cx: &mut Context<Self>) {
         if let Some((draft, attachments)) = self.model_menu_draft.take() {
             self.attachments = attachments;
