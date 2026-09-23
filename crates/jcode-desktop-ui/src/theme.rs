@@ -327,10 +327,11 @@ pub enum ThemePreset {
     Paper,
     Silver,
     LightNeutral,
+    DarkNeutral,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -346,6 +347,7 @@ impl ThemePreset {
         Self::Paper,
         Self::Silver,
         Self::LightNeutral,
+        Self::DarkNeutral,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -364,6 +366,7 @@ impl ThemePreset {
             Self::Paper => "paper",
             Self::Silver => "silver",
             Self::LightNeutral => "light-neutral",
+            Self::DarkNeutral => "dark-neutral",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -383,6 +386,7 @@ impl ThemePreset {
             Self::Paper => "Paper",
             Self::Silver => "Silver",
             Self::LightNeutral => "Light Neutral",
+            Self::DarkNeutral => "Dark Neutral",
         }
     }
     const fn index(self) -> usize {
@@ -402,6 +406,7 @@ impl ThemePreset {
             Self::Paper => 12,
             Self::Silver => 13,
             Self::LightNeutral => 14,
+            Self::DarkNeutral => 15,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -616,6 +621,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::PAPER.theme(),
         palettes::SILVER.theme(),
         palettes::light_neutral(),
+        palettes::dark_neutral(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -920,6 +926,38 @@ mod tests {
         let mixed = interpolate(&warm, theme, 0.5);
         assert!((mixed.PROMPT_TINT_STRENGTH - 0.025).abs() < f32::EPSILON);
         assert_eq!(interpolate(&warm, theme, 1.0).PROMPT_TINT_STRENGTH, 0.0);
+    }
+
+    #[test]
+    fn dark_neutral_is_untinted_gray_with_blue_only_for_links() {
+        let preset = ThemePreset::DarkNeutral;
+        assert_eq!(ThemePreset::from_id("dark-neutral"), preset);
+        assert_eq!(preset.label(), "Dark Neutral");
+        let theme = &raw_themes()[preset.index()];
+        assert_eq!(theme.PANEL_BG, rgb_c(0x212121));
+        assert_eq!(theme.USER_BG, rgb_c(0x303030));
+        assert!(luminance(theme.PANEL_BG) < 0.05);
+        for age in [0, 1, 6, 40, usize::MAX] {
+            assert_eq!(theme.prompt_background(age), theme.USER_BG);
+        }
+        for color in [
+            theme.BG,
+            theme.PANEL_BG,
+            theme.HEADER_BG,
+            theme.ACCENT,
+            theme.ACCENT_DIM,
+            theme.PANEL_BORDER_FOCUS,
+            theme.USER_BG,
+            theme.TOOL_BG,
+            theme.CODE_BG,
+            theme.INPUT_BG,
+        ] {
+            assert!((color.r - color.b).abs() <= 4.0 / 255.0 + f32::EPSILON);
+        }
+        assert!(contrast(theme.PANEL_BORDER_FOCUS, theme.INPUT_BG) >= 3.0);
+        assert!(contrast(theme.LINK, theme.PANEL_BG) >= 4.5);
+        assert!(contrast(theme.TEXT_DIM, theme.HEADER_BG) >= 4.5);
+        assert!(contrast(theme.HEADING, theme.USER_BG) >= 7.0);
     }
 
     #[test]

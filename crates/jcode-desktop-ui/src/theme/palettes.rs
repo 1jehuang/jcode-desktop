@@ -376,3 +376,41 @@ pub(super) fn light_neutral() -> Theme {
     theme.CURSOR = theme.HEADING;
     theme
 }
+
+/// Dark counterpart to Light Neutral: untinted charcoal surfaces, raised gray
+/// prompt cards, and charcoal-on-gray controls. Blue stays reserved for links
+/// and selection, while syntax and status keep their semantic colors.
+pub(super) fn dark_neutral() -> Theme {
+    let mut theme = Palette {
+        bg: 0x1a1a1a,
+        panel: 0x212121,
+        raised: 0x171717,
+        border: 0x333333,
+        text: 0xd6d6d6,
+        muted: 0xa3a3a3,
+        accent: 0xd6d6d6,
+        secondary: 0xd6d6d6,
+        keyword: 0x7ab7ff,
+        string: 0x8ccf9e,
+        number: 0xe3b96f,
+        error: 0xf28b8b,
+        ok: 0x8ccf9e,
+        warn: 0xe3b96f,
+    }
+    .theme();
+    theme.PANEL_BORDER_FOCUS = rgb_c(0x8a8a8a);
+    theme.ACCENT_DIM = rgb_c(0x2f2f2f);
+    theme.USER_BG = rgb_c(0x303030);
+    theme.PROMPT_TINT_STRENGTH = 0.0;
+    theme.TEXT_USER = rgb_c(0xf3f3f3);
+    theme.HEADING = rgb_c(0xf3f3f3);
+    theme.INPUT_BG = rgb_c(0x2a2a2a);
+    theme.INPUT_BORDER = rgb_c(0x3d3d3d);
+    theme.TOOL_BG = rgb_c(0x1c1c1c);
+    theme.CODE_BG = rgb_c(0x1b1b1b);
+    theme.INLINE_CODE_BG = rgb_c(0x2f2f2f);
+    theme.LINK = rgb_c(0x7ab7ff);
+    theme.SELECTION = rgba_c(0x3a83f75c);
+    theme.CURSOR = theme.HEADING;
+    theme
+}
