@@ -69,7 +69,9 @@ fn rebuild_ui(force: bool) -> anyhow::Result<()> {
             .to_string();
         command.env("JCODE_DESKTOP_BUILD_EPOCH", requested_at);
     }
+    let started = std::time::Instant::now();
     let output = command.current_dir(env!("CARGO_MANIFEST_DIR")).output()?;
+    record_build_timing(force, started.elapsed(), output.status.success());
     if output.status.success() {
         return Ok(());
     }
@@ -79,6 +81,29 @@ fn rebuild_ui(force: bool) -> anyhow::Result<()> {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+/// Append one Ctrl+R build measurement to `target/build-timings.jsonl`, the
+/// same log `scripts/build-timings.py` writes, so real reloads are tracked
+/// alongside controlled benchmarks. Best effort: timing never fails a reload.
+fn record_build_timing(force: bool, elapsed: std::time::Duration, success: bool) {
+    use std::io::Write;
+    let secs = elapsed.as_secs_f64();
+    eprintln!("UI rebuild took {secs:.2}s (success={success})");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let profile = if cfg!(debug_assertions) { "dev" } else { "release" };
+    let scenario = if force { "ctrl-r" } else { "startup" };
+    let line = format!(
+        "{{\"ts\":\"{ts}\",\"unix\":{ts},\"source\":\"host\",\"profile\":\"{profile}\",\"scenario\":\"{scenario}\",\"build_s\":{secs:.2},\"median_s\":{secs:.2},\"success\":{success},\"pid\":{}}}\n",
+        std::process::id()
+    );
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/build-timings.jsonl");
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
 }
 
 #[derive(Default)]

@@ -340,3 +340,30 @@ produced no lag warnings, and averaged 1.13% CPU during the following 15-second
 idle sample. This validates the release host, GPUI Wayland renderer, UI plugin,
 state diagnostic, and persistent diagnostics boundaries together without
 touching the active desktop session.
+
+## Compile times
+
+Recorded in `target/build-timings.jsonl`. `python3 scripts/build-timings.py`
+takes controlled measurements (touch a file, run the same cargo command as
+Ctrl+R, and record the median). The host also appends a `source: "host"` line
+for every real Ctrl+R and startup build. Run
+`python3 scripts/build-timings.py --summary` to see the log.
+
+Baseline, 2026-09-22, XPS 14 (Core Ultra X9 388H, 16 threads), rustc 1.98.1,
+mold, commit 4f6372c:
+
+| Profile | Scenario | Median |
+|---|---|---|
+| dev | no-op | 0.6s |
+| dev | touch a UI leaf file | 6.1s |
+| dev | touch `workspace.rs` | 5.5s |
+| dev | touch host `main.rs` | 5.4s |
+| release | no-op | 0.8s |
+| release | touch a UI leaf file | 48.1s |
+| release | touch host `main.rs` | 49.2s |
+
+The running hot-reload hosts are release builds, so every Ctrl+R costs about
+48s. `-Ztime-passes` on the release UI crate (43.5s total): 25.4s waiting on
+LLVM codegen, 18.4s ThinLTO, 12.3s LLVM passes, 11.4s codegen, 5.6s
+monomorphization, and under 5s in the frontend. Nearly all the time goes to
+optimized code generation for one large crate. The frontend is cheap.
