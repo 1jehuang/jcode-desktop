@@ -250,7 +250,7 @@ fn tool_value(name: &str, value: &Value, depth: usize) -> Option<DiffPreview> {
                 note(&mut result, "Empty content.");
             }
         }
-        "edit" => {
+        "edit" if value.get("edits").is_none() => {
             note(&mut result, SNIPPET_NOTE);
             result.hunks = snippet_diff(
                 value.get("old_string")?.as_str()?,
@@ -263,7 +263,7 @@ fn tool_value(name: &str, value: &Value, depth: usize) -> Option<DiffPreview> {
                 );
             }
         }
-        "multiedit" => {
+        "multiedit" | "edit" => {
             note(&mut result, SNIPPET_NOTE);
             let edits = value.get("edits")?.as_array()?;
             for (i, edit) in edits.iter().enumerate() {
@@ -1300,6 +1300,20 @@ mod tests {
         assert_eq!(file.hunks[1].lines[0].old_line, Some(1));
         assert!(file.note.as_deref().unwrap().contains("sequential"));
         assert!(file.note.as_deref().unwrap().contains("Replace all"));
+    }
+
+    #[test]
+    fn edit_with_edits_array_matches_multiedit_preview() {
+        let input = json!({"file_path":"a", "edits":[
+            {"old_string":"old\n", "new_string":"new\n"},
+            {"old_string":"x\n", "new_string":"y\n"}
+        ]})
+        .to_string();
+        let merged = from_tool("edit", &input).unwrap();
+        let legacy = from_tool("multiedit", &input).unwrap();
+        assert_eq!(merged.counts(), legacy.counts());
+        assert_eq!(merged.files[0].hunks.len(), 2);
+        assert!(merged.files[0].hunks[1].header.starts_with("Edit 2: "));
     }
 
     #[test]

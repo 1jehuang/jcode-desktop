@@ -8,7 +8,7 @@ pub(super) fn refresh_after(event: &jcode_sdk::ApiEvent) -> bool {
         // A failed multi-file patch can still contain successful file mutations.
         jcode_sdk::ApiEvent::ToolDone { name, .. } => matches!(
             name.trim_start_matches("functions."),
-            "write" | "edit" | "multiedit" | "patch" | "apply_patch" | "batch"
+            "write" | "edit" | "multiedit" | "patch" | "apply_patch" | "replace" | "batch"
         ),
         jcode_sdk::ApiEvent::TurnDone { .. } => true,
         _ => false,

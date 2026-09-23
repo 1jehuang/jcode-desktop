@@ -102,7 +102,9 @@ fn value_diffs(name: &str, input: &Value, depth: usize) -> Vec<FileDiff> {
                     };
                     append_lines(&mut diff.lines, '+', content);
                 }
-                "edit" => {
+                // `edit` accepts either one old/new pair or an `edits` array
+                // (the merged successor of `multiedit`).
+                "edit" if input.get("edits").is_none() => {
                     if !append_edit(&mut diff.lines, input) {
                         return Vec::new();
                     }
@@ -764,6 +766,26 @@ mod tests {
             ["-a", "+b", "@@ next requested edit @@", "-b", "+c", "+d"]
         );
         assert_eq!((diffs[0].added(), diffs[0].removed()), (3, 2));
+    }
+
+    #[test]
+    fn edit_with_edits_array_renders_like_multiedit() {
+        let input = json!({"file_path":"x", "edits":[
+            {"old_string":"a", "new_string":"b"}, {"old_string":"b", "new_string":"c"}
+        ]});
+        let merged = tool("edit", input.clone());
+        assert_eq!(merged[0].lines, tool("multiedit", input)[0].lines);
+        assert_eq!(merged[0].lines, ["-a", "+b", "@@ next requested edit @@", "-b", "+c"]);
+    }
+
+    #[test]
+    fn apply_patch_accepts_unified_diff() {
+        let diffs = tool(
+            "apply_patch",
+            json!({"patch_text":"--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n"}),
+        );
+        assert_eq!(diffs.len(), 1);
+        assert_eq!((diffs[0].added(), diffs[0].removed()), (1, 1));
     }
 
     #[test]
