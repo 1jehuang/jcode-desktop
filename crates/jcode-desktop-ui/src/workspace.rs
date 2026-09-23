@@ -7907,6 +7907,34 @@ mod default_working_dir_tests {
             );
         }
     }
+
+    /// Windows of a shared single-panel host each keep the directory, args
+    /// and state path of their own launch, including across a reload snapshot.
+    #[test]
+    fn each_window_launch_keeps_its_own_directory_and_arguments() {
+        use super::{LaunchSnapshot, launch_working_dir};
+        use jcode_desktop_api::{LaunchMode, WindowLaunch};
+        let alpha = tempfile::tempdir().unwrap();
+        let beta = tempfile::tempdir().unwrap();
+        let launch = |dir: &std::path::Path, args: &[&str]| {
+            WindowLaunch::from_parts(
+                args.iter().copied(),
+                [
+                    ("JCODE_DESKTOP_WORKING_DIR".into(), dir.display().to_string()),
+                    ("JCODE_DESKTOP_STATE".into(), format!("{}/state", dir.display())),
+                ],
+            )
+        };
+        let first = launch(alpha.path(), &["--single-panel"]);
+        let second = launch(beta.path(), &["--single-panel", "--resume"]);
+        assert_eq!(launch_working_dir(&first).as_deref(), alpha.path().to_str());
+        assert_eq!(launch_working_dir(&second).as_deref(), beta.path().to_str());
+        assert!(!LaunchMode::resume_requested(&first.args));
+        assert!(LaunchMode::resume_requested(&second.args));
+        let restored: WindowLaunch = LaunchSnapshot::from(&second).into();
+        assert_eq!(restored, second);
+        assert_eq!(launch_working_dir(&restored).as_deref(), beta.path().to_str());
+    }
 }
 
 /// Count session directories once. Lexical ties make the initial choice stable
