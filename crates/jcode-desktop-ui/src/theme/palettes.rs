@@ -454,3 +454,52 @@ pub(super) fn pure_black() -> Theme {
     theme.CURSOR = theme.HEADING;
     theme
 }
+
+/// Frosted glass: translucent smoky surfaces over the compositor-blurred
+/// wallpaper. Only this palette has a translucent canvas, which is what asks
+/// the window for a blurred background. Surfaces stack (canvas, then pane,
+/// then controls), so each layer adds a little tint rather than repainting.
+/// Prompt cards stay solid because sticky prompts cover transcript text.
+pub(super) fn glass() -> Theme {
+    let mut theme = Palette {
+        bg: 0x0e1014,
+        panel: 0x14161b,
+        raised: 0x1c1f25,
+        border: 0x3a3f48,
+        text: 0xf2f4f7,
+        muted: 0xd2d7de,
+        accent: 0xe6eaf0,
+        secondary: 0xc9d6e3,
+        keyword: 0x8ec2ff,
+        string: 0x9ad8aa,
+        number: 0xf0c47e,
+        error: 0xff9d9d,
+        ok: 0x9ad8aa,
+        warn: 0xf0c47e,
+    }
+    .theme();
+    theme.BG = rgba_c(0x0e101480);
+    theme.CANVAS_DOT = rgba_c(0xffffff10);
+    theme.PANEL_BG = rgba_c(0x14161b99);
+    theme.HEADER_BG = rgba_c(0x1c1f2566);
+    theme.PANEL_BORDER = rgba_c(0xffffff1f);
+    theme.PANEL_BORDER_FOCUS = rgba_c(0xffffff66);
+    theme.TOOL_BORDER = rgba_c(0xffffff1a);
+    theme.CODE_BORDER = rgba_c(0xffffff1a);
+    theme.INPUT_BORDER = rgba_c(0xffffff29);
+    theme.ACCENT_DIM = rgba_c(0xffffff1c);
+    theme.USER_BG = rgb_c(0x23262d);
+    theme.PROMPT_TINT_STRENGTH = 0.0;
+    theme.TEXT_USER = rgb_c(0xffffff);
+    theme.HEADING = rgb_c(0xffffff);
+    theme.INPUT_BG = rgba_c(0x0b0c0fa6);
+    theme.TOOL_BG = rgba_c(0xffffff0d);
+    theme.CODE_BG = rgba_c(0x0b0c0f99);
+    theme.CODE_HEADER_BG = rgba_c(0xffffff0d);
+    theme.INLINE_CODE_BG = rgba_c(0xffffff1a);
+    theme.MINIMAP_BG = rgba_c(0x14161bd9);
+    theme.LINK = rgb_c(0x8ec2ff);
+    theme.SELECTION = rgba_c(0x3a83f773);
+    theme.CURSOR = theme.HEADING;
+    theme
+}

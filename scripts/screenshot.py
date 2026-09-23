@@ -131,7 +131,7 @@ def main():
     parser.add_argument("--theme", default="warm-neutral", choices=(
         "warm-neutral", "warm-studio", "neutral-dark", "neutral-light",
         "midnight", "ocean", "forest", "plum", "rose-dawn", "parchment",
-        "graphite", "slate", "paper", "silver", "light-neutral", "chatgpt-light", "dark-neutral", "pure-black",
+        "graphite", "slate", "paper", "silver", "light-neutral", "chatgpt-light", "dark-neutral", "pure-black", "glass",
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
     args = parser.parse_args()

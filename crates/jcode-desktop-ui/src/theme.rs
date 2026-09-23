@@ -154,6 +154,35 @@ impl Theme {
         &themes()[preset.index()]
     }
 
+    /// A translucent canvas lets the desktop wallpaper through. Such palettes
+    /// ask the compositor to blur behind the window so text stays legible.
+    pub fn is_translucent(&self) -> bool {
+        self.BG.a < 1.0
+    }
+
+    /// Window background the settled palette needs.
+    pub fn window_background() -> gpui::WindowBackgroundAppearance {
+        if Self::selected().is_translucent() {
+            gpui::WindowBackgroundAppearance::Blurred
+        } else {
+            gpui::WindowBackgroundAppearance::Opaque
+        }
+    }
+
+    /// Apply the palette's window background when it changes. `applied`
+    /// remembers the last value per window so frames do not re-commit the
+    /// compositor blur region.
+    pub fn sync_window_background(
+        window: &gpui::Window,
+        applied: &mut Option<gpui::WindowBackgroundAppearance>,
+    ) {
+        let wanted = Self::window_background();
+        if *applied != Some(wanted) {
+            window.set_background_appearance(wanted);
+            *applied = Some(wanted);
+        }
+    }
+
     pub fn is_transitioning() -> bool {
         transition_state().lock().unwrap().is_some()
     }
@@ -335,10 +364,11 @@ pub enum ThemePreset {
     LightNeutral,
     DarkNeutral,
     PureBlack,
+    Glass,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -356,6 +386,7 @@ impl ThemePreset {
         Self::LightNeutral,
         Self::DarkNeutral,
         Self::PureBlack,
+        Self::Glass,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -376,6 +407,7 @@ impl ThemePreset {
             Self::LightNeutral => "light-neutral",
             Self::DarkNeutral => "dark-neutral",
             Self::PureBlack => "pure-black",
+            Self::Glass => "glass",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -397,6 +429,7 @@ impl ThemePreset {
             Self::LightNeutral => "Light Neutral",
             Self::DarkNeutral => "Dark Neutral",
             Self::PureBlack => "Pure Black",
+            Self::Glass => "Glass",
         }
     }
     const fn index(self) -> usize {
@@ -418,6 +451,7 @@ impl ThemePreset {
             Self::LightNeutral => 14,
             Self::DarkNeutral => 15,
             Self::PureBlack => 16,
+            Self::Glass => 17,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -634,6 +668,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::light_neutral(),
         palettes::dark_neutral(),
         palettes::pure_black(),
+        palettes::glass(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -861,6 +896,29 @@ mod tests {
         0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
     }
 
+    fn over(top: Rgba, bottom: Rgba) -> Rgba {
+        Rgba {
+            r: top.r * top.a + bottom.r * (1.0 - top.a),
+            g: top.g * top.a + bottom.g * (1.0 - top.a),
+            b: top.b * top.a + bottom.b * (1.0 - top.a),
+            a: 1.0,
+        }
+    }
+
+    /// Opaque color a surface role paints on screen. Translucent palettes
+    /// stack roles over the canvas, and the canvas over the blurred wallpaper.
+    /// Measure against a white wallpaper, the worst case for light text.
+    fn painted(theme: &Theme, role: Rgba) -> Rgba {
+        let canvas = over(theme.BG, rgb_c(0xffffff));
+        if role == theme.BG {
+            canvas
+        } else if role == theme.PANEL_BG || role == theme.HEADER_BG {
+            over(role, canvas)
+        } else {
+            over(role, over(theme.PANEL_BG, canvas))
+        }
+    }
+
     fn contrast(a: Rgba, b: Rgba) -> f32 {
         let (bright, dark) = if luminance(a) > luminance(b) {
             (luminance(a), luminance(b))
@@ -991,6 +1049,38 @@ mod tests {
     }
 
     #[test]
+    fn glass_is_the_only_translucent_palette_and_keeps_text_readable() {
+        let preset = ThemePreset::Glass;
+        assert_eq!(ThemePreset::from_id("glass"), preset);
+        assert_eq!(preset.label(), "Glass");
+        for (other, theme) in ThemePreset::ALL.into_iter().zip(raw_themes()) {
+            assert_eq!(theme.is_translucent(), other == preset, "{other:?}");
+        }
+        let theme = &raw_themes()[preset.index()];
+        assert!(theme.BG.a < 0.75 && theme.PANEL_BG.a < 1.0);
+        for age in [0, 1, 6, 40, usize::MAX] {
+            assert_eq!(theme.prompt_background(age), theme.USER_BG);
+            assert_eq!(theme.prompt_background(age).a, 1.0);
+        }
+        // Worst case for light text: a bright wallpaper blurred behind every
+        // translucent layer.
+        for role in [
+            theme.PANEL_BG,
+            theme.HEADER_BG,
+            theme.INPUT_BG,
+            theme.CODE_BG,
+        ] {
+            let painted = painted(theme, role);
+            assert!(
+                contrast(theme.TEXT, painted) >= 4.5,
+                "{}",
+                contrast(theme.TEXT, painted)
+            );
+        }
+        assert!(contrast(theme.HEADING, theme.USER_BG) >= 7.0);
+    }
+
+    #[test]
     fn preset_ids_indices_and_cycle_cover_every_palette() {
         let mut visited = std::collections::HashSet::new();
         let mut current = ThemePreset::ALL[0];
@@ -1028,6 +1118,7 @@ mod tests {
                 (theme.HEADER_BG, vec![theme.TEXT_DIM]),
                 (theme.INLINE_CODE_BG, vec![theme.CODE_TEXT]),
             ] {
+                let background = painted(theme, background);
                 for foreground in foregrounds {
                     assert!(
                         contrast(foreground, background) >= 4.5,
@@ -1128,10 +1219,13 @@ mod tests {
     #[test]
     fn every_preset_distinguishes_pane_focus_without_dimming_text() {
         for (preset, theme) in ThemePreset::ALL.into_iter().zip(themes()) {
-            let active = theme.panel_background(true);
-            let inactive = theme.panel_background(false);
-            assert_eq!(active, theme.PANEL_BG);
-            assert_eq!(inactive.a, 1.0);
+            assert_eq!(theme.panel_background(true), theme.PANEL_BG);
+            assert_eq!(
+                theme.panel_background(false).a == 1.0,
+                !theme.is_translucent()
+            );
+            let active = painted(theme, theme.panel_background(true));
+            let inactive = painted(theme, theme.panel_background(false));
             let difference = (active.r - inactive.r)
                 .abs()
                 .max((active.g - inactive.g).abs())

@@ -8,6 +8,7 @@ pub(crate) struct PanelWindow {
     source_session: Option<String>,
     source_window: AnyWindowHandle,
     finished: bool,
+    window_background: Option<gpui::WindowBackgroundAppearance>,
 }
 
 /// Open a utility panel in its own native window, or activate its existing window.
@@ -103,6 +104,7 @@ pub(crate) fn open_panel_window_at(
                     source_session,
                     source_window: origin,
                     finished: false,
+                    window_background: None,
                 }
             })
         },
@@ -175,7 +177,8 @@ impl PanelWindow {
 }
 
 impl Render for PanelWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Theme::sync_window_background(window, &mut self.window_background);
         let theme = Theme::global();
         div()
             .debug_selector(|| "panel-window-root".into())

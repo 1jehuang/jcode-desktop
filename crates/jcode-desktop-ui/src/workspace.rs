@@ -701,6 +701,8 @@ fn daemon_running_sessions() -> HashSet<String> {
 }
 
 pub struct Workspace {
+    /// Last window background applied for the active theme (blur for Glass).
+    window_background: Option<gpui::WindowBackgroundAppearance>,
     global_voice: global_voice::State,
     voice_key: voice::CopilotLatch,
     last_voice_chat: Option<gpui::EntityId>,
@@ -988,6 +990,7 @@ impl Workspace {
 
         let _ = window;
         let mut workspace = Self {
+            window_background: None,
             global_voice: Default::default(),
             voice_key: Default::default(),
             last_voice_chat: None,
@@ -1307,6 +1310,7 @@ impl Workspace {
     pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
         crate::input::bind_keys(cx);
         Self {
+            window_background: None,
             global_voice: Default::default(),
             voice_key: Default::default(),
             last_voice_chat: None,
@@ -7447,6 +7451,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Theme::sync_window_background(window, &mut self.window_background);
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing && slot.panel.read(cx).supports_voice()
         {
@@ -14135,6 +14140,7 @@ mod tests {
             "theme-preset-14",
             "theme-preset-15",
             "theme-preset-16",
+            "theme-preset-17",
         ];
         assert_eq!(selectors.len(), ThemePreset::ALL.len());
         for (selector, preset) in selectors.into_iter().zip(ThemePreset::ALL) {
