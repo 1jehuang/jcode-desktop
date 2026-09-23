@@ -18,11 +18,14 @@ use gpui::{
     WindowDecorations, WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 
-const SURFACE_WIDTH: f32 = 184.;
+/// Wide enough for a decision like "Jev → Previous session". The pill
+/// itself hugs its content, so the rest of the surface stays transparent.
+const SURFACE_WIDTH: f32 = 264.;
 const SURFACE_HEIGHT: f32 = 44.;
 /// Gap between the pill surface and the bottom of the usable display area.
 const BOTTOM_MARGIN: f32 = 14.;
 const PILL_WIDTH: f32 = 160.;
+const PILL_MAX_WIDTH: f32 = SURFACE_WIDTH - 16.;
 const PILL_HEIGHT: f32 = 28.;
 const BAR_WIDTH: f32 = 2.;
 const BAR_GAP: f32 = 1.;
@@ -33,6 +36,9 @@ pub(crate) struct Snapshot {
     pub title: String,
     /// The same 24 chronological RMS samples used by the panel voice meter.
     pub levels: Option<[f32; 24]>,
+    /// The hold finished and `title` states what Jev decided (or why it did
+    /// not act), so it reads as a result rather than a progress status.
+    pub decided: bool,
 }
 
 pub(crate) struct VoiceOverlay {
@@ -230,7 +236,8 @@ impl Render for VoiceOverlay {
                 div()
                     .id("global-voice-overlay")
                     .debug_selector(|| "global-voice-overlay".into())
-                    .w(px(PILL_WIDTH))
+                    .min_w(px(PILL_WIDTH))
+                    .max_w(px(PILL_MAX_WIDTH))
                     .h(px(PILL_HEIGHT))
                     .px(px(12.))
                     .flex()
@@ -255,7 +262,11 @@ impl Render for VoiceOverlay {
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .text_color(theme.TEXT_DIM)
+                            .text_color(if self.snapshot.decided {
+                                theme.TEXT
+                            } else {
+                                theme.TEXT_DIM
+                            })
                             .child(self.snapshot.title.clone()),
                     )
                     .when_some(self.snapshot.levels, |el, levels| {
@@ -376,6 +387,7 @@ mod tests {
             snapshot: Snapshot {
                 title: "Connecting…".into(),
                 levels: None,
+                decided: false,
             },
         });
         let handle = vcx.update(|window, _| window.window_handle());
@@ -384,6 +396,8 @@ mod tests {
             ("Connecting…", None),
             ("Listening", Some([0.02; 24])),
             ("Transcribing…", None),
+            ("Jev is choosing…", None),
+            ("Jev → Previous session", None),
             ("Voice error: microphone unavailable", None),
         ] {
             overlay.update(vcx, |overlay, cx| {
@@ -391,13 +405,15 @@ mod tests {
                     Snapshot {
                         title: title.into(),
                         levels,
+                        decided: title.starts_with("Jev →"),
                     },
                     cx,
                 );
             });
             vcx.run_until_parked();
             let pill = vcx.debug_bounds("global-voice-overlay").unwrap();
-            assert_eq!(pill.size, gpui::size(px(PILL_WIDTH), px(PILL_HEIGHT)));
+            assert_eq!(pill.size.height, px(PILL_HEIGHT));
+            assert!(pill.size.width >= px(PILL_WIDTH) && pill.size.width <= px(PILL_MAX_WIDTH));
             assert_eq!(
                 pill.center(),
                 gpui::point(px(SURFACE_WIDTH / 2.), px(SURFACE_HEIGHT / 2.))

@@ -162,7 +162,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn configure_voice_navigation(
+    pub(super) fn configure_voice_navigation(
         &mut self,
         panel: &Entity<Panel>,
         window: &mut Window,
@@ -273,6 +273,10 @@ impl Workspace {
                 panel.show_voice_decision(format!("Jev chose: Quick action · {action}"), cx);
             });
         }
+        // An unfocused hold mirrors the specific action in its OS pill.
+        source.update(cx, |panel, cx| {
+            panel.set_global_voice_decision(format!("Jev chose: Quick action · {action}"), cx)
+        });
     }
 
     pub(super) fn toggle_panel_voice(

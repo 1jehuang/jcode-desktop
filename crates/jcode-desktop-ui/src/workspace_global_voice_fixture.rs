@@ -32,8 +32,10 @@ impl Workspace {
                 let state = request.state.clone();
                 let result = this.update(cx, |this, cx| -> anyhow::Result<()> {
                     let snapshot = match state.as_str() {
-                        "listening" => Some(Snapshot { title: "Listening".into(), levels: Some(std::array::from_fn(|i| ((i * 7 % 23) as f32) / 120.0)) }),
-                        "transcribing" => Some(Snapshot { title: "Transcribing…".into(), levels: None }),
+                        "listening" => Some(Snapshot { title: "Listening".into(), levels: Some(std::array::from_fn(|i| ((i * 7 % 23) as f32) / 120.0)), decided: false }),
+                        "transcribing" => Some(Snapshot { title: "Transcribing…".into(), levels: None, decided: false }),
+                        "routing" => Some(Snapshot { title: "Jev is choosing…".into(), levels: None, decided: false }),
+                        "decided" => Some(Snapshot { title: "Jev → Coding agent".into(), levels: None, decided: true }),
                         "complete" => None,
                         _ => anyhow::bail!("unknown fixture state"),
                     };

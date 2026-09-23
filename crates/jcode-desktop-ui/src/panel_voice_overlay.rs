@@ -7,7 +7,7 @@ mod pills;
 fn meter_height(level: f32) -> f32 {
     // Speech RMS is far below full scale. Compress the visual range so quiet
     // speech is visible without making silence look like incoming audio.
-    3.0 + (level.max(0.0) * 4.0).sqrt().min(1.0) * 19.0
+    2.0 + (level.max(0.0) * 4.0).sqrt().min(1.0) * 16.0
 }
 
 impl Panel {
@@ -45,20 +45,22 @@ impl Panel {
         let card = div()
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
-            .w((viewport.width - px(32.)).min(px(if phase == Phase::Idle { 360. } else { 196. })))
-            .min_h(px(44.))
-            .px_3()
-            .py_2()
+            .when(phase == Phase::Idle, |el| {
+                el.w((viewport.width - px(32.)).min(px(360.))).min_h(px(44.)).px_3().py_2()
+            })
+            // Active capture hugs its content: waveform or status plus controls.
+            .when(phase != Phase::Idle, |el| {
+                el.max_w(viewport.width - px(32.)).h(px(30.)).pl(px(12.)).pr(px(4.))
+            })
             .flex()
             .items_center()
             .justify_center()
-            .gap_2()
+            .gap(px(6.))
             .rounded_full()
             .when(phase == Phase::Idle, |el| el.rounded_xl())
             .border_1()
             .border_color(theme.ACCENT.opacity(0.25))
             .bg(theme.PANEL_BG)
-            .shadow_lg()
             .text_color(theme.TEXT)
             .text_size(px(11.))
             .occlude()
@@ -68,12 +70,12 @@ impl Panel {
                 el.child(
                     div()
                         .debug_selector(|| "voice-waveform".into())
-                        .flex_1()
-                        .h(px(24.))
+                        .flex_none()
+                        .h(px(20.))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .gap(px(2.))
+                        .gap(px(1.5))
                         .children(self.voice.levels.iter().map(|level| {
                             div()
                                 .w(px(2.))
@@ -115,8 +117,10 @@ impl Panel {
                     el.child(
                         div()
                             .debug_selector(|| "voice-status".into())
-                            .flex_1()
+                            .when(phase == Phase::Idle, |el| el.flex_1())
                             .min_w_0()
+                            .whitespace_nowrap()
+                            .truncate()
                             .text_color(theme.TEXT_DIM)
                             .child(
                                 self.voice
@@ -132,7 +136,7 @@ impl Panel {
                 div()
                     .id("voice-cancel")
                     .debug_selector(|| "voice-cancel".into())
-                    .size(px(24.))
+                    .size(px(22.))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -156,7 +160,7 @@ impl Panel {
                     div()
                         .id("voice-stop")
                         .debug_selector(|| "voice-stop".into())
-                        .size(px(24.))
+                        .size(px(22.))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
@@ -689,11 +693,11 @@ mod tests {
 
     #[test]
     fn meter_tracks_silence_and_clamps_loud_audio() {
-        assert_eq!(meter_height(0.), 3.);
-        assert_eq!(meter_height(1.), 22.);
-        assert_eq!(meter_height(2.), 22.);
+        assert_eq!(meter_height(0.), 2.);
+        assert_eq!(meter_height(1.), 18.);
+        assert_eq!(meter_height(2.), 18.);
         assert!(meter_height(0.1) > meter_height(0.01));
-        assert!(meter_height(0.02) > 8.);
+        assert!(meter_height(0.02) > 6.);
     }
     #[gpui::test]
     fn voice_overlay_stays_at_bottom_without_moving_composer(cx: &mut gpui::TestAppContext) {

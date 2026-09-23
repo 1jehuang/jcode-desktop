@@ -106,9 +106,9 @@ pub(super) struct VoiceState {
     phase: Phase,
     // Attempt ownership persists through final transcription, even after key release.
     hold_capture: bool,
-    // Global capture must never execute navigation or send to an agent behind
-    // the user's foreground application. Preserve local voice behavior.
-    dictation_only: bool,
+    // Unfocused capture driven by the global hold. It routes through Jev like a
+    // focused hold, but its status and Jev's decision are mirrored in the OS pill.
+    global_capture: bool,
     recording: Option<NariRecording>,
     live_transcript: String,
     levels: [f32; 24],
@@ -159,6 +159,31 @@ impl Render for VoiceTooltip {
     }
 }
 
+/// Compact OS-pill label for Jev's decision, e.g. "Jev → Coding agent".
+fn global_pill_decision(decision: &str) -> String {
+    let decision = decision.strip_prefix("Jev chose: ").unwrap_or(decision);
+    let (route, detail) = decision.split_once(" · ").unwrap_or((decision, ""));
+    match route {
+        "Quick action" if !detail.is_empty() && detail != "Navigation" => format!("Jev → {detail}"),
+        route => format!("Jev → {route}"),
+    }
+}
+
+/// Compact OS-pill label for a finished attempt that did not act.
+fn global_pill_error(error: &str) -> String {
+    if error.starts_with("Jev is unsure") {
+        "Jev unsure · Kept in draft".into()
+    } else if error.starts_with("Jev could not match") {
+        "No matching session · Kept in draft".into()
+    } else if error.starts_with("Jev routing unavailable") {
+        "Jev unavailable · Kept in draft".into()
+    } else if error.contains("Navigation unavailable") {
+        "Jev → Quick action · Kept in draft".into()
+    } else {
+        error.to_string()
+    }
+}
+
 impl Panel {
     #[cfg(test)]
     pub(crate) fn resolve_voice_for_test(
@@ -190,6 +215,15 @@ impl Panel {
         self.voice.error = None;
         self.voice.decision = Some(message);
         cx.notify();
+    }
+
+    /// Refine the decision shown by an unfocused hold's OS pill. Focused
+    /// holds already show it on the destination panel.
+    pub(crate) fn set_global_voice_decision(&mut self, message: String, cx: &mut Context<Self>) {
+        if self.voice.global_capture && self.voice.error.is_none() {
+            self.voice.decision = Some(message);
+            cx.notify();
+        }
     }
 
     pub(crate) fn voice_trace(&self) -> Option<VoiceTrace> {
@@ -250,20 +284,25 @@ impl Panel {
         &self,
         attempt: &Arc<AtomicBool>,
     ) -> Option<crate::global_voice_overlay::Snapshot> {
-        if !Arc::ptr_eq(attempt, &self.voice.canceled) || !self.voice.dictation_only {
+        if !Arc::ptr_eq(attempt, &self.voice.canceled) || !self.voice.global_capture {
             return None;
         }
         use crate::global_voice_overlay::Snapshot;
-        let title = match self.voice.phase {
-            Phase::Idle => self.voice.error.clone()?,
-            Phase::Checking => "Connecting…".into(),
-            Phase::Recording => "Listening".into(),
-            Phase::Transcribing => "Transcribing…".into(),
-            Phase::Routing => "Finishing…".into(),
+        let (title, decided) = match self.voice.phase {
+            Phase::Idle => match (&self.voice.error, &self.voice.decision) {
+                (Some(error), _) => (global_pill_error(error), true),
+                (None, Some(decision)) => (global_pill_decision(decision), true),
+                (None, None) => ("Added to draft".into(), true),
+            },
+            Phase::Checking => ("Connecting…".into(), false),
+            Phase::Recording => ("Listening".into(), false),
+            Phase::Transcribing => ("Transcribing…".into(), false),
+            Phase::Routing => ("Jev is choosing…".into(), false),
         };
         Some(Snapshot {
             title,
             levels: (self.voice.phase == Phase::Recording).then_some(self.voice.levels),
+            decided,
         })
     }
 
@@ -272,7 +311,7 @@ impl Panel {
         attempt: &Arc<AtomicBool>,
         cx: &mut Context<Self>,
     ) {
-        if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.dictation_only {
+        if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.global_capture {
             self.cancel_voice(cx);
         }
     }
@@ -289,7 +328,7 @@ impl Panel {
     ) -> Option<Arc<AtomicBool>> {
         if self.supports_voice() && !self.voice_active() {
             self.start_voice_with_hold(true, cx);
-            self.voice.dictation_only = true;
+            self.voice.global_capture = true;
             return Some(self.voice.canceled.clone());
         }
         None
@@ -300,7 +339,7 @@ impl Panel {
         attempt: &Arc<AtomicBool>,
         cx: &mut Context<Self>,
     ) {
-        if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.dictation_only {
+        if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.global_capture {
             self.end_voice_hold(cx);
         }
     }
@@ -395,7 +434,7 @@ impl Panel {
         match result {
             Ok(recording) => {
                 jcode_base::voice::timing::mark("ui shows recording");
-                if self.voice.dictation_only {
+                if self.voice.global_capture {
                     eprintln!("global voice: recording started");
                 }
                 self.voice.phase = Phase::Recording;
@@ -404,7 +443,7 @@ impl Panel {
                 self.tick_voice(cx);
             }
             Err(error) => {
-                if self.voice.dictation_only {
+                if self.voice.global_capture {
                     eprintln!("global voice: recording failed to start: {error}");
                 }
                 self.voice.phase = Phase::Idle;
@@ -518,7 +557,7 @@ impl Panel {
         self.voice.live_transcript.clear();
         match result {
             Ok(text) if !text.trim().is_empty() => {
-                if self.voice.dictation_only {
+                if self.voice.global_capture {
                     self.voice.phase = Phase::Transcribing;
                     let attempt = self.voice.canceled.clone();
                     let check = cx
@@ -527,7 +566,7 @@ impl Panel {
                     self.voice.task = Some(cx.spawn(async move |this, cx| {
                         let allowed = check.await;
                         let _ = this.update(cx, |panel, cx| {
-                            panel.finish_global_voice_text(&attempt, text, allowed, cx);
+                            panel.finish_global_voice_text(&attempt, text, audio, allowed, cx);
                         });
                     }));
                     cx.notify();
@@ -545,7 +584,7 @@ impl Panel {
             Ok(_) => self.voice.error = Some("No speech was detected. Try recording again.".into()),
             Err(error) => self.voice.error = Some(error.to_string()),
         }
-        if self.voice.dictation_only {
+        if self.voice.global_capture {
             if let Some(error) = &self.voice.error {
                 eprintln!("global voice: finished without text: {error}");
             }
@@ -557,18 +596,25 @@ impl Panel {
         &mut self,
         attempt: &Arc<AtomicBool>,
         text: String,
+        audio: Option<Duration>,
         allowed: bool,
         cx: &mut Context<Self>,
     ) {
         if !Arc::ptr_eq(attempt, &self.voice.canceled)
             || attempt.load(Ordering::SeqCst)
-            || !self.voice.dictation_only
+            || !self.voice.global_capture
             || self.voice.phase != Phase::Transcribing
         {
             return;
         }
-        if allowed {
+        if allowed && self.voice.sessions.is_some() {
             // Length only. Never log transcript content.
+            eprintln!(
+                "global voice: routing {} transcript chars through Jev",
+                text.chars().count()
+            );
+            self.route_voice(text, audio, cx);
+        } else if allowed {
             eprintln!(
                 "global voice: inserted {} transcript chars",
                 text.chars().count()
@@ -750,8 +796,7 @@ impl Panel {
 
     /// Voice pill on the right of the composer's pill row: microphone plus its
     /// keybinding, so the shortcut is visible without hovering. While
-    /// voice is active it fills with the accent, a soft ring breathes around
-    /// it, and the ring swells with the live microphone level.
+    /// voice is active it fills with the accent. No glow or halo.
     pub(super) fn render_voice_tab(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
@@ -764,14 +809,6 @@ impl Panel {
         };
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
-        let reduce_motion = cx.reduce_motion() || crate::config::get().appearance.reduce_motion;
-        // Recent average level, so the ring follows speech without jitter.
-        let level = if phase == Phase::Recording {
-            let recent = &self.voice.levels[18..];
-            (recent.iter().sum::<f32>() / recent.len() as f32).clamp(0., 1.)
-        } else {
-            0.
-        };
         let size = super::composer::TAB_HEIGHT;
         let keycap_color = if active {
             theme.BG.opacity(0.8)
@@ -820,49 +857,9 @@ impl Panel {
                     ),
             )
             .child(voice_shortcut_keycap(keycap_color.into(), &theme));
-        // The ring is a sibling behind the pill so it never changes layout.
-        let ring = |spread: f32, alpha: f32| {
-            div()
-                .absolute()
-                .top(px(-spread))
-                .bottom(px(-spread))
-                .left(px(-spread))
-                .right(px(-spread))
-                .rounded_full()
-                .bg(theme.ACCENT.opacity(alpha))
-        };
-        let halo = active.then(|| {
-            let base = 2. + level * 5.;
-            if reduce_motion {
-                ring(base, 0.22).into_any_element()
-            } else {
-                use gpui::AnimationExt as _;
-                ring(base, 0.22)
-                    .debug_selector(|| "voice-pulse".into())
-                    .with_animation(
-                        ("voice-pulse", phase as usize),
-                        gpui::Animation::new(Duration::from_millis(1600))
-                            .repeat()
-                            .with_max_fps(30.),
-                        move |ring, t| {
-                            // Breathe outward and fade, like a ripple.
-                            let eased = 1. - (1. - t).powi(2);
-                            let spread = base + eased * 5.;
-                            ring.top(px(-spread))
-                                .bottom(px(-spread))
-                                .left(px(-spread))
-                                .right(px(-spread))
-                                .opacity(0.9 * (1. - t))
-                        },
-                    )
-                    .into_any_element()
-            }
-        });
         div()
             .flex_none()
-            .relative()
             .h(px(size))
-            .children(halo)
             .child(button)
             .into_any_element()
     }

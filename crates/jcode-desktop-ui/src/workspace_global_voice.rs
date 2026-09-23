@@ -191,7 +191,7 @@ impl Workspace {
                 .unwrap_or_default();
             for edge in edges {
                 match edge {
-                    Edge::Press => self.global_voice_press(cx),
+                    Edge::Press => self.global_voice_press(window, cx),
                     Edge::Release => self.global_voice_release(cx),
                     Edge::Cancel => {
                         eprintln!("global voice: canceled by input listener");
@@ -215,19 +215,19 @@ impl Workspace {
                 .last_permission_check
                 .is_none_or(|last| last.elapsed() >= Duration::from_millis(250))
         {
-            self.check_global_voice_permission(false, cx);
+            self.check_global_voice_permission(false, window, cx);
         }
         self.update_global_voice_overlay(cx);
     }
 
-    fn global_voice_press(&mut self, cx: &mut Context<Self>) {
+    fn global_voice_press(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         eprintln!("global voice: press");
         self.global_voice.pending_target = self
             .voice_target(cx)
             .map(|index| self.slots[index].panel.downgrade());
         self.global_voice.held = true;
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);
-        self.check_global_voice_permission(true, cx);
+        self.check_global_voice_permission(true, window, cx);
     }
 
     fn global_voice_release(&mut self, cx: &mut Context<Self>) {
@@ -276,7 +276,7 @@ impl Workspace {
         }
         self.ensure_global_voice_task(window, cx);
         self.global_voice.host_held_since = Some(Instant::now());
-        self.global_voice_press(cx);
+        self.global_voice_press(window, cx);
     }
 
     pub(super) fn end_global_voice_hold_action(
@@ -309,15 +309,20 @@ impl Workspace {
         self.global_voice.close_overlay(cx);
     }
 
-    fn check_global_voice_permission(&mut self, start: bool, cx: &mut Context<Self>) {
+    fn check_global_voice_permission(
+        &mut self,
+        start: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let serial = self.global_voice.press_serial;
         self.global_voice.last_permission_check = Some(Instant::now());
         let check = cx
             .background_executor()
             .spawn(crate::global_voice_session::permitted());
-        self.global_voice.permission_task = Some(cx.spawn(async move |this, cx| {
+        self.global_voice.permission_task = Some(cx.spawn_in(window, async move |this, cx| {
             let allowed = check.await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.global_voice.press_serial != serial {
                     return;
                 }
@@ -326,13 +331,13 @@ impl Workspace {
                     eprintln!("global voice: denied by session check");
                     this.cancel_global_voice_capture(cx);
                 } else if start && this.global_voice.held {
-                    this.begin_global_voice(cx);
+                    this.begin_global_voice(window, cx);
                 }
             });
         }));
     }
 
-    fn begin_global_voice(&mut self, cx: &mut Context<Self>) {
+    fn begin_global_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.account_sign_in.visible {
             return;
         }
@@ -374,6 +379,7 @@ impl Workspace {
                 Snapshot {
                     title: "Connecting…".into(),
                     levels: None,
+                    decided: false,
                 },
                 cx,
             )
@@ -387,6 +393,9 @@ impl Workspace {
         // No activate_window, set_active or focus_input here. The source draft
         // receives the result while the user's other application keeps focus.
         if let Some(attempt) = panel.update(cx, |panel, cx| panel.begin_global_voice_hold(cx)) {
+            // Same Jev routing as a focused hold: the last 20 sessions plus
+            // quick actions. The OS pill then shows what Jev decided.
+            self.configure_voice_navigation(&panel, window, cx);
             self.global_voice.owner = Some(Capture {
                 panel: panel.downgrade(),
                 attempt,
