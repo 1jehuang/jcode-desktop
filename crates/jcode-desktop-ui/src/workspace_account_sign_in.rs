@@ -786,7 +786,14 @@ impl Workspace {
                     &account.id,
                     account.display_name.clone(),
                     account.method.clone(),
-                    div().text_color(theme.OK).child(account.status_label()),
+                    div()
+                        .mr_1()
+                        .px_3()
+                        .py(px(3.0))
+                        .rounded_full()
+                        .bg(theme.OK.opacity(0.12))
+                        .text_color(theme.OK)
+                        .child(account.status_label()),
                 ));
             }
             section = section.child(list);
@@ -816,7 +823,7 @@ impl Workspace {
             .id(("account-import-toggle", index))
             .debug_selector(move || format!("account-import-toggle-{index}"))
             .text_size(px(12.0))
-            .px_2()
+            .px_3()
             .py_1()
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_account_import(index, cx)));
             let row = login_row(
@@ -846,7 +853,7 @@ impl Workspace {
             .flex()
             .flex_wrap()
             .gap_3()
-            .rounded_md()
+            .rounded_xl()
             .border_1()
             .border_color(if state.focused(Choice::Theme) {
                 theme.ACCENT
@@ -914,7 +921,7 @@ impl Workspace {
             .gap_3()
             .px(px(28.0))
             .py(px(12.0))
-            .rounded_md()
+            .rounded_full()
             .bg(theme.ACCENT)
             .text_color(theme.BG)
             .text_size(px(16.0))
@@ -950,7 +957,7 @@ impl Workspace {
                         .gap(px(if narrow { 12.0 } else { 20.0 }))
                         .px(px(if narrow { 16.0 } else { 28.0 }))
                         .py(px(if narrow { 14.0 } else { 28.0 }))
-                        .rounded_lg()
+                        .rounded(px(28.0))
                         .bg(theme.BG)
                         .border_1()
                         .border_color(theme.PANEL_BORDER)
@@ -992,12 +999,23 @@ fn login_row(logo: &str, name: String, detail: String, trailing: gpui::Div) -> g
         .flex()
         .items_center()
         .gap_3()
-        .px_3()
-        .py_2()
-        .rounded_md()
+        .pl(px(8.0))
+        .pr(px(8.0))
+        .py(px(6.0))
+        .rounded_full()
         .bg(theme.PANEL_BG);
     if let Some(data) = accounts::logo(logo) {
-        row = row.child(gpui::svg().data(data).size(px(18.0)).flex_none().text_color(theme.TEXT));
+        row = row.child(
+            div()
+                .size(px(32.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(theme.TEXT.opacity(0.06))
+                .child(gpui::svg().data(data).size(px(16.0)).text_color(theme.TEXT)),
+        );
     }
     row.child(
         div()
@@ -1021,14 +1039,14 @@ fn login_row(logo: &str, name: String, detail: String, trailing: gpui::Div) -> g
 fn theme_swatch(preset: ThemePreset, active: bool) -> gpui::Div {
     let current = Theme::global();
     let t = Theme::preview(preset);
-    let line = |width: f32, color: gpui::Rgba| div().h(px(3.0)).w(px(width)).rounded_sm().bg(color);
+    let line = |width: f32, color: gpui::Rgba| div().h(px(3.0)).w(px(width)).rounded_full().bg(color);
     div()
         .w(px(92.0))
         .h(px(58.0))
         .p(px(6.0))
         .flex()
         .gap(px(4.0))
-        .rounded_md()
+        .rounded_xl()
         .bg(t.BG)
         .border_2()
         .border_color(if active { current.ACCENT } else { current.PANEL_BORDER })
@@ -1036,7 +1054,7 @@ fn theme_swatch(preset: ThemePreset, active: bool) -> gpui::Div {
             div()
                 .w(px(14.0))
                 .h_full()
-                .rounded_sm()
+                .rounded_md()
                 .bg(t.HEADER_BG),
         )
         .child(
@@ -1044,7 +1062,7 @@ fn theme_swatch(preset: ThemePreset, active: bool) -> gpui::Div {
                 .flex_1()
                 .h_full()
                 .p(px(5.0))
-                .rounded_sm()
+                .rounded_md()
                 .bg(t.PANEL_BG)
                 .flex()
                 .flex_col()
@@ -1069,7 +1087,7 @@ fn account_button(
         .min_w_0()
         .px_4()
         .py_2()
-        .rounded_md()
+        .rounded_full()
         .border_1()
         .border_color(if focused {
             theme.ACCENT
@@ -1079,7 +1097,7 @@ fn account_button(
         .bg(if primary {
             theme.ACCENT.opacity(0.16)
         } else {
-            gpui::transparent_black().into()
+            theme.TEXT.opacity(0.06)
         })
         .text_size(px(14.0))
         .text_color(theme.TEXT)

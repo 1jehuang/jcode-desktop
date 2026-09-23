@@ -27,6 +27,9 @@
 
 - Never use decorative left-hand vertical lines, accent bars, or tree rails to mark or group content, including sidebar swarm agents. Use indentation, spacing, typography, or subtle background fills instead.
 - This rule does not prohibit functional scrollbars, pane dividers, or complete control outlines.
+- Prefer pills over boxy cards. Buttons, chips, toggles, list rows, and small grouped items use fully rounded (`rounded_full`) shapes. Do not default to square or lightly rounded (`rounded_sm`/`rounded_md`) boxes.
+- Buttons are always pills: primary actions get a filled accent pill, secondary actions a subtle filled or outlined pill. Small inline actions (Skip, Copy link) are compact pills, not bare text.
+- Lists of simple items (logins, choices, settings rows) render as pill rows on a subtle fill, not as stacked rectangular cards. Reserve larger rounded containers (`rounded_xl` or more) for genuinely multi-line content such as dialogs, panels, and previews, and avoid nesting boxes inside boxes.
 
 ## Testing
 
