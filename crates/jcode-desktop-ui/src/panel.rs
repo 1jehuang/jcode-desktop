@@ -4800,7 +4800,10 @@ impl Render for Panel {
                                                     .child(self.latest_activity_spinner.clone()),
                                             )
                                         })
-                                        .child("↓ latest"),
+                                        .child("↓")
+                                        .child(shortcuts::jump_to_latest_keycaps(
+                                            Theme::global().TEXT_DIM.into(),
+                                        )),
                                 ),
                         )
                     }),
