@@ -7,7 +7,7 @@ pub struct StopNotice {
     pub(super) title: String,
     pub(super) detail: String,
     provider_stop_reason: Option<String>,
-    failure: bool,
+    pub(super) failure: bool,
     pub(super) provisional: bool,
 }
 

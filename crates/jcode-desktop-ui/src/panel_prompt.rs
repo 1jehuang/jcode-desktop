@@ -7,7 +7,7 @@ pub(super) const PROMPT_TOP_PADDING: f32 = 10.;
 
 /// Bound both long pasted paragraphs and newline-heavy snippets. Return a
 /// source prefix, never alter the actual prompt sent to the harness or stored.
-fn compact_prompt(text: &str) -> Option<&str> {
+pub(super) fn compact_prompt(text: &str) -> Option<&str> {
     let mut lines = 1;
     for (characters, (byte, ch)) in text.char_indices().enumerate() {
         if characters == 600 || (ch == '\n' && lines == 6) {
@@ -207,9 +207,14 @@ impl Panel {
                     .when(collapsed, |content| {
                         content.max_h(px(140.)).overflow_hidden()
                     })
-                    .child(markdown::render_prompt(
+                    .child(markdown::render_prompt_with_prefix(
                         if collapsed { preview.unwrap() } else { text },
                         index,
+                        &if pinned {
+                            format!("pinned-{index}")
+                        } else {
+                            index.to_string()
+                        },
                         &self.transcript_selection,
                         window,
                         cx,

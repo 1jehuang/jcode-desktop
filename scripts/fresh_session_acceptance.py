@@ -1,11 +1,23 @@
 """Measure rendered pixels and native keyboard behavior on a private X11 display."""
 import csv
 import io
+import itertools
 import json
 import subprocess
 import time
 
 from PIL import Image
+
+
+CLIPBOARD_OWNER = """
+import gi, pathlib, sys
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk
+clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+clipboard.set_text(sys.argv[1], -1)
+pathlib.Path(sys.argv[2]).touch()
+Gtk.main()
+"""
 
 
 def composer_bounds(image):
@@ -59,7 +71,16 @@ def verify(output, env, root):
     fresh = composer_bounds(initial)
     x1, y1, x2, y2 = fresh
     center = ((x1 + x2) / 2, (y1 + y2) / 2)
-    expected_center_x = (276 + initial.width - 12) / 2
+    # The empty canvas is the longest solid-color span above the fresh
+    # composer. Measure its edges so sidebar-width changes do not invalidate
+    # this centering check, while retaining an independent pixel assertion.
+    scan_y = y1 // 2
+    spans = [list(group) for _, group in itertools.groupby(
+        range(initial.width), key=lambda x: initial.getpixel((x, scan_y)))]
+    canvas_span = max(spans, key=len)
+    assert len(canvas_span) > initial.width / 2, (scan_y, len(canvas_span))
+    canvas_bounds_x = [canvas_span[0], canvas_span[-1] + 1]
+    expected_center_x = sum(canvas_bounds_x) / 2
     assert abs(center[0] - expected_center_x) <= 2, (center, expected_center_x)
     assert .38 <= center[1] / initial.height <= .60, (center, initial.size)
     assert y2 - y1 >= 110, fresh
@@ -71,6 +92,64 @@ def verify(output, env, root):
     _, typed = capture("-typed")
     assert composer_bounds(typed) == fresh, "Typing moved the fresh composer"
     typed_text, _ = assert_text(typed, fresh, prompt, "typed")
+
+    # Exercise the real editor with a private-display clipboard paste, not
+    # fixture text injection or a new Shift+Enter feature. Each paragraph must
+    # have its own visible OCR position: flattening or dropping newlines must
+    # not pass merely because the draft still exists in application state.
+    ready = root / "multiline-clipboard-ready"
+    ready.unlink(missing_ok=True)
+    clipboard = subprocess.Popen(
+        ["/usr/bin/python3", "-c", CLIPBOARD_OWNER, "\nDictated words", str(ready)],
+        env=env, cwd=root)
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists():
+            if clipboard.poll() is not None or time.monotonic() >= deadline:
+                raise AssertionError("Private multiline clipboard failed to start (GTK3/PyGObject required)")
+            time.sleep(.05)
+        native("key", "ctrl+v")
+        _, multiline = capture("-multiline")
+    finally:
+        clipboard.terminate()
+        try:
+            clipboard.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            clipboard.kill()
+            clipboard.wait(timeout=5)
+    assert composer_bounds(multiline) == fresh, "Two draft lines moved the fresh composer"
+    multiline_text, first_line_top = assert_text(
+        multiline, fresh, prompt, "multiline-first")
+    _, second_line_top = assert_text(
+        multiline, fresh, "Dictated words", "multiline-second")
+    assert second_line_top - first_line_top >= 10, (
+        "Draft paragraphs must render on distinct lines", first_line_top, second_line_top)
+
+    # Select just the last word using native character selection, then replace
+    # it. This checks editing on the formerly invisible second paragraph while
+    # proving the original draft and newline survive the replacement.
+    native("key", "--repeat", "5", "--delay", "30", "shift+Left")
+    native("type", "--clearmodifiers", "--delay", "30", "speech")
+    _, edited = capture("-multiline-edited")
+    assert composer_bounds(edited) == fresh
+    edited_text, edited_first_top = assert_text(
+        edited, fresh, prompt, "multiline-edited-first")
+    _, edited_second_top = assert_text(
+        edited, fresh, "Dictated speech", "multiline-edited-second")
+    assert "words" not in edited_text.lower(), ("Selected word survived replacement", edited_text)
+    assert edited_second_top - edited_first_top >= 10, (
+        "Editing collapsed draft paragraphs", edited_first_top, edited_second_top)
+
+    # Select across the newline and restore the original one-line prompt so
+    # all existing fresh-session submission and transcript-growth checks run
+    # unchanged. No click is allowed to rescue lost editor focus.
+    native("key", "ctrl+a")
+    native("type", "--clearmodifiers", "--delay", "30", prompt)
+    _, restored = capture("-multiline-restored")
+    assert composer_bounds(restored) == fresh
+    restored_text, _ = assert_text(restored, fresh, prompt, "multiline-restored")
+    assert "dictated" not in restored_text.lower(), (
+        "Select-all did not replace both paragraphs", restored_text)
 
     native("key", "Return")
     _, sent = capture("-submitted")
@@ -135,9 +214,15 @@ def verify(output, env, root):
     final_text, _ = assert_text(final, growth_bounds[-1], final_followup, "growth-followup")
     evidence = {
         "window": list(initial.size), "fresh_bounds": fresh, "submitted_bounds": submitted,
+        "canvas_horizontal_bounds": canvas_bounds_x,
         "first_submission_movement_pixels": submitted[1] - y1,
         "first_prompt_top_pixels": prompt_top,
         "native_typed_text": typed_text, "submitted_transcript_text": sent_text,
+        "multiline_draft_text": multiline_text,
+        "multiline_line_tops_pixels": [first_line_top, second_line_top],
+        "multiline_selection_edit_text": edited_text,
+        "multiline_edited_line_tops_pixels": [edited_first_top, edited_second_top],
+        "multiline_select_all_restored_text": restored_text,
         "focus_retained_followup_text": followup_text,
         "typing_keeps_position": True, "first_submission_keeps_bounds": True,
         "growth_bounds": growth_bounds, "last_growth_prompt_text": last_prompt_text,

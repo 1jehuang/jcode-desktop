@@ -1,6 +1,6 @@
 //! Standalone windows reuse the chat and its utilities, never the spatial canvas.
-//! Utility views temporarily occupy the same surface. The conversation stays
-//! alive underneath, with an explicit way back instead of hidden workspace tabs.
+//! New utility panels open in separate native windows. The back control only
+//! handles legacy/restored layouts that already contain additional surfaces.
 use super::*;
 
 impl Workspace {
@@ -98,6 +98,7 @@ impl Workspace {
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::open_accounts))
+            .on_action(cx.listener(Self::open_model_window_or_picker))
             .on_action(cx.listener(Self::open_changelog))
             .on_action(cx.listener(Self::open_resume))
             .on_action(cx.listener(Self::open_change_review))
@@ -285,84 +286,149 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn single_panel_accounts_back_preserves_chat(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| standalone(cx));
-        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
-        source.update(vcx, |panel, cx| {
-            panel.input.update(cx, |input, cx| {
-                input.set_content("login must not replace this".into(), cx);
-            });
-        });
+    #[derive(Clone, Copy)]
+    enum Utility {
+        Accounts,
+        Review,
+        Changelog,
+    }
+
+    fn open_utility(
+        utility: Utility,
+        workspace: &Entity<Workspace>,
+        source: &Entity<Panel>,
+        vcx: &mut gpui::VisualTestContext,
+    ) {
         vcx.update(|window, cx| {
-            workspace.update(cx, |w, cx| {
-                w.open_accounts(
+            workspace.update(cx, |w, cx| match utility {
+                Utility::Accounts => w.open_accounts(
                     &OpenAccounts {
                         source: source.entity_id(),
                         login_command: None,
                     },
                     window,
                     cx,
-                );
+                ),
+                Utility::Review => w.open_change_review(
+                    &change_review::OpenChangeReview {
+                        source: source.entity_id(),
+                        output: String::new(),
+                        name: "write".into(),
+                        input: serde_json::json!({"file_path":"example.rs","content":"hello\n"})
+                            .to_string(),
+                        selected: 0,
+                        done: true,
+                        failed: false,
+                    },
+                    window,
+                    cx,
+                ),
+                Utility::Changelog => w.open_changelog(&OpenChangelog, window, cx),
             })
         });
         vcx.run_until_parked();
-        workspace.read_with(vcx, |w, cx| {
-            assert!(w.slots[w.active].panel.read(cx).is_accounts_panel());
-        });
-        let back = vcx.debug_bounds("single-panel-back").unwrap();
-        vcx.simulate_click(back.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots.len(), 1);
-            assert_eq!(w.slots[w.active].panel, source);
-            assert_eq!(
-                source.read(cx).input.read(cx).content.as_ref(),
-                "login must not replace this"
-            );
-        });
     }
 
-    #[gpui::test]
-    fn single_panel_review_is_one_surface_and_back_preserves_chat(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| standalone(cx));
+    fn assert_separate_utility_window(utility: Utility, cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut workspace = standalone(cx);
+            workspace.set_test_bridge(bridge);
+            workspace.focus_active(window, cx);
+            workspace
+        });
+        vcx.run_until_parked();
+        vcx.simulate_input("do not lose my draft");
+        let source_window = vcx.update(|window, _| window.window_handle());
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
-        source.update(vcx, |panel, cx| {
-            panel.input.update(cx, |input, cx| {
-                input.set_content("do not lose my draft".into(), cx);
-            })
+        let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
+        let state = workspace.read_with(vcx, |w, _| {
+            (w.active, w.active_row, w.previous, w.slots[0].width_fraction)
         });
-        let request = change_review::OpenChangeReview {
-            source: source.entity_id(),
-            output: String::new(),
-            name: "write".into(),
-            input: serde_json::json!({"file_path":"example.rs","content":"hello\n"}).to_string(),
-            selected: 0,
-            done: true,
-            failed: false,
-        };
-        vcx.update(|window, cx| {
-            workspace.update(cx, |w, cx| {
-                w.open_change_review(&request, window, cx);
-            })
+        open_utility(utility, &workspace, &source, vcx);
+        let child = vcx.update(|_, cx| {
+            let windows = cx.windows();
+            assert_eq!(windows.len(), 2, "utility must open a separate window");
+            windows.into_iter().find(|handle| *handle != source_window).unwrap()
         });
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("single-panel-surface").is_some());
-        assert!(vcx.debug_bounds("workspace-canvas").is_none());
-        workspace.read_with(vcx, |w, cx| {
-            assert!(w.slots[w.active].panel.read(cx).is_change_review());
+        let hosted = vcx.update(|_, cx| {
+            let root = child.downcast::<panel_window::PanelWindow>().unwrap();
+            let panel = root.read(cx).unwrap().panel.clone();
+            assert!(match utility {
+                Utility::Accounts => panel.read(cx).is_accounts_panel(),
+                Utility::Review => panel.read(cx).is_change_review(),
+                Utility::Changelog => panel.read(cx).is_changelog(),
+            });
+            panel
         });
-        let back = vcx.debug_bounds("single-panel-back").unwrap();
-        vcx.simulate_click(back.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("single-panel-back").is_none());
+        open_utility(utility, &workspace, &source, vcx);
+        vcx.update(|_, cx| {
+            assert_eq!(cx.windows().len(), 2, "repeated open must reuse the child");
+            assert!(cx.windows().contains(&child));
+            let root = child.downcast::<panel_window::PanelWindow>().unwrap();
+            assert_eq!(root.read(cx).unwrap().panel, hosted);
+        });
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 1);
             assert_eq!(w.slots[0].panel, source);
             assert_eq!(
-                source.read(cx).input.read(cx).content.as_ref(),
-                "do not lose my draft"
+                (w.active, w.active_row, w.previous, w.slots[0].width_fraction),
+                state,
+                "opening a utility must not alter source layout or selection"
             );
+            let after = source.read(cx).snapshot(cx);
+            assert_eq!(before.draft, after.draft);
+            assert_eq!(before.scroll_y, after.scroll_y);
         });
+        assert!(vcx.debug_bounds("single-panel-root").is_some());
+        assert!(vcx.debug_bounds("single-panel-back").is_none());
+        assert!(vcx.debug_bounds("panel-window-root").is_none());
+        let mut child_cx = gpui::VisualTestContext::from_window(child, vcx);
+        child_cx.run_until_parked();
+        assert!(child_cx.debug_bounds("panel-window-root").is_some());
+        assert!(child_cx.debug_bounds("workspace-canvas").is_none());
+        assert!(child_cx.debug_bounds("single-panel-back").is_none());
+        child_cx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            assert_eq!(cx.windows(), vec![source_window], "Escape closes only the child");
+            assert!(source.read(cx).input_focus_handle(cx).is_focused(window));
+        });
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 1);
+            assert_eq!(w.slots[w.active].panel, source);
+            assert_eq!(source.read(cx).snapshot(cx).draft, before.draft);
+        });
+        // A stale child handle must not prevent reopening after close.
+        open_utility(utility, &workspace, &source, vcx);
+        let reopened = vcx.update(|_, cx| {
+            let windows = cx.windows();
+            assert_eq!(windows.len(), 2);
+            windows.into_iter().find(|handle| *handle != source_window).unwrap()
+        });
+        let mut reopened_cx = gpui::VisualTestContext::from_window(reopened, vcx);
+        reopened_cx.dispatch_action(ClosePanel);
+        vcx.run_until_parked();
+        vcx.update(|_, cx| assert_eq!(cx.windows(), vec![source_window]));
+        assert!(commands.try_iter().all(|command| !matches!(command,
+            Command::Watch { session_id } | Command::Unwatch { session_id }
+                if session_id.starts_with("review://") || session_id == Panel::CHANGELOG_SESSION_ID
+        )));
+    }
+
+    #[gpui::test]
+    fn single_panel_accounts_reuses_child_and_preserves_source(cx: &mut gpui::TestAppContext) {
+        assert_separate_utility_window(Utility::Accounts, cx);
+    }
+
+    #[gpui::test]
+    fn single_panel_review_reuses_child_and_preserves_source(cx: &mut gpui::TestAppContext) {
+        assert_separate_utility_window(Utility::Review, cx);
+    }
+
+    #[gpui::test]
+    fn single_panel_changelog_reuses_child_and_preserves_source(cx: &mut gpui::TestAppContext) {
+        assert_separate_utility_window(Utility::Changelog, cx);
     }
 }

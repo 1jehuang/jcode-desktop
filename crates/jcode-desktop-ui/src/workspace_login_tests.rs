@@ -130,6 +130,147 @@ fn login_composer_remote_provider_keeps_native_recovery(cx: &mut gpui::TestAppCo
     });
 }
 
+fn accounts_child(vcx: &mut gpui::VisualTestContext) -> gpui::AnyWindowHandle {
+    vcx.update(|_, cx| {
+        cx.windows()
+            .into_iter()
+            .find(|handle| handle.downcast::<panel_window::PanelWindow>().is_some())
+            .expect("Accounts opens a separate native window")
+    })
+}
+
+#[gpui::test]
+fn single_panel_footer_accounts_preserves_draft_conversation_and_bounds(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx, "single-login-source");
+    let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+    workspace.update(vcx, |w, cx| {
+        w.single_panel = true;
+        source.update(cx, |panel, cx| {
+            panel.items = vec![
+                crate::panel::Item::User("Keep this conversation".into()),
+                crate::panel::Item::Assistant("And its response".into()),
+            ];
+            panel.input.update(cx, |input, cx| {
+                input.set_content("Unsent draft survives Accounts".into(), cx);
+            });
+        });
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let before = source.read_with(vcx, |panel, cx| {
+        (panel.items.clone(), panel.input.read(cx).content.clone())
+    });
+    let layout = workspace.read_with(vcx, |w, _| {
+        (w.active, w.active_row, w.slots[0].width_fraction)
+    });
+    let bounds = vcx.debug_bounds("single-panel-root").unwrap();
+    let input_bounds = vcx.debug_bounds("prompt-input").unwrap();
+    click(vcx, "panel-login");
+    assert_eq!(vcx.debug_bounds("single-panel-root"), Some(bounds));
+    assert_eq!(vcx.debug_bounds("prompt-input"), Some(input_bounds));
+    assert!(vcx.debug_bounds("login-dialog").is_none());
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots[0].panel, source);
+        assert_eq!((w.active, w.active_row, w.slots[0].width_fraction), layout);
+        let panel = source.read(cx);
+        assert_eq!(
+            (panel.items.clone(), panel.input.read(cx).content.clone()),
+            before
+        );
+    });
+    let child = accounts_child(vcx);
+    let mut child_cx = gpui::VisualTestContext::from_window(child, vcx);
+    child_cx.run_until_parked();
+    assert!(child_cx.debug_bounds("accounts-panel").is_some());
+    click(&mut child_cx, "login-close");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        assert_eq!(cx.windows().len(), 1);
+        assert!(source.read(cx).input_focus_handle(cx).is_focused(window));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "single-login-source")
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn single_panel_login_provider_uses_child_and_escape_restores_composer(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx, "single-login-provider");
+    workspace.update(vcx, |w, cx| {
+        w.single_panel = true;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    submit(vcx, "/login openai-api");
+    let source = workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.active, 0);
+        let source = w.slots[0].panel.clone();
+        assert!(source.read(cx).items.is_empty());
+        assert!(source.read(cx).input.read(cx).content.is_empty());
+        source
+    });
+    let child = accounts_child(vcx);
+    let mut child_cx = gpui::VisualTestContext::from_window(child, vcx);
+    child_cx.run_until_parked();
+    assert!(child_cx.debug_bounds("login-submit").is_some());
+    assert!(child_cx.debug_bounds("login-paste").is_some());
+    child_cx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        assert_eq!(cx.windows().len(), 1);
+        assert!(source.read(cx).input_focus_handle(cx).is_focused(window));
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "single-login-provider")
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn single_panel_accounts_choose_model_closes_accounts_and_opens_shared_picker(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx, commands) = setup(cx, "single-login-model");
+    workspace.update(vcx, |w, cx| {
+        w.single_panel = true;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+    click(vcx, "panel-login");
+    let child = accounts_child(vcx);
+    child
+        .downcast::<panel_window::PanelWindow>()
+        .unwrap()
+        .update(vcx, |root, _, cx| {
+            root.panel
+                .update(cx, |_, cx| cx.emit(crate::panel::AccountsPanelChooseModel));
+        })
+        .unwrap();
+    vcx.run_until_parked();
+    vcx.update(|_, cx| {
+        assert!(!cx.windows().contains(&child));
+        assert_eq!(cx.windows().len(), 1);
+    });
+    // No routes yet: the shared entry point offers account setup in place.
+    assert!(vcx.debug_bounds("recovery-connect-account").is_some());
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots[w.active].panel, source);
+    });
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "single-login-model")
+    );
+    assert!(commands.try_recv().is_err());
+}
+
 #[gpui::test]
 fn footer_and_account_model_actions_share_slash_menu_without_new_windows(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx, commands) = setup(cx, "unified-model-picker");

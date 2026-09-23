@@ -8,6 +8,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.single_panel {
+            let panel = cx.new(|cx| {
+                Panel::new(
+                    Panel::CHANGELOG_SESSION_ID.into(),
+                    Some("Desktop changelog".into()),
+                    None,
+                    self.bridge.clone(),
+                    cx,
+                )
+            });
+            if let Err(error) = panel_window::open_panel_window(
+                panel,
+                self.slots.get(self.active).map(|slot| slot.panel.clone()),
+                window,
+                cx,
+            ) {
+                eprintln!("failed to open changelog window: {error:#}");
+            }
+            return;
+        }
         let active_id = self
             .slots
             .get(self.active)

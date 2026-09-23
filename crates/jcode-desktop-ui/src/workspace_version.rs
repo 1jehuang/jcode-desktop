@@ -21,6 +21,13 @@ fn status_label(release: &ReleaseStatus, update: &UpdateState) -> (String, Optio
     }
 }
 
+/// Size the pill to its short version string, with room for an optional action.
+pub(super) fn pill_width() -> f32 {
+    let (_, action) = status_label(&updates::release_status(), &updates::current());
+    let version = ((crate::build_info::VERSION.len() + 1) as f32 * 5.4 + 16.0).clamp(64.0, 132.0);
+    (version + action.map_or(0.0, |label| label.len() as f32 * 5.4 + 12.0)).ceil()
+}
+
 impl Workspace {
     pub(super) fn render_version_header(
         &self,
@@ -44,15 +51,15 @@ impl Workspace {
             .debug_selector(|| "workspace-version".into())
             .absolute()
             .left(px(4.0))
-            .top(px(2.0))
+            .top(px(5.0))
             .w(px(width - 4.0))
-            .h(px(24.0))
-            .rounded_md()
+            .h(px(18.0))
+            .rounded_full()
             .bg(Theme::global().PANEL_BG)
-            .px_2()
+            .px(px(6.0))
             .flex()
             .items_center()
-            .gap_1()
+            .gap(px(4.0))
             .occlude()
             .tooltip(move |_, cx| {
                 cx.new(|_| live_tabs::TabTooltip(if detail == label { label.clone() } else { format!("{label}\n{detail}") }.into()))
@@ -65,7 +72,8 @@ impl Workspace {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(px(10.0))
+                    .font_family(Theme::global().FONT_MONO)
+                    .text_size(px(9.0))
                     .text_color(Theme::global().TEXT_DIM)
                     .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
                     .child(crate::build_info::version()),
@@ -77,13 +85,14 @@ impl Workspace {
                         .debug_selector(|| "workspace-update-button".into())
                         .flex_none()
                         .px_1()
-                        .h(px(20.0))
+                        .h(px(16.0))
                         .flex()
                         .items_center()
-                        .rounded_md()
+                        .rounded_full()
                         .bg(Theme::global().ACCENT.opacity(0.12))
                         .text_color(Theme::global().ACCENT)
-                        .text_size(px(11.0))
+                        .font_family(Theme::global().FONT_MONO)
+                        .text_size(px(9.0))
                         .cursor_pointer()
                         .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.22)))
                         .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
@@ -182,7 +191,8 @@ mod tests {
             .debug_bounds("workspace-version")
             .expect("version in header");
         assert!(header.origin.y < px(100.));
-        assert_eq!(header.size.height, px(24.0));
+        assert_eq!(header.size.height, px(18.0));
+        assert!(header.size.width < px(132.0), "idle version stays compact");
         let fps = vcx.debug_bounds("fps-counter").unwrap();
         let build = vcx.debug_bounds("workspace-build").unwrap();
         assert!(header.right() <= fps.left());
@@ -201,6 +211,7 @@ mod tests {
             updates::jcode_update_register_actions(check, check);
         }
         draw(vcx);
+        let header = vcx.debug_bounds("workspace-version").unwrap();
         let button = vcx
             .debug_bounds("workspace-update-button")
             .expect("new release offers Update");

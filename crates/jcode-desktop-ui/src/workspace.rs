@@ -19,6 +19,9 @@ mod single_panel;
 #[path = "workspace_global_voice.rs"]
 mod global_voice;
 
+#[path = "workspace_panel_window.rs"]
+pub(crate) mod panel_window;
+
 #[path = "workspace_preview.rs"]
 mod preview;
 
@@ -125,6 +128,12 @@ mod default_directory_tests;
 pub(crate) struct OpenAccounts {
     pub source: gpui::EntityId,
     pub login_command: Option<String>,
+}
+
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenModelPicker {
+    pub source: gpui::EntityId,
 }
 
 actions!(
@@ -1049,6 +1058,7 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                save_label: None,
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
@@ -1068,7 +1078,6 @@ impl Workspace {
                     ("Sidebar implementation", "working"),
                     ("Test runner", "completed"),
                 ]
-                save_label: None,
                 .into_iter()
                 .enumerate()
                 {
@@ -1168,6 +1177,7 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                save_label: None,
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
@@ -1189,7 +1199,6 @@ impl Workspace {
     pub(crate) fn enable_test_minimap(&mut self) {
         self.show_minimap = true;
     }
-                save_label: None,
 
     /// A workspace with no runtime and a caller-supplied coach, for tests that
     /// drive real keystrokes through the real keymap.
@@ -1774,6 +1783,7 @@ impl Workspace {
                     last_active_at_ms: None,
                     archived: false,
                     archived_at_ms: None,
+                    save_label: None,
                     parent_session_id: None,
                     agent_label: None,
                     swarm_status: None,
@@ -1797,7 +1807,6 @@ impl Workspace {
             } => {
                 if failed {
                     self.invalidate_cloud_connection(&host);
-                    save_label: None,
                 }
                 self.update_pending_remote_status(
                     request_id.as_deref(),
@@ -2190,6 +2199,7 @@ impl Workspace {
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
+                save_label: None,
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
@@ -2213,7 +2223,6 @@ impl Workspace {
         }
         if self.slots[index].panel.read(cx).supports_voice() {
             self.last_voice_chat = Some(self.slots[index].panel.entity_id());
-                save_label: None,
         }
         let outgoing = self
             .slots
@@ -2778,6 +2787,12 @@ impl Workspace {
                 cx,
             )
         });
+        if self.single_panel {
+            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+                eprintln!("Could not open panel window: {error:#}");
+            }
+            return;
+        }
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -2849,6 +2864,18 @@ impl Workspace {
         }
     }
 
+    fn open_model_window_or_picker(
+        &mut self,
+        request: &OpenModelPicker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.slots.iter()
+            .find(|slot| !slot.closing && slot.panel.entity_id() == request.source)
+            .map(|slot| slot.panel.clone()) else { return; };
+        source.update(cx, |panel, cx| panel.toggle_model_picker(window, cx));
+    }
+
     fn open_accounts(
         &mut self,
         request: &OpenAccounts,
@@ -2864,6 +2891,22 @@ impl Workspace {
         };
         let source = self.slots[source_index].panel.clone();
         let source_session = source.read(cx).session_id.clone();
+        if self.single_panel {
+            let preview = source.read(cx).preview_state;
+            let panel =
+                cx.new(|cx| Panel::new_accounts(&source_session, preview, self.bridge.clone(), cx));
+            match panel_window::open_panel_window(panel, Some(source), window, cx) {
+                Ok(panel) => {
+                    if let Some(command) = &request.login_command {
+                        panel.update(cx, |panel, cx| {
+                            panel.login_command(command, cx);
+                        });
+                    }
+                }
+                Err(error) => eprintln!("could not open Accounts window: {error:#}"),
+            }
+            return;
+        }
         if let Some(index) = self.slots.iter().position(|slot| {
             !slot.closing
                 && slot.panel.read(cx).session_id == format!("accounts://{source_session}")
@@ -2964,6 +3007,12 @@ impl Workspace {
         }
         let width_fraction = spawned_panel_width(self.slots.len());
         let panel = cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx));
+        if self.single_panel {
+            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+                eprintln!("Could not open panel window: {error:#}");
+            }
+            return;
+        }
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -3013,6 +3062,12 @@ impl Workspace {
 
         let width_fraction = spawned_panel_width(self.slots.len());
         let panel = cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx));
+        if self.single_panel {
+            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+                eprintln!("Could not open panel window: {error:#}");
+            }
+            return;
+        }
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -3079,6 +3134,12 @@ impl Workspace {
                 cx,
             )
         });
+        if self.single_panel {
+            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+                eprintln!("Could not open panel window: {error:#}");
+            }
+            return;
+        }
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -3126,6 +3187,12 @@ impl Workspace {
         }
         let width_fraction = spawned_panel_width(self.slots.len());
         let panel = cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx));
+        if self.single_panel {
+            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
+                eprintln!("Could not open panel window: {error:#}");
+            }
+            return;
+        }
         let insert_at = if self.slots.is_empty() {
             0
         } else {
@@ -4754,12 +4821,12 @@ impl Workspace {
             .slots
             .get(self.active)
             .map(|slot| slot.panel.read(cx).session_id.clone());
-        let open_activities = self
+        let open_marks = self
             .slots
             .iter()
             .map(|slot| {
                 let panel = slot.panel.read(cx);
-                (panel.session_id.clone(), panel.sidebar_activity())
+                (panel.session_id.clone(), panel.sidebar_mark())
             })
             .collect::<HashMap<_, _>>();
         let open_titles = self
@@ -4798,6 +4865,7 @@ impl Workspace {
                     last_active_at_ms: None,
                     archived: false,
                     archived_at_ms: None,
+                    save_label: None,
                     parent_session_id: None,
                     agent_label: None,
                     swarm_status: None,
@@ -4810,7 +4878,7 @@ impl Workspace {
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
             .filter(|session| !swarm.nested.contains(&session.session_id))
-            .partition(|session| open_activities.contains_key(&session.session_id));
+            .partition(|session| open_marks.contains_key(&session.session_id));
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
         let panel_positions = panel_positions
@@ -4879,7 +4947,6 @@ impl Workspace {
                     .working_dir
                     .as_deref()
                     .is_some_and(|dir| !dir.trim().is_empty())
-                    save_label: None,
                     || sidebar_session_created_ms(&session.session_id).is_some()
                     || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
                     || session.edit_stats.is_some()),
@@ -5029,7 +5096,7 @@ impl Workspace {
                                 (None, Some(meta)) => Some(meta),
                                 (None, None) => None,
                             };
-                            let activity = open_activities
+                            let activity = open_marks
                                 .get(&session.session_id)
                                 .cloned()
                                 .flatten();
@@ -7362,6 +7429,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
             .on_action(cx.listener(Self::open_accounts))
+            .on_action(cx.listener(Self::open_model_window_or_picker))
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))
@@ -8545,6 +8613,7 @@ mod tests {
             last_active_at_ms: None,
             archived: false,
             archived_at_ms: None,
+            save_label: None,
             parent_session_id: None,
             agent_label: None,
             swarm_status: None,
@@ -8627,7 +8696,6 @@ mod tests {
                     workspace.slots[slot].panel.read(cx).working_dir.as_deref(),
                     Some(directory)
                 );
-            save_label: None,
             }
             for directory in [None, Some("   ")] {
                 session.working_dir = directory.map(str::to_owned);
@@ -8790,7 +8858,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_spinner_only_paints_for_live_work(cx: &mut gpui::TestAppContext) {
+    fn sidebar_mark_persists_for_open_sessions_through_idle_and_activity(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("sidebar-activity", cx);
@@ -8803,25 +8871,35 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
+        assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_some());
+        assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
+        let mark_id = workspace.read_with(vcx, |workspace, cx| {
+            workspace.slots[0]
+                .panel
+                .read(cx)
+                .sidebar_mark()
+                .unwrap()
+                .entity_id()
+        });
         let idle_title_width = vcx
             .debug_bounds("sidebar-session-title-0")
             .unwrap()
             .size
             .width;
 
-        for (status, active) in [
-            ("generating", true),
-            ("thinking", true),
-            ("running", true),
-            ("streaming", true),
-            ("running_tools", true),
-            ("busy", true),
-            ("idle", false),
-            ("connected", false),
-            ("lost: disconnected", false),
-            ("crashed", false),
-            ("error", false),
+        for status in [
+            "generating",
+            "thinking",
+            "running",
+            "streaming",
+            "running_tools",
+            "busy",
+            "idle",
+            "connected",
+            "lost: disconnected",
+            "crashed",
+            "error",
         ] {
             workspace.update(vcx, |workspace, cx| {
                 workspace.apply(
@@ -8837,26 +8915,33 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert_eq!(
+            assert!(
                 vcx.debug_bounds("sidebar-session-spinner-0").is_some(),
-                active,
                 "status {status}",
             );
-            assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_none());
+            workspace.read_with(vcx, |workspace, cx| {
+                assert_eq!(
+                    workspace.slots[0]
+                        .panel
+                        .read(cx)
+                        .sidebar_mark()
+                        .unwrap()
+                        .entity_id(),
+                    mark_id,
+                    "status {status} must retain the same morphing mark",
+                );
+            });
+            assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_some());
             assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
             let title_width = vcx
                 .debug_bounds("sidebar-session-title-0")
                 .unwrap()
                 .size
                 .width;
-            if active {
-                assert!(title_width < idle_title_width);
-            } else {
-                assert_eq!(
-                    title_width, idle_title_width,
-                    "idle rows reserve no icon space"
-                );
-            }
+            assert_eq!(
+                title_width, idle_title_width,
+                "open rows keep stable mark space during activity changes"
+            );
         }
 
         for event in [
@@ -8890,6 +8975,28 @@ mod tests {
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
+            workspace.update(vcx, |workspace, cx| {
+                workspace.apply(
+                    Update::Event {
+                        session_id: "sidebar-activity".into(),
+                        event: jcode_sdk::ApiEvent::TurnDone {
+                            session_id: "sidebar-activity".into(),
+                        },
+                    },
+                    cx,
+                );
+                let panel = workspace.slots[0].panel.read(cx);
+                assert!(panel.sidebar_activity().is_none());
+                assert!(
+                    panel.tab_activity().is_none(),
+                    "idle tabs keep their normal emoji"
+                );
+                assert_eq!(panel.sidebar_mark().unwrap().entity_id(), mark_id);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
+            assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
         }
     }
 

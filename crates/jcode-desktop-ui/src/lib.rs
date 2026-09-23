@@ -234,6 +234,12 @@ unsafe extern "C-unwind" fn activate(
     let Some(host) = (unsafe { HostHandle::new(host) }) else {
         return ACTIVATE_FAILED;
     };
+    // GPUI is statically linked into both host and plugin. Without joining the
+    // host's TLS context, plugin elements accumulate in an uncleared fallback
+    // arena instead of the App arena reclaimed after the complete frame.
+    // The versioned API is checked before this point, and the host retains all
+    // generations so allocation destructors and these accessors stay callable.
+    unsafe { host.install_element_arena_context() };
     let snapshot = if snapshot_len == 0 {
         workspace::recovery::load()
     } else {

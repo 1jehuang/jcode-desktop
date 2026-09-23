@@ -33,6 +33,9 @@ if '--print-auth-url' in args:
 elif '--cancel' in args:
     print(json.dumps({{'provider':provider, 'status':'cancelled'}}))
 else:
+    if (home / 'fail-exchange').exists():
+        print('Error: Token exchange failed: test-private-code', file=sys.stderr)
+        sys.exit(1)
     # The real SDK must send the code over stdin, never argv.
     data = sys.stdin.read() if '--complete' not in args else 'device-approved'
     assert 'test-private-code' not in ' '.join(args)
@@ -168,7 +171,8 @@ fn empty_key_enter_has_actionable_error_and_provider_logos(cx: &mut gpui::TestAp
         Panel::new_accounts("key-test", None, crate::harness::spawn_inert(), cx)
     });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("login-logo-openai").is_some());
+    assert!(vcx.debug_bounds("login-method-browser").is_some());
+    assert!(vcx.debug_bounds("login-method-key").is_some());
     panel.update(vcx, |panel, cx| {
         panel.login_command("/login openai-api", cx);
     });
@@ -271,5 +275,74 @@ fn browser_callback_completes_native_login_without_paste(cx: &mut gpui::TestAppC
         assert!(state.complete && !state.callback_waiting && !state.busy);
         assert!(state.input.read(cx).content_empty());
         assert!(panel.items.is_empty());
+    });
+}
+
+#[gpui::test]
+fn callback_failure_preserves_real_safe_error_and_offers_restart(cx: &mut gpui::TestAppContext) {
+    use std::io::{Read, Write};
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let url = format!(
+        "https://example.invalid/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A{port}%2Fauth%2Fcallback&state=test-state"
+    );
+    let (root, client) = fixture_with_url("callback_url", &url);
+    std::fs::write(root.path().join("fail-exchange"), "fixture").unwrap();
+    let browser = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut stream = loop {
+            if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                break stream;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "listener never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        write!(stream, "GET /auth/callback?code=test-private-code&state=test-state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"));
+    });
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new_accounts(
+            "callback-failure-test",
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        )
+    });
+    panel.update(vcx, |panel, cx| {
+        panel.login.as_mut().unwrap().client = client;
+        panel.login_command("/login openai", cx);
+    });
+    vcx.run_until_parked();
+    browser.join().unwrap();
+    for selector in [
+        "login-error",
+        "login-retry",
+        "login-progress",
+        "login-current-step",
+    ] {
+        assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+    }
+    assert!(vcx.debug_bounds("login-complete").is_none());
+    panel.read_with(vcx, |panel, cx| {
+        let state = panel.login.as_ref().unwrap();
+        assert!(!state.busy && !state.callback_waiting && !state.complete);
+        let error = state.error.as_ref().unwrap();
+        assert!(error.contains("token exchange"), "{error}");
+        assert!(!error.contains("test-private-code"));
+        assert!(!state.flow.as_ref().unwrap().has_callback_listener());
+        assert!(
+            !serde_json::to_string(&panel.snapshot(cx))
+                .unwrap()
+                .contains("test-private-code")
+        );
     });
 }

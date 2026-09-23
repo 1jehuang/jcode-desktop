@@ -39,7 +39,7 @@ impl ConnectionStatus {
             Self::Expired => "Your sign-in has expired. Connect again to continue.",
             Self::Failed => "The latest account check failed. Reconnect to try again.",
             Self::NotConnected => "Connect this account to make its models available.",
-            Self::Unknown => "Could not read account health. Refresh to try again.",
+            Self::Unknown => "Could not read account health. Reopen Accounts to try again.",
         }
     }
 

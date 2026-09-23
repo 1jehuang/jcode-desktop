@@ -1,7 +1,7 @@
 //! Stable native GPUI host for Jcode Desktop.
 
 mod host {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     pub mod global_shortcut;
     pub mod instance;
     pub mod reload;

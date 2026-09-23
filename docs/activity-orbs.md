@@ -1,9 +1,22 @@
 # Native Thinking Orbs activity indicator
 
-Transcript, latest-output, and sidebar activity indicators use the **Working**
-animation from [gpui-thinking-orbs](https://github.com/FrancoEscob/gpui-thinking-orbs),
-at its purpose-designed **20px Inline** size. This replaces the custom 14px,
-8fps halftone donut, not the canonical Jcode logo or application icon.
+Open conversation sessions retain a **20px Inline** dotted Jcode donut in the
+sidebar. When activity starts, its particles morph into a state-specific
+animation from [gpui-thinking-orbs](https://github.com/FrancoEscob/gpui-thinking-orbs).
+When work finishes, the same entity morphs back to the resting donut.
+The canonical Jcode SVG and packaged application icon are unchanged.
+
+| Session activity | Animation |
+| --- | --- |
+| Idle, completed, disconnected, or failed | Static dotted Jcode donut |
+| Working | Working: tilted particle orbits |
+| Thinking | Reasoning: counter-rotating gyroscope loops |
+| Responding | Composing: undulating ribbon |
+| Running tools | Solving: scrambling/solving bands |
+
+Transcript and latest-output indicators use the same activity selection, but
+remain active-only so completed conversations do not retain a busy status row.
+Unopened historical sessions do not get a mark. Tab emoji behavior is unchanged.
 
 ## Dependency and attribution
 
@@ -15,47 +28,56 @@ at its purpose-designed **20px Inline** size. This replaces the custom 14px,
   exact same Zed revision used by the desktop host and UI. There is one GPUI
   package in the lockfile, not two incompatible sets of entity/window types.
 
-The dependency owns the animation math, inline density, projection, depth order,
-dot radii, alpha, and preset speed. Jcode does not maintain a copied engine or
-substitute its old torus geometry.
+The dependency owns the active animation geometry, inline density, depth order,
+dot radii, alpha, and preset speed. `activity_donut.rs` adds only Jcode's branded
+72-dot torus and a particle interpolation adapter using upstream `Frame`/`Dot`
+types. It does not copy the upstream animation engine or use a raymarcher.
 
 ## Native adapter
 
-`panel_activity.rs` uses the library's public geometry API with a retained `Frame`.
-The inline design contains 39 dots on tilted orbits. It is not the larger avatar
-design shrunk down, and has no fixed-frame animation cache or raymarcher.
+`panel_activity.rs` observes its owning panel and keeps a retained entity and
+geometry buffers across activity changes, including while the conversation is
+clipped but its sidebar row is visible. Every selected preset is dot-only.
 
-The host adapter keeps two application-specific behaviors:
-
+- Transitions use a 350ms smoothstep interpolation of particle position, depth,
+  radius, ink, and opacity. Different particle counts fade/shrink the unmatched
+  dots instead of popping them in or out.
+- The destination pose is frozen during the morph, then resumes its animation.
+  Retargeting captures the currently displayed pose, including an interrupted
+  transition, so a quick finish or new activity does not jump back to an endpoint.
 - A 30fps timer is armed only from visible paint, with at most one timer in
   flight. It never rearms itself. A clipped or unmounted indicator stops after
-  the pending tick, without refreshing the parent transcript.
-- Reduced motion uses the upstream static representative pose. Ink is mapped
-  between the desktop theme's text and panel-paper colors, retaining the
-  upstream per-dot depth and alpha.
+  the pending tick, without refreshing the parent transcript. The resting donut
+  stops scheduling frames when its return transition completes.
+- Reduced motion skips transitions and uses static representative poses. Ink
+  maps between theme text and panel-paper colors, preserving dot shading/alpha.
 
 Small circles use fractional-coordinate native paths in one paint layer. The
 pinned GPUI implementation snaps quad bounds to device pixels, so drawing the
-upstream dots as rounded quads would introduce position/diameter jitter. Each
-dot keeps its own color and compositing order rather than merging overlapping
-contours into a differently shaded shape.
+dots as rounded quads would introduce position/diameter jitter. Each dot keeps
+its own compositing order rather than merging overlapping contours.
 
 ## Validation
 
 ```sh
 cargo test -p jcode-desktop-ui --lib panel::activity -- --nocapture
-cargo test -p jcode-desktop-ui --lib sidebar_spinner
+cargo test -p jcode-desktop-ui --lib sidebar_mark_persists
 cargo build -p jcode-desktop
 python3 scripts/verify-activity-orb.py target/activity-orb-review
-python3 scripts/screenshot.py target/activity-orb.png --no-build --transcript streaming
+python3 scripts/screenshot.py target/activity-orb.png --no-build --transcript orb-thinking
 ```
 
 The native acceptance script uses private Xvfb displays and offline fixture
-data. It retains eight screenshots per case and checks the sidebar activity
-region for motion in light/dark themes, and stability in reduced-motion/idle
-states. It waits for real presentation rather than accepting a blank image just
-because a layout-state file exists. Inspect the full images and enlarged crops
-as well as the automated pixel checks. Eight distinct samples establish visible
-motion, not measured 30fps delivery. `fixture_cpu_percent` measures the entire
-debug application under software rendering, including full-window compositing.
-It is not a hardware-GPU measurement or an isolated spinner cost.
+data. It retains eight screenshots per case and checks the sidebar region for
+motion in all four activity presets, light/dark rendering, and stability in
+reduced-motion/idle states. Additional offline fixtures are `orb-working`,
+`orb-thinking`, and `orb-tools`. Unit/GPUI lifecycle tests cover exact morph
+endpoints, interrupted reversals, dot budgets, static idle scheduling, state
+selection, and retaining the same sidebar entity through completion.
+
+The native harness waits for real presentation rather than accepting a blank
+image just because a layout-state file exists. Inspect the full images and
+enlarged crops as well as automated pixel checks. Eight distinct samples
+establish visible motion, not measured 30fps delivery. `fixture_cpu_percent`
+measures the entire debug application under software rendering, not isolated
+spinner cost or hardware-GPU performance.

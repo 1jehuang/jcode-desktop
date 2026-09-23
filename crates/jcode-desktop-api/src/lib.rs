@@ -10,10 +10,10 @@ mod launch;
 pub use image_ids::ImageIds;
 pub use launch::LaunchMode;
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const ENTRY_POINT: &[u8] = b"jcode_desktop_ui_plugin\0";
-pub const GPUI_REVISION: [u8; 40] = *b"bc538def4545534201bbfcac4e95ac34ea6501b6";
+pub const GPUI_REVISION: [u8; 40] = *b"ff1a26d02a7326d679583e63fdd4d509fc571291";
 
 pub const ACTIVATE_OK: i32 = 0;
 pub const ACTIVATE_FAILED: i32 = 1;
@@ -57,6 +57,9 @@ pub struct HostApi {
     pub terminal_read: TerminalReadFn,
     pub terminal_resize: TerminalResizeFn,
     pub terminal_release: TerminalReleaseFn,
+    /// Canonical host TLS accessors, not a pointer to any particular App.
+    /// Every UI generation must join this context before constructing elements.
+    pub element_arena_context: gpui::ElementArenaContext,
 }
 
 impl HostApi {
@@ -71,10 +74,36 @@ pub struct HostHandle(HostApi);
 
 impl HostHandle {
     /// # Safety
-    /// `api.context` must remain valid while this handle is used.
+    /// A non-null `api` must point to a readable, aligned version/size prefix.
+    /// If that prefix claims the current version and size, the entire table
+    /// must be valid. Its context and callbacks must outlive this handle.
     pub unsafe fn new(api: *const HostApi) -> Option<Self> {
-        let api = unsafe { api.as_ref() }.copied()?;
-        api.is_compatible().then_some(Self(api))
+        // A previous host owns a shorter table. Check its stable prefix before
+        // creating a reference to, or copying, the current (larger) HostApi.
+        #[repr(C)]
+        struct Header {
+            abi_version: u32,
+            struct_size: u32,
+        }
+        let header = unsafe { api.cast::<Header>().as_ref() }?;
+        if header.abi_version != ABI_VERSION || header.struct_size as usize != size_of::<HostApi>()
+        {
+            return None;
+        }
+        Some(Self(unsafe { api.read() }))
+    }
+
+    /// Join the host's frame allocation context before activating this UI.
+    ///
+    /// # Safety
+    /// All requirements of [`gpui::ElementArenaContext::install`] apply,
+    /// including matching GPUI source, toolchain and layout-affecting build
+    /// configuration, module/TLS lifetimes, and no incompatible rebinding while
+    /// old scopes or allocations remain in use. Install on every thread using
+    /// this plugin's GPUI. Desktop renders and activates on its UI thread, and
+    /// retained generations reinstall the same host context when rolling back.
+    pub unsafe fn install_element_arena_context(self) {
+        unsafe { self.0.element_arena_context.install() };
     }
 
     /// Host handle for UI-only tests that do not create native resources.
@@ -89,6 +118,7 @@ impl HostHandle {
             terminal_read: inert_terminal_read,
             terminal_resize: inert_terminal_resize,
             terminal_release: inert_terminal_release,
+            element_arena_context: gpui::ElementArenaContext::current(),
         })
     }
 
@@ -279,6 +309,47 @@ mod tests {
         assert!(api.accepts_state(STATE_SCHEMA_VERSION));
         assert!(api.accepts_state(0));
         assert!(!api.accepts_state(STATE_SCHEMA_VERSION + 1));
+    }
+
+    #[test]
+    fn old_plugin_cannot_activate_against_the_shared_arena_host() {
+        let mut api = PluginApi::new(activate, snapshot);
+        api.abi_version = 3;
+        assert_eq!(
+            api.compatibility_error(),
+            Some("plugin ABI version differs from host")
+        );
+    }
+
+    #[test]
+    fn rejects_short_host_table_before_reading_callbacks() {
+        #[repr(C)]
+        struct Header {
+            abi_version: u32,
+            struct_size: u32,
+        }
+        for abi_version in [3, ABI_VERSION] {
+            let header = Header {
+                abi_version,
+                struct_size: size_of::<Header>() as u32,
+            };
+            // Deliberately only eight readable bytes, not a whole HostApi.
+            let handle = unsafe { HostHandle::new((&header as *const Header).cast()) };
+            assert!(handle.is_none());
+        }
+        assert!(unsafe { HostHandle::new(std::ptr::null()) }.is_none());
+    }
+
+    #[test]
+    fn current_host_table_carries_a_reinstallable_arena_context() {
+        let host = HostHandle::inert();
+        let handle = unsafe { HostHandle::new(&host.0) }.expect("current host table");
+        // A statically linked activation and rollback can install the same
+        // canonical context repeatedly without redirecting it to itself.
+        unsafe {
+            handle.install_element_arena_context();
+            handle.install_element_arena_context();
+        }
     }
 
     #[test]

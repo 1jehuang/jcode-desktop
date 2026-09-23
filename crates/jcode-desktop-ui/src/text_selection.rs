@@ -4,12 +4,12 @@
 //! default. This controller keeps the selection state shared by all selectable
 //! leaves in a transcript while each leaf retains its own styling and links.
 
-use std::ops::Range;
+use std::{collections::HashMap, ops::Range, time::Instant};
 
 use gpui::{
-    App, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, HighlightStyle, KeyBinding,
-    MouseButton, MouseMoveEvent, MouseUpEvent, SharedString, StyledText, TextLayout, Window,
-    actions, canvas, div, prelude::*,
+    App, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, HighlightStyle,
+    KeyBinding, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
+    StyledText, TextLayout, Window, actions, canvas, div, prelude::*, px,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -44,11 +44,30 @@ enum SelectMode {
     All,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Endpoint {
+    key: SharedString,
+    offset: usize,
+}
+
+struct LeafGeometry {
+    bounds: Bounds<Pixels>,
+    layout: TextLayout,
+    prefix_len: usize,
+}
+
 /// Selection and focus shared by the selectable leaves in one transcript.
 pub struct TextSelection {
     focus_handle: FocusHandle,
     selection: Option<Selection>,
     selecting: bool,
+    document: Vec<(SharedString, SharedString)>,
+    document_index: HashMap<SharedString, usize>,
+    geometry: HashMap<SharedString, LeafGeometry>,
+    surface_bounds: Option<Bounds<Pixels>>,
+    cross_head: Option<Endpoint>,
+    pointer: Option<Point<Pixels>>,
+    last_scroll: Option<Instant>,
 }
 
 impl TextSelection {
@@ -57,6 +76,13 @@ impl TextSelection {
             focus_handle: cx.focus_handle(),
             selection: None,
             selecting: false,
+            document: Vec::new(),
+            document_index: HashMap::new(),
+            geometry: HashMap::new(),
+            surface_bounds: None,
+            cross_head: None,
+            pointer: None,
+            last_scroll: None,
         }
     }
 
@@ -68,17 +94,125 @@ impl TextSelection {
         KEY_CONTEXT
     }
 
-    /// The visual highlight for a leaf, if that leaf owns the active selection.
-    pub fn highlight(&self, key: &str, text_len: usize) -> Option<(Range<usize>, HighlightStyle)> {
-        let selection = self.selection.as_ref()?;
-        if selection.key.as_ref() != key || selection.range.is_empty() {
-            return None;
+    /// A complete logical document, including rows the virtual list has never
+    /// mounted. Geometry is separate and only retained for the current paint.
+    pub(crate) fn set_document(&mut self, document: Vec<(SharedString, SharedString)>) {
+        if self.document == document {
+            return;
         }
-        let start = selection.range.start.min(text_len);
-        let end = selection.range.end.min(text_len);
-        (start < end).then(|| {
+        let index: HashMap<_, _> = document
+            .iter()
+            .enumerate()
+            .map(|(index, (key, _))| (key.clone(), index))
+            .collect();
+        // Keep an anchored selection through appended streaming text, but never
+        // copy a stale source snapshot after replacement, reordering or removal.
+        if let Some((first, _, last, _)) = self.document_range() {
+            let mut previous = None;
+            let valid = self.document[first..=last].iter().all(|(key, text)| {
+                let Some(&position) = index.get(key) else {
+                    return false;
+                };
+                let ordered = previous.is_none_or(|previous| position > previous);
+                previous = Some(position);
+                ordered && document[position].1.starts_with(text.as_ref())
+            });
+            if !valid {
+                self.selection = None;
+                self.cross_head = None;
+                self.finish();
+            }
+        }
+        if let Some(selection) = self.selection.as_mut()
+            && let Some(&position) = index.get(&selection.key)
+        {
+            selection.text = document[position].1.clone();
+        }
+        self.document = document;
+        self.document_index = index;
+    }
+
+    pub(crate) fn is_dragging(&self) -> bool {
+        self.selecting
+    }
+
+    fn document_drag(&self) -> bool {
+        self.selecting
+            && self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| self.document_index.contains_key(&selection.key))
+    }
+
+    fn document_range(&self) -> Option<(usize, usize, usize, usize)> {
+        let selection = self.selection.as_ref()?;
+        let &anchor_index = self.document_index.get(&selection.key)?;
+        let Some(head) = &self.cross_head else {
+            return Some((
+                anchor_index,
+                selection.range.start,
+                anchor_index,
+                selection.range.end,
+            ));
+        };
+        let &head_index = self.document_index.get(&head.key)?;
+        let forward = head_index >= anchor_index;
+        let anchor = match &selection.mode {
+            SelectMode::Character => selection.tail(),
+            SelectMode::Word(range) | SelectMode::Line(range) => {
+                if forward {
+                    range.start
+                } else {
+                    range.end
+                }
+            }
+            SelectMode::All => {
+                if forward {
+                    0
+                } else {
+                    selection.text.len()
+                }
+            }
+        };
+        Some(if forward {
+            (anchor_index, anchor, head_index, head.offset)
+        } else {
+            (head_index, head.offset, anchor_index, anchor)
+        })
+    }
+
+    fn range_for(&self, key: &str, text_len: usize) -> Option<Range<usize>> {
+        if let Some((first, start, last, end)) = self.document_range() {
+            let &index = self.document_index.get(key)?;
+            if index < first || index > last {
+                return None;
+            }
+            return Some(if first == last {
+                start.min(text_len)..end.min(text_len)
+            } else {
+                (if index == first {
+                    start.min(text_len)
+                } else {
+                    0
+                })..(if index == last {
+                    end.min(text_len)
+                } else {
+                    text_len
+                })
+            });
+        }
+        self.selection
+            .as_ref()
+            .filter(|selection| selection.key.as_ref() == key)
+            .map(|selection| selection.range.start.min(text_len)..selection.range.end.min(text_len))
+    }
+
+    /// The selected range for this leaf, including fully selected middle blocks.
+    pub fn highlight(&self, key: &str, text_len: usize) -> Option<(Range<usize>, HighlightStyle)> {
+        let range = self.range_for(key, text_len)?;
+        (!range.is_empty()).then(|| {
             (
-                start..end,
+                range,
                 HighlightStyle {
                     background_color: Some(to_hsla(Theme::global().ACCENT_DIM)),
                     ..Default::default()
@@ -87,20 +221,139 @@ impl TextSelection {
         })
     }
 
-    pub fn copy(&self, cx: &mut App) {
-        let Some(selection) = &self.selection else {
-            return;
-        };
-        if selection.range.is_empty() || selection.range.end > selection.text.len() {
-            return;
+    fn selected_text(&self) -> Option<String> {
+        if let Some((first, _, last, _)) = self.document_range() {
+            let mut parts = Vec::new();
+            for (key, text) in &self.document[first..=last] {
+                let range = self.range_for(key, text.len())?;
+                parts.push(text.get(range)?);
+            }
+            let text = parts.join("\n");
+            return (!text.is_empty()).then_some(text);
         }
-        cx.write_to_clipboard(ClipboardItem::new_string(
-            selection.text[selection.range.clone()].to_owned(),
-        ));
+        let selection = self.selection.as_ref()?;
+        (!selection.range.is_empty())
+            .then(|| selection.text.get(selection.range.clone()))
+            .flatten()
+            .map(str::to_owned)
+    }
+
+    pub fn copy(&self, cx: &mut App) {
+        if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
     pub fn finish(&mut self) {
         self.selecting = false;
+        self.pointer = None;
+        self.last_scroll = None;
+    }
+
+    fn register_geometry(
+        &mut self,
+        key: SharedString,
+        bounds: Bounds<Pixels>,
+        layout: TextLayout,
+        prefix_len: usize,
+    ) {
+        let bounds = self
+            .surface_bounds
+            .map_or(bounds, |surface| bounds.intersect(&surface));
+        if self.document_index.contains_key(&key)
+            && bounds.size.width > px(0.)
+            && bounds.size.height > px(0.)
+        {
+            self.geometry.insert(
+                key,
+                LeafGeometry {
+                    bounds,
+                    layout,
+                    prefix_len,
+                },
+            );
+        }
+    }
+
+    /// Resolve the nearest painted text in two dimensions, rather than clamping
+    /// a captured gesture to the leaf on which it started. Document order, not
+    /// painting/measurement order, decides what is selected between endpoints.
+    fn drag_at(&mut self, position: Point<Pixels>) -> bool {
+        self.pointer = Some(position);
+        let target = self
+            .geometry
+            .iter()
+            .min_by(|(left_key, left), (right_key, right)| {
+                let distance = |bounds: &Bounds<Pixels>| {
+                    let dx = f32::from(
+                        (bounds.left() - position.x)
+                            .max(position.x - bounds.right())
+                            .max(px(0.)),
+                    );
+                    let dy = f32::from(
+                        (bounds.top() - position.y)
+                            .max(position.y - bounds.bottom())
+                            .max(px(0.)),
+                    );
+                    // Prefer text on the pointer's visual line, then its column.
+                    (dy, dx)
+                };
+                let l = distance(&left.bounds);
+                let r = distance(&right.bounds);
+                l.0.total_cmp(&r.0).then(l.1.total_cmp(&r.1)).then_with(|| {
+                    self.document_index[*left_key].cmp(&self.document_index[*right_key])
+                })
+            })
+            .map(|(key, geometry)| {
+                let text = &self.document[self.document_index[key]].1;
+                let offset = source_index(
+                    layout_index(&geometry.layout, position),
+                    geometry.prefix_len,
+                    text.len(),
+                );
+                (key.clone(), nearest_char_boundary(text, offset))
+            });
+        let Some((key, offset)) = target else {
+            return false;
+        };
+        self.drag_to_endpoint(key, offset)
+    }
+
+    fn drag_to_endpoint(&mut self, key: SharedString, offset: usize) -> bool {
+        if !self.selecting {
+            return false;
+        }
+        let previous = self.document_range();
+        let Some(selection) = self.selection.as_mut() else {
+            return false;
+        };
+        if selection.key == key {
+            self.cross_head = None;
+            selection.set_head(nearest_char_boundary(
+                &selection.text,
+                offset.min(selection.text.len()),
+            ));
+        } else if let Some(&index) = self.document_index.get(&key) {
+            let text = &self.document[index].1;
+            let offset = nearest_char_boundary(text, offset.min(text.len()));
+            let offset = match &selection.mode {
+                SelectMode::Word(_) | SelectMode::Line(_) => {
+                    let unit = if matches!(selection.mode, SelectMode::Word(_)) {
+                        surrounding_word(text, offset)
+                    } else {
+                        surrounding_line(text, offset)
+                    };
+                    if index < self.document_index[&selection.key] {
+                        unit.start
+                    } else {
+                        unit.end
+                    }
+                }
+                _ => offset,
+            };
+            self.cross_head = Some(Endpoint { key, offset });
+        }
+        self.document_range() != previous
     }
 
     fn begin(
@@ -112,6 +365,18 @@ impl TextSelection {
         shift: bool,
     ) {
         let offset = nearest_char_boundary(&text, offset.min(text.len()));
+        if shift
+            && click_count == 1
+            && self.selection.as_ref().is_some_and(|previous| {
+                self.document_index.contains_key(&previous.key)
+                    && self.document_index.contains_key(&key)
+            })
+        {
+            self.selecting = true;
+            self.drag_to_endpoint(key, offset);
+            return;
+        }
+        self.cross_head = None;
         let (range, reversed, mode) = match click_count {
             1 if shift => {
                 if let Some(previous) = self.selection.as_ref().filter(|item| item.key == key) {
@@ -148,6 +413,7 @@ impl TextSelection {
 
     fn is_selecting(&self, key: &str) -> bool {
         self.selecting
+            && !self.document_drag()
             && self
                 .selection
                 .as_ref()
@@ -289,7 +555,15 @@ pub(crate) fn selectable_with_prefix(
         .child(
             canvas(
                 |_, _, _| (),
-                move |_, _, window, _| {
+                move |bounds, _, window, cx| {
+                    model.update(cx, |selection, _| {
+                        selection.register_geometry(
+                            key.clone(),
+                            bounds.intersect(&window.content_mask().bounds),
+                            layout.clone(),
+                            prefix_len,
+                        );
+                    });
                     let moved = model.clone();
                     let moved_key = key.clone();
                     let moved_layout = layout.clone();
@@ -331,6 +605,115 @@ pub(crate) fn selectable_with_prefix(
         )
         .child(child)
         .into_any_element()
+}
+
+/// Install once, before the text children, on the scrollable transcript. The
+/// capture lives on the surface so it survives virtualization of the anchor.
+pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::AnyElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            model.update(cx, |selection, _| {
+                selection.geometry.clear();
+                selection.surface_bounds = Some(bounds);
+            });
+            let moved = model.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                if !phase.capture() || !moved.read(cx).document_drag() {
+                    return;
+                }
+                moved.update(cx, |selection, cx| {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        let previous_pointer = selection.pointer;
+                        if selection.drag_at(event.position)
+                            || previous_pointer != Some(event.position)
+                        {
+                            cx.notify();
+                        }
+                    } else {
+                        selection.finish();
+                    }
+                });
+            });
+            let released = model.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase.capture()
+                    && event.button == MouseButton::Left
+                    && released.read(cx).document_drag()
+                {
+                    released.update(cx, |selection, cx| {
+                        // A fast drag may finish before its last move is delivered.
+                        if selection.drag_at(event.position) {
+                            cx.notify();
+                        }
+                        selection.finish();
+                    });
+                }
+            });
+            if model.read(cx).document_drag() && model.read(cx).pointer.is_some() {
+                let model = model.clone();
+                let list = list.clone();
+                // Resolve again after all leaves have painted. This follows a
+                // stationary drag pointer while wheel/edge scrolling changes
+                // the geometry under it, without an idle animation loop.
+                window.on_next_frame(move |_, cx| {
+                    model.update(cx, |selection, cx| {
+                        if !selection.document_drag() {
+                            return;
+                        }
+                        let Some(pointer) = selection.pointer else {
+                            return;
+                        };
+                        let mut changed = selection.drag_at(pointer);
+                        if let Some(list) = &list {
+                            let viewport = list.viewport_bounds().intersect(&bounds);
+                            let speed = edge_scroll_speed(pointer, viewport);
+                            if speed != 0. {
+                                let now = Instant::now();
+                                let elapsed =
+                                    selection.last_scroll.replace(now).map_or(1. / 60., |last| {
+                                        now.duration_since(last).as_secs_f32().min(0.05)
+                                    });
+                                let before = list.logical_scroll_top();
+                                let offset = -list.scroll_px_offset_for_scrollbar().y;
+                                let maximum = list.max_offset_for_scrollbar().y;
+                                let target =
+                                    (offset + px(speed * elapsed)).max(px(0.)).min(maximum);
+                                list.scroll_by(target - offset);
+                                let after = list.logical_scroll_top();
+                                changed |= before.item_ix != after.item_ix
+                                    || before.offset_in_item != after.offset_in_item;
+                            } else {
+                                selection.last_scroll = None;
+                            }
+                        }
+                        if changed {
+                            cx.notify();
+                        }
+                    });
+                });
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+    .into_any_element()
+}
+
+fn edge_scroll_speed(pointer: Point<Pixels>, bounds: Bounds<Pixels>) -> f32 {
+    if bounds.size.height <= px(0.) {
+        return 0.;
+    }
+    let edge = 28_f32.min(f32::from(bounds.size.height) / 3.);
+    let top = f32::from(pointer.y - bounds.top());
+    let bottom = f32::from(bounds.bottom() - pointer.y);
+    if top < edge {
+        -900. * ((edge - top) / edge).clamp(0., 1.)
+    } else if bottom < edge {
+        900. * ((edge - bottom) / edge).clamp(0., 1.)
+    } else {
+        0.
+    }
 }
 
 /// Build a selectable leaf with the inherited GPUI text style.
@@ -442,5 +825,104 @@ mod tests {
         let text = "hello world\nnext line";
         assert_eq!(&text[surrounding_word(text, 8)], "world");
         assert_eq!(&text[surrounding_line(text, 15)], "next line");
+    }
+    fn document() -> Vec<(SharedString, SharedString)> {
+        vec![
+            ("prompt".into(), "Ask βeta".into()),
+            ("tool".into(), "cargo test".into()),
+            ("answer".into(), "All passed".into()),
+        ]
+    }
+
+    #[gpui::test]
+    fn document_selection_spans_unmounted_leaves_in_both_directions(cx: &mut gpui::TestAppContext) {
+        cx.new(|cx| {
+            let mut selection = TextSelection::new(cx);
+            selection.set_document(document());
+            selection.begin("prompt".into(), "Ask βeta".into(), 4, 1, false);
+            selection.drag_to_endpoint("answer".into(), 3);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some("βeta\ncargo test\nAll")
+            );
+            assert_eq!(selection.range_for("tool", 10), Some(0..10));
+            selection.begin("answer".into(), "All passed".into(), 3, 1, false);
+            selection.drag_to_endpoint("prompt".into(), 4);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some("βeta\ncargo test\nAll")
+            );
+            selection.drag_to_endpoint("answer".into(), 10);
+            assert_eq!(selection.selected_text().as_deref(), Some(" passed"));
+            selection
+        });
+    }
+
+    #[gpui::test]
+    fn shift_click_extends_across_blocks_and_word_drag_keeps_units(cx: &mut gpui::TestAppContext) {
+        cx.new(|cx| {
+            let mut selection = TextSelection::new(cx);
+            selection.set_document(document());
+            selection.begin("prompt".into(), "Ask βeta".into(), 4, 1, false);
+            selection.finish();
+            selection.begin("answer".into(), "All passed".into(), 3, 1, true);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some("βeta\ncargo test\nAll")
+            );
+            selection.begin("prompt".into(), "Ask βeta".into(), 5, 2, false);
+            selection.drag_to_endpoint("answer".into(), 1);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some("βeta\ncargo test\nAll")
+            );
+            selection
+        });
+    }
+
+    #[gpui::test]
+    fn document_replacement_clears_stale_selection_but_stream_append_preserves_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.new(|cx| {
+            let mut selection = TextSelection::new(cx);
+            selection.set_document(document());
+            selection.begin("prompt".into(), "Ask βeta".into(), 4, 1, false);
+            selection.drag_to_endpoint("answer".into(), 3);
+            let mut appended = document();
+            appended[2].1 = "All passed today".into();
+            selection.set_document(appended);
+            assert_eq!(
+                selection.selected_text().as_deref(),
+                Some("βeta\ncargo test\nAll")
+            );
+            let mut replacement = document();
+            replacement[1].1 = "different command".into();
+            selection.set_document(replacement);
+            assert!(selection.selected_text().is_none());
+            assert!(!selection.is_dragging());
+            selection
+        });
+    }
+
+    #[test]
+    fn edge_autoscroll_is_bounded_and_does_not_run_in_the_middle() {
+        let bounds = Bounds::new(
+            gpui::point(px(0.), px(100.)),
+            gpui::size(px(500.), px(400.)),
+        );
+        assert_eq!(
+            edge_scroll_speed(gpui::point(px(20.), px(300.)), bounds),
+            0.
+        );
+        assert_eq!(
+            edge_scroll_speed(gpui::point(px(20.), px(80.)), bounds),
+            -900.
+        );
+        assert_eq!(
+            edge_scroll_speed(gpui::point(px(20.), px(520.)), bounds),
+            900.
+        );
+        assert!(edge_scroll_speed(gpui::point(px(20.), px(485.)), bounds) > 0.);
     }
 }

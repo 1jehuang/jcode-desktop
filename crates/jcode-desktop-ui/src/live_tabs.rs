@@ -28,9 +28,9 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
 /// Reserve a compact tag only when a full selected tab still fits. The tag
 /// precedes FPS, so all other left-anchored header content shares this offset.
 pub(super) fn version_header_width(tab_budget: f32) -> f32 {
-    const VERSION_WIDTH: f32 = 164.0;
-    if tab_budget >= VERSION_WIDTH + 208.0 + TAB_GROUP_LABEL_WIDTH {
-        VERSION_WIDTH
+    let version_width = version::pill_width();
+    if tab_budget >= version_width + 208.0 + TAB_GROUP_LABEL_WIDTH {
+        version_width
     } else {
         0.0
     }

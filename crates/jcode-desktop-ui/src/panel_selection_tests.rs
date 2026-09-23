@@ -172,12 +172,18 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
         panel.expanded_tools.insert("call".into());
         panel
     });
-    assert_eq!(drag_copy(vcx, "selectable-text-tool-summary-0"), "printf βeta");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-tool-summary-0"),
+        "printf βeta"
+    );
     assert_eq!(
         drag_copy(vcx, "selectable-text-tool-detail-0"),
         tool_detail("bash", input, output)
     );
-    assert_eq!(drag_copy(vcx, "selectable-text-tool-error-0"), "A useful error");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-tool-error-0"),
+        "A useful error"
+    );
     assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
     // Text gestures must not steal the adjacent disclosure control.
     let toggle = vcx.debug_bounds("tool-output-size").unwrap();
@@ -216,8 +222,14 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
         drag_copy(vcx, "selectable-text-pinned-todo-task-0-0"),
         "Make βeta selectable"
     );
-    assert_eq!(drag_copy(vcx, "selectable-text-pinned-todo-group-0"), "Selection");
-    assert_eq!(drag_copy(vcx, "selectable-text-pinned-todo-intention"), "Copy task text");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-pinned-todo-group-0"),
+        "Selection"
+    );
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-pinned-todo-intention"),
+        "Copy task text"
+    );
     assert!(panel.read_with(vcx, |panel, _| panel.pinned_todo_expanded));
 }
 
@@ -241,8 +253,14 @@ fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppCont
         }];
         panel
     });
-    assert_eq!(drag_copy(vcx, "selectable-text-background-label-0"), "Run tests");
-    assert_eq!(drag_copy(vcx, "selectable-text-background-summary-0"), "All tests passed");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-background-label-0"),
+        "Run tests"
+    );
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-background-summary-0"),
+        "All tests passed"
+    );
 }
 
 #[gpui::test]
@@ -262,8 +280,14 @@ fn code_file_selection_copies_multiple_lines_without_gutter(cx: &mut gpui::TestA
         });
         panel
     });
-    assert_eq!(drag_copy(vcx, "selectable-text-code-file-text"), "first βeta\n\nlast line");
-    assert_eq!(drag_copy(vcx, "selectable-text-code-file-path"), "/workspace/example.rs");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-code-file-text"),
+        "first βeta\n\nlast line"
+    );
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-code-file-path"),
+        "/workspace/example.rs"
+    );
 }
 
 #[gpui::test]
@@ -283,9 +307,196 @@ fn document_header_selection_copies_outside_body_context(cx: &mut gpui::TestAppC
             cx,
         )
     });
-    assert_eq!(drag_copy(vcx, "selectable-text-document-title"), "Working notes");
+    assert_eq!(
+        drag_copy(vcx, "selectable-text-document-title"),
+        "Working notes"
+    );
     assert_eq!(
         drag_copy(vcx, "selectable-text-document-source"),
         "/workspace/notes.md · read-only"
     );
+}
+
+fn begin_drag(vcx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>, shift: bool) {
+    vcx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position,
+        modifiers: gpui::Modifiers {
+            shift,
+            ..Default::default()
+        },
+        click_count: 1,
+        first_mouse: false,
+    });
+    vcx.run_until_parked();
+}
+
+fn finish_drag_copy(vcx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>) -> String {
+    vcx.simulate_event(gpui::MouseMoveEvent {
+        position,
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: Default::default(),
+    });
+    vcx.run_until_parked();
+    vcx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position,
+        modifiers: Default::default(),
+        click_count: 1,
+    });
+    vcx.simulate_keystrokes("ctrl-c");
+    vcx.update(|_, cx| cx.read_from_clipboard())
+        .and_then(|item| item.text())
+        .unwrap()
+}
+
+#[gpui::test]
+fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "continuous-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.items = vec![
+            Item::User("Prompt βeta".into()),
+            Item::Assistant("First paragraph.\n\nSecond paragraph.".into()),
+            Item::Tool {
+                call_id: "call".into(),
+                name: "bash".into(),
+                input: r#"{"command":"printf hello"}"#.into(),
+                output: "hidden output".into(),
+                done: true,
+                error: None,
+            },
+            Item::Assistant("Final answer.".into()),
+        ];
+        panel
+    });
+    vcx.run_until_parked();
+    let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
+    let last = vcx.debug_bounds("selectable-text-3-0").unwrap();
+    let expected = "Prompt βeta\nFirst paragraph.\nSecond paragraph.\nprintf hello\nFinal answer.";
+    begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
+    assert_eq!(
+        finish_drag_copy(vcx, point(last.right() - px(0.1), last.center().y)),
+        expected
+    );
+    panel.read_with(vcx, |panel, cx| {
+        for (key, len) in [
+            ("0-0", 12),
+            ("1-0", 16),
+            ("1-1", 17),
+            ("tool-summary-2", 12),
+            ("3-0", 13),
+        ] {
+            assert!(
+                panel
+                    .transcript_selection
+                    .read(cx)
+                    .highlight(key, len)
+                    .is_some(),
+                "missing highlight {key}"
+            );
+        }
+    });
+    begin_drag(vcx, point(last.right() - px(0.1), last.center().y), false);
+    assert_eq!(
+        finish_drag_copy(vcx, point(first.left() + px(0.1), first.center().y)),
+        expected
+    );
+}
+
+#[gpui::test]
+fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::input::bind_keys);
+    let input = r#"{"command":"cargo check"}"#;
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "continuous-tool-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.items = vec![
+            Item::User("Check this".into()),
+            Item::Tool {
+                call_id: "call".into(),
+                name: "bash".into(),
+                input: input.into(),
+                output: "Finished".into(),
+                done: true,
+                error: None,
+            },
+            Item::Assistant("```rust\nlet βeta = 1;\n```\n\nDone.".into()),
+        ];
+        panel.expanded_tools.insert("call".into());
+        panel
+    });
+    vcx.run_until_parked();
+    let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
+    let last = vcx.debug_bounds("selectable-text-2-1").unwrap();
+    begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
+    let copied = finish_drag_copy(vcx, point(last.right() - px(0.1), last.center().y));
+    assert_eq!(
+        copied,
+        format!(
+            "Check this\ncargo check\n{}\nlet βeta = 1;\nDone.",
+            tool_detail("bash", input, "Finished")
+        )
+    );
+    assert!(panel.read_with(vcx, |panel, _| panel.expanded_tools.contains("call")));
+}
+
+#[gpui::test]
+fn continuous_selection_retains_anchor_and_unmounted_intermediate_rows(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new(
+            "virtual-selection".into(),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.items = (0..100)
+            .map(|index| Item::Assistant(format!("Row {index} text")))
+            .collect();
+        panel.stick_to_bottom = false;
+        panel
+    });
+    vcx.run_until_parked();
+    let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
+    assert!(vcx.debug_bounds("selectable-text-50-0").is_none());
+    begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
+    // Jumping the virtual viewport must not discard the anchor or omit rows
+    // that have never been painted. This also covers shift-select after paging.
+    panel.update(vcx, |panel, cx| {
+        panel.transcript_list.scroll_to(gpui::ListOffset {
+            item_ix: 99,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("selectable-text-0-0").is_none());
+    let last = vcx.debug_bounds("selectable-text-99-0").unwrap();
+    let end = point(last.right() - px(0.1), last.center().y);
+    let copied = finish_drag_copy(vcx, end);
+    assert_eq!(
+        copied,
+        (0..100)
+            .map(|index| format!("Row {index} text"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    panel.read_with(vcx, |panel, cx| {
+        assert!(!panel.transcript_selection.read(cx).is_dragging())
+    });
 }

@@ -6,15 +6,13 @@ import time
 from PIL import Image
 
 
-def header_pixels(image, height, minimap):
+def header_pixels(image, height, minimap, version_width):
     """A single-line version tag precedes FPS in the compact tab row."""
     assert height == 0, ("the separate header must be removed", height)
     # This acceptance fixture uses the default folder layout and full sidebar.
     canvas_left = 224 + 12
     right = image.width - 12 - (154 if minimap else 0)
-    tab_budget = right - canvas_left - 88 - 40 - 40
-    version_width = 164 if tab_budget >= 164 + 208 + 24 else 0
-    fps_left = canvas_left + version_width
+    fps_left = round(canvas_left + version_width)
     slot = image.crop((fps_left, 6, fps_left + 88, 34))
     background = slot.getpixel((0, 0))
     changed = [(x, y) for y in range(slot.height) for x in range(slot.width)
@@ -63,7 +61,7 @@ def verify(output, env, root):
         subprocess.run(["import", "-window", "root", "png:" + str(path)],
                        env=env, cwd=root, check=True, timeout=15)
         with Image.open(path) as image:
-            pixels = header_pixels(image.convert("RGB"), height, current["minimap_visible"])
+            pixels = header_pixels(image.convert("RGB"), height, current["minimap_visible"], current["version_header_width"])
         frames.append(dict(workspace=row, keyboard_panel=current["keyboard_panel"],
                            screenshot=path.name, **pixels))
     width = nav()["viewport"][0]

@@ -103,7 +103,7 @@ fn recovery_kind(message: &str) -> RecoveryKind {
 // Provider errors can embed arbitrary CLI commands, nested causes and setup
 // instructions. Present a native summary rather than attempting a brittle
 // command-by-command rewrite. Copy details retains the complete original.
-fn native_error_message(message: &str) -> String {
+pub(super) fn native_error_message(message: &str) -> String {
     match recovery_kind(message) {
         RecoveryKind::Auth => "Account authentication failed. Log in again or choose another model.",
         RecoveryKind::Model => "This model is unavailable for the current account. Choose another model.",

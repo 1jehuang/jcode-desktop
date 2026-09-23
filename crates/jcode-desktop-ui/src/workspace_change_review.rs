@@ -70,6 +70,27 @@ impl Workspace {
         let source = self.slots[source_index].panel.read(cx);
         let session_id = format!("review://{}", source.session_id);
         let working_dir = source.working_dir.clone();
+        if self.single_panel {
+            let panel = cx.new(|cx| {
+                Panel::new_change_review(
+                    session_id,
+                    working_dir,
+                    request,
+                    self.bridge.clone(),
+                    cx,
+                )
+            });
+            match panel_window::open_panel_window(
+                panel,
+                Some(self.slots[source_index].panel.clone()),
+                window,
+                cx,
+            ) {
+                Ok(panel) => panel.update(cx, |panel, cx| panel.set_change_review(request, cx)),
+                Err(error) => eprintln!("failed to open change review window: {error:#}"),
+            }
+            return;
+        }
         let row = self.slots[source_index].row;
         // Reuse the source conversation's review column, including when it has
         // been moved, rather than opening a new column for every file click.

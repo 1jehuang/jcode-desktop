@@ -132,8 +132,12 @@ def main():
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     cases = {"dark": dict(theme="neutral-dark"), "light": dict(theme="neutral-light"),
+             "working": dict(theme="neutral-dark", transcript="orb-working"),
+             "thinking": dict(theme="neutral-dark", transcript="orb-thinking"),
+             "tools": dict(theme="neutral-dark", transcript="orb-tools"),
              "reduced": dict(theme="neutral-dark", reduced=True),
-             "idle": dict(theme="neutral-dark", transcript="empty")}
+             "idle": dict(theme="neutral-dark", transcript="empty"),
+             "idle-light": dict(theme="neutral-light", transcript="empty")}
     result = {}
     for name, options in cases.items():
         result[name] = capture_case(binary, root / name, **options)

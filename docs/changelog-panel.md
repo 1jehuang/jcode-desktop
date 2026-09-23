@@ -4,7 +4,8 @@ The updates panel uses a compact monospace document rather than a large version
 card. **Highlights** shows the installed release's editorial headline and named
 sections. **Full changelog** retains the complete embedded commit history with
 inline version/date headings, hanging bullets, and newest-first grouping.
-Development diagnostics remain in **Build details**.
+The panel has only these two views, including in development builds. Build
+diagnostics remain available in the development footer tooltip.
 
 ## Editorial source
 

@@ -135,6 +135,41 @@ mod tests {
     }
 
     #[test]
+    fn fractional_and_changing_refresh_cadence_preserves_elapsed_time_motion() {
+        // Monitor moves, VRR and missed callbacks must not turn the number of
+        // frames into a speed control. Compare identical elapsed time, not a
+        // rounded integer frame count, at both above-120 and fractional Hz.
+        for precise in [false, true] {
+            for rates in [
+                [59.94, 59.94, 59.94, 59.94],
+                [165.0, 165.0, 165.0, 165.0],
+                [240.0, 60.0, 144.0, 30.0],
+            ] {
+                let mut paced = WheelGlide::default();
+                let mut single_step = WheelGlide::default();
+                paced.push_input(120.0, precise);
+                single_step.push_input(120.0, precise);
+                let mut elapsed = Duration::ZERO;
+                let mut traveled = 0.0;
+                for hz in rates {
+                    let interval = Duration::from_secs_f64(1.0 / hz);
+                    elapsed += interval;
+                    traveled += paced.take_step(interval).unwrap();
+                }
+                single_step.take_step(elapsed);
+                assert!(
+                    (paced.remaining - single_step.remaining).abs() < 0.001,
+                    "precise={precise}, rates={rates:?}"
+                );
+                assert!((traveled + paced.remaining - 120.0).abs() < 0.001);
+                traveled += paced.take_step(Duration::from_secs(1)).unwrap();
+                assert_eq!(paced.remaining, 0.0);
+                assert!((traveled - 120.0).abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
     fn changing_input_source_or_direction_discards_old_travel() {
         let mut glide = WheelGlide::default();
         glide.push(120.0);

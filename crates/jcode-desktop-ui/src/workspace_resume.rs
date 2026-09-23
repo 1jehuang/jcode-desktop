@@ -51,7 +51,7 @@ fn filtered_sessions(
     let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
     sessions.retain(|session| {
         let text = format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {} {}",
             session.session_id,
             session.title.as_deref().unwrap_or_default(),
             session.save_label.as_deref().unwrap_or_default(),

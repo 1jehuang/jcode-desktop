@@ -55,12 +55,17 @@ struct Sample {
     unix_ms: u64,
     pid: u32,
     window: String,
+    sampler_id: String,
+    window_active: bool,
+    thermal_state: String,
     interval_ms: f64,
     ui_wake_lag_ms: f64,
     draw_count: u64,
+    draw_mean_ms: Option<f64>,
     draw_p95_ms: Option<f64>,
     draw_max_ms: Option<f64>,
     animation_present_count: u64,
+    animation_present_mean_ms: Option<f64>,
     animation_present_p95_ms: Option<f64>,
     input_frame_count: u64,
     input_p95_ms: Option<f64>,
@@ -91,12 +96,17 @@ fn delta(
         unix_ms: now_ms(),
         pid: std::process::id(),
         window,
+        sampler_id: String::new(),
+        window_active: false,
+        thermal_state: String::new(),
         interval_ms: interval.as_secs_f64() * 1000.0,
         ui_wake_lag_ms: wake_lag.as_secs_f64() * 1000.0,
         draw_count: draw.len(),
+        draw_mean_ms: (!draw.is_empty()).then(|| draw.mean() / 1_000_000.0),
         draw_p95_ms: (!draw.is_empty()).then(|| ms(draw.value_at_quantile(0.95))),
         draw_max_ms: (!draw.is_empty()).then(|| ms(draw.max())),
         animation_present_count: present.len(),
+        animation_present_mean_ms: (!present.is_empty()).then(|| present.mean() / 1_000_000.0),
         animation_present_p95_ms: (!present.is_empty())
             .then(|| ms(present.value_at_quantile(0.95))),
         input_frame_count: input.len(),
@@ -137,6 +147,13 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
     }
     let handle = window.window_handle();
     let window_id = format!("{:?}", handle.window_id());
+    // Hot reload can briefly overlap samplers for the same window. Keep their
+    // cumulative histogram deltas separate instead of double-counting frames.
+    let sampler_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string();
     cx.spawn(async move |cx| {
         let Some(path) = request_path() else {
             return;
@@ -161,10 +178,14 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
                 continue;
             };
             active = true;
-            let Ok(current) = handle.update(cx, |_, window, _| {
+            let Ok((current, window_active, thermal_state)) = handle.update(cx, |_, window, cx| {
                 (
-                    window.frame_duration_snapshot(),
-                    window.input_latency_snapshot(),
+                    (
+                        window.frame_duration_snapshot(),
+                        window.input_latency_snapshot(),
+                    ),
+                    window.is_window_active(),
+                    format!("{:?}", cx.thermal_state()),
                 )
             }) else {
                 return;
@@ -175,7 +196,7 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
                 previous = None;
             }
             if let Some(before) = previous.as_ref() {
-                let sample = delta(
+                let mut sample = delta(
                     capture_id.clone(),
                     window_id.clone(),
                     now.duration_since(sampled_at),
@@ -183,6 +204,9 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
                     before,
                     &current,
                 );
+                sample.sampler_id = sampler_id.clone();
+                sample.window_active = window_active;
+                sample.thermal_state = thermal_state.clone();
                 let output = path.with_file_name(format!(
                     "jcode-desktop-profile-{}-{}.jsonl",
                     std::process::id(),
@@ -235,8 +259,20 @@ mod tests {
         assert_eq!(idle.draw_count, 0);
         assert_eq!(idle.input_max_ms, None);
         assert_eq!(idle.animation_present_p95_ms, None);
+        assert_eq!(idle.draw_mean_ms, None);
+        assert_eq!(idle.animation_present_mean_ms, None);
         let mut after = before.clone();
         after.0.draw_duration_histogram.record(2_000_000).unwrap();
+        after
+            .0
+            .present_interval_histogram
+            .record(8_333_333)
+            .unwrap();
+        after
+            .0
+            .present_interval_histogram
+            .record(16_666_667)
+            .unwrap();
         after.1.latency_histogram.record(8_000_000).unwrap();
         after.1.mid_draw_events_dropped = 9;
         let sample = delta(
@@ -250,6 +286,9 @@ mod tests {
         assert_eq!(sample.draw_count, 1);
         assert_eq!(sample.input_frame_count, 1);
         assert!(sample.draw_max_ms.unwrap() < 2.01);
+        assert!((sample.draw_mean_ms.unwrap() - 2.0).abs() < 0.01);
+        assert!((sample.animation_present_mean_ms.unwrap() - 12.5).abs() < 0.01);
+        assert_eq!(sample.animation_present_count, 2);
         assert!(sample.input_max_ms.unwrap() < 8.01);
         assert_eq!(sample.mid_draw_inputs, 2);
         assert_eq!(sample.ui_wake_lag_ms, 3.0);

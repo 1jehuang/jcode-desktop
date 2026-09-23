@@ -1,4 +1,4 @@
-//! Read-only update summary and versioned history, with opt-in diagnostics.
+//! Read-only update summary and versioned history.
 use super::*;
 use crate::update_notes::{self, View};
 
@@ -111,7 +111,6 @@ impl Panel {
         let content_id = match self.changelog_view {
             View::Latest => "update-summary",
             View::History => "update-history",
-            View::Build => "update-build",
         };
         let mut content = div()
             .id(content_id)
@@ -206,15 +205,6 @@ impl Panel {
                                 .child(update_entries(group.entries))
                         }));
             }
-            View::Build => {
-                content = content.child(running_build()).child(markdown::render(
-                    &update_notes::build_details(),
-                    0,
-                    &self.transcript_selection,
-                    window,
-                    cx,
-                ));
-            }
         }
         div()
             .id("desktop-changelog")
@@ -233,11 +223,7 @@ impl Panel {
                         window.dispatch_action(Box::new(crate::workspace::ClosePanel), cx);
                         cx.stop_propagation();
                     } else if event.keystroke.modifiers == gpui::Modifiers::default() {
-                        let views = if update_notes::development() {
-                            &[View::Latest, View::History, View::Build][..]
-                        } else {
-                            &[View::Latest, View::History][..]
-                        };
+                        let views = [View::Latest, View::History];
                         let current = views
                             .iter()
                             .position(|view| *view == panel.changelog_view)
@@ -333,15 +319,7 @@ impl Panel {
                                 "Full changelog",
                                 "updates-history",
                                 cx,
-                            ))
-                            .when(update_notes::development(), |el| {
-                                el.child(self.update_view_button(
-                                    View::Build,
-                                    "Build details",
-                                    "updates-build",
-                                    cx,
-                                ))
-                            }),
+                            )),
                     ),
             )
             .child(
@@ -351,7 +329,6 @@ impl Panel {
                     .id(match self.changelog_view {
                         View::Latest => "updates-scroll-latest",
                         View::History => "updates-scroll-history",
-                        View::Build => "updates-scroll-build",
                     })
                     .flex_1()
                     .min_h_0()
@@ -399,17 +376,12 @@ mod tests {
         );
         assert!(vcx.debug_bounds("update-history").is_none());
         assert!(vcx.debug_bounds("update-build").is_none());
-        let development = update_notes::development();
-        assert_eq!(vcx.debug_bounds("updates-build").is_some(), development);
+        assert!(vcx.debug_bounds("updates-build").is_none());
         for (control, target, view) in [
             ("updates-history", "update-history", View::History),
-            ("updates-build", "update-build", View::Build),
             ("updates-latest", "update-summary", View::Latest),
             ("updates-history", "update-history", View::History),
-        ]
-        .into_iter()
-        .filter(|(_, _, view)| development || *view != View::Build)
-        {
+        ] {
             let bounds = vcx
                 .debug_bounds(control)
                 .expect("update navigation control");
@@ -439,16 +411,19 @@ mod tests {
         });
         vcx.simulate_keystrokes("right");
         vcx.run_until_parked();
-        let (target, view) = if development {
-            ("update-build", View::Build)
-        } else {
-            // Stable builds cycle directly from history back to latest.
-            ("update-summary", View::Latest)
-        };
-        assert!(vcx.debug_bounds(target).is_some());
-        panel.read_with(vcx, |panel, _| assert_eq!(panel.changelog_view, view));
-        assert_eq!(vcx.debug_bounds("updates-build").is_some(), development);
-        assert_eq!(vcx.debug_bounds("update-build").is_some(), development);
+        // Both development and packaged builds cycle through only two views.
+        assert!(vcx.debug_bounds("update-summary").is_some());
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.changelog_view, View::Latest)
+        });
+        vcx.simulate_keystrokes("left");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("update-history").is_some());
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.changelog_view, View::History)
+        });
+        assert!(vcx.debug_bounds("updates-build").is_none());
+        assert!(vcx.debug_bounds("update-build").is_none());
         assert!(
             commands.try_recv().is_err(),
             "keyboard navigation must remain local"

@@ -12,8 +12,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, SharedString, Style,
-    StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill,
-    img, point, prelude::*, px, relative, size,
+    StyledImage, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, img, point,
+    prelude::*, px, relative, size,
 };
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
@@ -21,8 +21,12 @@ use unicode_segmentation::UnicodeSegmentation;
 #[path = "input_popup.rs"]
 mod popup;
 
+#[path = "input_layout.rs"]
+mod layout;
+
 #[path = "input_motion.rs"]
 mod motion;
+use layout::PromptLayout;
 
 #[path = "input_model_menu.rs"]
 mod model_menu;
@@ -143,7 +147,7 @@ pub struct PromptInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<WrappedLine>,
+    last_layout: Option<PromptLayout>,
     last_bounds: Option<Bounds<Pixels>>,
     voice_preview: Option<String>,
     voice_preview_scroll: gpui::ScrollHandle,
@@ -1448,7 +1452,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
-    line: Option<WrappedLine>,
+    line: Option<PromptLayout>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
     text_bounds: Bounds<Pixels>,
@@ -1456,7 +1460,7 @@ struct PrepaintState {
 }
 
 fn selection_quads(
-    line: &WrappedLine,
+    line: &PromptLayout,
     range: Range<usize>,
     bounds: Bounds<Pixels>,
     line_height: Pixels,
@@ -1591,19 +1595,18 @@ impl Element for TextElement {
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_text(
-                display_text,
-                font_size,
-                &runs,
-                Some(bounds.size.width),
-                None,
-            )
-            .expect("prompt text should shape")
-            .into_iter()
-            .next()
-            .expect("shape_text always returns a line");
+        let line = PromptLayout::new(
+            window
+                .text_system()
+                .shape_text(
+                    display_text,
+                    font_size,
+                    &runs,
+                    Some(bounds.size.width),
+                    None,
+                )
+                .expect("prompt text should shape"),
+        );
         let line_height = window.line_height();
         let target = line
             .position_for_index(cursor, line_height)
@@ -1714,8 +1717,6 @@ impl Element for TextElement {
         line.paint(
             prepaint.text_bounds.origin,
             window.line_height(),
-            gpui::TextAlign::Left,
-            None,
             window,
             cx,
         )
@@ -1782,6 +1783,9 @@ impl Element for TextElement {
                 }));
             }
             if input.visual_line_count != prepaint.visual_line_count {
+                // Layout used the previous height this frame. Retry revealing the
+                // caret after the new scroll extent exists, even at the height cap.
+                input.revealed_caret = None;
                 input.visual_line_count = prepaint.visual_line_count;
                 let entity = _cx.entity();
                 _cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
@@ -2521,6 +2525,108 @@ mod tests {
                 );
                 input.set_content("/model favorite".into(), cx);
                 assert_eq!(input.command_suggestions()[0].value, "/model z-favorite");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn appended_dictation_is_laid_out_below_existing_draft(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        cx.simulate_input(*window, "Existing draft");
+        window
+            .update(cx, |input, _, cx| {
+                input.append_dictation("Dictated words", cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, window, _| {
+                assert_eq!(input.content.as_ref(), "Existing draft\nDictated words");
+                assert_eq!(
+                    input.visual_line_count, 2,
+                    "both explicit lines must render"
+                );
+                let layout = input.last_layout.as_ref().unwrap();
+                let caret = layout
+                    .position_for_index(input.content.len(), window.line_height())
+                    .expect("appended text must have a visible caret position");
+                assert_eq!(caret.y, window.line_height());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn multiline_layout_preserves_blank_lines_unicode_and_hit_testing(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, _, cx| {
+                input.set_content("αβ\n\n猫 text\n".into(), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, window, _| {
+                let height = window.line_height();
+                let layout = input.last_layout.as_ref().unwrap();
+                assert_eq!(input.visual_line_count, 4);
+                for (index, row) in [(0, 0), (5, 1), (6, 2), (15, 3)] {
+                    let position = layout.position_for_index(index, height).unwrap();
+                    assert_eq!(position, point(px(0.), height * row));
+                    let hit = layout
+                        .closest_index_for_position(position + point(px(0.), height / 2.), height)
+                        .unwrap_or_else(|index| index);
+                    assert_eq!(hit, index);
+                }
+                assert!(
+                    layout
+                        .position_for_index(input.content.len() + 1, height)
+                        .is_none()
+                );
+                assert_eq!(
+                    selection_quads(
+                        layout,
+                        0..input.content.len(),
+                        input.last_bounds.unwrap(),
+                        height
+                    )
+                    .len(),
+                    4
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn appended_dictation_scrolls_into_view_after_multiline_growth(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        window
+            .update(cx, |input, _, cx| {
+                input.set_content("Original line\n".repeat(30), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, _, cx| {
+                input.append_dictation("New dictated line\nAnother dictated line", cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, window, _| {
+                let height = input.last_bounds.unwrap().size.height / input.visual_line_count as f32;
+                let caret = input
+                    .last_layout
+                    .as_ref()
+                    .unwrap()
+                    .position_for_index(input.content.len(), height)
+                    .unwrap();
+                let top = input.last_bounds.unwrap().top() + caret.y;
+                let viewport = input.editor_scroll.bounds();
+                assert!(top >= viewport.top() - px(1.));
+                assert!(
+                    top + height <= viewport.bottom() + px(1.),
+                    "dictation caret must be visible: {top:?} {viewport:?}"
+                );
             })
             .unwrap();
     }

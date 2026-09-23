@@ -152,7 +152,7 @@ fn inline_files(name: &str, input: &str) -> Arc<Vec<FileDiff>> {
     inline_result_files(name, input, "")
 }
 
-fn inline_result_files(name: &str, input: &str, output: &str) -> Arc<Vec<FileDiff>> {
+pub(super) fn inline_result_files(name: &str, input: &str, output: &str) -> Arc<Vec<FileDiff>> {
     PREVIEW_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some((_, _, _, files)) = cache.iter().find(|(tool, arguments, result, _)| {

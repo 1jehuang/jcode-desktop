@@ -1542,6 +1542,96 @@ fn mermaid_display_line(line: &str) -> Option<String> {
 
 // --- Rendering -------------------------------------------------------------
 
+/// Logical reading order for transcript selection without laying out offscreen rows.
+/// Keys match selectable render leaves, including reasoning namespaces and padded
+/// table cells. List markers and rules are decorations, not selectable text.
+/// Diff/patch, rendered math, HTML previews, and Mermaid use synthetic block-key
+/// entries containing their readable source: these rich/media views do not expose
+/// a corresponding selectable leaf (HTML in reasoning does render as code).
+pub(crate) fn selection_segments(
+    source: &str,
+    row: usize,
+    reasoning: bool,
+    prompt: bool,
+) -> Vec<(SharedString, SharedString)> {
+    let mut segments = Vec::new();
+    collect_selection_segments(source, &row.to_string(), reasoning, prompt, &mut segments);
+    segments
+}
+
+fn collect_selection_segments(
+    source: &str,
+    key_prefix: &str,
+    reasoning: bool,
+    prompt: bool,
+    segments: &mut Vec<(SharedString, SharedString)>,
+) {
+    for (block_index, block) in parse_with_line_breaks(source, prompt)
+        .into_iter()
+        .enumerate()
+    {
+        let key = format!("{key_prefix}-{block_index}");
+        match block {
+            Block::Paragraph(text) => {
+                let text = if reasoning {
+                    reasoning_section_title(&text).unwrap_or(&text)
+                } else {
+                    &text
+                };
+                segments.push((key.into(), inline_spans(text).plain.into()));
+            }
+            Block::Heading(_, text) | Block::Bullet { text, .. } | Block::Numbered { text, .. } => {
+                segments.push((key.into(), inline_spans(&text).plain.into()));
+            }
+            Block::Reasoning(text) => {
+                collect_selection_segments(&text, &key, true, prompt, segments);
+            }
+            // Quotes currently render individual nonempty inline lines, not a
+            // recursive markdown document. Preserve that exact leaf structure.
+            Block::Quote(lines) => {
+                for (line_index, line) in lines
+                    .iter()
+                    .filter(|line| !line.trim().is_empty())
+                    .enumerate()
+                {
+                    segments.push((
+                        format!("{key}-{line_index}").into(),
+                        inline_spans(line).plain.into(),
+                    ));
+                }
+            }
+            Block::Table { header, rows } => {
+                let columns = header
+                    .len()
+                    .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+                for (row_index, row) in std::iter::once(&header).chain(rows.iter()).enumerate() {
+                    for column in 0..columns {
+                        let text = row.get(column).map(String::as_str).unwrap_or("");
+                        segments.push((
+                            table_cell_key(&key, row_index, column),
+                            inline_spans(text).plain.into(),
+                        ));
+                    }
+                }
+            }
+            // Highlighting preserves code's text. Avoid syntax highlighting and
+            // media rendering here, so offscreen extraction stays inexpensive.
+            Block::Code { body, .. }
+            | Block::HtmlPreview(body)
+            | Block::Mermaid(body)
+            | Block::Math(body) => {
+                segments.push((key.into(), body.into()));
+            }
+            Block::Rule => {}
+        }
+    }
+}
+
+/// Header is row zero, followed by body rows. Content never participates in IDs.
+fn table_cell_key(key: &str, row: usize, column: usize) -> SharedString {
+    format!("{key}-{row}-{column}").into()
+}
+
 /// Render markdown into a column of GPUI elements.
 pub fn render(
     source: &str,
@@ -1563,10 +1653,27 @@ pub(crate) fn render_prompt(
     on_preview: MediaPreviewHandler,
     background: gpui::Rgba,
 ) -> gpui::AnyElement {
+    render_prompt_with_prefix(
+        source, row, &row.to_string(), selection, window, cx, on_preview, background,
+    )
+}
+
+/// Render a duplicate prompt in its own selection namespace. Pinned overlays
+/// must not reuse the transcript's logical row keys or replace its text leaves.
+pub(crate) fn render_prompt_with_prefix(
+    source: &str,
+    row: usize,
+    key_prefix: &str,
+    selection: &gpui::Entity<TextSelection>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+    on_preview: MediaPreviewHandler,
+    background: gpui::Rgba,
+) -> gpui::AnyElement {
     render_document_with_prompt_background(
         source,
         row,
-        &row.to_string(),
+        key_prefix,
         selection,
         window,
         cx,
@@ -1987,7 +2094,7 @@ fn table(
     let columns = header
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0));
-    let cell = |text: &str, window: &gpui::Window| {
+    let cell = |text: &str, row: usize, column: usize, window: &gpui::Window| {
         div()
             .flex_1()
             .min_w_0()
@@ -1997,7 +2104,7 @@ fn table(
             .child(styled_line(
                 text,
                 selection,
-                format!("{key}-{:x}", hash(text)).into(),
+                table_cell_key(&key, row, column),
                 window,
                 cx,
             ))
@@ -2022,7 +2129,12 @@ fn table(
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(Theme::global().HEADING)
                 .children((0..columns).map(|index| {
-                    cell(header.get(index).map(String::as_str).unwrap_or(""), window)
+                    cell(
+                        header.get(index).map(String::as_str).unwrap_or(""),
+                        0,
+                        index,
+                        window,
+                    )
                 })),
         )
         .children(rows.into_iter().enumerate().map(|(row_index, row)| {
@@ -2033,7 +2145,12 @@ fn table(
                 .text_color(Theme::global().TEXT)
                 .children(
                     (0..columns).map(|index| {
-                        cell(row.get(index).map(String::as_str).unwrap_or(""), window)
+                        cell(
+                            row.get(index).map(String::as_str).unwrap_or(""),
+                            row_index + 1,
+                            index,
+                            window,
+                        )
                     }),
                 )
         }))
@@ -2043,6 +2160,210 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn pinned_prompt_selection_namespace_is_independent(cx: &mut gpui::TestAppContext) {
+        struct PromptCopies {
+            selection: gpui::Entity<TextSelection>,
+        }
+        impl gpui::Render for PromptCopies {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                let preview: MediaPreviewHandler = std::rc::Rc::new(|_, _, _| {});
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(render_prompt(
+                        "Full prompt",
+                        4,
+                        &self.selection,
+                        window,
+                        cx,
+                        preview.clone(),
+                        Theme::global().QUOTE_BG,
+                    ))
+                    .child(render_prompt_with_prefix(
+                        "Pinned preview",
+                        4,
+                        "pinned-4",
+                        &self.selection,
+                        window,
+                        cx,
+                        preview,
+                        Theme::global().QUOTE_BG,
+                    ))
+            }
+        }
+        let (view, vcx) = cx.add_window_view(|_, cx| PromptCopies {
+            selection: cx.new(TextSelection::new),
+        });
+        vcx.run_until_parked();
+        for (selector, expected) in [
+            ("selectable-text-4-0", "Full prompt"),
+            ("selectable-text-pinned-4-0", "Pinned preview"),
+        ] {
+            let bounds = vcx.debug_bounds(selector).expect("independent prompt leaf");
+            vcx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: bounds.center(),
+                modifiers: gpui::Modifiers::default(),
+                click_count: 4,
+                first_mouse: false,
+            });
+            let selection = view.read_with(vcx, |view, _| view.selection.clone());
+            vcx.update(|_, cx| selection.update(cx, |selection, cx| selection.copy(cx)));
+            let copied = vcx
+                .update(|_, cx| cx.read_from_clipboard())
+                .and_then(|item| item.text());
+            assert_eq!(copied.as_deref(), Some(expected));
+        }
+        assert_eq!(
+            selection_segments("Full prompt", 4, false, true)[0]
+                .0
+                .as_ref(),
+            "4-0"
+        );
+    }
+
+    fn extracted(source: &str, row: usize, reasoning: bool, prompt: bool) -> Vec<(String, String)> {
+        selection_segments(source, row, reasoning, prompt)
+            .into_iter()
+            .map(|(key, text)| (key.to_string(), text.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn selection_segments_preserve_leaf_order_and_plain_text() {
+        let source = "# **Heading**\n\nProse [link](https://example.com)\ncontinued.\n\n- [x] `done`\n2. *next*\n\n> **quote**\n>\n> > nested\n\n***\n\n```rust\n  let café = 1;\n\t// text\n```";
+        let expected = [
+            ("9-0", "Heading"),
+            ("9-1", "Prose link continued."),
+            ("9-2", "done"),
+            ("9-3", "next"),
+            ("9-4-0", "quote"),
+            ("9-4-1", "> nested"),
+            ("9-6", "  let café = 1;\n\t// text"),
+        ];
+        assert_eq!(
+            extracted(source, 9, false, false),
+            expected.map(|(k, t)| (k.into(), t.into()))
+        );
+        assert_eq!(
+            extracted("a\nb", 0, false, true),
+            [("0-0".into(), "a\nb".into())]
+        );
+        assert_eq!(
+            extracted("**`Title`**", 0, true, false),
+            [("0-0".into(), "Title".into())]
+        );
+        assert!(selection_segments("\n***\n", 0, false, false).is_empty());
+    }
+
+    #[test]
+    fn selection_segments_tables_are_positional_unique_and_padded() {
+        let source = "| same | same |\n| --- | --- |\n| same | same | same |\n| same |";
+        let segments = extracted(source, 3, false, false);
+        assert_eq!(segments.len(), 9);
+        let keys: std::collections::HashSet<_> = segments.iter().map(|(key, _)| key).collect();
+        assert_eq!(keys.len(), segments.len());
+        for (index, (key, _)) in segments.iter().enumerate() {
+            assert_eq!(key, &format!("3-0-{}-{}", index / 3, index % 3));
+        }
+        assert_eq!(segments[2].1, "");
+        assert_eq!(segments[7].1, "");
+        assert_eq!(segments[8].1, "");
+    }
+
+    #[test]
+    fn selection_segments_nested_reasoning_quotes_keep_their_namespace() {
+        let inner: String = "> **nested**\n>\n> last"
+            .lines()
+            .map(jcode_render_core::reasoning_line_markup)
+            .collect();
+        let source: String = inner
+            .lines()
+            .map(jcode_render_core::reasoning_line_markup)
+            .collect();
+        assert_eq!(
+            extracted(&source, 7, false, false),
+            [
+                ("7-0-0-0-0".into(), "nested".into()),
+                ("7-0-0-0-1".into(), "last".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_segments_code_and_media_use_readable_bodies() {
+        for lang in [
+            "rust",
+            "text",
+            "unknown",
+            "diff",
+            "patch",
+            "html-preview",
+            "mermaid",
+            "mmd",
+        ] {
+            let body = "  α <b> & `literal`\n\tsecond";
+            let source = format!("```{lang}\n{body}\n```");
+            assert_eq!(
+                extracted(&source, 4, false, false),
+                [("4-0".into(), body.into())]
+            );
+            if !matches!(lang, "diff" | "patch" | "html-preview" | "mermaid" | "mmd") {
+                assert_eq!(highlight_code(body, lang).0, body);
+            }
+        }
+        assert_eq!(
+            extracted("$$x^2$$", 4, false, false),
+            [("4-0".into(), "x^2".into())]
+        );
+    }
+
+    #[gpui::test]
+    fn selection_segments_match_rendered_leaf_keys_and_copy(cx: &mut gpui::TestAppContext) {
+        let nested: String = ["> **quoted**", ">", "> second"]
+            .into_iter()
+            .map(jcode_render_core::reasoning_line_markup)
+            .collect();
+        // Separate small documents keep every tested leaf inside the test viewport.
+        for source in [
+            "# **Heading**\n\nProse `code`\n\n- [x] done\n2. next".to_owned(),
+            "```rust\n  let x = 1;\n\t// café\n```".to_owned(),
+            nested,
+            "| same | same |\n| --- | --- |\n| same | same |".to_owned(),
+        ] {
+            let expected = selection_segments(&source, 0, false, false);
+            let (view, vcx) = cx.add_window_view(|_, cx| RestoredReasoningView {
+                selection: cx.new(TextSelection::new),
+                source,
+            });
+            vcx.run_until_parked();
+            for (key, text) in expected {
+                let bounds = vcx
+                    .debug_bounds(Box::leak(format!("selectable-text-{key}").into_boxed_str()))
+                    .unwrap_or_else(|| panic!("missing rendered leaf {key}"));
+                vcx.simulate_event(gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position: bounds.center(),
+                    modifiers: gpui::Modifiers::default(),
+                    click_count: 4,
+                    first_mouse: false,
+                });
+                let selection = view.read_with(vcx, |view, _| view.selection.clone());
+                vcx.update(|_, cx| selection.update(cx, |selection, cx| selection.copy(cx)));
+                let copied = vcx
+                    .update(|_, cx| cx.read_from_clipboard())
+                    .and_then(|item| item.text());
+                assert_eq!(copied.as_deref(), Some(text.as_ref()), "leaf {key}");
+            }
+        }
+    }
 
     #[test]
     fn prompt_line_breaks_are_preserved_without_changing_assistant_markdown() {

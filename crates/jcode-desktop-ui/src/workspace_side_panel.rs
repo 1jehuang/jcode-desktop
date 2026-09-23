@@ -73,6 +73,42 @@ impl Workspace {
                     && (old.focused_page_id != snapshot.focused_page_id || old == &routing))
         });
 
+        if self.single_panel {
+            let owner = owner.to_owned();
+            let snapshot = snapshot.clone();
+            let workspace = cx.entity().downgrade();
+            // Runtime events do not borrow a Window. Wait until the current
+            // entity/window update has finished before finding its native root.
+            cx.defer(move |cx| {
+                let Some(workspace) = workspace.upgrade() else {
+                    return;
+                };
+                let origin = cx.windows().into_iter().find(|handle| {
+                    handle
+                        .update(cx, |root, _, _| {
+                            root.downcast::<Workspace>()
+                                .is_ok_and(|root| root.entity_id() == workspace.entity_id())
+                        })
+                        .unwrap_or(false)
+                });
+                let Some(origin) = origin else {
+                    return;
+                };
+                workspace.update(cx, |this, cx| {
+                    this.apply_side_panel_windows(
+                        &owner,
+                        &snapshot,
+                        previous.as_ref(),
+                        &routing,
+                        focus_changed,
+                        origin,
+                        cx,
+                    );
+                });
+            });
+            return true;
+        }
+
         // Deleting a tool page removes only that owner's document, never the chat.
         self.slots.retain(|slot| {
             let panel = slot.panel.read(cx);
@@ -224,6 +260,84 @@ impl Workspace {
         self.camera_dirty[row] = true;
         cx.notify();
         true
+    }
+
+    fn apply_side_panel_windows(
+        &mut self,
+        owner: &str,
+        snapshot: &SidePanelSnapshot,
+        previous: Option<&SidePanelRoutingState>,
+        routing: &SidePanelRoutingState,
+        focus_changed: bool,
+        origin: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self
+            .slots
+            .iter()
+            .find(|slot| !slot.closing && slot.panel.read(cx).session_id == owner)
+            .map(|slot| slot.panel.clone())
+        else {
+            return;
+        };
+        let mut documents = HashMap::new();
+        for handle in cx.windows() {
+            let Some(handle) = handle.downcast::<panel_window::PanelWindow>() else {
+                continue;
+            };
+            let Ok(root) = handle.read(cx) else {
+                continue;
+            };
+            let panel = root.panel.clone();
+            if panel.read(cx).side_document_owner() != Some(owner) {
+                continue;
+            }
+            let Some(id) = panel.read(cx).side_document_page_id().map(str::to_owned) else {
+                continue;
+            };
+            if snapshot.pages.iter().any(|page| page.id == id) {
+                documents.insert(id, (handle, panel));
+            } else {
+                let _ = handle.update(cx, |root, window, _| root.remove_document(window));
+            }
+        }
+        let mut seen = HashSet::new();
+        for page in &snapshot.pages {
+            if !seen.insert(&page.id) {
+                continue;
+            }
+            let unchanged =
+                previous.is_some_and(|old| old.pages.get(&page.id) == routing.pages.get(&page.id));
+            let explicitly_focused =
+                focus_changed && snapshot.focused_page_id.as_deref() == Some(&page.id);
+            let existing = documents.get(&page.id);
+            if unchanged && existing.is_none() && !explicitly_focused {
+                continue;
+            }
+            let activate = snapshot.focused_page_id.as_deref() == Some(&page.id)
+                && (focus_changed || (snapshot.focus_revision == 0 && existing.is_none()));
+            let panel = if let Some((handle, panel)) = existing {
+                panel.update(cx, |panel, cx| panel.update_side_document(page, cx));
+                let _ = handle.update(cx, |root, window, cx| {
+                    window.set_window_title(&format!("{} · Jcode", root.panel.read(cx).title));
+                });
+                if !activate {
+                    continue;
+                }
+                panel.clone()
+            } else {
+                cx.new(|cx| Panel::new_side_document(owner, page, self.bridge.clone(), cx))
+            };
+            if let Err(error) = panel_window::open_panel_window_at(
+                panel,
+                Some(source.clone()),
+                origin,
+                activate,
+                cx,
+            ) {
+                eprintln!("could not open side document window: {error:#}");
+            }
+        }
     }
 }
 
@@ -599,5 +713,272 @@ mod tests {
             })
             .collect();
         assert_eq!(watched, vec!["owner"]);
+    }
+
+    fn document_windows(
+        vcx: &mut gpui::VisualTestContext,
+    ) -> Vec<(gpui::WindowHandle<panel_window::PanelWindow>, Entity<Panel>)> {
+        vcx.update(|_, cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| {
+                    let handle = handle.downcast::<panel_window::PanelWindow>()?;
+                    let panel = handle.read(cx).ok()?.panel.clone();
+                    panel.read(cx).is_side_document().then_some((handle, panel))
+                })
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    fn single_panel_documents_spawn_update_focus_delete_without_changing_source(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.single_panel = true;
+            w.set_test_bridge(bridge);
+            w.push_test_panel("owner", cx);
+            w
+        });
+        let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+        workspace.update_in(vcx, |w, window, cx| {
+            source.update(cx, |panel, cx| {
+                panel
+                    .items
+                    .push(crate::panel::Item::User("Conversation stays here".into()));
+                panel.input.update(cx, |input, cx| {
+                    input.set_content("Unsent source draft".into(), cx)
+                });
+            });
+            w.focus_active(window, cx);
+            window.activate_window();
+        });
+        vcx.run_until_parked();
+        let origin = vcx.update(|window, _| window.window_handle());
+        let before = source.read_with(vcx, |panel, cx| {
+            (panel.items.clone(), panel.snapshot(cx).draft)
+        });
+        let bounds = vcx.debug_bounds("single-panel-root").unwrap();
+        let mut state = snapshot("First", false);
+        state.focus_revision = 1;
+        workspace.update(vcx, |w, cx| {
+            assert!(w.apply(event("owner", state.clone()), cx));
+        });
+        vcx.run_until_parked();
+        let docs = document_windows(vcx);
+        assert_eq!(docs.len(), 1);
+        let (child, document) = docs[0].clone();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                cx.active_window(),
+                Some(origin),
+                "background spawn must not activate its window"
+            )
+        });
+        state.pages[0].content = "Updated".into();
+        state.pages[0].title = "Updated title".into();
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(document_windows(vcx)[0].1, document);
+        document.read_with(vcx, |panel, cx| {
+            assert_eq!(
+                panel.snapshot(cx).side_document.unwrap().page.content,
+                "Updated"
+            );
+            assert_eq!(panel.title.as_ref(), "Updated title");
+        });
+        // Duplicate records still obey first-record-wins and cannot open another window.
+        let mut duplicate = state.pages[0].clone();
+        duplicate.content = "Must not replace first".into();
+        state.pages.push(duplicate);
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(document_windows(vcx).len(), 1);
+        state.focus_revision += 1;
+        state.focused_page_id = Some("notes".into());
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                cx.active_window(),
+                Some(child.into()),
+                "explicit focus activates child"
+            )
+        });
+        vcx.update(|window, _| window.activate_window());
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            assert_eq!(
+                cx.active_window(),
+                Some(origin),
+                "replay must not steal focus"
+            )
+        });
+        assert_eq!(document_windows(vcx).len(), 1);
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", SidePanelSnapshot::default()), cx);
+        });
+        vcx.run_until_parked();
+        assert!(document_windows(vcx).is_empty());
+        assert_eq!(vcx.debug_bounds("single-panel-root"), Some(bounds));
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 1);
+            assert_eq!(w.active, 0);
+            assert_eq!(w.slots[0].panel, source);
+            assert_eq!(
+                (
+                    source.read(cx).items.clone(),
+                    source.read(cx).snapshot(cx).draft
+                ),
+                before
+            );
+        });
+        vcx.update(|_, cx| assert_eq!(cx.active_window(), Some(origin)));
+        assert!(
+            commands.try_recv().is_err(),
+            "documents never attach or create sessions"
+        );
+    }
+
+    #[gpui::test]
+    fn single_panel_document_dismissal_replay_and_changed_page_reopening(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.single_panel = true;
+            w.push_test_panel("owner", cx);
+            w
+        });
+        let mut state = snapshot("Original", true);
+        state.focus_revision = 4;
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        let (child, _) = document_windows(vcx).pop().unwrap();
+        let mut child_cx = gpui::VisualTestContext::from_window(child.into(), vcx);
+        child_cx.run_until_parked();
+        child_cx.dispatch_action(ClosePanel);
+        vcx.run_until_parked();
+        assert!(document_windows(vcx).is_empty());
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            document_windows(vcx).is_empty(),
+            "replay must not reopen a dismissed page"
+        );
+        state.pages.push(SidePanelPage {
+            id: "other".into(),
+            content: "unrelated".into(),
+            ..Default::default()
+        });
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        let docs = document_windows(vcx);
+        assert_eq!(docs.len(), 1);
+        docs[0].1.read_with(vcx, |panel, _| {
+            assert_eq!(panel.side_document_page_id(), Some("other"))
+        });
+        state.pages[0].content = "Changed while dismissed".into();
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            document_windows(vcx).len(),
+            2,
+            "changed dismissed page reopens"
+        );
+        let origin = vcx.update(|window, cx| {
+            assert_eq!(
+                cx.active_window(),
+                Some(window.window_handle()),
+                "reopen without new focus intent stays background"
+            );
+            window.window_handle()
+        });
+        let (notes, _) = document_windows(vcx)
+            .into_iter()
+            .find(|(_, panel)| {
+                panel.read_with(vcx, |panel, _| {
+                    panel.side_document_page_id() == Some("notes")
+                })
+            })
+            .unwrap();
+        notes
+            .update(vcx, |root, window, _| root.remove_document(window))
+            .unwrap();
+        state.focus_revision += 1;
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", state.clone()), cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            document_windows(vcx).len(),
+            2,
+            "explicit focus reopens unchanged dismissed page"
+        );
+        vcx.update(|_, cx| assert_ne!(cx.active_window(), Some(origin)));
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.slots.len(), 1);
+            assert_eq!(w.active, 0);
+        });
+    }
+
+    #[gpui::test]
+    fn single_panel_documents_find_replaced_host_root_and_ignore_late_events(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct HostRoot;
+        impl Render for HostRoot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+        let (_, vcx) = cx.add_window_view(|_, _| HostRoot);
+        // Native host handles retain their original root type even after activation.
+        let workspace = vcx.update(|window, cx| {
+            window.replace_root(cx, |_, cx| {
+                let mut w = Workspace::for_test(learning::Coach::new(), cx);
+                w.single_panel = true;
+                w.push_test_panel("owner", cx);
+                w
+            })
+        });
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", snapshot("Document", false)), cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(document_windows(vcx).len(), 1);
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", SidePanelSnapshot::default()), cx);
+        });
+        vcx.run_until_parked();
+        assert!(document_windows(vcx).is_empty());
+        workspace.update(vcx, |w, cx| {
+            w.apply(event("owner", snapshot("Late document", false)), cx);
+            w.slots.clear();
+        });
+        vcx.run_until_parked();
+        assert!(
+            document_windows(vcx).is_empty(),
+            "source closed before deferred routing must not create an orphan"
+        );
     }
 }

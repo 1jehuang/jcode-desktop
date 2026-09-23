@@ -28,7 +28,7 @@ CLI: `v0.1.700-dev (abc1234, dirty)`. The `v`, hash, parentheses, and dirty mark
 are not part of `DISPLAY_VERSION`. A dirty packaged build retains its exact
 release version but still reports `GIT_DIRTY=true`.
 
-The update panel, development footer, build tooltip, and Build details all use
+The update panel, development footer, and build tooltip all use
 the same numbered display version. Release history retains its exact release
 tag boundaries and labels its unreleased group with the running display version.
 `jcode-desktop --version` (or `-V`) reports `Jcode Desktop v0.1.N-dev (hash, dirty)`

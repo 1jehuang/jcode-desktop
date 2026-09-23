@@ -1,5 +1,81 @@
 # Interaction latency profile
 
+## Refresh-rate investigation, 2026-09-21
+
+The production scheduler does **not** have a blanket 120 FPS cap. The current
+Wayland backend follows compositor frame callbacks. An active window can use the
+display's native cadence without estimating Hz from slow frames or adding an
+application timer. GPUI deliberately throttles some unfocused animation to about
+30 FPS and serious/critical thermal conditions to about 60 FPS. These are not
+promises of delivered FPS. See [the platform source audit](docs/display-refresh-scheduling.md)
+for exact pinned revisions, macOS behavior, and the separate X11 multi-monitor gap.
+
+A passive 30-second capture against release host PID 346784 recorded 538 raw
+draw samples and 52 input-bearing samples. Maximum draw time was **71.43 ms**,
+maximum UI wake lag **112.36 ms**, and maximum input-to-frame latency **10.55 ms**.
+Thirty of 336 sampling windows included a draw over the 8.33 ms budget for 120 Hz.
+The median of nonempty windows' draw p95 values was 2.12 ms, not a pooled p95.
+The process consumed 4.54 CPU seconds over 29.94 seconds. Load average was about
+16 to 18 and CPU pressure reported about 15% at the end, with concurrent Rust
+builds running. This establishes real long-tail stalls under load, not which
+function caused them or how fast a quiet system would render.
+
+Only **three animation intervals** were recorded, insufficient to characterize
+sustained animation FPS. Another UI reload overlapped the capture, so raw counts
+may overlap between samplers. The initial `--perf` attempt could not run because
+the `perf` executable is absent. No CPU stack attribution is claimed.
+Artifacts: `target/live-profile/refresh-investigation-timing/`.
+
+An isolated release fixture on private Xvfb/lavapipe exercised 26 native overview
+actions and 93 animation intervals. Idle produced zero draws over eight seconds.
+During overview transitions, median per-window draw p95 was 5.76 ms, maximum
+draw was 93.65 ms, and maximum wake lag was 637.92 ms under concurrent build load.
+This is software-renderer workflow evidence, not performance on the Intel GPU
+or a before/after speedup. Artifacts: `target/live-profile/refresh-offline-baseline/`.
+
+The profiler now emits interval-weighted mean draw/presentation times, window
+focus, thermal state, and a sampler identity. Analysis separates reload
+generations, warns when animation samples are too sparse, and does not mistake
+idle wall time for lost frames or invert a p95 as average FPS. Missing `perf`
+falls back explicitly to timing-only capture. An exiting target preserves partial
+evidence and marks the capture incomplete instead of losing it to a missing RSS
+field. This handling was motivated by the original host exiting during a second
+capture. No host restart was forced.
+
+These are diagnostic improvements, not a claimed rendering optimization.
+The next meaningful performance comparison needs sustained active interaction,
+no overlapping reload, and documented build/system load.
+
+### Follow-up with enhanced diagnostics
+
+The state-preserving reload completed in remaining single-panel host PID 373219.
+The emitted new fields confirm activation, rather than relying on the socket's
+enqueue acknowledgement. A 30-second capture contained one sampler, 1,149 draws,
+371 input-bearing frames and **623 animation intervals**. All animation intervals
+were in focus-active sampling windows: their weighted mean was **13.89 ms
+(72.01 FPS)**. Active-window draws averaged **5.91 ms**. Maximum draw across the
+capture was **18.76 ms**, maximum wake lag **17.60 ms**, and maximum input-to-frame
+latency **30.87 ms**. Thermal state remained `Nominal`. Inactive windows had no
+animation interval samples, so their ordinary event-driven draws are not evidence
+of an animation throttle. Focus is sampled at the window boundary, not per frame.
+
+A read-only `wlr-randr --json` query reported the only enabled output, `eDP-1`, at
+2880x1800, **120.000999 Hz**, adaptive sync disabled. No output configuration was
+changed and no compositor-specific IPC command was used. This confirms a real
+shortfall against the active mode, not a 60 Hz screen mistaken for 120 Hz.
+Forty-seven of 114 focus-active sampling windows included a draw above 8.33 ms.
+That establishes missed CPU draw budgets during part of the run. It does not
+separate layout/text, GPU submission, compositor scheduling and other costs.
+System load fell from about 11.9 to 8.2 and the process consumed 8.86 CPU seconds.
+This different-window capture is not a controlled before/after speedup comparison.
+Artifacts: `target/live-profile/refresh-single-panel-enhanced/`.
+
+Validation: 20 Python profiling tests, two Rust live-profiler tests and eight
+real-crate scroll cadence tests passed. The current debug fixture rendered and
+was visually inspected at `target/ui-review-refresh-profile.png`; the enhanced
+offline overview capture exercised 17 native actions and 40 animation intervals.
+That software/debug run is validation of telemetry, not a GPU FPS benchmark.
+
 ## Loaded desktop stalls, 2026-09-12
 
 A passive 25-second capture of the running desktop recorded 875 draws and

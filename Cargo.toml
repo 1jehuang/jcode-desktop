@@ -18,13 +18,15 @@ jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
 [patch."https://github.com/zed-industries/zed"]
-# Preserve native pinch translation without changing the shared GPUI event ABI.
-# This fork's platform crate depends on the original upstream GPUI revision.
+# Host and loaded UI share GPUI's element-arena context through this pinned API.
+gpui = { git = "https://github.com/1jehuang/zed", rev = "ff1a26d02a7326d679583e63fdd4d509fc571291", version = "=0.2.2" }
+# Preserve native pinch translation. Its upstream GPUI dependency resolves to
+# the same patched instance above, so platform event types remain shared.
 gpui_linux = { git = "https://github.com/1jehuang/zed", rev = "a659883259f2b490714b58e3ab6ff05d26d08a3a" }
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance used by host and UI.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
+gpui = { git = "https://github.com/1jehuang/zed", rev = "ff1a26d02a7326d679583e63fdd4d509fc571291", version = "=0.2.2" }
 
 [package]
 name = "jcode-desktop"

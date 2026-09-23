@@ -28,6 +28,9 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 #[path = "panel_selection_tests.rs"]
 mod selection_tests;
 
+#[path = "panel_text_document.rs"]
+mod text_document;
+
 #[path = "panel_snapshot.rs"]
 mod snapshot;
 pub use snapshot::TranscriptSnapshot;
@@ -325,6 +328,8 @@ pub struct Panel {
     expanded_prompts: HashSet<(usize, bool)>,
     pinned_todo_expanded: bool,
     transcript_selection: Entity<TextSelection>,
+    transcript_text_document: text_document::TranscriptTextDocument,
+    transcript_dragging: bool,
     changelog_view: crate::update_notes::View,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
@@ -664,6 +669,18 @@ impl Panel {
             .then(|| self.tab_emoji.clone().into())
     }
 
+    pub(crate) fn sidebar_mark(&self) -> Option<gpui::AnyView> {
+        self.supports_voice().then(|| self.sidebar_spinner.clone().into())
+    }
+
+    fn orb_activity(&self) -> activity::Activity {
+        if self.activity_active() {
+            activity::Activity::from_status_line(&self.status_line())
+        } else {
+            activity::Activity::Idle
+        }
+    }
+
     pub(crate) fn sidebar_activity(&self) -> Option<gpui::AnyView> {
         self.activity_active()
             .then(|| self.sidebar_spinner.clone().into())
@@ -773,7 +790,14 @@ impl Panel {
             .unwrap_or_else(|| short_id(&session_id));
         let transcript_list = ListState::new(0, ListAlignment::Top, px(600.));
         let transcript_selection = cx.new(TextSelection::new);
-        cx.observe(&transcript_selection, |panel, _, cx| {
+        cx.observe(&transcript_selection, |panel, selection, cx| {
+            let dragging = selection.read(cx).is_dragging();
+            if dragging && !panel.transcript_dragging {
+                panel.cancel_transcript_momentum();
+                panel.stick_to_bottom = false;
+                panel.release_startup_preview();
+            }
+            panel.transcript_dragging = dragging;
             panel.transcript_measurements.dirty = true;
             cx.notify();
         })
@@ -785,7 +809,8 @@ impl Panel {
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
                 panel.release_startup_preview();
-                let stick_to_bottom = event.is_following_tail;
+                let stick_to_bottom = event.is_following_tail
+                    && !panel.transcript_selection.read(cx).is_dragging();
                 if panel.stick_to_bottom != stick_to_bottom {
                     panel.stick_to_bottom = stick_to_bottom;
                     cx.notify();
@@ -803,11 +828,22 @@ impl Panel {
         let emoji = jcode_core::id::extract_session_name(&session_id)
             .map(jcode_core::id::session_icon)
             .unwrap_or("💫");
+        let activity_status = if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
+            match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
+                Ok("orb-working") => "running",
+                Ok("orb-thinking") => "thinking",
+                Ok("orb-tools") => "running_tools",
+                _ => "idle",
+            }
+        } else {
+            "idle"
+        };
+        let activity_owner = cx.entity();
         Self {
             session_id,
             title: display_title.into(),
             working_dir,
-            status: "idle".into(),
+            status: activity_status.into(),
             connection_phase: String::new(),
             model: usage_fixture.then(|| "gpt-5.6-sol".into()),
             provider: usage_fixture.then(|| "openai".into()),
@@ -827,11 +863,11 @@ impl Panel {
             #[cfg(test)]
             animate_stream_in_tests: false,
             sound_events: crate::sound_events::SoundEvents::default(),
-            activity_spinner: cx.new(activity::Spinner::new),
+            activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             show_build_footer: true,
-            latest_activity_spinner: cx.new(activity::Spinner::new),
+            latest_activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
-            sidebar_spinner: cx.new(activity::Spinner::new),
+            sidebar_spinner: cx.new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
             surface_focused: true,
             input,
             voice: voice::VoiceState::default(),
@@ -856,6 +892,8 @@ impl Panel {
             expanded_prompts: HashSet::new(),
             pinned_todo_expanded: false,
             transcript_selection,
+            transcript_text_document: Default::default(),
+            transcript_dragging: false,
             changelog_view: crate::update_notes::View::Latest,
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
@@ -3315,15 +3353,6 @@ impl Panel {
             .pt(px(10.0))
             .pb_2()
             .child(self.activity_spinner.clone())
-            .child(
-                div()
-                    .debug_selector(|| "panel-activity-label".into())
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(11.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child(self.status_line()),
-            )
             .into_any_element()
     }
 
@@ -4097,6 +4126,7 @@ impl Render for Panel {
         let transcript_selection = self.transcript_selection.clone();
         let transcript_selection_focus = transcript_selection.read(cx).focus_handle();
         let transcript_shell = div()
+            .relative()
             // Keyed descendants (including browser-backed image previews) must
             // retain their entities when an unrelated streamed reply starts or
             // ends. Only the debug selector reflects streaming state.
@@ -4126,7 +4156,13 @@ impl Render for Panel {
             .size_full()
             .text_size(px(13.5))
             .pb(px(TRANSCRIPT_BOTTOM_GAP))
-            .overflow_hidden();
+            .overflow_hidden()
+            // Clear and collect only this frame's painted leaf geometry before
+            // the virtual list paints. Logical text is maintained independently.
+            .child(text_selection::surface(
+                self.transcript_selection.clone(),
+                Some(self.transcript_list.clone()),
+            ));
 
         // Live rows are appended after the settled ones and share the same
         // renderer, so a streaming turn looks identical to a finished one.
@@ -4139,6 +4175,15 @@ impl Render for Panel {
         let has_pinned_todo = pinned_todo.is_some();
         self.tick_stream_reveal(window, cx);
         let rows = Arc::new(self.transcript_render_rows());
+        if let Some(document) = self.transcript_text_document.sync(
+            &self.items,
+            &rows,
+            &self.expanded_prompts,
+            &self.expanded_tools,
+        ) {
+            self.transcript_selection
+                .update(cx, |selection, _| selection.set_document(document));
+        }
         let prompt_rows: Vec<(usize, usize)> = rows
             .iter()
             .enumerate()
@@ -4631,8 +4676,7 @@ impl Render for Panel {
                                                     .items_center()
                                                     .gap_2()
                                                     .text_color(Theme::global().ACCENT)
-                                                    .child(self.latest_activity_spinner.clone())
-                                                    .child(self.status_line()),
+                                                    .child(self.latest_activity_spinner.clone()),
                                             )
                                         })
                                         .child("↓ latest"),

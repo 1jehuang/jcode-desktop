@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import time
 import uuid
@@ -17,6 +18,8 @@ def process_sample(pid):
     stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
     io = dict(line.split(": ") for line in Path(f"/proc/{pid}/io").read_text().splitlines())
     status = dict(line.split(":", 1) for line in Path(f"/proc/{pid}/status").read_text().splitlines())
+    if 'VmRSS' not in status:
+        raise ProcessLookupError(f"Desktop PID {pid} exited during capture")
     return {
         "unix_ms": int(time.time() * 1000),
         "main_cpu_ticks": int(stat[11]) + int(stat[12]),
@@ -42,6 +45,25 @@ def desktop_pid():
     return candidates[0]
 
 
+def cadence_summary(frames):
+    """Never infer FPS from idle wall time or invert a percentile as an average."""
+    def weighted_mean(field, count):
+        samples = [s for s in frames if s.get(field) is not None and s.get(count, 0)]
+        total = sum(s[count] for s in samples)
+        return sum(s[field] * s[count] for s in samples) / total if total else None
+    present_mean = weighted_mean('animation_present_mean_ms', 'animation_present_count')
+    return {
+        'sample_windows': len(frames),
+        'draws': sum(s['draw_count'] for s in frames),
+        'draw_mean_ms': weighted_mean('draw_mean_ms', 'draw_count'),
+        'animation_intervals': sum(s.get('animation_present_count', 0) for s in frames),
+        'animation_mean_ms': present_mean,
+        'animation_fps': 1000 / present_mean if present_mean else None,
+        'inactive_windows': sum(s.get('window_active') is False for s in frames),
+        'thermal_states': sorted({s['thermal_state'] for s in frames if s.get('thermal_state')}),
+    }
+
+
 def analyze(output):
     frames = [json.loads(line) for line in (output / "frames.jsonl").read_text().splitlines()]
     process = [json.loads(line) for line in (output / "process.jsonl").read_text().splitlines()]
@@ -65,6 +87,19 @@ def analyze(output):
         "draw_over_16ms_windows": sum((s["draw_max_ms"] or 0) > 16.7 for s in frames),
         "wake_over_20ms_windows": sum(s["ui_wake_lag_ms"] > 20 for s in frames),
     }
+    # Reloaded UI generations may overlap. Report each sampler independently,
+    # not a combined FPS that silently counts the same presented frame twice.
+    groups = {}
+    for sample in frames:
+        key = f"{sample.get('pid', 'unknown')}/{sample.get('window', 'unknown')}/{sample.get('sampler_id', 'legacy')}"
+        groups.setdefault(key, []).append(sample)
+    summary['cadence_by_sampler'] = {key: cadence_summary(samples) for key, samples in groups.items()}
+    for key, cadence in summary['cadence_by_sampler'].items():
+        print(f"Cadence {key}: {json.dumps(cadence)}")
+        if cadence['animation_intervals'] < 30:
+            print("INCONCLUSIVE FOR SUSTAINED FPS: fewer than 30 animation intervals. Idle draws are not missed frames.")
+    if len(groups) > 1:
+        print("Multiple windows or reload generations sampled. Counts above are raw sampler totals, not deduplicated frames.")
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
 
@@ -83,6 +118,9 @@ def main():
         return
     if not 5 <= args.seconds <= 110:
         parser.error("--seconds must be 5..110 (capture expires automatically)")
+    if args.perf and shutil.which('perf') is None:
+        print("WARNING: perf is unavailable. Capturing frame timing and process load without CPU stacks.")
+        args.perf = False
     runtime = Path(os.environ["XDG_RUNTIME_DIR"])
     pid = args.pid or desktop_pid()
     control = runtime / "jcode-desktop-profile.json"
@@ -108,6 +146,7 @@ def main():
     }, indent=2) + "\n")
     perf = None
     perf_log = None
+    stopped_early = None
     source = runtime / f"jcode-desktop-profile-{pid}-{capture_id}.jsonl"
     print(f"Capturing live desktop PID {pid} for {args.seconds}s. Use the app normally.\nOutput: {output}", flush=True)
     try:
@@ -121,7 +160,16 @@ def main():
             ], stdout=perf_log, stderr=perf_log)
         with (output / "process.jsonl").open("w") as file:
             while time.time() < start + args.seconds:
-                file.write(json.dumps(process_sample(pid)) + "\n")
+                try:
+                    sample = process_sample(pid)
+                except (FileNotFoundError, ProcessLookupError):
+                    stopped_early = f"Desktop PID {pid} exited during capture"
+                    print(f"WARNING: {stopped_early}. Preserving partial timing evidence.")
+                    metadata = json.loads((output / 'capture.json').read_text())
+                    metadata['stopped_early_reason'] = stopped_early
+                    (output / 'capture.json').write_text(json.dumps(metadata, indent=2) + '\n')
+                    break
+                file.write(json.dumps(sample) + "\n")
                 file.flush()
                 if time.time() > start + 5 and not source.exists():
                     raise RuntimeError("No live-window samples. Rebuild/reload UI with live profiling support, and check PID/runtime directory.")
@@ -150,6 +198,8 @@ def main():
         if perf_log is not None:
             perf_log.close()
     analyze(output)
+    if stopped_early:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

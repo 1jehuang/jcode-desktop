@@ -9,7 +9,6 @@ pub(crate) enum View {
     #[default]
     Latest,
     History,
-    Build,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -319,21 +318,6 @@ fn overview(raw: &str, current: &str) -> Option<ReleaseOverview> {
 /// the latest available release when this build has no matching editorial notes.
 pub(crate) fn release_overview() -> Option<ReleaseOverview> {
     overview(fallback(), crate::build_info::VERSION)
-}
-
-pub(crate) fn development() -> bool {
-    crate::changelog::development()
-}
-
-pub(crate) fn build_details() -> String {
-    format!(
-        "Version `{}`\n\nCommit `{}`\n\nUpdate base `{}`\n\nBuild `{}`\n\n{}",
-        crate::build_info::VERSION,
-        crate::build_info::revision(),
-        env!("JCODE_DESKTOP_VERSION"),
-        env!("JCODE_DESKTOP_BUILD_ID"),
-        include_str!(concat!(env!("OUT_DIR"), "/changelog-debug.md"))
-    )
 }
 
 pub(crate) fn fallback() -> &'static str {

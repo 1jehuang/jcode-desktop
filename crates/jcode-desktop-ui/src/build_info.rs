@@ -229,6 +229,5 @@ mod tests {
         );
         assert!(crate::build_version().starts_with(&format!("v{VERSION} (")));
         assert!(label().contains(&version_label(VERSION)));
-        assert!(crate::update_notes::build_details().contains(VERSION));
     }
 }

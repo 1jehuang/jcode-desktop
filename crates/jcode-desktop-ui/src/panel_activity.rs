@@ -1,4 +1,4 @@
-//! Upstream Working + Inline thinking orb, with a paint-only animation lease.
+//! Activity-selected upstream inline orbs, with a paint-only animation lease.
 //! A timer invalidates geometry once, never rearms itself. Clipped/hidden views
 //! therefore stop after at most one pending tick without visibility bookkeeping.
 
@@ -9,14 +9,57 @@ use gpui_thinking_orbs::{Frame, OrbSize, OrbState, Resolved, draw_mode_into, res
 
 use crate::theme::Theme;
 
+#[path = "activity_donut.rs"]
+mod donut;
+
+const MORPH_DURATION: Duration = Duration::from_millis(350);
 const TICK: Duration = Duration::from_nanos(33_333_334);
 const SIZE: f32 = 20.0;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Activity {
+    Idle,
+    Working,
+    Thinking,
+    Responding,
+    RunningTools,
+}
+
+impl Activity {
+    pub(super) fn from_status_line(status: &str) -> Self {
+        match status {
+            "Thinking" => Self::Thinking,
+            "Responding" => Self::Responding,
+            "Running tools" => Self::RunningTools,
+            _ => Self::Working,
+        }
+    }
+
+    fn preset(self) -> Resolved {
+        resolve_preset(
+            match self {
+                Self::Idle | Self::Working => OrbState::Working,
+                Self::Thinking => OrbState::Reasoning,
+                Self::Responding => OrbState::Composing,
+                Self::RunningTools => OrbState::Solving,
+            },
+            OrbSize::Inline,
+        )
+    }
+}
+
 pub(super) struct Spinner {
+    activity: Activity,
+    sidebar_mark: bool,
+    panel: Option<gpui::WeakEntity<super::Panel>>,
     elapsed: Duration,
+    motion_elapsed: Duration,
     lease_started: Option<Instant>,
     resolved: Resolved,
     frame: Frame,
+    target_frame: Frame,
+    morph_from: Frame,
+    morph_started: Option<Duration>,
     geometry_dirty: bool,
     reduced_motion: Option<bool>,
     tick: Option<Task<()>>,
@@ -25,25 +68,88 @@ pub(super) struct Spinner {
 impl Spinner {
     pub(super) fn new(_: &mut Context<Self>) -> Self {
         Self {
+            activity: Activity::Idle,
+            sidebar_mark: false,
+            panel: None,
             elapsed: Duration::ZERO,
+            motion_elapsed: Duration::ZERO,
             lease_started: None,
             resolved: resolve_preset(OrbState::Working, OrbSize::Inline),
             frame: Frame::new(),
+            target_frame: Frame::new(),
+            morph_from: Frame::new(),
+            morph_started: None,
             geometry_dirty: true,
             reduced_motion: None,
             tick: None,
         }
     }
 
+    pub(super) fn for_panel(panel: gpui::Entity<super::Panel>, cx: &mut Context<Self>) -> Self {
+        // Observe the owner, not just its render: the sidebar may be visible
+        // while the conversation panel is clipped or not rendered at all.
+        cx.observe(&panel, |spinner, panel, cx| {
+            let activity = panel.read(cx).orb_activity();
+            spinner.set_activity(activity, cx);
+        })
+        .detach();
+        let mut spinner = Self::new(cx);
+        spinner.panel = Some(panel.downgrade());
+        spinner
+    }
+
+    pub(super) fn for_sidebar(panel: gpui::Entity<super::Panel>, cx: &mut Context<Self>) -> Self {
+        let mut spinner = Self::for_panel(panel, cx);
+        spinner.sidebar_mark = true;
+        spinner
+    }
+
+    pub(super) fn set_activity(&mut self, activity: Activity, cx: &mut Context<Self>) {
+        if self.activity == activity {
+            return;
+        }
+        if self.frame.dots.is_empty() {
+            self.prepare(self.reduced_motion.unwrap_or(false));
+        }
+        self.morph_from.dots.clone_from(&self.frame.dots);
+        self.morph_from.lines.clone_from(&self.frame.lines);
+        self.morph_started = Some(self.elapsed);
+        self.activity = activity;
+        self.resolved = activity.preset();
+        // Keep the retained frame and the existing paint lease. Changing
+        // activity invalidates geometry but never starts a hidden timer.
+        self.geometry_dirty = true;
+        cx.notify();
+    }
+
     fn prepare(&mut self, reduce_motion: bool) {
         if self.geometry_dirty || self.reduced_motion != Some(reduce_motion) {
-            draw_mode_into(
-                self.resolved.mode,
-                SIZE,
-                animation_time(self.elapsed, self.resolved.speed, reduce_motion),
-                &self.resolved.opts,
-                &mut self.frame,
-            );
+            if self.activity == Activity::Idle {
+                donut::draw_donut_into(SIZE, 0.6, &mut self.target_frame);
+            } else {
+                draw_mode_into(
+                    self.resolved.mode,
+                    SIZE,
+                    animation_time(self.motion_elapsed, self.resolved.speed, reduce_motion),
+                    &self.resolved.opts,
+                    &mut self.target_frame,
+                );
+            }
+            let progress = self.morph_started.map(|started| {
+                self.elapsed.saturating_sub(started).as_secs_f32() / MORPH_DURATION.as_secs_f32()
+            });
+            if !reduce_motion && progress.is_some_and(|p| p < 1.0) {
+                donut::morph_into(
+                    &self.morph_from,
+                    &self.target_frame,
+                    progress.unwrap(),
+                    &mut self.frame,
+                );
+            } else {
+                self.frame.dots.clone_from(&self.target_frame.dots);
+                self.frame.lines.clone_from(&self.target_frame.lines);
+                self.morph_started = None;
+            }
             self.geometry_dirty = false;
             self.reduced_motion = Some(reduce_motion);
         }
@@ -53,12 +159,18 @@ impl Spinner {
         if let Some(started) = self.lease_started.take() {
             // Actual monotonic time, not +TICK or a frame index. Idle/reduced
             // intervals have no lease and cannot age or jump the animation.
-            self.elapsed += now.saturating_duration_since(started);
+            let delta = now.saturating_duration_since(started);
+            self.elapsed += delta;
+            // Freeze the destination pose throughout a morph. Depth-sorted
+            // particle identities must not change under interpolation.
+            if self.morph_started.is_none() {
+                self.motion_elapsed += delta;
+            }
         }
     }
 
     fn arm(&mut self, reduce_motion: bool, cx: &mut Context<Self>) {
-        if reduce_motion {
+        if reduce_motion || (self.activity == Activity::Idle && self.morph_started.is_none()) {
             self.finish_lease(Instant::now());
             self.tick = None;
             return;
@@ -87,6 +199,22 @@ fn animation_time(elapsed: Duration, speed: f32, reduce_motion: bool) -> f32 {
     } else {
         (elapsed.as_secs_f64() * speed as f64) as f32
     }
+}
+
+// Pulse only the ink, never the label's content or layout. Share the orb's
+// paint lease so clipped labels cannot keep the transcript animating.
+fn label_intensity(activity: Activity, elapsed: Duration, reduce_motion: bool) -> f32 {
+    if reduce_motion || activity == Activity::Idle {
+        return 0.0;
+    }
+    let period = match activity {
+        Activity::Thinking => 2.8,
+        Activity::Responding => 1.6,
+        Activity::RunningTools => 1.2,
+        _ => 2.2,
+    };
+    let phase = (elapsed.as_secs_f64() % period) / period;
+    (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32 * 0.45
 }
 
 fn ink_color(white: f32, alpha: f32, theme: &Theme) -> gpui::Rgba {
@@ -130,9 +258,34 @@ fn dot_path(
 
 impl Render for Spinner {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut label = None;
+        if let Some(panel) = self.panel.as_ref().and_then(|panel| panel.upgrade()) {
+            let activity = panel.read(cx).orb_activity();
+            if !self.sidebar_mark {
+                label = Some(panel.read(cx).status_line());
+            }
+            self.set_activity(activity, cx);
+        }
+        let theme = Theme::global();
+        let intensity = label_intensity(
+            self.activity,
+            self.elapsed,
+            crate::config::get().appearance.reduce_motion,
+        );
+        let label_color = gpui::Rgba {
+            r: theme.TEXT_DIM.r + (theme.TEXT.r - theme.TEXT_DIM.r) * intensity,
+            g: theme.TEXT_DIM.g + (theme.TEXT.g - theme.TEXT_DIM.g) * intensity,
+            b: theme.TEXT_DIM.b + (theme.TEXT.b - theme.TEXT_DIM.b) * intensity,
+            a: theme.TEXT_DIM.a,
+        };
         let spinner = cx.entity().downgrade();
-        div()
-            .debug_selector(|| "panel-activity-spinner".into())
+        let selector = if self.sidebar_mark {
+            "panel-sidebar-mark"
+        } else {
+            "panel-activity-spinner"
+        };
+        let orb = div()
+            .debug_selector(move || selector.into())
             .relative()
             .flex_none()
             .size(px(SIZE))
@@ -147,7 +300,7 @@ impl Render for Spinner {
                                 spinner.prepare(reduce_motion);
                                 let theme = Theme::global();
                                 let r_min = spinner.resolved.opts.r_min.unwrap_or(0.3);
-                                // Working is dot-only. Geometry, detail and sorting stay upstream.
+                                // Every selected preset is dot-only, including tool activity.
                                 debug_assert!(spinner.frame.lines.is_empty());
                                 window.paint_layer(bounds, |window| {
                                     for dot in &spinner.frame.dots {
@@ -166,13 +319,143 @@ impl Render for Spinner {
                 )
                 .absolute()
                 .size_full(),
-            )
+            );
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .child(orb)
+            .when_some(label, |row, label| {
+                row.child(
+                    div()
+                        .debug_selector(|| "panel-activity-label".into())
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(11.0))
+                        .text_color(label_color)
+                        .child(label),
+                )
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_pulse_is_bounded_state_aware_and_motion_safe() {
+        for activity in [
+            Activity::Working,
+            Activity::Thinking,
+            Activity::Responding,
+            Activity::RunningTools,
+        ] {
+            assert_eq!(label_intensity(activity, Duration::ZERO, false), 0.0);
+            for millis in 0..6000 {
+                let elapsed = Duration::from_millis(millis);
+                assert!((0.0..=0.45).contains(&label_intensity(activity, elapsed, false)));
+                assert_eq!(label_intensity(activity, elapsed, true), 0.0);
+                assert_eq!(label_intensity(Activity::Idle, elapsed, false), 0.0);
+            }
+        }
+        let time = Duration::from_millis(600);
+        assert_ne!(
+            label_intensity(Activity::Thinking, time, false),
+            label_intensity(Activity::RunningTools, time, false)
+        );
+    }
+
+    fn signature(frame: &Frame) -> Vec<(f32, f32, f32, f32, f32, f32)> {
+        frame
+            .dots
+            .iter()
+            .map(|d| (d.x, d.y, d.z, d.r, d.white, d.a))
+            .collect()
+    }
+
+    #[test]
+    fn activity_presets_are_distinct_and_dot_only() {
+        use gpui_thinking_orbs::ModeKey;
+        for (label, activity, mode) in [
+            ("Working", Activity::Working, ModeKey::Orbits),
+            ("Thinking", Activity::Thinking, ModeKey::Gyroscope),
+            ("Responding", Activity::Responding, ModeKey::Ribbon),
+            ("Running tools", Activity::RunningTools, ModeKey::Rubik),
+        ] {
+            assert_eq!(Activity::from_status_line(label), activity);
+            let preset = activity.preset();
+            assert_eq!(preset.mode, mode);
+            let mut frame = Frame::new();
+            for i in 0..100 {
+                draw_mode_into(preset.mode, SIZE, i as f32 / 30.0, &preset.opts, &mut frame);
+                assert!(!frame.dots.is_empty());
+                assert!(frame.lines.is_empty());
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn retained_spinner_morphs_reverses_and_settles_idle(cx: &mut gpui::TestAppContext) {
+        let spinner = cx.new(Spinner::new);
+        spinner.update(cx, |spinner, cx| {
+            spinner.prepare(false);
+            let idle = signature(&spinner.frame);
+            spinner.arm(false, cx);
+            assert!(spinner.tick.is_none(), "static idle does not schedule work");
+            spinner.set_activity(Activity::Thinking, cx);
+            spinner.prepare(false);
+            assert_eq!(
+                signature(&spinner.frame),
+                idle,
+                "morph begins from painted pose"
+            );
+            let frozen_target = signature(&spinner.target_frame);
+            let start = Instant::now();
+            spinner.lease_started = Some(start);
+            spinner.finish_lease(start + MORPH_DURATION / 2);
+            spinner.geometry_dirty = true;
+            spinner.prepare(false);
+            let midway = signature(&spinner.frame);
+            assert_eq!(signature(&spinner.target_frame), frozen_target);
+            assert_eq!(spinner.motion_elapsed, Duration::ZERO);
+            assert_ne!(midway, idle);
+            spinner.set_activity(Activity::Idle, cx);
+            spinner.prepare(false);
+            assert_eq!(signature(&spinner.frame), midway, "reversal never jumps");
+            spinner.elapsed += MORPH_DURATION;
+            spinner.geometry_dirty = true;
+            spinner.prepare(false);
+            spinner.arm(false, cx);
+            assert_eq!(signature(&spinner.frame), idle);
+            assert!(spinner.morph_started.is_none());
+            assert!(spinner.tick.is_none());
+            for activity in [
+                Activity::Thinking,
+                Activity::Responding,
+                Activity::RunningTools,
+                Activity::Working,
+                Activity::Idle,
+            ] {
+                spinner.set_activity(activity, cx);
+                spinner.prepare(true);
+                spinner.arm(true, cx);
+                assert!(spinner.morph_started.is_none());
+                assert!(spinner.tick.is_none());
+                let pose = signature(&spinner.frame);
+                let buffer = spinner.frame.dots.as_ptr();
+                let target_buffer = spinner.target_frame.dots.as_ptr();
+                spinner.prepare(true);
+                assert_eq!(signature(&spinner.frame), pose);
+                spinner.geometry_dirty = true;
+                spinner.prepare(true);
+                assert_eq!(signature(&spinner.frame), pose);
+                assert_eq!(spinner.frame.dots.as_ptr(), buffer);
+                assert_eq!(spinner.target_frame.dots.as_ptr(), target_buffer);
+            }
+        });
+    }
 
     fn assert_inline_status(vcx: &mut gpui::VisualTestContext) {
         let spinner = vcx
@@ -314,7 +597,11 @@ mod tests {
 
     #[gpui::test]
     fn lease_clock_counts_actual_elapsed_once_and_excludes_idle(cx: &mut gpui::TestAppContext) {
-        let spinner = cx.new(Spinner::new);
+        let spinner = cx.new(|cx| {
+            let mut spinner = Spinner::new(cx);
+            spinner.activity = Activity::Working;
+            spinner
+        });
         spinner.update(cx, |spinner, _| {
             let start = Instant::now();
             spinner.lease_started = Some(start);
@@ -347,7 +634,11 @@ mod tests {
 
     #[gpui::test]
     fn activity_clock_is_bounded_and_respects_reduced_motion(cx: &mut gpui::TestAppContext) {
-        let spinner = cx.new(Spinner::new);
+        let spinner = cx.new(|cx| {
+            let mut spinner = Spinner::new(cx);
+            spinner.activity = Activity::Working;
+            spinner
+        });
         spinner.update(cx, |spinner, cx| {
             spinner.prepare(false);
             spinner.arm(true, cx);
@@ -375,7 +666,11 @@ mod tests {
 
     #[gpui::test]
     fn activity_clock_cancels_and_retains_reduced_motion_frame(cx: &mut gpui::TestAppContext) {
-        let spinner = cx.new(Spinner::new);
+        let spinner = cx.new(|cx| {
+            let mut spinner = Spinner::new(cx);
+            spinner.activity = Activity::Working;
+            spinner
+        });
         spinner.update(cx, |spinner, cx| spinner.arm(false, cx));
         cx.run_until_parked();
         spinner.update(cx, |spinner, cx| {
@@ -578,6 +873,16 @@ mod tests {
                 assert_eq!(panel.status_line(), expected);
             });
             vcx.run_until_parked();
+            panel.read_with(vcx, |panel, cx| {
+                let expected = Activity::from_status_line(expected);
+                for spinner in [
+                    &panel.activity_spinner,
+                    &panel.latest_activity_spinner,
+                    &panel.sidebar_spinner,
+                ] {
+                    assert_eq!(spinner.read(cx).activity, expected);
+                }
+            });
             assert!(vcx.debug_bounds("panel-activity-spinner").is_some());
             assert!(vcx.debug_bounds("panel-session-title").is_none());
             assert_inline_status(vcx);

@@ -77,7 +77,7 @@ impl Panel {
                 }, cx);
                 self.apply(&ApiEvent::TurnDone { session_id: self.session_id.clone() }, cx);
             }
-            PreviewState::VoiceConnecting | PreviewState::VoiceListening => {
+            PreviewState::VoiceConnecting | PreviewState::VoiceListening | PreviewState::VoiceRouting | PreviewState::VoiceCodingAgent | PreviewState::VoiceQuickAction => {
                 self.seed_voice_preview(state);
             }
             PreviewState::Streaming => {

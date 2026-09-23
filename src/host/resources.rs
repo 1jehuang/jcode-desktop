@@ -53,6 +53,7 @@ impl HostState {
             terminal_read,
             terminal_resize,
             terminal_release,
+            element_arena_context: gpui::ElementArenaContext::current(),
         }
     }
 

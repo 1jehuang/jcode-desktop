@@ -72,6 +72,7 @@ impl Workspace {
             "canvas_width": self.last_canvas_width,
 
             "header_height": 0,
+            "version_header_width": (self.live_tabs.header_offset - live_tabs::TAB_STATUS_WIDTH).max(0.0),
             "active_row": self.active_row,
             "focused_slot": focused,
             "keyboard_panel": keyboard_panel,

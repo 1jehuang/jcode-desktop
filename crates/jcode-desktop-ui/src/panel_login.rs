@@ -8,6 +8,8 @@ use jcode_sdk::{
 #[path = "panel_login_status.rs"]
 mod connection;
 use connection::{ConnectionStatus, ConnectionStatuses};
+#[path = "panel_login_catalog.rs"]
+mod catalog;
 
 pub(super) struct LoginState {
     client: AuthClient,
@@ -28,6 +30,8 @@ pub(super) struct LoginState {
     statuses: Option<ConnectionStatuses>,
     status_loading: bool,
     status_task: Option<Task<()>>,
+    search: Entity<PromptInput>,
+    usage: Option<catalog::MethodUsage>,
 }
 
 impl Drop for LoginState {
@@ -49,6 +53,9 @@ enum LoginUpdate {
 impl Panel {
     pub(super) fn login_input_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
         let state = self.login.as_ref()?;
+        if state.provider.is_none() {
+            return Some(state.search.focus_handle(cx));
+        }
         (state
             .provider
             .as_ref()
@@ -95,6 +102,39 @@ impl Panel {
         } else {
             client.providers()
         };
+        let change = cx.weak_entity();
+        let cancel = change.clone();
+        let search = cx.new(|cx| {
+            let mut search = PromptInput::new(cx, "Search accounts…", |_, _, _, _| {})
+                .without_command_completion()
+                .with_on_overlay_cancel(move |app| {
+                    let restored = cancel.update(app, |panel, cx| {
+                        panel.close_login_picker(cx);
+                        if panel.is_accounts_panel() {
+                            cx.emit(AccountsPanelClosed);
+                            None
+                        } else {
+                            Some(panel.input_focus_handle(cx))
+                        }
+                    });
+                    if let Ok(Some(focus)) = &restored
+                        && let Some(window) = app.active_window()
+                    {
+                        let _ = window.update(app, |_, window, cx| focus.focus(window, cx));
+                    }
+                    restored.is_ok()
+                })
+                .with_on_change(move |_, app| {
+                    let _ = change.update(app, |panel, cx| {
+                        if let Some(state) = &panel.login {
+                            state.scroll.set_offset(point(px(0.), px(0.)));
+                        }
+                        cx.notify();
+                    });
+                });
+            search.set_submission_enabled(false, cx);
+            search
+        });
         self.login = Some(LoginState {
             client,
             providers,
@@ -114,6 +154,8 @@ impl Panel {
             statuses: None,
             status_loading: false,
             status_task: None,
+            search,
+            usage: None,
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
@@ -153,16 +195,20 @@ impl Panel {
                 for id in provider_ids {
                     statuses.entry(id).or_insert(ConnectionStatus::NotConnected);
                 }
-                Some(statuses)
+                (Some(statuses), None)
             } else {
-                connection::fetch_connection_statuses()
+                (
+                    connection::fetch_connection_statuses(),
+                    jcode_base::model_usage::method_usage_counts().ok(),
+                )
             }
         });
         state.status_task = Some(cx.spawn(async move |this, cx| {
-            let statuses = task.await;
+            let (statuses, usage) = task.await;
             let _ = this.update(cx, |panel, cx| {
                 if let Some(state) = panel.login.as_mut() {
                     state.statuses = statuses;
+                    state.usage = usage;
                     state.status_loading = false;
                     cx.notify();
                 }
@@ -226,11 +272,7 @@ impl Panel {
         state.task = None;
         state.callback_task = None;
         state.callback_waiting = false;
-        if let Some(flow) = state.flow.take() {
-            std::thread::spawn(move || {
-                let _ = flow.cancel();
-            });
-        }
+        let previous_flow = state.flow.take();
         state.provider = Some(provider);
         state.prompt = None;
         state.error = None;
@@ -248,6 +290,11 @@ impl Panel {
             return;
         }
         if provider.method == LoginMethod::ApiKey {
+            if let Some(flow) = previous_flow {
+                std::thread::spawn(move || {
+                    let _ = flow.cancel();
+                });
+            }
             state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
         } else {
             match state.client.begin(provider.id, None) {
@@ -255,6 +302,11 @@ impl Panel {
                     state.flow = Some(flow.clone());
                     self.run_login_task(
                         move || {
+                            // Release the old callback port before binding the new
+                            // attempt. Parallel cancellation made retries manual-only.
+                            if let Some(previous) = previous_flow {
+                                previous.cancel().map_err(|e| e.to_string())?;
+                            }
                             flow.start()
                                 .map(LoginUpdate::Prompt)
                                 .map_err(|e| e.to_string())
@@ -369,22 +421,54 @@ impl Panel {
         };
         let attempt = state.input.entity_id();
         state.callback_waiting = true;
-        let task = cx
-            .background_executor()
-            .spawn(async move { flow.wait_for_callback() });
-        state.callback_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |panel, cx| {
-                let Some(state) = panel.login.as_mut() else { return; };
-                if state.input.entity_id() != attempt || state.complete { return; }
-                state.callback_waiting = false;
-                match result {
-                    Ok(result) => panel.complete_login(result.validation_warning, cx),
-                    Err(_) if state.busy => {}, // A manual submission owns completion now.
-                    Err(_) => state.error = Some("Automatic sign-in did not finish. Paste the callback URL below, or start a new sign-in.".into()),
-                }
-                cx.notify();
+        let (sender, receiver) = async_channel::unbounded();
+        let task = cx.background_executor().spawn(async move {
+            let result = flow.wait_for_callback_with_progress(|| {
+                let _ = sender.send_blocking(None);
             });
+            let _ = sender.send_blocking(Some(result));
+        });
+        state.callback_task = Some(cx.spawn(async move |this, cx| {
+            let _worker = task;
+            let mut exchanging = false;
+            while let Ok(update) = receiver.recv().await {
+                let done = update.is_some();
+                let keep_going = this
+                    .update(cx, |panel, cx| {
+                        let Some(state) = panel.login.as_mut() else {
+                            return false;
+                        };
+                        if state.input.entity_id() != attempt || state.complete {
+                            return false;
+                        }
+                        match update {
+                            None => {
+                                exchanging = true;
+                                state.callback_waiting = false;
+                                state.busy = true;
+                            }
+                            Some(result) => {
+                                state.callback_waiting = false;
+                                match result {
+                                    Ok(result) => {
+                                        panel.complete_login(result.validation_warning, cx)
+                                    }
+                                    Err(_) if state.busy && !exchanging => {} // Manual submission owns completion.
+                                    Err(error) => {
+                                        state.busy = false;
+                                        state.error = Some(error.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if done || !keep_going {
+                    break;
+                }
+            }
         }));
     }
 
@@ -477,7 +561,9 @@ impl Panel {
             && state.focus_pending
         {
             state.focus_pending = false;
-            if state
+            if state.provider.is_none() {
+                state.search.focus_handle(cx).focus(window, cx);
+            } else if state
                 .provider
                 .as_ref()
                 .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
@@ -526,7 +612,7 @@ impl Panel {
                         } else {
                             theme.OK
                         })
-                        .child("Account connected. Choose a model to continue."),
+                        .child("Sign-in complete. Account connected. Choose a model to continue."),
                 )
                 .child(
                     login_button("login-choose-model", "Choose a model").on_click(cx.listener(
@@ -564,11 +650,13 @@ impl Panel {
                 );
             }
             if state.busy && state.prompt.is_none() {
-                body = body.child(
-                    div()
-                        .debug_selector(|| "login-busy".into())
-                        .child("Connecting securely…"),
-                );
+                body = body.child(div().debug_selector(|| "login-busy".into()).child(
+                    if provider.method == LoginMethod::ApiKey {
+                        "Saving your API key securely…"
+                    } else {
+                        "Step 1 of 3: Preparing a secure sign-in link…"
+                    },
+                ));
             } else if provider.method == LoginMethod::ApiKey {
                 body = body
                     .child(div().text_color(theme.TEXT_DIM).child(
@@ -585,6 +673,25 @@ impl Panel {
                             .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
                     );
             } else if let Some(prompt) = &state.prompt {
+                body = body.child(
+                    div().debug_selector(|| "login-progress".into())
+                        .text_size(px(12.)).text_color(theme.TEXT_DIM)
+                        .child("1. Prepare sign-in link  →  2. Approve in browser  →  3. Connect account"),
+                ).child(
+                    div().debug_selector(|| "login-current-step".into())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(if state.error.is_some() {
+                            "Sign-in paused. Review the error above."
+                        } else if state.busy && prompt.input_kind != AuthInputKind::DeviceCode {
+                            "Step 3 of 3: Authorization received. Connecting your account…"
+                        } else if state.callback_waiting {
+                            "Step 2 of 3: Waiting for browser authorization and callback…"
+                        } else if prompt.input_kind == AuthInputKind::DeviceCode {
+                            "Step 2 of 3: Waiting for browser approval…"
+                        } else {
+                            "Step 2 of 3: Finish in your browser, then paste the result below."
+                        }),
+                );
                 let url = prompt.auth_url.clone();
                 let preview = self.preview_state.is_some() || crate::harness::screenshot_mode();
                 let copy_url = url.clone();
@@ -634,7 +741,7 @@ impl Panel {
                             if state.callback_waiting {
                                 "Waiting for your browser. If it does not return, paste the full callback URL here and press Enter."
                             } else if prompt.input_kind == AuthInputKind::CallbackUrl {
-                                "If the browser cannot open localhost, copy its full address here. The callback stays private."
+                                "Automatic callback is unavailable (the local port may be in use). After approving, copy the full localhost address from your browser and paste it here. It stays private."
                             } else {
                                 "Paste the returned code or full callback URL below. It stays private."
                             },
@@ -654,7 +761,7 @@ impl Panel {
                             .child(if prompt.input_kind == AuthInputKind::DeviceCode {
                                 "Waiting for browser approval…"
                             } else {
-                                "Connecting securely…"
+                                "Exchanging authorization and saving credentials…"
                             }),
                     );
                 } else {
@@ -686,57 +793,22 @@ impl Panel {
                 )),
             );
         } else if !remote {
-            body =
-                body.child(div().text_color(theme.TEXT_DIM).child(
-                    "Choose an account to connect or reconnect. Status is for this computer.",
-                ));
-            body = body.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .whitespace_normal()
-                            .text_size(px(12.))
-                            .text_color(theme.TEXT_DIM)
-                            .child("Saved account status · This computer"),
-                    )
-                    .child(
-                        login_button(
-                            "login-refresh-status",
-                            if state.status_loading {
-                                "Checking…"
-                            } else {
-                                "Refresh status"
-                            },
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh_login_status(cx))),
-                    ),
+            let providers = catalog::filtered_providers(
+                &state.providers,
+                &state.search.read(cx).content,
+                state.statuses.as_ref(),
+                state.status_loading,
+                state.usage.as_ref(),
             );
-            let mut providers = state.providers.clone();
-            providers.sort_by_key(|provider| provider.method == LoginMethod::ApiKey);
-            let mut previous_method = None;
+            if providers.is_empty() {
+                body = body.child(
+                    div()
+                        .debug_selector(|| "login-search-empty".into())
+                        .text_color(theme.TEXT_DIM)
+                        .child("No accounts match your search."),
+                );
+            }
             for provider in &providers {
-                let api_key = provider.method == LoginMethod::ApiKey;
-                if previous_method != Some(api_key) {
-                    previous_method = Some(api_key);
-                    body = body.child(
-                        div()
-                            .pt_2()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.TEXT_DIM)
-                            .child(if api_key {
-                                "API keys"
-                            } else {
-                                "Subscriptions & browser sign-in"
-                            }),
-                    );
-                }
                 let provider = provider.clone();
                 let id = format!("login-provider-{}", provider.id);
                 let status = connection::status_for(
@@ -771,8 +843,14 @@ impl Panel {
                                 .items_center()
                                 .gap_2()
                                 .flex_wrap()
-                                .child(login_logo(&provider))
-                                .child(div().flex_1().min_w_0().child(label))
+                                .child(login_method_icon(provider.method))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(80.))
+                                        .whitespace_normal()
+                                        .child(label),
+                                )
                                 .child(
                                     div()
                                         .debug_selector(move || status_id.clone())
@@ -802,6 +880,17 @@ impl Panel {
                 .size_full()
                 .bg(theme.PANEL_BG)
                 .occlude()
+                .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" && !event.is_held {
+                        this.close_login_picker(cx);
+                        if this.is_accounts_panel() {
+                            cx.emit(AccountsPanelClosed);
+                        } else {
+                            this.focus_input(window, cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                }))
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                     if event.keystroke.key == "enter" && !event.is_held {
                         this.submit_login(cx);
@@ -844,6 +933,17 @@ impl Panel {
                             )),
                         ),
                 )
+                .when(
+                    state.provider.is_none() && !state.complete && !remote,
+                    |el| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "login-search".into())
+                                .flex_none()
+                                .child(state.search.clone()),
+                        )
+                    },
+                )
                 .child(
                     div()
                         .id("login-body")
@@ -862,6 +962,34 @@ impl Panel {
             state.input.update(cx, |input, cx| input.paste(window, cx));
         }
     }
+}
+
+fn login_method_icon(method: LoginMethod) -> gpui::AnyElement {
+    let (icon, label) = match method {
+        LoginMethod::ApiKey => ("key", catalog::method_label(method)),
+        LoginMethod::OAuth => ("browser", catalog::method_label(method)),
+        LoginMethod::DeviceCode => ("computer", catalog::method_label(method)),
+    };
+    div()
+        .debug_selector(move || format!("login-method-{icon}"))
+        .w(px(110.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .text_size(px(11.))
+        .text_color(Theme::global().TEXT_DIM)
+        .child(if method == LoginMethod::ApiKey {
+            gpui::svg()
+                .data(include_bytes!("../../../assets/icons/key.svg") as &'static [u8])
+                .size(px(14.))
+                .text_color(Theme::global().TEXT_DIM)
+                .into_any_element()
+        } else {
+            crate::tool_icon::render(icon).into_any_element()
+        })
+        .child(label)
+        .into_any_element()
 }
 
 fn login_logo(provider: &LoginProvider) -> gpui::AnyElement {
@@ -905,14 +1033,15 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn login_status_badges_and_refresh_are_visible(cx: &mut gpui::TestAppContext) {
+    fn login_status_badges_and_search_are_visible(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new_accounts("login-test", None, crate::harness::spawn_inert(), cx)
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("accounts-panel").is_some());
         assert!(vcx.debug_bounds("login-status-openai").is_some());
-        assert!(vcx.debug_bounds("login-refresh-status").is_some());
+        assert!(vcx.debug_bounds("login-refresh-status").is_none());
+        assert!(vcx.debug_bounds("login-search").is_some());
         panel.read_with(vcx, |panel, _| {
             let state = panel.login.as_ref().unwrap();
             assert!(!state.status_loading);
@@ -921,10 +1050,19 @@ mod tests {
                 ConnectionStatus::Connected
             );
         });
-        let refresh = vcx.debug_bounds("login-refresh-status").unwrap();
-        vcx.simulate_click(refresh.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("login-status-openai").is_some());
+        vcx.simulate_input("no-such-provider");
+        assert!(vcx.debug_bounds("login-search-empty").is_some());
+        assert!(vcx.debug_bounds("login-provider-openai").is_none());
+        panel.update(vcx, |panel, cx| {
+            panel
+                .login
+                .as_ref()
+                .unwrap()
+                .search
+                .update(cx, |input, cx| input.set_content("OPENAI".into(), cx));
+            cx.notify();
+        });
+        assert!(vcx.debug_bounds("login-provider-openai").is_some());
     }
 
     #[gpui::test]
