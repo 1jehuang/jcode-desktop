@@ -154,32 +154,7 @@ impl Panel {
                         cx.stop_propagation();
                     }))
                     .child("×"),
-            )
-            .when(phase == Phase::Recording, |el| {
-                el.child(
-                    div()
-                        .id("voice-stop")
-                        .debug_selector(|| "voice-stop".into())
-                        .size(px(22.))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .cursor_pointer()
-                        .bg(theme.ACCENT_DIM)
-                        .text_color(theme.ACCENT)
-                        .tooltip(|_, cx| {
-                            cx.new(|_| VoiceTooltip("Finish transcription · Let Jev choose".into()))
-                                .into()
-                        })
-                        .on_click(cx.listener(|panel, _, _, cx| {
-                            panel.stop_voice(cx);
-                            cx.stop_propagation();
-                        }))
-                        .child("■"),
-                )
-            });
+            );
         Some(
             gpui::deferred(
                 gpui::anchored()
@@ -748,10 +723,9 @@ mod tests {
                 );
                 let cancel = vcx.debug_bounds("voice-cancel").unwrap();
                 assert!(cancel.bottom() <= card.bottom());
-                assert_eq!(
-                    vcx.debug_bounds("voice-stop").is_some(),
-                    phase == Phase::Recording
-                );
+                // The dismiss button is the only capture control. Finishing
+                // goes through the microphone pill or its shortcut.
+                assert!(vcx.debug_bounds("voice-stop").is_none());
             }
         }
     }
