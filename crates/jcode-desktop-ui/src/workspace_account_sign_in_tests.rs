@@ -98,6 +98,13 @@ fn email_field_sends_offline_code_and_start_over_returns(cx: &mut gpui::TestAppC
         assert!(w.account_sign_in.input.as_ref().unwrap().read(cx).content.is_empty());
     });
     assert!(vcx.debug_bounds("account-sign-in-sent").is_some());
+    click(vcx, "account-sign-in-gmail");
+    workspace.read_with(vcx, |w, _| {
+        let url = w.account_sign_in.opened_url.as_deref().unwrap();
+        assert!(url.starts_with("https://mail.google.com/mail/?authuser=me%40example.com#search/"));
+        assert!(url.contains("from%3Alogin%40solosystems.dev"));
+        assert!(url.contains("in%3Aanywhere"), "includes Spam");
+    });
     click(vcx, "account-sign-in-back");
     workspace.read_with(vcx, |w, cx| {
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome));
@@ -165,6 +172,8 @@ fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAp
         assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }))
     });
     vcx.simulate_keystrokes("tab tab tab tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::OpenGmail));
+    vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::StartOver));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();

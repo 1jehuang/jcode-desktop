@@ -32,6 +32,8 @@ pub(super) struct State {
     demo: Option<Demo>,
     #[cfg(test)]
     test_api_base: Option<String>,
+    #[cfg(test)]
+    opened_url: Option<String>,
 }
 
 struct Demo {
@@ -47,6 +49,7 @@ enum Choice {
     Theme,
     Field,
     Primary,
+    OpenGmail,
     StartOver,
     Continue,
 }
@@ -140,7 +143,7 @@ impl State {
         match self.stage {
             Stage::Complete { .. } => {}
             Stage::Code { .. } | Stage::Verifying { .. } => {
-                choices.extend([Choice::Field, Choice::Primary, Choice::StartOver])
+                choices.extend([Choice::Field, Choice::Primary, Choice::OpenGmail, Choice::StartOver])
             }
             _ if self.connected => {}
             _ => choices.extend([Choice::Field, Choice::Primary]),
@@ -344,6 +347,7 @@ impl Workspace {
         match choice {
             Choice::Field => self.focus_account_input(window, cx),
             Choice::Primary => self.account_sign_in_primary(window, cx),
+            Choice::OpenGmail => self.open_account_gmail(cx),
             Choice::StartOver => self.reset_account_sign_in(window, cx),
             Choice::Login(index) => self.toggle_account_import(index, cx),
             Choice::Theme => self.pick_account_theme(Theme::active_preset().next(), cx),
@@ -618,6 +622,21 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Gmail, filtered to our sign-in email and including Spam.
+    fn open_account_gmail(&mut self, cx: &mut Context<Self>) {
+        let Some((email, _)) = self.account_sign_in.stage.code_step() else { return };
+        let url = auth::gmail_search_link(email);
+        #[cfg(test)]
+        {
+            self.account_sign_in.opened_url = Some(url);
+        }
+        #[cfg(not(test))]
+        if live() {
+            cx.open_url(&url);
+        }
+        cx.notify();
+    }
+
     fn account_sign_in_approved(&mut self, email: String, cx: &mut Context<Self>) {
         self.account_sign_in.connected = true;
         self.account_sign_in.stage = Stage::Complete { email };
@@ -889,7 +908,19 @@ impl Workspace {
                 )
                 .when(code.is_some(), |el| {
                     el.child(
-                        div().flex().px_1().child(
+                        div().flex().gap_2().px_1().child(
+                            account_button(
+                                "account-sign-in-gmail",
+                                "Open Gmail",
+                                false,
+                                state.focused(Choice::OpenGmail),
+                            )
+                            .text_size(px(12.0))
+                            .px_3()
+                            .py_1()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_account_gmail(cx))),
+                        )
+                        .child(
                             account_button(
                                 "account-sign-in-back",
                                 "Use another email",
