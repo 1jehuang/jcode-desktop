@@ -30,13 +30,47 @@ const VOICE_SHORTCUT: &str = "Ctrl+Shift+Space";
 const VOICE_SHORTCUT: &str = "⌘⇧M (Command+Shift+M)";
 
 /// Compact keycap shown inside the voice pill so the shortcut is visible
-/// without hovering.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const VOICE_SHORTCUT_KEYCAP: &str = "Copilot key";
+/// without hovering. Linux draws the Copilot key glyph instead of text.
 #[cfg(target_os = "windows")]
 const VOICE_SHORTCUT_KEYCAP: &str = "Ctrl+Shift+Space";
 #[cfg(target_os = "macos")]
 const VOICE_SHORTCUT_KEYCAP: &str = "⌘⇧M";
+
+/// Linux: a small outlined keycap holding the Copilot key glyph.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn voice_shortcut_keycap(color: gpui::Hsla, _theme: &Theme) -> gpui::AnyElement {
+    div()
+        .debug_selector(|| "voice-shortcut".into())
+        .flex_none()
+        .size(px(15.))
+        .rounded(px(3.5))
+        .border_1()
+        .border_color(color.opacity(0.7))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            gpui::svg()
+                .debug_selector(|| "voice-shortcut-copilot-icon".into())
+                .data(include_bytes!("../../../assets/icons/copilot.svg") as &'static [u8])
+                .text_color(color)
+                .size(px(9.)),
+        )
+        .into_any_element()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Theme) -> gpui::AnyElement {
+    div()
+        .debug_selector(|| "voice-shortcut".into())
+        .flex_none()
+        .whitespace_nowrap()
+        .text_size(px(10.5))
+        .font_family(theme.FONT_MONO)
+        .text_color(color)
+        .child(VOICE_SHORTCUT_KEYCAP)
+        .into_any_element()
+}
 
 fn voice_tooltip(action: &str, status: &str) -> String {
     format!(
@@ -171,8 +205,12 @@ impl Panel {
 
     pub(crate) fn keep_voice_draft(&mut self, text: &str, cx: &mut Context<Self>) {
         self.voice.decision = None;
-        self.voice.error = Some("Jev chose: Quick action · Navigation unavailable. Transcript kept in the draft.".into());
-        self.input.update(cx, |input, cx| input.append_dictation(text, cx));
+        self.voice.error = Some(
+            "Jev chose: Quick action · Navigation unavailable. Transcript kept in the draft."
+                .into(),
+        );
+        self.input
+            .update(cx, |input, cx| input.append_dictation(text, cx));
         cx.notify();
     }
 
@@ -208,7 +246,10 @@ impl Panel {
         self.voice.phase != Phase::Idle
     }
 
-    pub(crate) fn global_voice_snapshot(&self, attempt: &Arc<AtomicBool>) -> Option<crate::global_voice_overlay::Snapshot> {
+    pub(crate) fn global_voice_snapshot(
+        &self,
+        attempt: &Arc<AtomicBool>,
+    ) -> Option<crate::global_voice_overlay::Snapshot> {
         if !Arc::ptr_eq(attempt, &self.voice.canceled) || !self.voice.dictation_only {
             return None;
         }
@@ -226,7 +267,11 @@ impl Panel {
         })
     }
 
-    pub(crate) fn cancel_global_voice(&mut self, attempt: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+    pub(crate) fn cancel_global_voice(
+        &mut self,
+        attempt: &Arc<AtomicBool>,
+        cx: &mut Context<Self>,
+    ) {
         if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.dictation_only {
             self.cancel_voice(cx);
         }
@@ -238,7 +283,10 @@ impl Panel {
         }
     }
 
-    pub(crate) fn begin_global_voice_hold(&mut self, cx: &mut Context<Self>) -> Option<Arc<AtomicBool>> {
+    pub(crate) fn begin_global_voice_hold(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<AtomicBool>> {
         if self.supports_voice() && !self.voice_active() {
             self.start_voice_with_hold(true, cx);
             self.voice.dictation_only = true;
@@ -247,7 +295,11 @@ impl Panel {
         None
     }
 
-    pub(crate) fn end_global_voice_hold(&mut self, attempt: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+    pub(crate) fn end_global_voice_hold(
+        &mut self,
+        attempt: &Arc<AtomicBool>,
+        cx: &mut Context<Self>,
+    ) {
         if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.dictation_only {
             self.end_voice_hold(cx);
         }
@@ -469,7 +521,9 @@ impl Panel {
                 if self.voice.dictation_only {
                     self.voice.phase = Phase::Transcribing;
                     let attempt = self.voice.canceled.clone();
-                    let check = cx.background_executor().spawn(crate::global_voice_session::permitted());
+                    let check = cx
+                        .background_executor()
+                        .spawn(crate::global_voice_session::permitted());
                     self.voice.task = Some(cx.spawn(async move |this, cx| {
                         let allowed = check.await;
                         let _ = this.update(cx, |panel, cx| {
@@ -499,7 +553,13 @@ impl Panel {
         cx.notify();
     }
 
-    fn finish_global_voice_text(&mut self, attempt: &Arc<AtomicBool>, text: String, allowed: bool, cx: &mut Context<Self>) {
+    fn finish_global_voice_text(
+        &mut self,
+        attempt: &Arc<AtomicBool>,
+        text: String,
+        allowed: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !Arc::ptr_eq(attempt, &self.voice.canceled)
             || attempt.load(Ordering::SeqCst)
             || !self.voice.dictation_only
@@ -509,8 +569,12 @@ impl Panel {
         }
         if allowed {
             // Length only. Never log transcript content.
-            eprintln!("global voice: inserted {} transcript chars", text.chars().count());
-            self.input.update(cx, |input, cx| input.append_dictation(&text, cx));
+            eprintln!(
+                "global voice: inserted {} transcript chars",
+                text.chars().count()
+            );
+            self.input
+                .update(cx, |input, cx| input.append_dictation(&text, cx));
             self.voice.phase = Phase::Idle;
             self.voice.error = None;
             cx.notify();
@@ -622,18 +686,27 @@ impl Panel {
             }
             Ok(VoiceIntent::Dictation) => None,
             Ok(VoiceIntent::OpenSession(id)) => {
-                target = self.voice.sessions.as_ref()
-                    .and_then(|sessions| sessions.iter().find(|s| s.session_id == id)).cloned();
+                target = self
+                    .voice
+                    .sessions
+                    .as_ref()
+                    .and_then(|sessions| sessions.iter().find(|s| s.session_id == id))
+                    .cloned();
                 target.is_none().then(|| "Jev could not match a session in your last 20. Transcript kept in the draft.".to_string())
             }
-            Ok(VoiceIntent::Uncertain) => Some("Jev is unsure which route to choose. Transcript kept in the draft.".into()),
-            Err(error) => Some(format!("Jev routing unavailable: {error}. Transcript kept in the draft.")),
+            Ok(VoiceIntent::Uncertain) => {
+                Some("Jev is unsure which route to choose. Transcript kept in the draft.".into())
+            }
+            Err(error) => Some(format!(
+                "Jev routing unavailable: {error}. Transcript kept in the draft."
+            )),
         };
         let text = std::mem::take(&mut self.voice.live_transcript);
         self.voice.error = error;
         if coding_agent {
             // Send only this utterance, never text or attachments already in the composer.
-            self.voice.decision = Some("Jev chose: Coding agent · Sent or queued for reasoning".into());
+            self.voice.decision =
+                Some("Jev chose: Coding agent · Sent or queued for reasoning".into());
             self.submit_or_queue(text, Vec::new(), true, cx);
         } else if let Some(action) = quick_action {
             self.voice.decision = Some("Jev chose: Quick action · Navigation".into());
@@ -700,7 +773,11 @@ impl Panel {
             0.
         };
         let size = super::composer::TAB_HEIGHT;
-        let keycap_color = if active { theme.BG.opacity(0.8) } else { theme.TEXT_FAINT };
+        let keycap_color = if active {
+            theme.BG.opacity(0.8)
+        } else {
+            theme.TEXT_FAINT
+        };
         let button = div()
             .id("voice-toggle")
             .debug_selector(|| "voice-toggle".into())
@@ -742,16 +819,7 @@ impl Panel {
                             .size(px(12.)),
                     ),
             )
-            .child(
-                div()
-                    .debug_selector(|| "voice-shortcut".into())
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_size(px(10.5))
-                    .font_family(theme.FONT_MONO)
-                    .text_color(keycap_color)
-                    .child(VOICE_SHORTCUT_KEYCAP),
-            );
+            .child(voice_shortcut_keycap(keycap_color.into(), &theme));
         // The ring is a sibling behind the pill so it never changes layout.
         let ring = |spread: f32, alpha: f32| {
             div()
@@ -813,7 +881,9 @@ mod tests {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(cx, |panel, cx| {
             let text = "maybe switch somewhere";
-            panel.input.update(cx, |input, cx| input.set_content("typed work".into(), cx));
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("typed work".into(), cx));
             panel.voice.phase = Phase::Routing;
             panel.voice.live_transcript = text.into();
             panel.voice.trace = Some(VoiceTrace {
@@ -825,41 +895,68 @@ mod tests {
                 usage: None,
             });
             let attempt = panel.voice.canceled.clone();
-            panel.finish_voice_report(&attempt, Ok(voice_intent::VoiceClassification {
-                intent: VoiceIntent::Uncertain,
-                answers: vec![voice_intent::VoiceAnswer { id: "uncertain".into(), probability: 0.91 }],
-                usage: Some(voice_intent::VoiceUsage { input_tokens: 1200, output_tokens: 7, requests: 1 }),
-            }), cx);
+            panel.finish_voice_report(
+                &attempt,
+                Ok(voice_intent::VoiceClassification {
+                    intent: VoiceIntent::Uncertain,
+                    answers: vec![voice_intent::VoiceAnswer {
+                        id: "uncertain".into(),
+                        probability: 0.91,
+                    }],
+                    usage: Some(voice_intent::VoiceUsage {
+                        input_tokens: 1200,
+                        output_tokens: 7,
+                        requests: 1,
+                    }),
+                }),
+                cx,
+            );
             let trace = panel.voice.trace.as_ref().unwrap();
             assert_eq!(trace.transcript, text);
             assert_eq!(trace.questions.len(), 7);
             assert_eq!(trace.answers[0].probability, 0.91);
             assert_eq!(trace.usage.unwrap().input_tokens, 1200);
-            assert_eq!(panel.input.read(cx).content.as_ref(), "typed work\nmaybe switch somewhere");
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "typed work\nmaybe switch somewhere"
+            );
             assert!(panel.voice.error.as_ref().unwrap().contains("unsure"));
             // A duplicate completion cannot replace the evidence or append again.
             panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("late failure")), cx);
-            assert_eq!(panel.voice.trace.as_ref().unwrap().answers[0].probability, 0.91);
+            assert_eq!(
+                panel.voice.trace.as_ref().unwrap().answers[0].probability,
+                0.91
+            );
             panel.cancel_voice(cx);
             assert!(panel.voice.trace.is_none());
-            panel.finish_voice_report(&attempt, Ok(voice_intent::VoiceClassification {
-                intent: VoiceIntent::CodingAgent,
-                answers: Vec::new(),
-                usage: None,
-            }), cx);
+            panel.finish_voice_report(
+                &attempt,
+                Ok(voice_intent::VoiceClassification {
+                    intent: VoiceIntent::CodingAgent,
+                    answers: Vec::new(),
+                    usage: None,
+                }),
+                cx,
+            );
             assert!(panel.voice.trace.is_none());
-            assert_eq!(panel.input.read(cx).content.as_ref(), "typed work\nmaybe switch somewhere");
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "typed work\nmaybe switch somewhere"
+            );
         });
     }
 
     #[gpui::test]
-    fn voice_report_failure_keeps_questions_without_fabricating_answers(cx: &mut gpui::TestAppContext) {
+    fn voice_report_failure_keeps_questions_without_fabricating_answers(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(cx, |panel, cx| {
             panel.voice.phase = Phase::Routing;
             panel.voice.live_transcript = "keep this".into();
             panel.voice.trace = Some(VoiceTrace {
-                transcript: "keep this".into(), candidates: Vec::new(),
+                transcript: "keep this".into(),
+                candidates: Vec::new(),
                 questions: voice_intent::describe_questions("keep this", &[]).unwrap(),
                 answers: Vec::new(),
                 audio: None,
@@ -869,13 +966,22 @@ mod tests {
             panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("provider unavailable")), cx);
             assert_eq!(panel.voice.trace.as_ref().unwrap().questions.len(), 7);
             assert!(panel.voice.trace.as_ref().unwrap().answers.is_empty());
-            assert!(panel.voice.error.as_ref().unwrap().contains("provider unavailable"));
+            assert!(
+                panel
+                    .voice
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("provider unavailable")
+            );
             assert_eq!(panel.input.read(cx).content.as_ref(), "keep this");
         });
     }
 
     #[gpui::test]
-    fn voice_coding_agent_sends_only_transcript_once_and_preserves_draft(cx: &mut gpui::TestAppContext) {
+    fn voice_coding_agent_sends_only_transcript_once_and_preserves_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let panel = cx.new(|cx| {
             let mut panel = Panel::new("voice-agent".into(), None, None, bridge, cx);
@@ -884,15 +990,25 @@ mod tests {
             panel
         });
         panel.update(cx, |panel, cx| {
-            panel.input.update(cx, |input, cx| input.set_content("unfinished typed work".into(), cx));
+            panel.input.update(cx, |input, cx| {
+                input.set_content("unfinished typed work".into(), cx)
+            });
             panel.resolve_voice_for_test("debug this failure", Ok(VoiceIntent::CodingAgent), cx);
-            assert_eq!(panel.input.read(cx).content.as_ref(), "unfinished typed work");
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "unfinished typed work"
+            );
             let attempt = panel.voice.canceled.clone();
             panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
         });
-        assert!(matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
-            if session_id == "voice-agent" && content == "debug this failure" && images.is_empty()));
-        assert!(commands.try_recv().is_err(), "a duplicate completion must never send twice");
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+            if session_id == "voice-agent" && content == "debug this failure" && images.is_empty())
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "a duplicate completion must never send twice"
+        );
     }
 
     #[gpui::test]
@@ -906,11 +1022,16 @@ mod tests {
         });
         panel.update(cx, |panel, cx| {
             panel.resolve_voice_for_test("then add tests", Ok(VoiceIntent::CodingAgent), cx);
-            assert!(commands.try_recv().is_err(), "do not interrupt the active turn");
+            assert!(
+                commands.try_recv().is_err(),
+                "do not interrupt the active turn"
+            );
             panel.status = "idle".into();
             panel.send_queued_prompts(cx);
         });
-        assert!(matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "then add tests"));
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "then add tests")
+        );
     }
 
     #[gpui::test]
@@ -990,7 +1111,9 @@ mod tests {
             panel.voice.sessions = Some(Vec::new());
             panel.prepare_voice_attempt(true);
             panel.voice.phase = Phase::Recording;
-            panel.input.update(cx, |input, cx| input.set_content("typed draft".into(), cx));
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content("typed draft".into(), cx));
             panel.apply_voice_event(NariEvent::Transcript("fix the bug".into()), cx);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert!(panel.voice.phase == Phase::Recording);
@@ -1002,8 +1125,20 @@ mod tests {
             let attempt = panel.voice.canceled.clone();
             panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
-            assert!(panel.voice.decision.as_ref().unwrap().contains("Coding agent"));
-            assert!(panel.items.iter().any(|item| matches!(item, Item::User(text) if text == "fix the bug")));
+            assert!(
+                panel
+                    .voice
+                    .decision
+                    .as_ref()
+                    .unwrap()
+                    .contains("Coding agent")
+            );
+            assert!(
+                panel
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::User(text) if text == "fix the bug"))
+            );
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
         });
@@ -1290,7 +1425,10 @@ mod tests {
                     button.left() >= input.left() && button.right() <= input.right(),
                     "voice at {width}: {button:?} outside {input:?}"
                 );
-                assert!(button.bottom() < input.top(), "voice is detached from the input");
+                assert!(
+                    button.bottom() < input.top(),
+                    "voice is detached from the input"
+                );
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
                 assert_eq!(icon.size.width, px(12.));
                 assert_eq!(button.size.height, px(crate::panel::composer::TAB_HEIGHT));
@@ -1299,7 +1437,10 @@ mod tests {
                 assert!(shortcut.right() <= button.right());
                 if phase == Phase::Idle {
                     let status = vcx.debug_bounds("voice-ready-status").unwrap();
-                    assert!(status.top() >= input.bottom(), "status sits in the bottom bar");
+                    assert!(
+                        status.top() >= input.bottom(),
+                        "status sits in the bottom bar"
+                    );
                 }
             }
         }

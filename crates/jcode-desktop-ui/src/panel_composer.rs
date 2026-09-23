@@ -1,8 +1,8 @@
 //! Composer chrome: a plain location line and compact pills above the input.
 //!
-//! The location line (repo or directory) sits flush left as plain text. Below
-//! it, the model pill (pretty name, then reasoning effort) and the credential
-//! method pill sit on the left, and the voice pill (microphone plus its
+//! The model pill (pretty name, then reasoning effort) and the credential
+//! method pill sit on the left, followed by the location (repo or directory)
+//! as plain text that truncates first. The voice pill (microphone plus its
 //! keybinding) sits on the right.
 //! Pills are detached from the input and shaped like the transcript's user
 //! prompt cards, so nothing reads as a folder tab.
@@ -95,7 +95,36 @@ impl Panel {
                                 );
                                 cx.stop_propagation();
                             })),
-                    ),
+                    )
+                    .children(location.map(|(name, detail)| {
+                        div()
+                            .debug_selector(|| "composer-location".into())
+                            .flex_shrink(4.)
+                            .min_w_0()
+                            .pl_1()
+                            .flex()
+                            .items_baseline()
+                            .gap_1p5()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(11.5))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.TEXT_DIM)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(name),
+                            )
+                            .children(detail.map(|detail| {
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(10.5))
+                                    .font_family(theme.FONT_MONO)
+                                    .text_color(theme.TEXT_FAINT)
+                                    .child(detail)
+                            }))
+                    })),
             )
             .child(self.render_voice_tab(cx));
         div()
@@ -104,36 +133,6 @@ impl Panel {
             .min_w_0()
             .flex()
             .flex_col()
-            .children(location.map(|(name, detail)| {
-                div()
-                    .debug_selector(|| "composer-location".into())
-                    .w_full()
-                    .min_w_0()
-                    .px_2()
-                    .pb_1()
-                    .flex()
-                    .items_baseline()
-                    .gap_1p5()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(px(11.5))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.TEXT_DIM)
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(name),
-                    )
-                    .children(detail.map(|detail| {
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(10.5))
-                            .font_family(theme.FONT_MONO)
-                            .text_color(theme.TEXT_FAINT)
-                            .child(detail)
-                    }))
-            }))
             .child(pills)
             .child(self.render_voice_input_slot(cx))
             .into_any_element()
@@ -221,7 +220,10 @@ mod tests {
         assert_eq!(model_tab_label(None, Some("high")), "Choose model");
         assert_eq!(model_tab_label(Some(" "), None), "Choose model");
         assert_eq!(model_tab_label(Some("claude-opus-4-8"), None), "Opus 4.8");
-        assert_eq!(model_tab_label(Some("gpt-5.5"), Some("high")), "GPT-5.5 high");
+        assert_eq!(
+            model_tab_label(Some("gpt-5.5"), Some("high")),
+            "GPT-5.5 high"
+        );
         assert_eq!(model_tab_label(None, Some("high")), "Choose model");
         assert_eq!(
             model_tab_label(Some("gpt-5.1-codex-max"), Some("")),
@@ -241,12 +243,15 @@ mod tests {
             ("jcode".into(), Some("~/src".into()))
         );
         assert_eq!(location_label(&home), ("~".into(), None));
-        assert_eq!(location_label("/srv/app"), ("app".into(), Some("/srv".into())));
+        assert_eq!(
+            location_label("/srv/app"),
+            ("app".into(), Some("/srv".into()))
+        );
         assert_eq!(location_label("/"), ("/".into(), None));
     }
 
     #[gpui::test]
-    fn pills_sit_above_the_input_with_location_and_effort(cx: &mut gpui::TestAppContext) {
+    fn pills_sit_above_the_input_with_location_after_method(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [240., 480., 1440.] {
@@ -268,7 +273,14 @@ mod tests {
             let effort = vcx.debug_bounds("panel-model-effort").unwrap();
             let login = vcx.debug_bounds("panel-login").unwrap();
             let voice = vcx.debug_bounds("voice-toggle").unwrap();
-            assert!(location.bottom() <= model.top(), "location sits above the pills");
+            assert!(
+                login.right() <= location.left(),
+                "location follows the method pill"
+            );
+            assert!(
+                location.right() <= voice.left(),
+                "location stays left of voice"
+            );
             for (tab_name, tab) in [("model", model), ("login", login), ("voice", voice)] {
                 assert!(
                     tab.bottom() < input.top(),
@@ -276,10 +288,16 @@ mod tests {
                 );
                 assert!(tab.left() >= input.left() && tab.right() <= input.right());
             }
-            assert!(name.right() <= effort.left(), "effort follows the model name");
+            assert!(
+                name.right() <= effort.left(),
+                "effort follows the model name"
+            );
             assert!(model.right() <= login.left(), "method follows model");
             assert!(login.right() <= voice.left(), "voice sits on the right");
-            assert!(voice.size.width > voice.size.height, "voice pill shows its shortcut");
+            assert!(
+                voice.size.width > voice.size.height,
+                "voice pill shows its shortcut"
+            );
         }
     }
 }
