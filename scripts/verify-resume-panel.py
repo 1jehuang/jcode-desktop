@@ -225,18 +225,18 @@ def run_mode(binary, output, evidence, driver, single, report, plugin=None):
             picker_png = output.with_name(output.stem + "-single-picker.png") if single else output
             capture(picker_png, ("Resume session", TITLE, "Resume acceptance beta"))
             type_text("Resume acceptance")
-            capture(evidence / f"{name}-preview-alpha.png", ("Status: idle", "Alpha conversation preview"))
+            capture(evidence / f"{name}-preview-alpha.png", ("Alpha conversation preview", "rendered with the chat panel"))
             key("Down")
-            capture(evidence / f"{name}-preview-beta.png", ("Status: running", "Beta conversation preview"), ("Status: idle", "Alpha conversation preview"))
+            capture(evidence / f"{name}-preview-beta.png", ("Beta conversation preview", "rendered with the chat panel"), ("Alpha conversation preview",))
             if plugin:
                 key("ctrl+r")
                 wait_generation(3)
                 state_check("reload-preserves-search-and-selection", picker)
                 capture(evidence / f"{name}-reloaded-beta.png",
-                        ("Resume acceptance", "Status: running", "Beta conversation preview"),
-                        ("Status: idle", "Alpha conversation preview"))
+                        ("Resume acceptance", "Beta conversation preview"),
+                        ("Alpha conversation preview",))
             key("Up")
-            capture(evidence / f"{name}-preview-return.png", ("Status: idle", "Alpha conversation preview"), ("Status: running", "Beta conversation preview"))
+            capture(evidence / f"{name}-preview-return.png", ("Alpha conversation preview", "rendered with the chat panel"), ("Beta conversation preview",))
             key("ctrl+3")
             capture(evidence / f"{name}-saved.png", (TITLE,), ("Resume acceptance beta",))
             key("ctrl+1")

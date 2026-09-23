@@ -33,7 +33,9 @@ pub(super) struct State {
     scroll: ScrollHandle,
     pub(super) start_on_close: bool,
     preview_id: Option<String>,
-    preview: Option<Result<Vec<(String, String)>, String>>,
+    /// The real chat panel in transcript-only mode, hydrated through the same
+    /// `load_history` path a resumed session uses, so the preview is identical.
+    preview: Option<Result<Entity<Panel>, String>>,
     preview_task: Option<gpui::Task<()>>,
 }
 
@@ -398,14 +400,14 @@ impl Workspace {
         let mut preview = div()
             .id("resume-preview")
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_hidden()
             .debug_selector(|| "resume-preview".into())
             .flex_1()
             .min_w_0()
-            .p_4()
+            .p_3()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_2()
             .bg(theme.TOOL_BG)
             .rounded_lg();
         if let Some(session) = matches
@@ -413,64 +415,63 @@ impl Workspace {
             .find(|s| Some(&s.session_id) == selected.as_ref())
         {
             let (_, title) = sidebar_session_title(session);
-            preview =
-                preview
-                    .child(div().text_size(px(18.0)).child(title))
-                    .child(
-                        div().text_color(theme.TEXT_DIM).text_ellipsis().child(
-                            session
-                                .working_dir
-                                .as_deref()
-                                .map(compact_working_dir)
-                                .unwrap_or_else(|| "No working directory".into()),
-                        ),
-                    )
-                    .child(format!(
-                        "Status: {}{}",
-                        session.status,
-                        if session.saved { " · Saved" } else { "" }
-                    ))
-                    .children(sidebar_session_meta(session))
+            let detail = [
+                Some(
+                    session
+                        .working_dir
+                        .as_deref()
+                        .map(compact_working_dir)
+                        .unwrap_or_else(|| "No working directory".into()),
+                ),
+                Some(format!(
+                    "{}{}",
+                    session.status,
+                    if session.saved { " · saved" } else { "" }
+                )),
+                sidebar_session_meta(session),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+            preview = preview.child(
+                div()
+                    .flex_none()
+                    .px_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_size(px(16.0)).text_ellipsis().child(title))
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(theme.TEXT_DIM)
                             .text_ellipsis()
-                            .child(session.session_id.clone()),
-                    )
-                    .child(div().text_size(px(12.0)).text_color(theme.TEXT_DIM).child(
-                        "Press Enter to resume this conversation. Your current draft is kept.",
-                    ));
-            preview = preview.child(div().text_size(px(14.0)).child("Recent messages"));
-            match self
+                            .child(detail),
+                    ),
+            );
+            let transcript = match self
                 .resume
                 .as_ref()
                 .and_then(|state| state.preview.as_ref())
             {
-                None => preview = preview.child("Loading conversation…"),
-                Some(Err(error)) => preview = preview.child(error.clone()),
-                Some(Ok(messages)) if messages.is_empty() => {
-                    preview = preview.child("No conversation messages yet.");
+                None => resume_preview_notice("Loading conversation…"),
+                Some(Err(error)) => resume_preview_notice(error.clone()),
+                Some(Ok(panel)) if panel.read(cx).items.is_empty() => {
+                    resume_preview_notice("No conversation messages yet.")
                 }
-                Some(Ok(messages)) => {
-                    for (index, (role, text)) in messages.iter().enumerate() {
-                        preview = preview.child(
-                            div()
-                                .debug_selector(move || format!("resume-preview-message-{index}"))
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(theme.TEXT_DIM)
-                                        .child(role.clone()),
-                                )
-                                .child(div().text_size(px(13.0)).child(text.clone())),
-                        );
-                    }
-                }
-            }
+                Some(Ok(panel)) => panel.clone().into_any_element(),
+            };
+            preview = preview.child(
+                div()
+                    .debug_selector(|| "resume-preview-transcript".into())
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .rounded_md()
+                    .bg(theme.PANEL_BG)
+                    .child(transcript),
+            );
         } else {
             preview = preview.child("Select a session to see its details.");
         }
@@ -568,7 +569,7 @@ impl Workspace {
                     .min_h_0()
                     .child(
                         div()
-                            .w(relative(0.55))
+                            .w(relative(0.4))
                             .min_w_0()
                             .flex()
                             .flex_col()
@@ -593,15 +594,23 @@ impl Workspace {
         let requested_id = id.clone();
         let request = cx
             .background_executor()
-            .spawn(async move { load_preview_messages(&id) });
+            .spawn(async move { load_preview_history(&id) });
         // Replacing this task cancels the previous selection's UI delivery.
         state.preview_task = Some(cx.spawn(async move |this, cx| {
             let result = request.await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(state) = this.resume.as_mut()
-                    && state.preview_id.as_ref() == Some(&requested_id)
-                {
-                    state.preview = Some(result);
+                let current = this
+                    .resume
+                    .as_ref()
+                    .is_some_and(|state| state.preview_id.as_ref() == Some(&requested_id));
+                if !current {
+                    return;
+                }
+                let preview = result.map(|(messages, images)| {
+                    preview_panel(requested_id.clone(), messages, images, cx)
+                });
+                if let Some(state) = this.resume.as_mut() {
+                    state.preview = Some(preview);
                 }
                 cx.notify();
             });
@@ -631,29 +640,65 @@ impl Workspace {
     }
 }
 
+type PreviewHistory = (
+    Vec<jcode_sdk::HistoryMessage>,
+    Vec<jcode_sdk::RenderedImage>,
+);
+
+fn resume_preview_notice(text: impl Into<gpui::SharedString>) -> gpui::AnyElement {
+    div()
+        .size_full()
+        .p_4()
+        .text_size(px(13.0))
+        .text_color(Theme::global().TEXT_DIM)
+        .child(text.into())
+        .into_any_element()
+}
+
+/// Build the ordinary chat panel over an inert bridge. It never sends commands
+/// or connects its composer, and renders only the transcript.
+fn preview_panel(
+    id: String,
+    messages: Vec<jcode_sdk::HistoryMessage>,
+    images: Vec<jcode_sdk::RenderedImage>,
+    cx: &mut App,
+) -> Entity<Panel> {
+    cx.new(|cx| {
+        let mut panel = Panel::new(
+            format!("resume-preview://{id}"),
+            None,
+            None,
+            crate::harness::spawn_inert(),
+            cx,
+        );
+        panel.transcript_only = true;
+        panel.load_history(messages, images, cx);
+        panel
+    })
+}
+
 /// Read only: never attach/watch a runtime just to browse its conversation.
-fn load_preview_messages(id: &str) -> Result<Vec<(String, String)>, String> {
+fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
     if harness::screenshot_mode()
         && std::env::var_os("JCODE_DESKTOP_SCREENSHOT_RESUME_FIXTURE").is_some()
         && id.starts_with("resume-fixture-")
     {
-        return Ok(vec![
-            (
-                "user".into(),
-                "Please recover the standalone conversation.".into(),
-            ),
-            (
-                "assistant".into(),
-                format!(
-                    "{} conversation preview",
-                    if id.ends_with("alpha") {
-                        "Alpha"
-                    } else {
-                        "Beta"
-                    }
+        let message = |role: &str, content: String| jcode_sdk::HistoryMessage {
+            response_stats: None,
+            role: role.into(),
+            content,
+        };
+        let name = if id.ends_with("alpha") { "Alpha" } else { "Beta" };
+        return Ok((
+            vec![
+                message("user", "Please recover the standalone conversation.".into()),
+                message(
+                    "assistant",
+                    format!("**{name}** conversation preview\n\n- rendered with the chat panel\n- `markdown` included"),
                 ),
-            ),
-        ]);
+            ],
+            Vec::new(),
+        ));
     }
     // Reject path components and remote IDs rather than reading outside local storage.
     if id.is_empty() || id.contains(['/', '\\']) || id == "." || id == ".." {
@@ -666,21 +711,36 @@ fn load_preview_messages(id: &str) -> Result<Vec<(String, String)>, String> {
     load_preview_path(&path)
 }
 
-fn load_preview_path(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+fn load_preview_path(path: &std::path::Path) -> Result<PreviewHistory, String> {
     let session = jcode_base::session::Session::load_from_path(path)
         .map_err(|_| "Conversation preview unavailable. Resume to load this session.".to_owned())?;
-    Ok(preview_messages(&session))
+    Ok(preview_history(&session))
 }
 
-fn preview_messages(session: &jcode_base::session::Session) -> Vec<(String, String)> {
-    // Match CLI resume: render persisted snapshot plus journal, last 20 messages.
-    jcode_base::session::render_messages(session)
+/// Same rendering the server uses for `History`, converted through the same
+/// wire shape the harness API delivers to a resumed chat panel.
+fn preview_history(session: &jcode_base::session::Session) -> PreviewHistory {
+    let (messages, images) = jcode_base::session::render_messages_and_images(session);
+    let messages = messages
         .into_iter()
-        .rev()
-        .take(20)
-        .rev()
-        .map(|message| (message.role, message.content.chars().take(4000).collect()))
-        .collect()
+        .map(|message| jcode_sdk::HistoryMessage {
+            response_stats: message
+                .response_stats
+                .and_then(|stats| serde_json::to_value(stats).ok())
+                .and_then(|stats| serde_json::from_value(stats).ok()),
+            role: message.role,
+            content: message.content,
+        })
+        .collect();
+    let images = images
+        .into_iter()
+        .filter_map(|image| {
+            serde_json::to_value(image)
+                .ok()
+                .and_then(|image| serde_json::from_value(image).ok())
+        })
+        .collect();
+    (messages, images)
 }
 
 #[cfg(test)]
@@ -688,8 +748,16 @@ mod tests {
     use super::*;
     use crate::workspace::tests::session_info;
 
+    fn roles_and_text(history: &PreviewHistory) -> Vec<(String, String)> {
+        history
+            .0
+            .iter()
+            .map(|message| (message.role.clone(), message.content.clone()))
+            .collect()
+    }
+
     #[test]
-    fn resume_preview_reads_actual_recent_messages_and_bounds_unicode() {
+    fn resume_preview_uses_full_chat_history_shape() {
         use jcode_base::message::{ContentBlock, Role};
         let mut session =
             jcode_base::session::Session::create_with_id("preview-test".into(), None, None);
@@ -706,24 +774,51 @@ mod tests {
                 }],
             );
         }
-        let messages = preview_messages(&session);
-        assert_eq!(messages.len(), 20);
-        assert_eq!(messages[0], ("user".into(), "Actual message 4".into()));
-        assert_eq!(
-            messages[19],
-            ("assistant".into(), "Actual message 23".into())
-        );
-        session.add_message(
-            Role::User,
-            vec![ContentBlock::Text {
-                text: "界".repeat(5000),
-                cache_control: None,
-            }],
-        );
-        assert_eq!(
-            preview_messages(&session).last().unwrap().1.chars().count(),
-            4000
-        );
+        let history = preview_history(&session);
+        // Identical to the server History payload: no truncation or clipping.
+        let expected: Vec<_> = jcode_base::session::render_messages(&session)
+            .into_iter()
+            .map(|message| (message.role, message.content))
+            .collect();
+        assert_eq!(roles_and_text(&history), expected);
+        assert_eq!(history.0.len(), 24);
+    }
+
+    #[gpui::test]
+    fn resume_preview_renders_through_the_chat_panel_without_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let message = |role: &str, content: &str| jcode_sdk::HistoryMessage {
+            response_stats: None,
+            role: role.into(),
+            content: content.into(),
+        };
+        let (host, vcx) = cx.add_window_view(|_, cx| {
+            let panel = preview_panel(
+                "abc".into(),
+                vec![message("user", "question"), message("assistant", "**answer**")],
+                Vec::new(),
+                cx,
+            );
+            PanelHost(panel)
+        });
+        vcx.run_until_parked();
+        host.read_with(vcx, |host, cx| {
+            let panel = host.0.read(cx);
+            assert!(panel.transcript_only);
+            assert!(panel.history_loaded());
+            assert!(matches!(&panel.items[..], [crate::panel::Item::User(q), crate::panel::Item::Assistant(a)]
+                if q == "question" && a == "**answer**"));
+        });
+        assert!(vcx.debug_bounds("panel-meta").is_none());
+        assert!(vcx.debug_bounds("fresh-session").is_none());
+    }
+
+    struct PanelHost(Entity<Panel>);
+    impl Render for PanelHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
     }
 
     #[test]
@@ -751,7 +846,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert_eq!(
-            load_preview_path(&path).unwrap(),
+            roles_and_text(&load_preview_path(&path).unwrap()),
             vec![
                 ("user".into(), "Persisted user question".into()),
                 ("assistant".into(), "Persisted assistant answer".into()),
@@ -778,7 +873,7 @@ mod tests {
             "..",
             "foo\\bar",
         ] {
-            assert!(load_preview_messages(id).is_err(), "{id}");
+            assert!(load_preview_history(id).is_err(), "{id}");
         }
     }
 

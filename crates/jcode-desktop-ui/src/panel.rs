@@ -359,6 +359,9 @@ pub struct Panel {
     recovery_picker_open: bool,
     model_picker_open: bool,
     focus_pending: bool,
+    /// Read-only transcript surface (resume preview): the chat renderer
+    /// without composer, footer, or focus stealing.
+    pub(crate) transcript_only: bool,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
     model_logo_providers: HashMap<String, String>,
@@ -872,6 +875,7 @@ impl Panel {
             recovery_picker_open: false,
             model_picker_open: false,
             focus_pending: false,
+            transcript_only: false,
             login: None,
             available_models: Vec::new(),
             model_logo_providers: HashMap::new(),
@@ -4086,7 +4090,8 @@ impl Render for Panel {
         let row_count = rows.len() + usize::from(self.activity_active());
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
-        let fresh_session = self.items.is_empty()
+        let fresh_session = !self.transcript_only
+            && self.items.is_empty()
             && row_count == 0
             && !self.activity_active()
             && !self
@@ -4593,7 +4598,7 @@ impl Render for Panel {
             })
             // Keep controls together, wrapping the status group on narrow panels
             // rather than clipping the voice button or its shortcut.
-            .child(
+            .children((!self.transcript_only).then(|| {
                 div()
                     .debug_selector(|| "panel-meta".into())
                     .flex_none()
@@ -4689,12 +4694,14 @@ impl Render for Panel {
                             .children(usage_meters)
                             .child(self.render_image_pane_toggle(cx))
                             .child(self.render_voice_controls(status_line, cx)),
-                    ),
-            )
+                    )
+            }))
             .children(self.render_voice_overlay(window, cx))
             .children(self.render_preview_badge(cx))
             // Input
-            .when(!fresh_session && self.startup_layout.is_none(), |el| {
+            .when(
+                !fresh_session && self.startup_layout.is_none() && !self.transcript_only,
+                |el| {
                 el.child(
                     div().flex_none().min_w_0().px_2().py_2().child(
                         div()
@@ -4711,7 +4718,10 @@ impl Render for Panel {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
-                    this.focus_input(window, cx);
+                    // A read-only preview must not steal focus from its host.
+                    if !this.transcript_only {
+                        this.focus_input(window, cx);
+                    }
                     cx.notify();
                 }),
             )
