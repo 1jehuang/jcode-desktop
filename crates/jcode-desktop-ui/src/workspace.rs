@@ -117,6 +117,9 @@ mod voice;
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
 
+#[path = "workspace_usage_reset.rs"]
+mod usage_reset;
+
 #[path = "workspace_rename.rs"]
 mod rename;
 
@@ -789,6 +792,8 @@ pub struct Workspace {
     accounts_scroll: ScrollHandle,
     accounts_scroll_remainder: f32,
     accounts_layout_pending: bool,
+    /// Review and redemption of one login's banked usage reset.
+    usage_reset: Option<usage_reset::Dialog>,
     status: String,
     connected: bool,
     focus_handle: FocusHandle,
@@ -1059,6 +1064,7 @@ impl Workspace {
             accounts_scroll: ScrollHandle::new(),
             accounts_scroll_remainder: 0.0,
             accounts_layout_pending: true,
+            usage_reset: None,
             status: "starting...".into(),
             connected: false,
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -1369,6 +1375,7 @@ impl Workspace {
             accounts_scroll: ScrollHandle::new(),
             accounts_scroll_remainder: 0.0,
             accounts_layout_pending: true,
+            usage_reset: None,
             status: "test".into(),
             connected: true,
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -6220,6 +6227,58 @@ impl Workspace {
                 details = details.child(limits);
             }
 
+            if available {
+                // One compact pill per login with a redeemable reset. The pill
+                // only opens a review. Nothing is spent until it is confirmed.
+                let resets: Vec<accounts::BankedReset> =
+                    account.offerable_resets().cloned().collect();
+                let many = resets.len() > 1;
+                let has_resets = !resets.is_empty();
+                let mut pills = div().mt(px(3.0)).flex().flex_wrap().gap(px(4.0));
+                for (reset_index, reset) in resets.into_iter().enumerate() {
+                    let label = match (&reset.account_label, many) {
+                        (Some(login), true) => format!("{} · {login}", reset.pill_label()),
+                        _ => reset.pill_label(),
+                    };
+                    pills = pills.child(
+                        div()
+                            .id(("account-reset", index * 100 + reset_index))
+                            .debug_selector({
+                                let id = account.id.clone();
+                                move || format!("account-{id}-reset-{reset_index}")
+                            })
+                            .flex_none()
+                            .px(px(8.0))
+                            .h(px(16.0))
+                            .flex()
+                            .items_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .text_size(px(9.0))
+                            .bg(Theme::global().ACCENT.opacity(0.16))
+                            .text_color(Theme::global().ACCENT)
+                            .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.26)))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| {
+                                    remotes::HeaderTooltip(
+                                        "Review a banked usage reset. Nothing is spent until you confirm."
+                                            .into(),
+                                    )
+                                })
+                                .into()
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.open_usage_reset(&reset, cx);
+                            }))
+                            .child(label),
+                    );
+                }
+                if has_resets {
+                    details = details.child(pills);
+                }
+            }
+
             if account.shows_oauth_history() {
                 let mut history = div()
                     .debug_selector(|| format!("account-{}-history", account.id))
@@ -6280,6 +6339,9 @@ impl Workspace {
                 );
             }
 
+            // Rows with history or a reset pill need more than the compact height.
+            let grows = account.shows_oauth_history()
+                || (available && account.offerable_resets().next().is_some());
             list = list.child(
                 div()
                     .flex_none()
@@ -6287,18 +6349,14 @@ impl Workspace {
                     .debug_selector(|| format!("account-{}", account.id))
                     .mx_2()
                     .px_2()
-                    .when(account.shows_oauth_history(), |row| {
-                        row.min_h(px(ACCOUNT_ROW_HEIGHT))
-                    })
-                    .when(!account.shows_oauth_history(), |row| {
-                        row.h(px(ACCOUNT_ROW_HEIGHT))
-                    })
+                    .when(grows, |row| row.min_h(px(ACCOUNT_ROW_HEIGHT)))
+                    .when(!grows, |row| row.h(px(ACCOUNT_ROW_HEIGHT)))
                     .py_1()
                     .overflow_hidden()
                     .rounded_md()
                     .flex()
                     .items_center()
-                    .when(account.shows_oauth_history(), |row| row.items_start())
+                    .when(grows, |row| row.items_start())
                     .gap_2()
                     .hover(|el| el.bg(Theme::global().HEADER_BG))
                     .child(logo)
@@ -7799,6 +7857,9 @@ impl Render for Workspace {
             )
             .when(self.rename_editor.is_some(), |root| {
                 root.child(self.render_rename_editor(cx))
+            })
+            .when(self.usage_reset.is_some(), |root| {
+                root.child(self.render_usage_reset(cx))
             })
             .when(self.show_beta_notice, |root| {
                 root.child(self.render_beta_notice(window, cx))
@@ -10545,6 +10606,7 @@ mod tests {
             w.accounts[0].usage_reports = ["personal", "work"].into_iter().map(|label| {
                 accounts::UsageReport {
                     limits: Vec::new(),
+                    banked_reset: None,
                     provider_name: format!("OpenAI (ChatGPT) {label}"),
                     account_label: Some(label.into()),
                     extra_info: vec![

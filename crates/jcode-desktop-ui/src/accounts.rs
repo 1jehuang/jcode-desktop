@@ -42,6 +42,81 @@ pub struct UsageReport {
     pub account_label: Option<String>,
     pub limits: Vec<UsageLimit>,
     pub extra_info: Vec<(String, String)>,
+    /// A banked usage reset this login can redeem, from `jcode usage --json`.
+    pub banked_reset: Option<BankedReset>,
+}
+
+/// Read-only reset availability. Redeeming always needs a fresh, confirmed
+/// preparation against the provider, never these cached facts alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BankedReset {
+    pub provider: ResetProvider,
+    /// Login the reset is pinned to. `None` is the default login.
+    pub account_label: Option<String>,
+    pub available_count: u64,
+    /// The limit is actually enforced, so a reset helps right now.
+    pub limit_reached: bool,
+    /// RFC3339 time the next reset becomes available when none is left.
+    pub next_available_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetProvider {
+    OpenAi,
+    Claude,
+}
+
+impl ResetProvider {
+    /// Harness API provider id for usage invalidation.
+    pub fn api_id(self) -> &'static str {
+        match self {
+            Self::OpenAi => "openai",
+            Self::Claude => "claude",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OpenAi => "OpenAI",
+            Self::Claude => "Claude",
+        }
+    }
+}
+
+impl BankedReset {
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        let provider = match value.get("provider")?.as_str()? {
+            "openai" => ResetProvider::OpenAi,
+            "claude" => ResetProvider::Claude,
+            _ => return None,
+        };
+        let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        Some(Self {
+            provider,
+            account_label: text("account_label"),
+            available_count: value.get("available_count")?.as_u64()?,
+            limit_reached: value
+                .get("limit_reached")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            next_available_at: text("next_available_at"),
+        })
+    }
+
+    /// Worth offering: redeemable now. OpenAI resets are banked, so they are
+    /// only suggested once the limit actually binds, never spent early.
+    pub fn offerable(&self) -> bool {
+        self.available_count > 0 && (self.limit_reached || self.provider == ResetProvider::Claude)
+    }
+
+    /// Compact pill caption.
+    pub fn pill_label(&self) -> String {
+        match (self.provider, self.available_count) {
+            (ResetProvider::OpenAi, count) if count > 1 => format!("Reset limits · {count}"),
+            (ResetProvider::OpenAi, _) => "Reset limits".to_string(),
+            (ResetProvider::Claude, _) => "Reset session".to_string(),
+        }
+    }
 }
 
 pub const USAGE_ESTIMATE_NOTE: &str = "Recorded by Jcode. API-equivalent estimates, not your ChatGPT bill. Today starts at local midnight. Lifetime covers recorded history only.";
@@ -99,6 +174,14 @@ impl Account {
             "not_configured" => "Not configured",
             _ => "Status unknown",
         }
+    }
+
+    /// Resets this account can offer, one per login, in report order.
+    pub fn offerable_resets(&self) -> impl Iterator<Item = &BankedReset> {
+        self.usage_reports
+            .iter()
+            .filter_map(|report| report.banked_reset.as_ref())
+            .filter(|reset| reset.offerable())
     }
 
     pub fn shows_oauth_history(&self) -> bool {
@@ -188,11 +271,26 @@ pub fn spawn() -> Feed {
             status: status.into(),
             auth_kind: auth_kind.into(),
             method: "Offline fixture".into(),
-            usage_reports: if id == "openai" {
+            usage_reports: if id == "claude" {
+                vec![UsageReport {
+                    provider_name: "Anthropic (Claude)".into(),
+                    account_label: None,
+                    limits: Vec::new(),
+                    extra_info: Vec::new(),
+                    banked_reset: Some(BankedReset {
+                        provider: ResetProvider::Claude,
+                        account_label: None,
+                        available_count: 1,
+                        limit_reached: true,
+                        next_available_at: None,
+                    }),
+                }]
+            } else if id == "openai" {
                 vec![UsageReport {
                     provider_name: "OpenAI (ChatGPT)".into(),
                     account_label: Some("personal".into()),
                     limits: vec![UsageLimit { name: "5 hour".into(), usage_percent: 25., reset_in: Some("2h".into()) }],
+                    banked_reset: None,
                     extra_info: vec![
                         ("Today".into(), "120000 input / 8000 output tokens (90000 cached input), $0.4200 API-equivalent estimate, not a bill; recorded only; since local midnight".into()),
                         ("Lifetime".into(), "2400000 input / 160000 output tokens (1800000 cached input), $8.4000 known + unknown cost (2 unpriced responses) API-equivalent estimate, not a bill; recorded only; partial token counts; since 2026-09-01 10:00 -07:00".into()),
@@ -328,6 +426,7 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
         account.usage_reports.push(UsageReport {
             provider_name: provider_name.to_owned(),
             account_label,
+            banked_reset: provider.get("banked_reset").and_then(BankedReset::parse),
             limits: Vec::new(),
             extra_info: extra_info
                 .into_iter()
@@ -644,6 +743,47 @@ mod tests {
         assert!(openai.usage_reports[1].extra_info.is_empty());
         assert!(USAGE_ESTIMATE_NOTE.contains("not your ChatGPT bill"));
         assert!(USAGE_ESTIMATE_NOTE.contains("local midnight"));
+    }
+
+    #[test]
+    fn banked_resets_merge_per_login_and_only_redeemable_ones_are_offered() {
+        let mut accounts = parse(SAMPLE).unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[
+                {"provider_name":"OpenAI - work","limits":[],"extra_info":[["Account label","work"]],
+                 "banked_reset":{"provider":"openai","account_label":"work","available_count":2,"limit_reached":true}},
+                {"provider_name":"OpenAI - personal","limits":[],
+                 "banked_reset":{"provider":"openai","account_label":"personal","available_count":1,"limit_reached":false}},
+                {"provider_name":"OpenAI - broken","limits":[],"banked_reset":{"provider":"mystery","available_count":1}},
+                {"provider_name":"Anthropic (Claude)","limits":[],
+                 "banked_reset":{"provider":"claude","account_label":null,"available_count":0,"limit_reached":true,
+                                 "next_available_at":"2099-01-08T00:00:00Z"}}
+            ]}"#,
+        );
+        let openai = accounts
+            .iter()
+            .find(|account| account.id == "openai")
+            .unwrap();
+        let offered: Vec<_> = openai.offerable_resets().collect();
+        assert_eq!(
+            offered.len(),
+            1,
+            "unbound limits and unknown providers are not offered"
+        );
+        assert_eq!(offered[0].account_label.as_deref(), Some("work"));
+        assert_eq!(offered[0].provider, ResetProvider::OpenAi);
+        assert!(openai.usage_reports[2].banked_reset.is_none());
+        let claude = accounts
+            .iter()
+            .find(|account| account.id == "claude")
+            .unwrap();
+        let spent = claude.usage_reports[0].banked_reset.as_ref().unwrap();
+        assert!(!spent.offerable());
+        assert_eq!(
+            spent.next_available_at.as_deref(),
+            Some("2099-01-08T00:00:00Z")
+        );
     }
 
     #[test]
