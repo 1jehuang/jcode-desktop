@@ -37,6 +37,48 @@ pub(super) struct State {
     /// `load_history` path a resumed session uses, so the preview is identical.
     preview: Option<Result<Entity<Panel>, String>>,
     preview_task: Option<gpui::Task<()>>,
+    /// Sessions the daemon is generating for right now, from its streaming
+    /// markers. Refreshed off the UI thread while the picker is open.
+    streaming: HashSet<String>,
+    _presence_task: Option<gpui::Task<()>>,
+}
+
+const PRESENCE_REFRESH: Duration = Duration::from_millis(1500);
+
+/// How a row relates to live work, strongest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Liveness {
+    Working,
+    Open,
+    Inactive,
+}
+
+fn status_is_working(status: &str) -> bool {
+    matches!(
+        status,
+        "running"
+            | "working"
+            | "busy"
+            | "streaming"
+            | "generating"
+            | "thinking"
+            | "running_tools"
+            | "compacting"
+            | "processing"
+    )
+}
+
+/// Streaming markers written by every live jcode process, filtered to
+/// sessions whose owning process is still alive.
+fn streaming_sessions() -> HashSet<String> {
+    if cfg!(test) || harness::screenshot_mode() {
+        return HashSet::new();
+    }
+    jcode_base::session::session_presence()
+        .into_iter()
+        .filter(|presence| presence.streaming)
+        .map(|presence| presence.session_id)
+        .collect()
 }
 
 pub(crate) fn is_resume_command(content: &str) -> bool {
@@ -47,6 +89,7 @@ fn filtered_sessions(
     mut sessions: Vec<jcode_sdk::SessionInfo>,
     query: &str,
     filter: Filter,
+    working: &HashSet<String>,
 ) -> Vec<jcode_sdk::SessionInfo> {
     let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
     sessions.retain(|session| {
@@ -63,10 +106,9 @@ fn filtered_sessions(
         !session.archived
             && match filter {
                 Filter::All => true,
-                Filter::Active => matches!(
-                    session.status.as_str(),
-                    "running" | "working" | "busy" | "streaming"
-                ),
+                Filter::Active => {
+                    working.contains(&session.session_id) || status_is_working(&session.status)
+                }
                 Filter::Saved => session.saved,
             }
             && words.iter().all(|word| text.contains(word))
@@ -118,7 +160,9 @@ impl Workspace {
             }) => {
                 self.open_resume(&OpenResume, window, cx);
                 let state = self.resume.as_mut().unwrap();
-                state.search.update(cx, |input, cx| input.restore(search, cx));
+                state
+                    .search
+                    .update(cx, |input, cx| input.restore(search, cx));
                 state.query = query;
                 state.selected = selected;
                 state.filter = filter;
@@ -127,9 +171,12 @@ impl Workspace {
             None | Some(Snapshot::Legacy) if resume_requested => {
                 // Old linked hosts omitted picker state. Recover only while the
                 // active slot is still the unstarted startup draft, not a chat.
-                if snapshot.is_none() || self.slots.get(self.active).is_some_and(|slot| {
-                    slot.panel.read(cx).is_startup_draft()
-                }) {
+                if snapshot.is_none()
+                    || self
+                        .slots
+                        .get(self.active)
+                        .is_some_and(|slot| slot.panel.read(cx).is_startup_draft())
+                {
                     self.open_resume(&OpenResume, window, cx);
                     self.resume.as_mut().unwrap().start_on_close = true;
                 }
@@ -170,11 +217,71 @@ impl Workspace {
         sessions
     }
 
+    /// Sessions open in this window, and whether each is mid-turn.
+    fn resume_open_activity(&self, cx: &App) -> HashMap<String, bool> {
+        self.slots
+            .iter()
+            .filter(|slot| !slot.closing)
+            .map(|slot| {
+                let panel = slot.panel.read(cx);
+                (panel.session_id.clone(), panel.sidebar_activity().is_some())
+            })
+            .collect()
+    }
+
+    fn resume_working(&self, cx: &App) -> HashSet<String> {
+        let mut working = self
+            .resume
+            .as_ref()
+            .map(|state| state.streaming.clone())
+            .unwrap_or_default();
+        working.extend(
+            self.resume_open_activity(cx)
+                .into_iter()
+                .filter_map(|(id, active)| active.then_some(id)),
+        );
+        working
+    }
+
     fn resume_matches(&self, cx: &App) -> Vec<jcode_sdk::SessionInfo> {
         let Some(state) = &self.resume else {
             return Vec::new();
         };
-        filtered_sessions(self.resume_sessions(cx), &state.query, state.filter)
+        filtered_sessions(
+            self.resume_sessions(cx),
+            &state.query,
+            state.filter,
+            &self.resume_working(cx),
+        )
+    }
+
+    /// Poll the daemon's streaming markers while the picker stays open.
+    /// Dropping the picker state drops this task and stops the loop.
+    fn watch_resume_presence(cx: &mut Context<Self>) -> gpui::Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let streaming = cx
+                    .background_executor()
+                    .spawn(async { streaming_sessions() })
+                    .await;
+                let open = this
+                    .update(cx, |this, cx| {
+                        let Some(state) = this.resume.as_mut() else {
+                            return false;
+                        };
+                        if state.streaming != streaming {
+                            state.streaming = streaming;
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !open {
+                    return;
+                }
+                cx.background_executor().timer(PRESENCE_REFRESH).await;
+            }
+        })
     }
 
     pub(super) fn open_resume(
@@ -220,7 +327,13 @@ impl Workspace {
             preview_id: None,
             preview: None,
             preview_task: None,
+            streaming: HashSet::new(),
+            _presence_task: None,
         });
+        let presence = Self::watch_resume_presence(cx);
+        if let Some(state) = self.resume.as_mut() {
+            state._presence_task = Some(presence);
+        }
         cx.notify();
     }
 
@@ -320,6 +433,31 @@ impl Workspace {
 
     pub(super) fn render_resume(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let matches = self.resume_matches(cx);
+        let working = self.resume_working(cx);
+        let open_activity = self.resume_open_activity(cx);
+        let open_spinners: HashMap<String, gpui::AnyView> = self
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                let panel = slot.panel.read(cx);
+                panel
+                    .sidebar_activity()
+                    .map(|view| (panel.session_id.clone(), view))
+            })
+            .collect();
+        let liveness = |session: &jcode_sdk::SessionInfo| {
+            if working.contains(&session.session_id) || status_is_working(&session.status) {
+                Liveness::Working
+            } else if open_activity.contains_key(&session.session_id) {
+                Liveness::Open
+            } else {
+                Liveness::Inactive
+            }
+        };
+        let working_count = matches
+            .iter()
+            .filter(|session| liveness(session) == Liveness::Working)
+            .count();
         let state = self.resume.as_mut().expect("resume picker is open");
         // The session catalog arrives asynchronously after a reload. Do not
         // discard the restored selection while only local slots are available.
@@ -351,12 +489,20 @@ impl Workspace {
                 _ if session.saved => "★ ".to_string(),
                 _ => String::new(),
             };
+            let live = liveness(session);
+            let status = match live {
+                Liveness::Working => "working".to_string(),
+                Liveness::Open => "open".to_string(),
+                Liveness::Inactive => session.status.clone(),
+            };
             let metadata = format!(
                 "{}{} · {}",
                 saved_marker,
-                session.status,
+                status,
                 sidebar_session_meta(session).unwrap_or_else(|| "Session history".into())
             );
+            let badge =
+                resume_liveness_badge(live, open_spinners.get(&session.session_id).cloned(), index);
             rows = rows.child(
                 div()
                     .id(("resume-row", index))
@@ -373,7 +519,20 @@ impl Workspace {
                         }
                         this.resume_selected(window, cx);
                     }))
-                    .child(div().text_ellipsis().child(format!("{icon} {title}")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .child(format!("{icon} {title}")),
+                            )
+                            .children(badge),
+                    )
                     .child(
                         div()
                             .text_size(px(12.0))
@@ -432,7 +591,11 @@ impl Workspace {
                 ),
                 Some(format!(
                     "{}{}",
-                    session.status,
+                    match liveness(session) {
+                        Liveness::Working => "working now".to_string(),
+                        Liveness::Open => "open in Desktop".to_string(),
+                        Liveness::Inactive => session.status.clone(),
+                    },
                     if session.saved { " · saved" } else { "" }
                 )),
                 sidebar_session_meta(session),
@@ -565,7 +728,11 @@ impl Workspace {
                     .child(
                         div()
                             .text_color(theme.TEXT_DIM)
-                            .child(format!("{} sessions", matches.len())),
+                            .child(if working_count > 0 {
+                                format!("{} sessions · {working_count} working", matches.len())
+                            } else {
+                                format!("{} sessions", matches.len())
+                            }),
                     ),
             )
             .child(
@@ -652,6 +819,41 @@ type PreviewHistory = (
     Vec<jcode_sdk::RenderedImage>,
 );
 
+/// A compact right-aligned tag. Working rows get a tinted pill so they stand
+/// out at a glance. Open rows get a quiet label.
+fn resume_liveness_badge(
+    live: Liveness,
+    spinner: Option<gpui::AnyView>,
+    index: usize,
+) -> Option<gpui::AnyElement> {
+    let theme = Theme::global();
+    let (label, ink, fill) = match live {
+        Liveness::Inactive => return None,
+        Liveness::Working => ("Working", theme.OK, Some(gpui::Rgba { a: 0.2, ..theme.OK })),
+        Liveness::Open => ("Open", theme.TEXT_DIM, None),
+    };
+    Some(
+        div()
+            .debug_selector(move || format!("resume-row-{index}-{}", label.to_lowercase()))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .px_2()
+            .py(px(1.0))
+            .rounded_full()
+            .text_size(px(12.0))
+            .text_color(ink)
+            .when_some(fill, |el, fill| el.bg(fill))
+            .when(live == Liveness::Working, |el| match spinner {
+                Some(spinner) => el.child(div().flex_none().child(spinner)),
+                None => el.child(div().flex_none().size(px(7.0)).rounded_full().bg(ink)),
+            })
+            .child(label)
+            .into_any_element(),
+    )
+}
+
 fn resume_preview_notice(text: impl Into<gpui::SharedString>) -> gpui::AnyElement {
     div()
         .size_full()
@@ -695,13 +897,19 @@ fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
             role: role.into(),
             content,
         };
-        let name = if id.ends_with("alpha") { "Alpha" } else { "Beta" };
+        let name = if id.ends_with("alpha") {
+            "Alpha"
+        } else {
+            "Beta"
+        };
         return Ok((
             vec![
                 message("user", "Please recover the standalone conversation.".into()),
                 message(
                     "assistant",
-                    format!("**{name}** conversation preview\n\n- rendered with the chat panel\n- `markdown` included"),
+                    format!(
+                        "**{name}** conversation preview\n\n- rendered with the chat panel\n- `markdown` included"
+                    ),
                 ),
             ],
             Vec::new(),
@@ -803,7 +1011,10 @@ mod tests {
         let (host, vcx) = cx.add_window_view(|_, cx| {
             let panel = preview_panel(
                 "abc".into(),
-                vec![message("user", "question"), message("assistant", "**answer**")],
+                vec![
+                    message("user", "question"),
+                    message("assistant", "**answer**"),
+                ],
                 Vec::new(),
                 cx,
             );
@@ -890,9 +1101,17 @@ mod tests {
         labelled.saved = true;
         labelled.save_label = Some("Investor Catch Up Work".into());
         let other = session_info("session_other", Some("Other"));
-        let matches = filtered_sessions(vec![labelled, other], "investor work", Filter::All);
+        let matches = filtered_sessions(
+            vec![labelled, other],
+            "investor work",
+            Filter::All,
+            &HashSet::new(),
+        );
         assert_eq!(
-            matches.iter().map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+            matches
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["session_labelled"]
         );
     }
@@ -905,11 +1124,11 @@ mod tests {
         let sessions = vec![alpha.clone(), beta];
         for query in ["  RÉSUMÉ   client ", "alpha-123", "PLANNER"] {
             assert_eq!(
-                filtered_sessions(sessions.clone(), query, Filter::All),
+                filtered_sessions(sessions.clone(), query, Filter::All, &HashSet::new()),
                 vec![alpha.clone()]
             );
         }
-        assert!(filtered_sessions(sessions, "not-found", Filter::All).is_empty());
+        assert!(filtered_sessions(sessions, "not-found", Filter::All, &HashSet::new()).is_empty());
     }
 
     #[test]
@@ -926,19 +1145,88 @@ mod tests {
         archived.archived = true;
         let sessions = vec![duplicate, saved.clone(), archived, running.clone()];
         assert_eq!(
-            filtered_sessions(sessions.clone(), "", Filter::All),
+            filtered_sessions(sessions.clone(), "", Filter::All, &HashSet::new()),
             vec![saved.clone(), running.clone()]
         );
         assert_eq!(
-            filtered_sessions(sessions.clone(), "", Filter::Active),
+            filtered_sessions(sessions.clone(), "", Filter::Active, &HashSet::new()),
             vec![running]
         );
-        assert_eq!(filtered_sessions(sessions, "", Filter::Saved), vec![saved]);
+        assert_eq!(
+            filtered_sessions(sessions, "", Filter::Saved, &HashSet::new()),
+            vec![saved]
+        );
         assert!(is_resume_command(" /session \n"));
         assert!(is_resume_command("/resume"));
         assert!(is_resume_command("/sessions"));
         assert!(!is_resume_command("/resumeall"));
         assert!(!is_resume_command("/resume unrelated"));
+    }
+
+    #[test]
+    fn resume_active_filter_includes_daemon_streaming_sessions() {
+        let idle = session_info("idle", None);
+        let streaming = session_info("streaming", None);
+        let working = HashSet::from(["streaming".to_string()]);
+        assert_eq!(
+            filtered_sessions(vec![idle, streaming.clone()], "", Filter::Active, &working),
+            vec![streaming]
+        );
+    }
+
+    #[gpui::test]
+    fn resume_rows_mark_working_and_open_sessions(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.single_panel = true;
+            w.open_startup_draft(cx);
+            let mut busy = session_info("busy", Some("Busy"));
+            busy.updated_at_ms = Some(30);
+            let mut quiet = session_info("quiet", Some("Quiet"));
+            quiet.updated_at_ms = Some(20);
+            let mut remote = session_info("remote", Some("Remote"));
+            remote.updated_at_ms = Some(10);
+            w.sessions = vec![busy, quiet, remote];
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| w.open_resume(&OpenResume, window, cx));
+        // Let the first presence poll land before injecting daemon state.
+        vcx.run_until_parked();
+        workspace.update(vcx, |w, cx| {
+            w.resume.as_mut().unwrap().streaming = HashSet::from(["remote".to_string()]);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let rows = workspace.read_with(vcx, |w, cx| {
+            w.resume_matches(cx)
+                .into_iter()
+                .map(|s| s.session_id)
+                .collect::<Vec<_>>()
+        });
+        let remote = rows.iter().position(|id| id == "remote").unwrap();
+        let quiet = rows.iter().position(|id| id == "quiet").unwrap();
+        assert!(
+            vcx.debug_bounds(format!("resume-row-{remote}-working").leak())
+                .is_some()
+        );
+        assert!(
+            vcx.debug_bounds(format!("resume-row-{quiet}-working").leak())
+                .is_none()
+        );
+        assert!(
+            vcx.debug_bounds(format!("resume-row-{quiet}-open").leak())
+                .is_none()
+        );
+        // The local startup draft is open in this window but idle.
+        let draft = rows
+            .iter()
+            .position(|id| !["busy", "quiet", "remote"].contains(&id.as_str()));
+        if let Some(draft) = draft {
+            assert!(
+                vcx.debug_bounds(format!("resume-row-{draft}-open").leak())
+                    .is_some()
+            );
+        }
     }
 
     fn reload_picker(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -980,14 +1268,27 @@ mod tests {
             let expected = w.resume_snapshot(cx);
             reload_picker(w, window, cx);
             assert_eq!(w.resume_snapshot(cx), expected);
-            assert!(w.resume.as_ref().unwrap().search.focus_handle(cx).is_focused(window));
+            assert!(
+                w.resume
+                    .as_ref()
+                    .unwrap()
+                    .search
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
             w.apply(harness::Update::Connected, cx);
             assert_eq!(w.resume_snapshot(cx), expected);
-            assert!(commands.try_recv().is_err(), "reload must not create or attach a session");
+            assert!(
+                commands.try_recv().is_err(),
+                "reload must not create or attach a session"
+            );
         });
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, _| {
-            assert_eq!(w.resume.as_ref().unwrap().selected.as_deref(), Some("selected-session"));
+            assert_eq!(
+                w.resume.as_ref().unwrap().selected.as_deref(),
+                Some("selected-session")
+            );
         });
         assert!(commands.try_recv().is_err());
     }
@@ -1005,7 +1306,10 @@ mod tests {
             assert!(w.slots[w.active].panel.read(cx).is_startup_draft());
             assert_eq!(w.resume_snapshot(cx), Snapshot::Closed);
             reload_picker(w, window, cx);
-            assert!(w.resume.is_none(), "--resume must not reopen an intentionally closed picker");
+            assert!(
+                w.resume.is_none(),
+                "--resume must not reopen an intentionally closed picker"
+            );
         });
     }
 
@@ -1028,14 +1332,15 @@ mod tests {
             assert_eq!(w.slots[w.active].panel.read(cx).session_id, "target");
             while commands.try_recv().is_ok() {}
             w.apply(harness::Update::Connected, cx);
-            assert!(commands.try_recv().is_err(), "must not start the hidden startup draft");
+            assert!(
+                commands.try_recv().is_err(),
+                "must not start the hidden startup draft"
+            );
         });
     }
 
     #[gpui::test]
-    fn resume_reload_legacy_recovers_only_requested_active_startup(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn resume_reload_legacy_recovers_only_requested_active_startup(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = harness::spawn_recording();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -1044,7 +1349,8 @@ mod tests {
             w
         });
         workspace.update_in(vcx, |w, window, cx| {
-            let mut json = serde_json::to_value(w.snapshot_for_reload(window, cx).unwrap()).unwrap();
+            let mut json =
+                serde_json::to_value(w.snapshot_for_reload(window, cx).unwrap()).unwrap();
             json.as_object_mut().unwrap().remove("resume");
             let legacy = WorkspaceSnapshot::decode(&serde_json::to_vec(&json).unwrap()).unwrap();
             assert_eq!(legacy.resume, Snapshot::Legacy);
@@ -1053,14 +1359,24 @@ mod tests {
             assert!(w.resume.is_none());
             w.restore_resume(Some(Snapshot::Legacy), true, window, cx);
             assert!(w.resume.as_ref().unwrap().start_on_close);
-            assert!(w.resume.as_ref().unwrap().search.focus_handle(cx).is_focused(window));
+            assert!(
+                w.resume
+                    .as_ref()
+                    .unwrap()
+                    .search
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
             w.apply(harness::Update::Connected, cx);
             assert!(commands.try_recv().is_err());
             w.sessions = vec![session_info("target", Some("Target"))];
             w.resume.as_mut().unwrap().selected = Some("target".into());
             w.resume_selected(window, cx);
             w.restore_resume(Some(Snapshot::Legacy), true, window, cx);
-            assert!(w.resume.is_none(), "legacy --resume must not replace an active chat");
+            assert!(
+                w.resume.is_none(),
+                "legacy --resume must not replace an active chat"
+            );
         });
     }
 
