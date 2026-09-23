@@ -168,14 +168,23 @@ fn base_options(bounds: Bounds<Pixels>) -> WindowOptions {
 fn popup_bounds(area: Option<Bounds<Pixels>>) -> Bounds<Pixels> {
     let surface = size(px(SURFACE_WIDTH), px(SURFACE_HEIGHT));
     let Some(area) = area else {
-        return Bounds { origin: point(px(0.), px(0.)), size: surface };
+        return Bounds {
+            origin: point(px(0.), px(0.)),
+            size: surface,
+        };
     };
     let x = area.origin.x + (area.size.width - surface.width) / 2.;
     let y = area.origin.y + area.size.height - surface.height - px(BOTTOM_MARGIN);
-    Bounds { origin: point(x, y.max(area.origin.y)), size: surface }
+    Bounds {
+        origin: point(x, y.max(area.origin.y)),
+        size: surface,
+    }
 }
 
-fn popup_options(area: Option<Bounds<Pixels>>, display_id: Option<gpui::DisplayId>) -> WindowOptions {
+fn popup_options(
+    area: Option<Bounds<Pixels>>,
+    display_id: Option<gpui::DisplayId>,
+) -> WindowOptions {
     WindowOptions {
         kind: WindowKind::PopUp,
         display_id,
@@ -347,7 +356,10 @@ mod tests {
         assert_eq!(bounds.center().x, area.center().x);
         assert_eq!(bounds.bottom(), area.bottom() - px(BOTTOM_MARGIN));
         // Tiny or missing displays still yield an on-screen fixed surface.
-        let tiny = Bounds { origin: point(px(0.), px(0.)), size: size(px(20.), px(20.)) };
+        let tiny = Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(20.), px(20.)),
+        };
         let Some(WindowBounds::Windowed(bounds)) = popup_options(Some(tiny), None).window_bounds
         else {
             panic!()
@@ -425,7 +437,10 @@ mod tests {
             assert_eq!(meter.is_some(), levels.is_some());
             if let Some(meter) = meter {
                 // Single row: label left of the meter, both inside the pill.
-                assert!(status.right() <= meter.left(), "{title}: label overlaps meter");
+                assert!(
+                    status.right() <= meter.left(),
+                    "{title}: label overlaps meter"
+                );
                 assert!(meter.left() >= pill.left() && meter.right() <= pill.right());
                 assert!(meter.top() >= pill.top() && meter.bottom() <= pill.bottom());
             }

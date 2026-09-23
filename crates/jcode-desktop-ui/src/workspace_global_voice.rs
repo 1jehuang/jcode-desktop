@@ -60,6 +60,38 @@ fn host_press_uses_global_owner(window_active: bool, overlay_available: bool) ->
     !window_active && overlay_available
 }
 
+/// Marks a single-panel window opened by Shift+Copilot.
+#[cfg(target_os = "linux")]
+const SPAWNED_HOLD_FLAG: &str = "--global-voice-hold";
+
+/// Shift+Copilot: a new single-panel window in `voice.spawn_working_dir`
+/// that takes over the current hold. This window only launches it.
+#[cfg(target_os = "linux")]
+fn spawn_voice_window() {
+    let Ok(executable) = std::env::current_exe() else {
+        eprintln!("global voice: cannot locate the desktop executable to spawn");
+        return;
+    };
+    let mut command = std::process::Command::new(executable);
+    command.args(spawn_args(std::env::args_os().skip(1)));
+    if let Some(dir) = crate::config::get().voice.spawn_working_dir.clone() {
+        command.env("JCODE_DESKTOP_WORKING_DIR", dir);
+    }
+    match command.spawn() {
+        Ok(child) => eprintln!("global voice: spawned voice window {}", child.id()),
+        Err(error) => eprintln!("global voice: could not spawn voice window: {error}"),
+    }
+}
+
+/// Keep this host's hot-reload choice. Never forward launch or voice flags.
+#[cfg(target_os = "linux")]
+fn spawn_args(own: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["--single-panel".into(), SPAWNED_HOLD_FLAG.into()];
+    args.extend(own.filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"));
+    args
+}
+
 impl State {
     #[cfg(target_os = "linux")]
     pub(super) fn ready(&self) -> bool {
@@ -148,6 +180,12 @@ impl Workspace {
             "global voice: listening on {} configured device(s)",
             crate::config::get().voice.global_devices.len()
         );
+        let mut listener = listener;
+        if std::env::args_os().any(|arg| arg == SPAWNED_HOLD_FLAG) {
+            // Shift+Copilot opened this window. Record the hold that is
+            // still down, so the opener's key-up finishes this transcript.
+            listener.adopt_held_key();
+        }
         self.global_voice.listener = Some(listener);
         self.global_voice.set_active(window.is_window_active());
         self.ensure_global_voice_task(window, cx);
@@ -194,6 +232,8 @@ impl Workspace {
             for edge in edges {
                 match edge {
                     Edge::Press => self.global_voice_press(window, cx),
+                    Edge::Spawn => spawn_voice_window(),
+                    Edge::Tap => self.toggle_voice(&ToggleVoice, window, cx),
                     Edge::Release => self.global_voice_release(cx),
                     Edge::Cancel => {
                         eprintln!("global voice: canceled by input listener");
@@ -487,6 +527,22 @@ impl Workspace {
                 false
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod spawn_tests {
+    use super::*;
+
+    #[test]
+    fn spawned_voice_window_is_single_panel_and_keeps_only_reload_choice() {
+        let own = ["--hot-reload", "--resume", "--toggle-voice", "--session=a"]
+            .map(std::ffi::OsString::from);
+        assert_eq!(
+            spawn_args(own.into_iter()),
+            ["--single-panel", SPAWNED_HOLD_FLAG, "--hot-reload"]
+                .map(std::ffi::OsString::from)
+        );
     }
 }
 

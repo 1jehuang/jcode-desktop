@@ -20,6 +20,8 @@ pub struct VoiceConfig {
     pub global_hold: bool,
     /// Explicit keyboard paths only. An empty list must never discover all devices.
     pub global_devices: Vec<PathBuf>,
+    /// Working directory for the window Shift+Copilot opens. Unset inherits.
+    pub spawn_working_dir: Option<PathBuf>,
 }
 
 /// Desktop feedback is opt-in and independent of the terminal client's bell.
@@ -517,6 +519,9 @@ mod tests {
             let voice = parse(&text, standalone).unwrap().voice;
             assert!(voice.global_hold);
             assert_eq!(voice.global_devices, vec![PathBuf::from(device)]);
+            assert_eq!(voice.spawn_working_dir, None);
+            let voice = parse(&format!("[{prefix}]\nspawn_working_dir = '/repo'\n"), standalone).unwrap().voice;
+            assert_eq!(voice.spawn_working_dir, Some(PathBuf::from("/repo")));
             let voice = parse(&format!("[{prefix}]\nglobal_hold = true\n"), standalone).unwrap().voice;
             assert!(voice.global_hold);
             assert!(voice.global_devices.is_empty());

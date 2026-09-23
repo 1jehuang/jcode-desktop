@@ -41,10 +41,16 @@ fn global_voice_routes_through_jev_and_pill_shows_the_decision(cx: &mut gpui::Te
 
         panel.voice.phase = Phase::Idle;
         for (decision, title) in [
-            ("Jev chose: Coding agent · Sent now", "Jev → Coding agent"),
+            (
+                "Jev chose: Coding agent · Sent now",
+                "Jev → Coding agent",
+            ),
             ("Jev chose: Quick action · Navigation", "Jev → Quick action"),
             ("Jev chose: Quick action · New session", "Jev → New session"),
-            ("Jev chose: Quick action · Open session", "Jev → Open session"),
+            (
+                "Jev chose: Quick action · Open session",
+                "Jev → Open session",
+            ),
         ] {
             panel.voice.error = None;
             panel.voice.decision = Some(decision.into());
@@ -54,8 +60,10 @@ fn global_voice_routes_through_jev_and_pill_shows_the_decision(cx: &mut gpui::Te
         }
         panel.voice.decision = Some("Jev chose: Quick action · Navigation".into());
         panel.set_global_voice_decision("Jev chose: Quick action · Previous session".into(), cx);
-        assert_eq!(panel.global_voice_snapshot(&attempt).unwrap().title, "Jev → Previous session");
-
+        assert_eq!(
+            panel.global_voice_snapshot(&attempt).unwrap().title,
+            "Jev → Previous session"
+        );
     });
 }
 

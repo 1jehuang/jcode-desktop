@@ -46,11 +46,17 @@ impl Panel {
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
             .when(phase == Phase::Idle, |el| {
-                el.w((viewport.width - px(32.)).min(px(360.))).min_h(px(44.)).px_3().py_2()
+                el.w((viewport.width - px(32.)).min(px(360.)))
+                    .min_h(px(44.))
+                    .px_3()
+                    .py_2()
             })
             // Active capture hugs its content: waveform or status plus controls.
             .when(phase != Phase::Idle, |el| {
-                el.max_w(viewport.width - px(32.)).h(px(30.)).pl(px(12.)).pr(px(4.))
+                el.max_w(viewport.width - px(32.))
+                    .h(px(30.))
+                    .pl(px(12.))
+                    .pr(px(4.))
             })
             .flex()
             .items_center()

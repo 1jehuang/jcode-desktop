@@ -41,15 +41,25 @@ fn is_copilot(stroke: &gpui::Keystroke) -> bool {
 
 fn is_voice_hold(stroke: &gpui::Keystroke) -> bool {
     #[cfg(target_os = "macos")]
-    if stroke.key == "m" && stroke.modifiers.platform && stroke.modifiers.shift
-        && !stroke.modifiers.control && !stroke.modifiers.alt && !stroke.modifiers.function {
+    if stroke.key == "m"
+        && stroke.modifiers.platform
+        && stroke.modifiers.shift
+        && !stroke.modifiers.control
+        && !stroke.modifiers.alt
+        && !stroke.modifiers.function
+    {
         return true;
     }
     // Matches the host's RegisterHotKey chord so a failed registration still
     // leaves a focused hold-to-talk.
     #[cfg(target_os = "windows")]
-    if stroke.key == "space" && stroke.modifiers.control && stroke.modifiers.shift
-        && !stroke.modifiers.platform && !stroke.modifiers.alt && !stroke.modifiers.function {
+    if stroke.key == "space"
+        && stroke.modifiers.control
+        && stroke.modifiers.shift
+        && !stroke.modifiers.platform
+        && !stroke.modifiers.alt
+        && !stroke.modifiers.function
+    {
         return true;
     }
     is_copilot(stroke)
@@ -143,9 +153,7 @@ impl Workspace {
             return;
         };
         let panel = self.slots[index].panel.clone();
-        if !panel.read(cx).voice_active()
-            && self.account_sign_in.visible
-        {
+        if !panel.read(cx).voice_active() && self.account_sign_in.visible {
             return;
         }
         self.set_active(index, cx);
@@ -194,11 +202,7 @@ impl Workspace {
         let action_subscription = cx.subscribe_in(
             panel,
             window,
-            |workspace,
-             source,
-             request: &crate::panel::voice::VoiceActionRequested,
-             window,
-             cx| {
+            |workspace, source, request: &crate::panel::voice::VoiceActionRequested, window, cx| {
                 if workspace.account_sign_in.visible
                     || !workspace
                         .slots
@@ -244,7 +248,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active) = self.slots.get(self.active) else { return false };
+        let Some(active) = self.slots.get(self.active) else {
+            return false;
+        };
         let current = (active.row, self.active);
         // Follow the sidebar's top-to-bottom strip order, skipping utility and
         // closing panels. Navigation starts at current focus, not the old owner.
@@ -252,11 +258,21 @@ impl Workspace {
             let position = (slot.row, index);
             (!slot.closing
                 && slot.panel.read(cx).supports_voice()
-                && if forward { position > current } else { position < current })
-                .then_some(position)
+                && if forward {
+                    position > current
+                } else {
+                    position < current
+                })
+            .then_some(position)
         });
-        let target = if forward { candidates.min() } else { candidates.max() };
-        let Some((_, index)) = target else { return false };
+        let target = if forward {
+            candidates.min()
+        } else {
+            candidates.max()
+        };
+        let Some((_, index)) = target else {
+            return false;
+        };
         self.set_active(index, cx);
         self.overview = false;
         self.overview_progress.set(0.0, Instant::now());
@@ -265,7 +281,12 @@ impl Workspace {
         true
     }
 
-    fn show_voice_navigation_decision(&self, action: &str, source: &Entity<Panel>, cx: &mut Context<Self>) {
+    fn show_voice_navigation_decision(
+        &self,
+        action: &str,
+        source: &Entity<Panel>,
+        cx: &mut Context<Self>,
+    ) {
         let trace = source.read(cx).voice_trace();
         if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing) {
             slot.panel.update(cx, |panel, cx| {
@@ -298,10 +319,14 @@ impl Workspace {
         if self.account_sign_in.visible {
             return;
         }
-        let Some(index) = self.voice_target(cx) else { return };
+        let Some(index) = self.voice_target(cx) else {
+            return;
+        };
         let panel = self.slots[index].panel.clone();
         // A hold never toggles or takes ownership of an existing click recording.
-        if panel.read(cx).voice_active() { return; }
+        if panel.read(cx).voice_active() {
+            return;
+        }
         self.set_active(index, cx);
         if self.overview {
             self.overview = false;
@@ -427,8 +452,10 @@ mod tests {
             assert_eq!(workspace.slots.len(), 2);
             assert_eq!(workspace.active, 1);
             assert_eq!(workspace.slots[1].panel.read(cx).session_id, "voice-target");
-            assert_eq!(workspace.slots[1].panel.read(cx).voice_decision_for_test(),
-                Some("Jev chose: Quick action · Open session"));
+            assert_eq!(
+                workspace.slots[1].panel.read(cx).voice_decision_for_test(),
+                Some("Jev chose: Quick action · Open session")
+            );
         });
     }
 
@@ -490,8 +517,14 @@ mod tests {
                     let owner = workspace.slots[start].panel.clone();
                     workspace.configure_voice_navigation(&owner, window, cx);
                     owner.update(cx, |panel, cx| {
-                        panel.input.update(cx, |input, cx| input.set_content("typed draft".into(), cx));
-                        panel.resolve_voice_for_test("navigate", Ok(VoiceIntent::QuickAction(action)), cx);
+                        panel
+                            .input
+                            .update(cx, |input, cx| input.set_content("typed draft".into(), cx));
+                        panel.resolve_voice_for_test(
+                            "navigate",
+                            Ok(VoiceIntent::QuickAction(action)),
+                            cx,
+                        );
                     });
                     owner
                 })
@@ -499,18 +532,27 @@ mod tests {
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, cx| {
                 assert_eq!(workspace.active, expected, "{label}");
-                assert_eq!(workspace.slots.len(), if label == "New session" { 3 } else { 2 });
-                assert_eq!(owner.read(cx).input.read(cx).content.as_ref(), "typed draft");
-                assert_eq!(workspace.slots[expected].panel.read(cx).voice_decision_for_test(),
-                    Some(format!("Jev chose: Quick action · {label}").as_str()));
+                assert_eq!(
+                    workspace.slots.len(),
+                    if label == "New session" { 3 } else { 2 }
+                );
+                assert_eq!(
+                    owner.read(cx).input.read(cx).content.as_ref(),
+                    "typed draft"
+                );
+                assert_eq!(
+                    workspace.slots[expected]
+                        .panel
+                        .read(cx)
+                        .voice_decision_for_test(),
+                    Some(format!("Jev chose: Quick action · {label}").as_str())
+                );
             });
         }
     }
 
     #[gpui::test]
-    fn voice_navigation_ignores_modals_and_closed_recording_owners(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn voice_navigation_ignores_modals_and_closed_recording_owners(cx: &mut gpui::TestAppContext) {
         use jcode_base::voice_intent::{QuickAction, VoiceIntent};
         for blocked in ["account", "closing", "removed"] {
             for session_match in [false, true] {
@@ -518,7 +560,8 @@ mod tests {
                     let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
                     workspace.push_test_panel("voice-owner", cx);
                     workspace.push_test_panel("voice-target", cx);
-                    workspace.sessions = vec![super::super::tests::session_info("voice-target", None)];
+                    workspace.sessions =
+                        vec![super::super::tests::session_info("voice-target", None)];
                     workspace
                 });
                 let owner = vcx.update(|window, cx| {
@@ -529,11 +572,15 @@ mod tests {
                         match blocked {
                             "account" => workspace.account_sign_in.visible = true,
                             "closing" => workspace.slots[0].closing = true,
-                            "removed" => { workspace.slots.remove(0); }
+                            "removed" => {
+                                workspace.slots.remove(0);
+                            }
                             _ => unreachable!(),
                         }
                         owner.update(cx, |panel, cx| {
-                            panel.input.update(cx, |input, cx| input.set_content("typed".into(), cx));
+                            panel
+                                .input
+                                .update(cx, |input, cx| input.set_content("typed".into(), cx));
                             let intent = if session_match {
                                 VoiceIntent::OpenSession("voice-target".into())
                             } else {
@@ -547,7 +594,10 @@ mod tests {
                 vcx.run_until_parked();
                 workspace.read_with(vcx, |workspace, _| {
                     assert_eq!(workspace.active, 0, "{blocked}");
-                    assert_eq!(workspace.slots.len(), if blocked == "removed" { 1 } else { 2 });
+                    assert_eq!(
+                        workspace.slots.len(),
+                        if blocked == "removed" { 1 } else { 2 }
+                    );
                 });
                 owner.read_with(vcx, |panel, cx| {
                     assert_eq!(panel.input.read(cx).content.as_ref(), "typed\nnavigate");
@@ -575,14 +625,20 @@ mod tests {
             (QuickAction::NextSession, 0, 3),
             (QuickAction::PreviousSession, 3, 0),
         ] {
-            vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-                workspace.set_active(start, cx);
-                let owner = workspace.slots[start].panel.clone();
-                workspace.configure_voice_navigation(&owner, window, cx);
-                owner.update(cx, |panel, cx| {
-                    panel.resolve_voice_for_test("navigate", Ok(VoiceIntent::QuickAction(action)), cx);
-                });
-            }));
+            vcx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_active(start, cx);
+                    let owner = workspace.slots[start].panel.clone();
+                    workspace.configure_voice_navigation(&owner, window, cx);
+                    owner.update(cx, |panel, cx| {
+                        panel.resolve_voice_for_test(
+                            "navigate",
+                            Ok(VoiceIntent::QuickAction(action)),
+                            cx,
+                        );
+                    });
+                })
+            });
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, _| {
                 assert_eq!(workspace.active, expected);
@@ -592,9 +648,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_navigation_at_session_boundary_keeps_the_utterance(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn voice_navigation_at_session_boundary_keeps_the_utterance(cx: &mut gpui::TestAppContext) {
         use jcode_base::voice_intent::{QuickAction, VoiceIntent};
         for action in [QuickAction::NextSession, QuickAction::PreviousSession] {
             let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -602,19 +656,36 @@ mod tests {
                 workspace.push_test_panel("only-chat", cx);
                 workspace
             });
-            vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-                let owner = workspace.slots[0].panel.clone();
-                workspace.configure_voice_navigation(&owner, window, cx);
-                owner.update(cx, |panel, cx| {
-                    panel.input.update(cx, |input, cx| input.set_content("typed".into(), cx));
-                    panel.resolve_voice_for_test("navigate", Ok(VoiceIntent::QuickAction(action)), cx);
-                });
-            }));
+            vcx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    let owner = workspace.slots[0].panel.clone();
+                    workspace.configure_voice_navigation(&owner, window, cx);
+                    owner.update(cx, |panel, cx| {
+                        panel
+                            .input
+                            .update(cx, |input, cx| input.set_content("typed".into(), cx));
+                        panel.resolve_voice_for_test(
+                            "navigate",
+                            Ok(VoiceIntent::QuickAction(action)),
+                            cx,
+                        );
+                    });
+                })
+            });
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, cx| {
                 assert_eq!(workspace.active, 0);
                 assert_eq!(workspace.slots.len(), 1);
-                assert_eq!(workspace.slots[0].panel.read(cx).input.read(cx).content.as_ref(), "typed\nnavigate");
+                assert_eq!(
+                    workspace.slots[0]
+                        .panel
+                        .read(cx)
+                        .input
+                        .read(cx)
+                        .content
+                        .as_ref(),
+                    "typed\nnavigate"
+                );
             });
         }
     }
@@ -702,28 +773,37 @@ mod tests {
             disable_test_microphones(&mut workspace, cx);
             workspace
         });
-        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-            workspace.set_active(0, cx);
-            workspace.focus_active(window, cx);
-        }));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_active(0, cx);
+                workspace.focus_active(window, cx);
+            })
+        });
         vcx.run_until_parked();
         vcx.simulate_event(down("super-shift-xf86assistant", false));
         workspace.read_with(vcx, |workspace, _| assert!(workspace.voice_key.is_down()));
         // Offline windows cannot capture audio. Install only the held connecting
         // state after real key-down, then exercise repeat and key-up routing.
         workspace.update(vcx, |workspace, cx| {
-            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
+            workspace.slots[0]
+                .panel
+                .update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
         });
         for held in [true, false, true, false] {
             vcx.simulate_event(down("super-shift-xf86assistant", held));
             workspace.read_with(vcx, |workspace, cx| {
-                assert!(workspace.slots[0].panel.read(cx).voice_active(), "repeat must not stop capture");
+                assert!(
+                    workspace.slots[0].panel.read(cx).voice_active(),
+                    "repeat must not stop capture"
+                );
             });
         }
-        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-            workspace.set_active(1, cx);
-            workspace.focus_active(window, cx);
-        }));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_active(1, cx);
+                workspace.focus_active(window, cx);
+            })
+        });
         vcx.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse("xf86touchpadoff").unwrap(),
         });
@@ -742,14 +822,22 @@ mod tests {
             disable_test_microphones(&mut workspace, cx);
             workspace
         });
-        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_checking_for_test());
-            workspace.focus_active(window, cx);
-        }));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.slots[0]
+                    .panel
+                    .update(cx, |panel, _| panel.set_voice_checking_for_test());
+                workspace.focus_active(window, cx);
+            })
+        });
         vcx.run_until_parked();
         vcx.simulate_event(down("super-shift-f23", false));
-        vcx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("f23").unwrap() });
-        workspace.read_with(vcx, |workspace, cx| assert!(workspace.slots[0].panel.read(cx).voice_active()));
+        vcx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("f23").unwrap(),
+        });
+        workspace.read_with(vcx, |workspace, cx| {
+            assert!(workspace.slots[0].panel.read(cx).voice_active())
+        });
     }
 
     #[gpui::test]
@@ -768,7 +856,9 @@ mod tests {
             window.dispatch_action(start, cx);
         });
         workspace.update(vcx, |workspace, cx| {
-            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
+            workspace.slots[0]
+                .panel
+                .update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
         });
         vcx.update(|window, cx| {
             let stop = cx.build_action("workspace::EndVoiceHold", None).unwrap();
@@ -776,7 +866,9 @@ mod tests {
             window.dispatch_action(stop, cx);
         });
         vcx.run_until_parked();
-        workspace.read_with(vcx, |workspace, cx| assert!(!workspace.slots[0].panel.read(cx).voice_active()));
+        workspace.read_with(vcx, |workspace, cx| {
+            assert!(!workspace.slots[0].panel.read(cx).voice_active())
+        });
     }
 
     #[gpui::test]

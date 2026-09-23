@@ -36,7 +36,16 @@ pub enum Edge {
     Release,
     /// Abort without finalizing a transcript. Safety/failure, not physical key-up.
     Cancel,
+    /// Shift+Copilot: open a new single-panel window that records this hold.
+    /// Its physical key-up still arrives here as Release.
+    Spawn,
+    /// A spawned window opened after its Shift+Copilot hold already ended.
+    /// Start a click-style recording instead of losing the request.
+    Tap,
 }
+
+/// How long a freshly spawned window waits to adopt the hold that opened it.
+const ADOPT_WINDOW: Duration = Duration::from_secs(10);
 
 // Linux input_event, including the native ABI's actual timeval layout.
 #[repr(C)]
@@ -279,6 +288,9 @@ struct Decoder {
     down: BTreeSet<usize>,
     suppressed: BTreeSet<usize>,
     trigger: Option<usize>,
+    /// Press order of the keys in `down`. Keys already held at open are 0.
+    order: BTreeMap<usize, u64>,
+    presses: u64,
 }
 impl Decoder {
     fn snapshot(bits: &[u8; KEY_BYTES]) -> Self {
@@ -292,7 +304,30 @@ impl Decoder {
             down,
             suppressed,
             trigger: None,
+            order: BTreeMap::new(),
+            presses: 0,
         }
+    }
+    fn pressed_at(&self, key: usize) -> Option<u64> {
+        self.down
+            .contains(&key)
+            .then(|| self.order.get(&key).copied().unwrap_or(0))
+    }
+    /// The Copilot key synthesizes Meta, then Shift, then F23. A Shift the
+    /// user was already holding therefore went down before that Meta (the
+    /// kernel drops the synthetic duplicate). Right Shift is never synthetic.
+    fn user_shift(&self) -> bool {
+        if self.down.contains(&54) {
+            return true;
+        }
+        let Some(shift) = self.pressed_at(42) else {
+            return false;
+        };
+        [125, 126]
+            .iter()
+            .filter_map(|key| self.pressed_at(*key))
+            .min()
+            .is_none_or(|meta| shift < meta)
     }
     fn event(&mut self, kind: u16, code: u16, value: i32) -> Option<Edge> {
         let key = usize::from(code);
@@ -304,6 +339,7 @@ impl Decoder {
         }
         if value == 0 {
             self.down.remove(&key);
+            self.order.remove(&key);
             self.suppressed.remove(&key);
             if self.trigger == Some(key) {
                 self.trigger = None;
@@ -311,18 +347,29 @@ impl Decoder {
             }
             return None;
         }
-        if !self.down.insert(key) || self.suppressed.contains(&key) || self.trigger.is_some() {
+        if !self.down.insert(key) {
+            return None;
+        }
+        self.presses += 1;
+        self.order.insert(key, self.presses);
+        if self.suppressed.contains(&key) || self.trigger.is_some() {
             return None;
         }
         let shift = self.down.contains(&42) || self.down.contains(&54);
         let meta = self.down.contains(&125) || self.down.contains(&126);
         let blocked = [29, 97, 56, 100].iter().any(|key| self.down.contains(key));
-        if !blocked && ((key == ASSISTANT && shift == meta) || (key == F23 && shift && meta)) {
-            self.trigger = Some(key);
-            Some(Edge::Press)
-        } else {
-            None
+        if blocked {
+            return None;
         }
+        let edge = match key {
+            // Bare Assistant, or its Super+Shift form, is the normal hold.
+            ASSISTANT if shift == meta => Edge::Press,
+            F23 if shift && meta && self.user_shift() => Edge::Spawn,
+            F23 if shift && meta => Edge::Press,
+            _ => return None,
+        };
+        self.trigger = Some(key);
+        Some(edge)
     }
 }
 // sysfs prints native unsigned-long bitmap words, most significant first.
@@ -452,8 +499,11 @@ pub(crate) struct Listener {
     allowlist: Vec<PathBuf>,
     eligible: bool,
     devices: BTreeMap<PathBuf, Device>,
-    capture: Option<(PathBuf, Instant, Lock)>,
-    pending: Option<(PathBuf, u64)>,
+    /// A spawned window adopts its opener's hold without the routing lock,
+    /// which the opening window still holds until key-up.
+    capture: Option<(PathBuf, Instant, Option<Lock>)>,
+    pending: Option<(PathBuf, u64, Edge)>,
+    adopt_until: Option<Instant>,
     next_scan: Instant,
     healthy: bool,
     registration_ok: bool,
@@ -495,6 +545,7 @@ impl Listener {
             devices: BTreeMap::new(),
             capture: None,
             pending: None,
+            adopt_until: None,
             next_scan: Instant::now(),
             healthy: false,
             registration_ok: false,
@@ -520,6 +571,37 @@ impl Listener {
                 self.eligible && self.healthy && !self.devices.is_empty(),
             )
             .is_ok();
+    }
+    /// Treat a Copilot key that is already down as this window's own hold.
+    /// Used once by a window that Shift+Copilot just opened.
+    pub(crate) fn adopt_held_key(&mut self) {
+        self.adopt_until = Some(Instant::now() + ADOPT_WINDOW);
+    }
+    fn adopt(&mut self, edges: &mut Vec<Edge>) {
+        let Some(until) = self.adopt_until else { return };
+        if Instant::now() >= until {
+            self.adopt_until = None;
+            return;
+        }
+        if self.capture.is_some() || !self.ready() {
+            return;
+        }
+        self.adopt_until = None;
+        let held = self.devices.iter_mut().find_map(|(path, device)| {
+            let key = [F23, ASSISTANT]
+                .into_iter()
+                .find(|key| device.decoder.down.contains(key))?;
+            device.decoder.suppressed.remove(&key);
+            device.decoder.trigger = Some(key);
+            Some(path.clone())
+        });
+        match held {
+            Some(path) => {
+                self.capture = Some((path, Instant::now(), None));
+                edges.push(Edge::Press);
+            }
+            None => edges.push(Edge::Tap),
+        }
     }
     pub(crate) fn ready(&self) -> bool {
         self.eligible && self.healthy && self.registration_ok && !self.devices.is_empty()
@@ -611,14 +693,16 @@ impl Listener {
                     }
                 };
                 match device.decoder.event(event.kind, event.code, event.value) {
-                    Some(Edge::Press) if self.capture.is_none() && self.ready() => {
+                    Some(edge @ (Edge::Press | Edge::Spawn))
+                        if self.capture.is_none() && self.ready() =>
+                    {
                         match self.registration.capture(
                             event.time.tv_sec as u64 * 1_000_000_000
                                 + event.time.tv_usec as u64 * 1_000,
                         ) {
                             Ok(Some(lock)) => {
-                                self.capture = Some((path.clone(), Instant::now(), lock));
-                                edges.push(Edge::Press);
+                                self.capture = Some((path.clone(), Instant::now(), Some(lock)));
+                                edges.push(edge);
                             }
                             Ok(None) => {}
                             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -626,6 +710,7 @@ impl Listener {
                                     path.clone(),
                                     event.time.tv_sec as u64 * 1_000_000_000
                                         + event.time.tv_usec as u64 * 1_000,
+                                    edge,
                                 ));
                             }
                             Err(_) => {
@@ -644,7 +729,7 @@ impl Listener {
         }
         // A short routing-lock collision must not lose a physical press. Drain
         // key-up first so a released key can never become a delayed capture.
-        if let Some((path, stamp)) = self.pending.take() {
+        if let Some((path, stamp, edge)) = self.pending.take() {
             if self.capture.is_none()
                 && self.ready()
                 && self
@@ -654,17 +739,19 @@ impl Listener {
             {
                 match self.registration.capture(stamp) {
                     Ok(Some(lock)) => {
-                        self.capture = Some((path, Instant::now(), lock));
-                        edges.push(Edge::Press);
+                        self.capture = Some((path, Instant::now(), Some(lock)));
+                        edges.push(edge);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        self.pending = Some((path, stamp))
+                        self.pending = Some((path, stamp, edge))
                     }
                     Err(_) => self.registration_ok = false,
                     Ok(None) => {}
                 }
             }
         }
+        // After draining, so a key-up during startup is already applied.
+        self.adopt(&mut edges);
         edges
     }
 }
@@ -685,8 +772,9 @@ mod tests {
         let mut d = Decoder::default();
         assert_eq!(d.event(1, F23 as u16, 1), None);
         d.event(1, F23 as u16, 0);
-        d.event(1, 42, 1);
+        // Hardware order: synthetic Meta, then Shift, then F23.
         d.event(1, 125, 1);
+        d.event(1, 42, 1);
         assert_eq!(d.event(1, F23 as u16, 1), Some(Edge::Press));
         assert_eq!(d.event(1, F23 as u16, 2), None);
         assert_eq!(d.event(1, F23 as u16, 1), None);
@@ -696,6 +784,57 @@ mod tests {
         assert_eq!(d.event(1, ASSISTANT as u16, 1), Some(Edge::Press));
         assert_eq!(d.event(1, ASSISTANT as u16, 0), Some(Edge::Release));
         assert_eq!(d.event(1, 30, 1), None);
+    }
+    #[test]
+    fn shift_before_copilot_spawns_but_synthetic_shift_holds() {
+        // Copilot alone: synthetic Meta, then Shift, then F23.
+        let mut d = Decoder::default();
+        d.event(1, 125, 1);
+        d.event(1, 42, 1);
+        assert_eq!(d.event(1, F23 as u16, 1), Some(Edge::Press));
+        assert_eq!(d.event(1, F23 as u16, 0), Some(Edge::Release));
+        // User Shift first. The kernel drops the synthetic duplicate Shift.
+        let mut d = Decoder::default();
+        d.event(1, 42, 1);
+        d.event(1, 125, 1);
+        assert_eq!(d.event(1, F23 as u16, 1), Some(Edge::Spawn));
+        assert_eq!(d.event(1, 42, 0), None);
+        assert_eq!(d.event(1, F23 as u16, 0), Some(Edge::Release));
+        // Right Shift is never synthesized.
+        let mut d = Decoder::default();
+        d.event(1, 125, 1);
+        d.event(1, 42, 1);
+        d.event(1, 54, 1);
+        assert_eq!(d.event(1, F23 as u16, 1), Some(Edge::Spawn));
+    }
+    #[test]
+    fn spawned_window_adopts_a_held_key_or_falls_back_to_a_tap() {
+        for held in [true, false] {
+            let (mut listener, mut writer, dir) = fake_listener();
+            listener.capture = None;
+            if held {
+                send(&mut writer, 1, 42, 1);
+                send(&mut writer, 1, 125, 1);
+                // Lost to the opener's routing lock, still physically down.
+                let routing = Lock::take(&dir.join("routing.lock")).unwrap();
+                send(&mut writer, 1, F23 as u16, 1);
+                assert!(listener.poll().is_empty());
+                listener.pending = None;
+                drop(routing);
+            }
+            listener.adopt_held_key();
+            assert_eq!(
+                listener.poll(),
+                vec![if held { Edge::Press } else { Edge::Tap }]
+            );
+            assert!(listener.poll().is_empty(), "adoption happens once");
+            if held {
+                send(&mut writer, 1, F23 as u16, 0);
+                assert_eq!(listener.poll(), vec![Edge::Release]);
+            }
+            drop(listener);
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
     #[test]
     fn held_at_open_is_ignored() {
@@ -830,6 +969,7 @@ mod tests {
             )]),
             capture: None,
             pending: None,
+            adopt_until: None,
             next_scan: Instant::now() + Duration::from_secs(1000),
             healthy: true,
             registration_ok: false,
