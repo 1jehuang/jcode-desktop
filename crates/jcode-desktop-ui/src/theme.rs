@@ -328,10 +328,11 @@ pub enum ThemePreset {
     Silver,
     LightNeutral,
     DarkNeutral,
+    PureBlack,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -348,6 +349,7 @@ impl ThemePreset {
         Self::Silver,
         Self::LightNeutral,
         Self::DarkNeutral,
+        Self::PureBlack,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -367,6 +369,7 @@ impl ThemePreset {
             Self::Silver => "silver",
             Self::LightNeutral => "light-neutral",
             Self::DarkNeutral => "dark-neutral",
+            Self::PureBlack => "pure-black",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -387,6 +390,7 @@ impl ThemePreset {
             Self::Silver => "Silver",
             Self::LightNeutral => "Light Neutral",
             Self::DarkNeutral => "Dark Neutral",
+            Self::PureBlack => "Pure Black",
         }
     }
     const fn index(self) -> usize {
@@ -407,6 +411,7 @@ impl ThemePreset {
             Self::Silver => 13,
             Self::LightNeutral => 14,
             Self::DarkNeutral => 15,
+            Self::PureBlack => 16,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -622,6 +627,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::SILVER.theme(),
         palettes::light_neutral(),
         palettes::dark_neutral(),
+        palettes::pure_black(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -953,6 +959,24 @@ mod tests {
             theme.INPUT_BG,
         ] {
             assert!((color.r - color.b).abs() <= 4.0 / 255.0 + f32::EPSILON);
+        }
+        assert!(contrast(theme.PANEL_BORDER_FOCUS, theme.INPUT_BG) >= 3.0);
+        assert!(contrast(theme.LINK, theme.PANEL_BG) >= 4.5);
+        assert!(contrast(theme.TEXT_DIM, theme.HEADER_BG) >= 4.5);
+        assert!(contrast(theme.HEADING, theme.USER_BG) >= 7.0);
+    }
+
+    #[test]
+    fn pure_black_uses_true_black_canvas_and_focused_panes() {
+        let preset = ThemePreset::PureBlack;
+        assert_eq!(ThemePreset::from_id("pure-black"), preset);
+        assert_eq!(preset.label(), "Pure Black");
+        let theme = &raw_themes()[preset.index()];
+        assert_eq!(theme.BG, rgb_c(0x000000));
+        assert_eq!(theme.PANEL_BG, rgb_c(0x000000));
+        assert_eq!(theme.INPUT_BG, rgb_c(0x000000));
+        for age in [0, 1, 6, 40, usize::MAX] {
+            assert_eq!(theme.prompt_background(age), theme.USER_BG);
         }
         assert!(contrast(theme.PANEL_BORDER_FOCUS, theme.INPUT_BG) >= 3.0);
         assert!(contrast(theme.LINK, theme.PANEL_BG) >= 4.5);

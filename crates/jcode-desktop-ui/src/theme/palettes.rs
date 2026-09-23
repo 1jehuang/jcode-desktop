@@ -414,3 +414,43 @@ pub(super) fn dark_neutral() -> Theme {
     theme.CURSOR = theme.HEADING;
     theme
 }
+
+/// OLED-friendly true black: canvas, focused panes, and composer are #000000.
+/// Inactive panes and chrome lift just enough to show focus, prompt cards use
+/// a quiet dark gray, and blue stays reserved for links and selection.
+pub(super) fn pure_black() -> Theme {
+    let mut theme = Palette {
+        bg: 0x000000,
+        panel: 0x000000,
+        raised: 0x0f0f0f,
+        border: 0x262626,
+        text: 0xd9d9d9,
+        muted: 0xa0a0a0,
+        accent: 0xd9d9d9,
+        secondary: 0xd9d9d9,
+        keyword: 0x7ab7ff,
+        string: 0x8ccf9e,
+        number: 0xe3b96f,
+        error: 0xf28b8b,
+        ok: 0x8ccf9e,
+        warn: 0xe3b96f,
+    }
+    .theme();
+    theme.PANEL_BORDER_FOCUS = rgb_c(0x7a7a7a);
+    theme.ACCENT_DIM = rgb_c(0x1f1f1f);
+    theme.USER_BG = rgb_c(0x1a1a1a);
+    theme.PROMPT_TINT_STRENGTH = 0.0;
+    theme.TEXT_USER = rgb_c(0xf5f5f5);
+    theme.HEADING = rgb_c(0xf5f5f5);
+    theme.INPUT_BG = rgb_c(0x000000);
+    theme.INPUT_BORDER = rgb_c(0x2e2e2e);
+    theme.TOOL_BG = rgb_c(0x0a0a0a);
+    theme.CODE_BG = rgb_c(0x0a0a0a);
+    theme.CODE_HEADER_BG = rgb_c(0x121212);
+    theme.INLINE_CODE_BG = rgb_c(0x1c1c1c);
+    theme.MINIMAP_BG = rgba_c(0x000000e6);
+    theme.LINK = rgb_c(0x7ab7ff);
+    theme.SELECTION = rgba_c(0x3a83f75c);
+    theme.CURSOR = theme.HEADING;
+    theme
+}

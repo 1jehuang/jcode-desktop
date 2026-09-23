@@ -13862,6 +13862,7 @@ mod tests {
             "theme-preset-13",
             "theme-preset-14",
             "theme-preset-15",
+            "theme-preset-16",
         ];
         assert_eq!(selectors.len(), ThemePreset::ALL.len());
         for (selector, preset) in selectors.into_iter().zip(ThemePreset::ALL) {
