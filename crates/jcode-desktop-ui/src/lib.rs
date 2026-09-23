@@ -13,6 +13,10 @@ mod diff_model;
 mod diff_review_content;
 mod diff_view;
 mod fps_counter;
+#[cfg(target_os = "linux")]
+mod global_voice_input;
+mod global_voice_overlay;
+mod global_voice_session;
 mod harness;
 mod html_preview;
 mod image_cache;

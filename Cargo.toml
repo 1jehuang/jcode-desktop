@@ -59,6 +59,10 @@ gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
 async-channel = "2"
 global-hotkey = "0.7"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+async-channel = "2"
+global-hotkey = "0.7"
+
 [dev-dependencies]
 handterm-common = { git = "https://github.com/1jehuang/handterm", rev = "ead926b6f13a1f30d58836c4fd8fb325660bae96" }
 async-channel = "2"

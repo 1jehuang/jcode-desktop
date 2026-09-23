@@ -307,6 +307,48 @@ fn dispatch_instance_command(
     Ok(())
 }
 
+/// Edges from the process-lifetime global voice shortcut (macOS/Windows).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlobalVoiceEdge {
+    Press,
+    Release,
+}
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+fn global_voice_action(edge: GlobalVoiceEdge) -> &'static str {
+    match edge {
+        GlobalVoiceEdge::Press => "workspace::BeginGlobalVoiceHold",
+        GlobalVoiceEdge::Release => "workspace::EndGlobalVoiceHold",
+    }
+}
+
+/// A global voice hold never activates, restores or raises the window. The UI
+/// decides between its focused hold and the unfocused dictation-only owner
+/// with an OS-level pill. Only when no live UI can take the unfocused path
+/// (red-closed window, or an older UI generation without the action) does it
+/// fall back to the legacy restore-and-hold behavior.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+fn dispatch_global_voice(
+    edge: GlobalVoiceEdge,
+    manager: &Rc<RefCell<ReloadManager>>,
+    current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let window = *current_window.borrow();
+    if let Some(window) = window {
+        match dispatch_ui_action(window, global_voice_action(edge), cx) {
+            Ok(()) => return Ok(()),
+            Err(error) => eprintln!("global voice: unfocused path unavailable: {error:#}"),
+        }
+    }
+    let legacy = match edge {
+        GlobalVoiceEdge::Press => InstanceCommand::VoicePress,
+        GlobalVoiceEdge::Release => InstanceCommand::VoiceRelease,
+    };
+    dispatch_instance_command(legacy, manager, current_window, cx)
+}
+
 fn launch_quit_mode(mode: LaunchMode, screenshot: bool, lifecycle: bool) -> gpui::QuitMode {
     if mode == LaunchMode::SinglePanel {
         gpui::QuitMode::Default
@@ -431,21 +473,36 @@ fn main() {
         *reopen_state.borrow_mut() = Some((manager.clone(), current_window.clone()));
         // Only the main desktop owns the global shortcut. Auxiliary workspace
         // instances must not steal it or report a spurious registration conflict.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if instance_name.is_none() {
             if let Err(error) = host::global_shortcut::install(cx, {
                 let manager = manager.clone();
                 let current_window = current_window.clone();
                 move |event, cx| {
-                    let command = match event {
-                        host::global_shortcut::ShortcutEvent::Activate => InstanceCommand::Show,
-                        host::global_shortcut::ShortcutEvent::VoicePress => InstanceCommand::VoicePress,
-                        host::global_shortcut::ShortcutEvent::VoiceRelease => InstanceCommand::VoiceRelease,
-                    };
-                    dispatch_instance_command(command, &manager, &current_window, cx)
+                    use host::global_shortcut::ShortcutEvent;
+                    match event {
+                        ShortcutEvent::Activate => dispatch_instance_command(
+                            InstanceCommand::Show,
+                            &manager,
+                            &current_window,
+                            cx,
+                        ),
+                        ShortcutEvent::VoicePress => dispatch_global_voice(
+                            GlobalVoiceEdge::Press,
+                            &manager,
+                            &current_window,
+                            cx,
+                        ),
+                        ShortcutEvent::VoiceRelease => dispatch_global_voice(
+                            GlobalVoiceEdge::Release,
+                            &manager,
+                            &current_window,
+                            cx,
+                        ),
+                    }
                 }
             }) {
-                eprintln!("could not register global Control+Command+I shortcut: {error:#}");
+                eprintln!("could not register global desktop shortcuts: {error:#}");
             }
         }
         window
@@ -620,6 +677,14 @@ mod tests {
             assert_eq!(super::voice_action(command), Some(action));
         }
         assert_eq!(super::voice_cli_command("--reload-ui".as_ref()), None);
+        assert_eq!(
+            super::global_voice_action(super::GlobalVoiceEdge::Press),
+            "workspace::BeginGlobalVoiceHold"
+        );
+        assert_eq!(
+            super::global_voice_action(super::GlobalVoiceEdge::Release),
+            "workspace::EndGlobalVoiceHold"
+        );
         assert_eq!(super::voice_action(super::InstanceCommand::Show), None);
     }
 

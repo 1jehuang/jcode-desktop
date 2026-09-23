@@ -16,6 +16,9 @@ pub(crate) mod resume;
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
 
+#[path = "workspace_global_voice.rs"]
+mod global_voice;
+
 #[path = "workspace_preview.rs"]
 mod preview;
 
@@ -158,6 +161,8 @@ actions!(
         ToggleVoice,
         BeginVoiceHold,
         EndVoiceHold,
+        BeginGlobalVoiceHold,
+        EndGlobalVoiceHold,
         CycleTheme,
         NewHelpSession,
         OpenChangelog,
@@ -632,6 +637,7 @@ impl WorkspaceSnapshot {
 }
 
 pub struct Workspace {
+    global_voice: global_voice::State,
     voice_key: voice::CopilotLatch,
     last_voice_chat: Option<gpui::EntityId>,
     _voice_activation: Option<gpui::Subscription>,
@@ -886,9 +892,11 @@ impl Workspace {
 
         let _ = window;
         let mut workspace = Self {
+            global_voice: Default::default(),
             voice_key: Default::default(),
             last_voice_chat: None,
             _voice_activation: Some(cx.observe_window_activation(window, |this, window, cx| {
+                this.global_voice.set_active(window.is_window_active());
                 if !window.is_window_active() {
                     if this.voice_key.is_down() {
                         this.end_voice_hold(&EndVoiceHold, window, cx);
@@ -1135,6 +1143,7 @@ impl Workspace {
             workspace.start_default_startup(cx);
         }
         workspace.start_preview_control(cx);
+        workspace.start_global_voice(window, cx);
         workspace
     }
 
@@ -1188,6 +1197,7 @@ impl Workspace {
     pub fn for_test(coach: learning::Coach, cx: &mut Context<Self>) -> Self {
         crate::input::bind_keys(cx);
         Self {
+            global_voice: Default::default(),
             voice_key: Default::default(),
             last_voice_chat: None,
             _voice_activation: None,
@@ -7298,6 +7308,8 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::toggle_panel_voice))
             .capture_action(cx.listener(Self::begin_voice_hold))
             .capture_action(cx.listener(Self::end_voice_hold))
+            .capture_action(cx.listener(Self::begin_global_voice_hold_action))
+            .capture_action(cx.listener(Self::end_global_voice_hold_action))
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {

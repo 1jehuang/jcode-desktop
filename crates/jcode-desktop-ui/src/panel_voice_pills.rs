@@ -1,5 +1,6 @@
 //! Compact concrete-action evidence, independent of the optional detailed trace.
 use super::*;
+use jcode_base::voice;
 
 // Keep the shared routing argmax order, including numeric (not lexical) candidates.
 fn concrete_action_rank(id: &str) -> Option<usize> {
@@ -32,9 +33,13 @@ struct ActionPill {
     id: String,
     label: String,
     score: String,
+    probability: Option<f64>,
     winner: bool,
 }
 
+/// Concrete actions ranked by Jev's yes probability, highest first. Exact ties
+/// and unanswered rows keep the shared argmax order, so rank 1 is always the
+/// route that was actually selected.
 fn action_pills(trace: &VoiceTrace, waiting: bool, failed: bool) -> Vec<ActionPill> {
     let mut actions: Vec<_> = trace
         .questions
@@ -47,7 +52,7 @@ fn action_pills(trace: &VoiceTrace, waiting: bool, failed: bool) -> Vec<ActionPi
     if !waiting && !failed {
         for (_, question) in &actions {
             if let Some(answer) = trace.answers.iter().find(|answer| answer.id == question.id) {
-                let probability = answer.probability as f64;
+                let probability = answer.probability;
                 if probability.is_finite() && probability > best {
                     best = probability;
                     winner = Some(question.id.as_str());
@@ -55,15 +60,17 @@ fn action_pills(trace: &VoiceTrace, waiting: bool, failed: bool) -> Vec<ActionPi
             }
         }
     }
-    actions
+    let mut pills: Vec<_> = actions
         .into_iter()
         .map(|(_, question)| {
-            let score = trace
+            let probability = trace
                 .answers
                 .iter()
                 .find(|answer| answer.id == question.id)
-                .filter(|answer| answer.probability.is_finite())
-                .map(|answer| format!("{:.1}%", answer.probability * 100.))
+                .map(|answer| answer.probability)
+                .filter(|probability| probability.is_finite());
+            let score = probability
+                .map(|probability| format!("{:.1}%", probability * 100.))
                 .unwrap_or_else(|| {
                     if waiting {
                         "Waiting…"
@@ -82,13 +89,138 @@ fn action_pills(trace: &VoiceTrace, waiting: bool, failed: bool) -> Vec<ActionPi
                     .map(|candidate| format!("Open: {}", candidate.title))
                     .unwrap_or_else(|| action_label(&question.id)),
                 score,
+                probability,
                 winner: winner == Some(question.id.as_str()),
             }
         })
-        .collect()
+        .collect();
+    // Stable sort: equal and missing probabilities retain argmax order.
+    pills.sort_by(|a, b| {
+        b.probability
+            .unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&a.probability.unwrap_or(f64::NEG_INFINITY))
+    });
+    pills
 }
 
+/// Compact USD for sub-cent amounts, keeping two significant digits.
+fn format_usd(amount: f64) -> String {
+    if !amount.is_finite() || amount <= 0. {
+        return "$0".into();
+    }
+    if amount >= 0.01 {
+        return format!("${amount:.4}");
+    }
+    let decimals = ((-amount.log10()).ceil() as usize + 1).min(10);
+    format!("${amount:.decimals$}")
+}
+
+fn format_tokens(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Context fed to Jev and the estimated cost of this voice request.
+/// Prices are published list rates, not a bill, so every value says "est.".
+fn cost_lines(trace: &VoiceTrace, waiting: bool) -> Vec<(&'static str, String, String)> {
+    let transcription = trace.audio.map(voice::estimated_transcription_usd);
+    let jev = trace.usage.map(|usage| usage.estimated_usd());
+    let context = match trace.usage {
+        Some(usage) => (
+            format!(
+                "{} tokens in · {} out{}",
+                format_tokens(usage.input_tokens),
+                format_tokens(usage.output_tokens),
+                if usage.requests > 1 {
+                    format!(" · {} requests", usage.requests)
+                } else {
+                    String::new()
+                }
+            ),
+            jev.map(format_usd).unwrap_or_default(),
+        ),
+        None if waiting => ("Measuring…".into(), String::new()),
+        None => ("Not reported".into(), String::new()),
+    };
+    let audio = match trace.audio {
+        Some(audio) => (
+            format!("{:.1}s audio · Nari", audio.as_secs_f64()),
+            transcription.map(format_usd).unwrap_or_default(),
+        ),
+        None => ("Not measured".into(), String::new()),
+    };
+    let total = match (jev, transcription) {
+        (Some(jev), Some(transcription)) => format_usd(jev + transcription),
+        (None, Some(transcription)) => format!("{}+", format_usd(transcription)),
+        (Some(jev), None) => format!("{}+", format_usd(jev)),
+        (None, None) => "—".into(),
+    };
+    vec![
+        ("Jev context", context.0, context.1),
+        ("Transcription", audio.0, audio.1),
+        ("Total (est.)", String::new(), total),
+    ]
+}
+
+/// One-line cost summary: Jev context tokens and cost, audio and Nari cost, total.
+fn cost_summary(trace: &VoiceTrace, waiting: bool) -> String {
+    let jev = match trace.usage {
+        Some(usage) => format!(
+            "{} tok {}",
+            format_tokens(usage.input_tokens),
+            format_usd(usage.estimated_usd())
+        ),
+        None if waiting => "Jev …".into(),
+        None => "Jev n/a".into(),
+    };
+    let audio = trace.audio.map_or_else(
+        || "audio n/a".into(),
+        |audio| {
+            format!(
+                "{:.1}s {}",
+                audio.as_secs_f64(),
+                format_usd(voice::estimated_transcription_usd(audio))
+            )
+        },
+    );
+    let total = cost_lines(trace, waiting)[2].2.clone();
+    format!("{jev} · {audio} · {total} est.")
+}
+
+/// Rows shown before the "+N" chip. Details lists every action.
+const COMPACT_ROWS: usize = 3;
+
 impl Panel {
+    pub(super) fn render_voice_costs(&self, trace: &VoiceTrace) -> gpui::Div {
+        let theme = Theme::global();
+        let waiting = self.voice.phase == Phase::Routing;
+        let lines = cost_lines(trace, waiting);
+        let tooltip = lines
+            .iter()
+            .map(|(label, detail, cost)| format!("{label}: {detail} {cost}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        div().child(
+            div()
+                .id("voice-costs")
+                .debug_selector(|| "voice-costs".into())
+                .flex_shrink_0()
+                .truncate()
+                .font_family(theme.FONT_MONO)
+                .text_size(px(10.))
+                .text_color(theme.TEXT_DIM)
+                .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip.clone())).into())
+                .child(cost_summary(trace, waiting)),
+        )
+    }
+
     pub(super) fn render_voice_pills(
         &self,
         window: &Window,
@@ -101,86 +233,105 @@ impl Panel {
             .expect("trace card requires a trace");
         let theme = Theme::global();
         let viewport = window.viewport_size();
-        let pills = action_pills(
-            trace,
-            self.voice.phase == Phase::Routing,
-            self.voice.error.is_some(),
-        );
-        let pill_row = div()
-            .id("voice-action-pills")
-            .debug_selector(|| "voice-action-pills".into())
-            .min_h_0()
-            .max_h(px(112.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_wrap()
-            .gap_1()
-            .children(pills.into_iter().map(|pill| {
-                let selector = format!("voice-action-{}", pill.id);
-                let tooltip = format!(
-                    "{} · {}{}",
-                    pill.label,
-                    pill.score,
-                    if pill.winner {
-                        " · Selected route"
-                    } else {
-                        ""
-                    }
-                );
-                div()
-                    .id(gpui::ElementId::Name(selector.clone().into()))
-                    .debug_selector(move || selector.clone())
-                    .max_w((viewport.width - px(44.)).max(px(1.)).min(px(280.)))
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if pill.winner {
-                        theme.ACCENT
-                    } else {
-                        theme.ACCENT.opacity(0.2)
-                    })
-                    .bg(if pill.winner {
-                        theme.ACCENT_DIM
-                    } else {
-                        theme.PANEL_BG
-                    })
-                    .text_color(if pill.winner {
-                        theme.ACCENT
-                    } else {
-                        theme.TEXT_DIM
-                    })
-                    .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip.clone())).into())
-                    .when(pill.winner, |el| el.child(div().flex_shrink_0().child("✓")))
-                    .child(div().min_w_0().truncate().child(pill.label))
-                    .child(div().flex_shrink_0().child(pill.score))
-            }));
-        let heading = if self.voice.phase == Phase::Routing {
-            "Jev · Choosing a route"
-        } else if self.voice.error.is_some() {
-            "Jev · Could not choose"
-        } else {
-            "Jev · Decision"
+        let waiting = self.voice.phase == Phase::Routing;
+        let pills = action_pills(trace, waiting, self.voice.error.is_some());
+        let hidden = pills.len().saturating_sub(COMPACT_ROWS);
+        let decision = self.voice.decision.clone();
+        // Rows mirror prompt cards: an outside circular number badge beside a
+        // tight tinted paper chip. Rank tints follow the prompt rainbow fade.
+        let row = |index: usize, pill: ActionPill| {
+            let selector = format!("voice-action-{}", pill.id);
+            let background = theme.prompt_background(index);
+            let tooltip = format!(
+                "#{} · {} · {}{}",
+                index + 1,
+                pill.label,
+                pill.score,
+                match (&decision, pill.winner) {
+                    (Some(decision), true) => format!("\n{decision}"),
+                    (None, true) => " · Selected route".into(),
+                    _ => String::new(),
+                }
+            );
+            let winner = pill.winner;
+            div()
+                .id(gpui::ElementId::Name(selector.clone().into()))
+                .debug_selector(move || selector.clone())
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .min_w_0()
+                .tooltip(move |_, cx| cx.new(|_| VoiceTooltip(tooltip.clone())).into())
+                .child(
+                    div()
+                        .debug_selector(move || format!("voice-action-rank-{}", index + 1))
+                        .flex_none()
+                        .size(px(18.))
+                        .rounded_full()
+                        .bg(background)
+                        .font_family(theme.FONT_MONO)
+                        .text_center()
+                        .text_size(px(10.))
+                        .line_height(px(18.))
+                        .text_color(theme.TEXT_DIM)
+                        .child((index + 1).to_string()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when(winner && decision.is_some(), |el| {
+                            el.debug_selector(|| "voice-decision".into())
+                        })
+                        .px_2()
+                        .py(px(2.))
+                        .rounded_md()
+                        .bg(background)
+                        .text_color(if pill.winner { theme.TEXT_USER } else { theme.TEXT_DIM })
+                        .child(div().min_w_0().truncate().child(pill.label))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .font_family(theme.FONT_MONO)
+                                .text_size(px(10.))
+                                .text_color(if pill.winner { theme.ACCENT } else { theme.TEXT_DIM })
+                                .child(if pill.winner {
+                                    format!("✓ {}", pill.score)
+                                } else {
+                                    pill.score
+                                }),
+                        ),
+                )
         };
+        let ranking = div()
+            .id("voice-action-ranking")
+            .debug_selector(|| "voice-action-ranking".into())
+            .flex()
+            .flex_col()
+            .gap(px(3.))
+            .children(
+                pills
+                    .into_iter()
+                    .take(COMPACT_ROWS)
+                    .enumerate()
+                    .map(|(index, pill)| row(index, pill)),
+            );
         let card = div()
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
-            .w((viewport.width - px(24.)).max(px(1.)).min(px(960.)))
-            .max_h((viewport.height - px(64.)).max(px(1.)).min(px(240.)))
-            .p_2()
+            .max_w((viewport.width - px(24.)).max(px(1.)).min(px(420.)))
+            .min_w_0()
+            .px_2()
+            .py(px(6.))
             .flex()
             .flex_col()
-            .gap_2()
-            .rounded_xl()
-            .border_1()
-            .border_color(theme.ACCENT.opacity(0.25))
+            .gap(px(4.))
+            .rounded_lg()
             .bg(theme.PANEL_BG)
-            .shadow_lg()
+            .shadow_md()
             .text_color(theme.TEXT)
             .text_size(px(11.))
             .occlude()
@@ -191,10 +342,20 @@ impl Panel {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .flex_shrink_0()
-                    .child(div().flex_1().min_w_0().text_size(px(12.)).child(heading))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .debug_selector(|| {
+"voice-heard".into()
+                            })
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.TEXT_DIM)
+                            .child(format!("“{}”", trace.transcript)),
+                    )
                     .when(self.voice.trace_preview, |el| {
-                        el.child(div().text_color(theme.TEXT_DIM).child("Preview"))
+                        el.child(div().flex_shrink_0().text_color(theme.TEXT_DIM).child("Preview"))
                     })
                     .child(
                         div()
@@ -202,26 +363,28 @@ impl Panel {
                             .debug_selector(|| "voice-trace-expand".into())
                             .flex_shrink_0()
                             .cursor_pointer()
-                            .text_color(theme.ACCENT)
+                            .text_color(theme.TEXT_DIM)
+                            .hover(|el| el.text_color(theme.TEXT))
                             .on_click(cx.listener(|panel, _, _, cx| {
                                 panel.voice.trace_expanded = !panel.voice.trace_expanded;
                                 cx.notify();
                                 cx.stop_propagation();
                             }))
-                            .child("Details"),
+                            .child(if hidden > 0 { format!("+{hidden}") } else { "Details".into() }),
                     )
                     .child(
                         div()
                             .id("voice-cancel")
                             .debug_selector(|| "voice-cancel".into())
-                            .size(px(24.))
+                            .size(px(18.))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded_full()
                             .cursor_pointer()
-                            .hover(|el| el.bg(theme.ACCENT_DIM))
+                            .text_color(theme.TEXT_DIM)
+                            .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                             .on_click(cx.listener(|panel, _, _, cx| {
                                 panel.cancel_voice(cx);
                                 cx.stop_propagation();
@@ -233,20 +396,14 @@ impl Panel {
                 el.child(
                     div()
                         .debug_selector(|| "voice-status".into())
-                        .flex_shrink_0()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(10.))
                         .child(error),
                 )
             })
-            .when_some(self.voice.decision.clone(), |el, decision| {
-                el.child(
-                    div()
-                        .debug_selector(|| "voice-decision".into())
-                        .flex_shrink_0()
-                        .text_color(theme.ACCENT)
-                        .child(decision),
-                )
-            })
-            .child(pill_row);
+            .child(ranking)
+            .child(self.render_voice_costs(trace));
         gpui::deferred(
             gpui::anchored()
                 .position(gpui::point(px(0.), px(0.)))
@@ -266,6 +423,8 @@ impl Panel {
     }
 }
 
+const RANKING_MAX_HEIGHT: f32 = 72.;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,7 +442,40 @@ mod tests {
                 .unwrap(),
             answers: Vec::new(),
             candidates,
+            audio: None,
+            usage: None,
         }
+    }
+
+    #[test]
+    fn costs_report_context_tokens_and_published_prices() {
+        let mut trace = trace_fixture();
+        let lines = cost_lines(&trace, true);
+        assert_eq!(lines[0].1, "Measuring…");
+        assert_eq!(lines[1].1, "Not measured");
+        assert_eq!(lines[2].2, "—");
+        trace.audio = Some(Duration::from_secs(30));
+        trace.usage = Some(voice_intent::VoiceUsage {
+            input_tokens: 12_345,
+            output_tokens: 27,
+            requests: 2,
+        });
+        let lines = cost_lines(&trace, false);
+        assert_eq!(lines[0].1, "12,345 tokens in · 27 out · 2 requests");
+        // 12,345 × $0.042 / 1M = $0.000518
+        assert_eq!(lines[0].2, "$0.00052");
+        assert_eq!(lines[1].1, "30.0s audio · Nari");
+        // 30 s × $0.12 / h = $0.001
+        assert_eq!(lines[1].2, "$0.0010");
+        assert_eq!(lines[2].2, "$0.0015");
+        trace.usage = None;
+        assert_eq!(cost_lines(&trace, false)[0].1, "Not reported");
+        assert_eq!(cost_lines(&trace, false)[2].2, "$0.0010+");
+        assert_eq!(format_usd(0.25), "$0.2500");
+        trace.usage = Some(voice_intent::VoiceUsage { input_tokens: 4_812, output_tokens: 9, requests: 1 });
+        assert_eq!(cost_summary(&trace, false), "4,812 tok $0.00020 · 30.0s $0.0010 · $0.0012 est.");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_000_000), "1,000,000");
     }
 
     #[test]
@@ -309,6 +501,10 @@ mod tests {
         ];
         let pills = action_pills(&trace, false, false);
         assert_eq!(pills.len(), 25);
+        // Ranked by probability: the winner is first, then descending scores.
+        assert_eq!(pills[0].id, "candidate_19");
+        assert_eq!(pills[1].id, "coding_agent");
+        assert!(pills[2..].iter().all(|p| p.probability.is_none()));
         assert!(!pills
             .iter()
             .any(|p| p.id == "navigation" || p.id == "quick_action"));
@@ -321,9 +517,11 @@ mod tests {
         assert_eq!(winners[0].id, "candidate_19");
         assert_eq!(winners[0].score, "91.0%");
         assert_eq!(winners[0].label, "Open: Conversation 19");
-        assert_eq!(pills[2].label, "New conversation");
-        assert_eq!(pills[3].label, "Next conversation");
-        assert_eq!(pills[4].label, "Previous conversation");
+        // Unanswered rows retain the shared argmax order after answered rows.
+        assert_eq!(pills[2].label, "Uncertain");
+        assert_eq!(pills[3].label, "New conversation");
+        assert_eq!(pills[4].label, "Next conversation");
+        assert_eq!(pills[5].label, "Previous conversation");
     }
 
     #[test]
@@ -350,6 +548,7 @@ mod tests {
                 .collect();
             let pills = action_pills(&trace, false, false);
             assert_eq!(pills.iter().find(|p| p.winner).unwrap().id, ids[start]);
+            assert!(pills[0].winner, "the chosen route always ranks first");
             assert_eq!(pills.iter().filter(|p| p.winner).count(), 1);
         }
     }
@@ -417,17 +616,21 @@ mod tests {
                         card.top() >= px(0.) && card.bottom() <= px(height),
                         "{card:?}"
                     );
-                    assert!(card.size.width <= px(960.));
+                    assert!(card.size.width <= px(520.));
                     if !expanded {
                         assert_eq!(card.top(), px(48.));
                     }
                     assert!(card.size.height <= px(560.));
                     assert_eq!(vcx.debug_bounds("prompt-input").unwrap(), input);
                     if !expanded {
-                        let pills = vcx.debug_bounds("voice-action-pills").unwrap();
-                        assert!(pills.size.height <= px(112.));
+                        let pills = vcx.debug_bounds("voice-action-ranking").unwrap();
+                        assert!(pills.size.height <= px(RANKING_MAX_HEIGHT));
+                        assert!(vcx.debug_bounds("voice-costs").is_some());
+                        // Compact: only the top ranks render, the rest live in Details.
+                        assert!(vcx.debug_bounds("voice-action-rank-1").is_some());
+                        assert!(vcx.debug_bounds("voice-action-rank-4").is_none());
+                        assert!(card.size.height <= px(140.), "{card:?}");
                         assert!(pills.left() >= card.left() && pills.right() <= card.right());
-                        assert!(vcx.debug_bounds("voice-action-candidate_19").is_some());
                         assert!(vcx.debug_bounds("voice-action-navigation").is_none());
                         assert!(vcx.debug_bounds("voice-action-quick_action").is_none());
                     }

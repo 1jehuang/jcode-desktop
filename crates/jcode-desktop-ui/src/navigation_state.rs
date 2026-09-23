@@ -35,6 +35,8 @@ impl Workspace {
                             "session": slot.panel.read(cx).session_id,
                             "history_loaded": slot.panel.read(cx).history_loaded(),
                             "history_items": slot.panel.read(cx).items.len(),
+                            // Length only: the dump must never contain draft text.
+                            "draft_chars": slot.panel.read(cx).input.read(cx).snapshot().content.chars().count(),
                             "terminal": slot.panel.read(cx).terminal_debug_snapshot(cx),
                             "width": slot.width_fraction,
                             "focused": focused == Some(index),

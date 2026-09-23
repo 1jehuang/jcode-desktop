@@ -10,6 +10,16 @@ pub struct DesktopConfig {
     pub workspace: WorkspaceConfig,
     pub terminal: TerminalConfig,
     pub sounds: SoundsConfig,
+    pub voice: VoiceConfig,
+}
+
+/// Background microphone access and physical input devices require explicit opt-in.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    pub global_hold: bool,
+    /// Explicit keyboard paths only. An empty list must never discover all devices.
+    pub global_devices: Vec<PathBuf>,
 }
 
 /// Desktop feedback is opt-in and independent of the terminal client's bell.
@@ -78,6 +88,7 @@ impl Default for DesktopConfig {
             workspace: WorkspaceConfig::default(),
             terminal: TerminalConfig::default(),
             sounds: SoundsConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -481,6 +492,42 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_voice_defaults_off_without_implicit_devices() {
+        let defaults = DesktopConfig::default();
+        assert!(!defaults.voice.global_hold);
+        assert!(defaults.voice.global_devices.is_empty());
+        for standalone in [false, true] {
+            let prefix = if standalone { "voice" } else { "desktop.voice" };
+            for text in [String::new(), format!("[{prefix}]\n")] {
+                let voice = parse(&text, standalone).unwrap().voice;
+                assert!(!voice.global_hold);
+                assert!(voice.global_devices.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn global_voice_parses_explicit_opt_in_and_device_paths() {
+        let device = "/dev/input/by-path/platform-i8042-serio-0-event-kbd";
+        for standalone in [false, true] {
+            let prefix = if standalone { "voice" } else { "desktop.voice" };
+            let text = format!("[{prefix}]\nglobal_hold = true\nglobal_devices = ['{device}']\n");
+            let voice = parse(&text, standalone).unwrap().voice;
+            assert!(voice.global_hold);
+            assert_eq!(voice.global_devices, vec![PathBuf::from(device)]);
+            let voice = parse(&format!("[{prefix}]\nglobal_hold = true\n"), standalone).unwrap().voice;
+            assert!(voice.global_hold);
+            assert!(voice.global_devices.is_empty());
+            let voice = parse(&format!("[{prefix}]\nglobal_devices = ['{device}']\n"), standalone).unwrap().voice;
+            assert!(!voice.global_hold);
+            assert_eq!(voice.global_devices, vec![PathBuf::from(device)]);
+            for invalid in ["global_hold = 'true'", "global_devices = 'all'", "global_devices = [42]"] {
+                assert!(parse(&format!("[{prefix}]\n{invalid}\n"), standalone).is_err());
+            }
+        }
+    }
 
     #[test]
     fn account_sign_in_choice_survives_restart_without_changing_other_settings() {

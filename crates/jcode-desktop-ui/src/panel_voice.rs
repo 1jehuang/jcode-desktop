@@ -17,14 +17,21 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
 #[path = "panel_voice_overlay.rs"]
 mod overlay;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(test)]
+#[path = "panel_global_voice_tests.rs"]
+mod global_tests;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const VOICE_SHORTCUT: &str = "Copilot key";
+// Registered globally by the host (RegisterHotKey), so it works unfocused too.
+#[cfg(target_os = "windows")]
+const VOICE_SHORTCUT: &str = "Ctrl+Shift+Space";
 #[cfg(target_os = "macos")]
 const VOICE_SHORTCUT: &str = "⌘⇧M (Command+Shift+M)";
 
 fn voice_tooltip(action: &str, status: &str) -> String {
     format!(
-        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. Held speech always becomes a draft, never sent automatically. Click recording can also recognize requests to open a recent session."
+        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. After transcription, Jev chooses a coding agent or a quick navigation action. Uncertain requests stay in the draft."
     )
 }
 
@@ -38,25 +45,51 @@ enum Phase {
     Routing,
 }
 
+/// Ephemeral routing evidence. Never included in persisted panel snapshots.
+#[derive(Clone)]
+pub(crate) struct VoiceTrace {
+    transcript: String,
+    candidates: Vec<SessionCandidate>,
+    questions: Vec<voice_intent::VoiceQuestion>,
+    answers: Vec<voice_intent::VoiceAnswer>,
+    /// Streamed microphone audio, the Nari billing unit. Measured locally.
+    audio: Option<Duration>,
+    /// Provider-reported Jev usage. `None` while routing or when unreported.
+    usage: Option<voice_intent::VoiceUsage>,
+}
+
 #[derive(Default)]
 pub(super) struct VoiceState {
     phase: Phase,
     // Attempt ownership persists through final transcription, even after key release.
     hold_capture: bool,
+    // Global capture must never execute navigation or send to an agent behind
+    // the user's foreground application. Preserve local voice behavior.
+    dictation_only: bool,
     recording: Option<NariRecording>,
     live_transcript: String,
     levels: [f32; 24],
     canceled: Arc<AtomicBool>,
     started: Option<Instant>,
+    // Audio length at stop, so final transcription latency is not billed as audio.
+    audio: Option<Duration>,
     error: Option<String>,
     task: Option<Task<()>>,
     timer: Option<Task<()>>,
     sessions: Option<Vec<jcode_sdk::SessionInfo>>,
     navigation: Option<gpui::Subscription>,
+    actions: Option<gpui::Subscription>,
+    decision: Option<String>,
+    trace: Option<VoiceTrace>,
+    trace_expanded: bool,
+    trace_preview: bool,
 }
 
-pub(crate) struct VoiceSessionRequested(pub jcode_sdk::SessionInfo);
+pub(crate) struct VoiceSessionRequested(pub jcode_sdk::SessionInfo, pub String);
 impl gpui::EventEmitter<VoiceSessionRequested> for Panel {}
+
+pub(crate) struct VoiceActionRequested(pub voice_intent::QuickAction, pub String);
+impl gpui::EventEmitter<VoiceActionRequested> for Panel {}
 
 impl Drop for VoiceState {
     fn drop(&mut self) {
@@ -106,6 +139,39 @@ impl Panel {
         self.voice.navigation = Some(subscription);
     }
 
+    pub(crate) fn configure_voice_actions(&mut self, subscription: gpui::Subscription) {
+        self.voice.actions = Some(subscription);
+    }
+
+    pub(crate) fn show_voice_decision(&mut self, message: String, cx: &mut Context<Self>) {
+        self.voice.error = None;
+        self.voice.decision = Some(message);
+        cx.notify();
+    }
+
+    pub(crate) fn voice_trace(&self) -> Option<VoiceTrace> {
+        self.voice.trace.clone()
+    }
+
+    pub(crate) fn show_voice_trace(&mut self, trace: Option<VoiceTrace>, cx: &mut Context<Self>) {
+        self.voice.trace = trace;
+        self.voice.trace_expanded = false;
+        self.voice.trace_preview = false;
+        cx.notify();
+    }
+
+    pub(crate) fn keep_voice_draft(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.voice.decision = None;
+        self.voice.error = Some("Jev chose: Quick action · Navigation unavailable. Transcript kept in the draft.".into());
+        self.input.update(cx, |input, cx| input.append_dictation(text, cx));
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn voice_decision_for_test(&self) -> Option<&str> {
+        self.voice.decision.as_deref()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_voice_checking_for_test(&mut self) {
         self.voice = VoiceState::default();
@@ -133,9 +199,48 @@ impl Panel {
         self.voice.phase != Phase::Idle
     }
 
+    pub(crate) fn global_voice_snapshot(&self, attempt: &Arc<AtomicBool>) -> Option<crate::global_voice_overlay::Snapshot> {
+        if !Arc::ptr_eq(attempt, &self.voice.canceled) || !self.voice.dictation_only {
+            return None;
+        }
+        use crate::global_voice_overlay::Snapshot;
+        let title = match self.voice.phase {
+            Phase::Idle => self.voice.error.clone()?,
+            Phase::Checking => "Connecting…".into(),
+            Phase::Recording => "Listening".into(),
+            Phase::Transcribing => "Transcribing…".into(),
+            Phase::Routing => "Finishing…".into(),
+        };
+        Some(Snapshot {
+            title,
+            levels: (self.voice.phase == Phase::Recording).then_some(self.voice.levels),
+        })
+    }
+
+    pub(crate) fn cancel_global_voice(&mut self, attempt: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+        if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.dictation_only {
+            self.cancel_voice(cx);
+        }
+    }
+
     pub(crate) fn begin_voice_hold(&mut self, cx: &mut Context<Self>) {
         if self.supports_voice() && self.voice.phase == Phase::Idle {
             self.start_voice_with_hold(true, cx);
+        }
+    }
+
+    pub(crate) fn begin_global_voice_hold(&mut self, cx: &mut Context<Self>) -> Option<Arc<AtomicBool>> {
+        if self.supports_voice() && !self.voice_active() {
+            self.start_voice_with_hold(true, cx);
+            self.voice.dictation_only = true;
+            return Some(self.voice.canceled.clone());
+        }
+        None
+    }
+
+    pub(crate) fn end_global_voice_hold(&mut self, attempt: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+        if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.dictation_only {
+            self.end_voice_hold(cx);
         }
     }
 
@@ -170,7 +275,9 @@ impl Panel {
         // Session configuration belongs to the panel, not an individual capture.
         let sessions = self.voice.sessions.take();
         let navigation = self.voice.navigation.take();
+        let actions = self.voice.actions.take();
         self.voice = VoiceState::default();
+        self.voice.actions = actions;
         self.voice.sessions = sessions;
         self.voice.navigation = navigation;
     }
@@ -227,12 +334,18 @@ impl Panel {
         match result {
             Ok(recording) => {
                 jcode_base::voice::timing::mark("ui shows recording");
+                if self.voice.dictation_only {
+                    eprintln!("global voice: recording started");
+                }
                 self.voice.phase = Phase::Recording;
                 self.voice.recording = Some(recording);
                 self.voice.started = Some(Instant::now());
                 self.tick_voice(cx);
             }
             Err(error) => {
+                if self.voice.dictation_only {
+                    eprintln!("global voice: recording failed to start: {error}");
+                }
                 self.voice.phase = Phase::Idle;
                 self.voice.hold_capture = false;
                 self.voice.error = Some(error.to_string());
@@ -326,20 +439,39 @@ impl Panel {
             return;
         };
         recording.stop();
+        self.voice.audio = self.voice.started.map(|started| started.elapsed());
         self.voice.phase = Phase::Transcribing;
         cx.notify();
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
-        let dictation_only = std::mem::take(&mut self.voice.hold_capture);
+        self.voice.hold_capture = false;
         self.voice.phase = Phase::Idle;
+        let audio = self
+            .voice
+            .audio
+            .take()
+            .or_else(|| self.voice.started.map(|started| started.elapsed()));
         self.voice.started = None;
         self.voice.recording = None;
         self.voice.live_transcript.clear();
         match result {
             Ok(text) if !text.trim().is_empty() => {
-                if !dictation_only && self.voice.sessions.is_some() {
-                    self.route_voice(text, cx);
+                if self.voice.dictation_only {
+                    self.voice.phase = Phase::Transcribing;
+                    let attempt = self.voice.canceled.clone();
+                    let check = cx.background_executor().spawn(crate::global_voice_session::permitted());
+                    self.voice.task = Some(cx.spawn(async move |this, cx| {
+                        let allowed = check.await;
+                        let _ = this.update(cx, |panel, cx| {
+                            panel.finish_global_voice_text(&attempt, text, allowed, cx);
+                        });
+                    }));
+                    cx.notify();
+                    return;
+                }
+                if self.voice.sessions.is_some() {
+                    self.route_voice(text, audio, cx);
                     return;
                 }
                 self.input.update(cx, |input, cx| {
@@ -350,10 +482,35 @@ impl Panel {
             Ok(_) => self.voice.error = Some("No speech was detected. Try recording again.".into()),
             Err(error) => self.voice.error = Some(error.to_string()),
         }
+        if self.voice.dictation_only {
+            if let Some(error) = &self.voice.error {
+                eprintln!("global voice: finished without text: {error}");
+            }
+        }
         cx.notify();
     }
 
-    fn route_voice(&mut self, text: String, cx: &mut Context<Self>) {
+    fn finish_global_voice_text(&mut self, attempt: &Arc<AtomicBool>, text: String, allowed: bool, cx: &mut Context<Self>) {
+        if !Arc::ptr_eq(attempt, &self.voice.canceled)
+            || attempt.load(Ordering::SeqCst)
+            || !self.voice.dictation_only
+            || self.voice.phase != Phase::Transcribing
+        {
+            return;
+        }
+        if allowed {
+            // Length only. Never log transcript content.
+            eprintln!("global voice: inserted {} transcript chars", text.chars().count());
+            self.input.update(cx, |input, cx| input.append_dictation(&text, cx));
+            self.voice.phase = Phase::Idle;
+            self.voice.error = None;
+            cx.notify();
+        } else {
+            self.cancel_global_voice(attempt, cx);
+        }
+    }
+
+    fn route_voice(&mut self, text: String, audio: Option<Duration>, cx: &mut Context<Self>) {
         self.voice.phase = Phase::Routing;
         self.voice.live_transcript = text.clone();
         self.voice.error = None;
@@ -373,18 +530,56 @@ impl Panel {
                 working_dir: s.working_dir.clone(),
             })
             .collect::<Vec<_>>();
+        let questions = match voice_intent::describe_questions(&text, &candidates) {
+            Ok(questions) => questions,
+            Err(error) => {
+                self.finish_voice_routing(&attempt, Err(error), cx);
+                return;
+            }
+        };
+        self.voice.trace = Some(VoiceTrace {
+            transcript: text.clone(),
+            candidates: candidates.clone(),
+            questions,
+            answers: Vec::new(),
+            audio,
+            usage: None,
+        });
         let work = cx.background_executor().spawn(async move {
             tokio::runtime::Runtime::new()
                 .map_err(anyhow::Error::from)?
-                .block_on(voice_intent::classify(&text, &candidates))
+                .block_on(voice_intent::classify_with_report(&text, &candidates))
         });
         self.voice.task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |panel, cx| {
-                panel.finish_voice_routing(&attempt, result, cx);
+                panel.finish_voice_report(&attempt, result, cx);
             });
         }));
         cx.notify();
+    }
+
+    fn finish_voice_report(
+        &mut self,
+        attempt: &Arc<AtomicBool>,
+        result: anyhow::Result<voice_intent::VoiceClassification>,
+        cx: &mut Context<Self>,
+    ) {
+        // A canceled or superseded request cannot overwrite the visible evidence.
+        if !Arc::ptr_eq(attempt, &self.voice.canceled)
+            || attempt.load(Ordering::SeqCst)
+            || self.voice.phase != Phase::Routing
+        {
+            return;
+        }
+        let intent = result.map(|report| {
+            if let Some(trace) = &mut self.voice.trace {
+                trace.answers = report.answers;
+                trace.usage = report.usage;
+            }
+            report.intent
+        });
+        self.finish_voice_routing(attempt, intent, cx);
     }
 
     fn finish_voice_routing(
@@ -401,21 +596,43 @@ impl Panel {
         }
         self.voice.phase = Phase::Idle;
         let mut target = None;
+        let mut quick_action = None;
+        let mut coding_agent = false;
         let error = match result {
+            Ok(VoiceIntent::CodingAgent) => {
+                coding_agent = true;
+                None
+            }
+            Ok(VoiceIntent::QuickAction(action)) => {
+                if self.voice.actions.is_some() {
+                    quick_action = Some(action);
+                    None
+                } else {
+                    Some("Jev chose: Quick action · Navigation unavailable. Transcript kept in the draft.".into())
+                }
+            }
             Ok(VoiceIntent::Dictation) => None,
             Ok(VoiceIntent::OpenSession(id)) => {
                 target = self.voice.sessions.as_ref()
                     .and_then(|sessions| sessions.iter().find(|s| s.session_id == id)).cloned();
                 target.is_none().then(|| "Jev could not match a session in your last 20. Transcript kept in the draft.".to_string())
             }
-            Ok(VoiceIntent::Uncertain) => Some("Jev couldn't confidently match a session in your last 20. Try its title or project name. Transcript kept in the draft.".into()),
-            Err(error) => Some(format!("Jev session lookup unavailable: {error}. Transcript kept in the draft.")),
+            Ok(VoiceIntent::Uncertain) => Some("Jev is unsure which route to choose. Transcript kept in the draft.".into()),
+            Err(error) => Some(format!("Jev routing unavailable: {error}. Transcript kept in the draft.")),
         };
         let text = std::mem::take(&mut self.voice.live_transcript);
         self.voice.error = error;
-        if let Some(session) = target {
+        if coding_agent {
+            // Send only this utterance, never text or attachments already in the composer.
+            self.voice.decision = Some("Jev chose: Coding agent · Sent or queued for reasoning".into());
+            self.submit_or_queue(text, Vec::new(), true, cx);
+        } else if let Some(action) = quick_action {
+            self.voice.decision = Some("Jev chose: Quick action · Navigation".into());
+            cx.emit(VoiceActionRequested(action, text));
+        } else if let Some(session) = target {
+            self.voice.decision = Some("Jev chose: Quick action · Open session".into());
             // Emit only an exact member of the bounded snapshot, never a model-supplied path.
-            cx.emit(VoiceSessionRequested(session));
+            cx.emit(VoiceSessionRequested(session, text));
         } else {
             self.input
                 .update(cx, |input, cx| input.append_dictation(&text, cx));
@@ -510,6 +727,111 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn voice_report_retains_actual_answers_and_keeps_uncertain_text(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            let text = "maybe switch somewhere";
+            panel.input.update(cx, |input, cx| input.set_content("typed work".into(), cx));
+            panel.voice.phase = Phase::Routing;
+            panel.voice.live_transcript = text.into();
+            panel.voice.trace = Some(VoiceTrace {
+                transcript: text.into(),
+                candidates: Vec::new(),
+                questions: voice_intent::describe_questions(text, &[]).unwrap(),
+                answers: Vec::new(),
+                audio: None,
+                usage: None,
+            });
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_voice_report(&attempt, Ok(voice_intent::VoiceClassification {
+                intent: VoiceIntent::Uncertain,
+                answers: vec![voice_intent::VoiceAnswer { id: "uncertain".into(), probability: 0.91 }],
+                usage: Some(voice_intent::VoiceUsage { input_tokens: 1200, output_tokens: 7, requests: 1 }),
+            }), cx);
+            let trace = panel.voice.trace.as_ref().unwrap();
+            assert_eq!(trace.transcript, text);
+            assert_eq!(trace.questions.len(), 7);
+            assert_eq!(trace.answers[0].probability, 0.91);
+            assert_eq!(trace.usage.unwrap().input_tokens, 1200);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "typed work\nmaybe switch somewhere");
+            assert!(panel.voice.error.as_ref().unwrap().contains("unsure"));
+            // A duplicate completion cannot replace the evidence or append again.
+            panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("late failure")), cx);
+            assert_eq!(panel.voice.trace.as_ref().unwrap().answers[0].probability, 0.91);
+            panel.cancel_voice(cx);
+            assert!(panel.voice.trace.is_none());
+            panel.finish_voice_report(&attempt, Ok(voice_intent::VoiceClassification {
+                intent: VoiceIntent::CodingAgent,
+                answers: Vec::new(),
+                usage: None,
+            }), cx);
+            assert!(panel.voice.trace.is_none());
+            assert_eq!(panel.input.read(cx).content.as_ref(), "typed work\nmaybe switch somewhere");
+        });
+    }
+
+    #[gpui::test]
+    fn voice_report_failure_keeps_questions_without_fabricating_answers(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(cx, |panel, cx| {
+            panel.voice.phase = Phase::Routing;
+            panel.voice.live_transcript = "keep this".into();
+            panel.voice.trace = Some(VoiceTrace {
+                transcript: "keep this".into(), candidates: Vec::new(),
+                questions: voice_intent::describe_questions("keep this", &[]).unwrap(),
+                answers: Vec::new(),
+                audio: None,
+                usage: None,
+            });
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("provider unavailable")), cx);
+            assert_eq!(panel.voice.trace.as_ref().unwrap().questions.len(), 7);
+            assert!(panel.voice.trace.as_ref().unwrap().answers.is_empty());
+            assert!(panel.voice.error.as_ref().unwrap().contains("provider unavailable"));
+            assert_eq!(panel.input.read(cx).content.as_ref(), "keep this");
+        });
+    }
+
+    #[gpui::test]
+    fn voice_coding_agent_sends_only_transcript_once_and_preserves_draft(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let panel = cx.new(|cx| {
+            let mut panel = Panel::new("voice-agent".into(), None, None, bridge, cx);
+            panel.history_loaded = true;
+            panel.status = "idle".into();
+            panel
+        });
+        panel.update(cx, |panel, cx| {
+            panel.input.update(cx, |input, cx| input.set_content("unfinished typed work".into(), cx));
+            panel.resolve_voice_for_test("debug this failure", Ok(VoiceIntent::CodingAgent), cx);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "unfinished typed work");
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
+        });
+        assert!(matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
+            if session_id == "voice-agent" && content == "debug this failure" && images.is_empty()));
+        assert!(commands.try_recv().is_err(), "a duplicate completion must never send twice");
+    }
+
+    #[gpui::test]
+    fn voice_coding_agent_queues_while_busy(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let panel = cx.new(|cx| {
+            let mut panel = Panel::new("voice-agent".into(), None, None, bridge, cx);
+            panel.history_loaded = true;
+            panel.status = "running".into();
+            panel
+        });
+        panel.update(cx, |panel, cx| {
+            panel.resolve_voice_for_test("then add tests", Ok(VoiceIntent::CodingAgent), cx);
+            assert!(commands.try_recv().is_err(), "do not interrupt the active turn");
+            panel.status = "idle".into();
+            panel.send_queued_prompts(cx);
+        });
+        assert!(matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "then add tests"));
+    }
+
+    #[gpui::test]
     fn voice_hold_repeat_and_early_release_cancel_only_owned_startup(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -578,54 +900,30 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_hold_streams_then_appends_dictation_without_navigation_or_sending(
+    fn voice_hold_routes_final_transcription_without_touching_typed_draft(
         cx: &mut gpui::TestAppContext,
     ) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(cx, |panel, cx| {
-            panel.voice.sessions = Some(vec![
-                serde_json::from_value(serde_json::json!({
-                    "session_id": "target", "status": "idle", "title": "PDF renderer"
-                }))
-                .unwrap(),
-            ]);
+            panel.voice.sessions = Some(Vec::new());
             panel.prepare_voice_attempt(true);
             panel.voice.phase = Phase::Recording;
-            panel
-                .input
-                .update(cx, |input, cx| input.set_content("typed draft".into(), cx));
-            panel.apply_voice_event(NariEvent::Transcript("open PDF".into()), cx);
-            panel.apply_voice_event(NariEvent::Transcript("open PDF renderer".into()), cx);
-            assert_eq!(panel.voice.live_transcript, "open PDF renderer");
+            panel.input.update(cx, |input, cx| input.set_content("typed draft".into(), cx));
+            panel.apply_voice_event(NariEvent::Transcript("fix the bug".into()), cx);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
-            assert!(
-                !serde_json::to_string(&panel.snapshot(cx))
-                    .unwrap()
-                    .contains("open PDF renderer")
-            );
-            let attempt = panel.voice.canceled.clone();
-            panel.begin_voice_hold(cx);
-            assert!(Arc::ptr_eq(&attempt, &panel.voice.canceled));
-            // Model stop_voice's post-stop phase without opening a live mic.
-            panel.voice.phase = Phase::Transcribing;
-            panel.end_voice_hold(cx);
-            panel.end_voice_hold(cx);
-            assert!(panel.voice.hold_capture);
-            assert!(!attempt.load(Ordering::SeqCst));
-            let before = panel.items.len();
-            panel.apply_voice_event(NariEvent::Finished(Ok("open PDF renderer".into())), cx);
-            assert!(
-                panel.voice.phase == Phase::Idle,
-                "must not enter voice routing"
-            );
+            assert!(panel.voice.phase == Phase::Recording);
+            panel.apply_voice_event(NariEvent::Finished(Ok("fix the bug".into())), cx);
+            assert!(panel.voice.phase == Phase::Routing);
             assert!(!panel.voice.hold_capture);
-            assert!(panel.voice.task.is_none(), "must not start a classifier");
-            assert_eq!(
-                panel.input.read(cx).content.as_ref(),
-                "typed draft\nopen PDF renderer"
-            );
-            assert_eq!(panel.items.len(), before, "never sends");
+            // Replace the unpolled task with a deterministic typed Jev response.
+            panel.voice.task = None;
+            let attempt = panel.voice.canceled.clone();
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
+            assert!(panel.voice.decision.as_ref().unwrap().contains("Coding agent"));
+            assert!(panel.items.iter().any(|item| matches!(item, Item::User(text) if text == "fix the bug")));
             assert!(panel.voice.live_transcript.is_empty());
+            assert!(!panel.voice_active());
         });
     }
 
@@ -708,12 +1006,14 @@ mod tests {
             panel.voice.live_transcript = "discard".into();
             let attempt = panel.voice.canceled.clone();
             panel.cancel_voice(cx);
-            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::Dictation), cx);
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
             assert!(panel.input.read(cx).content.is_empty());
+            assert!(panel.items.is_empty());
             panel.voice.phase = Phase::Routing;
             panel.voice.live_transcript = "new recording".into();
-            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::Dictation), cx);
+            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
             assert!(panel.input.read(cx).content.is_empty());
+            assert!(panel.items.is_empty());
             assert_eq!(panel.voice.live_transcript, "new recording");
             assert!(
                 !serde_json::to_string(&panel.snapshot(cx))

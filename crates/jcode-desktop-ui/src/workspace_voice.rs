@@ -45,6 +45,13 @@ fn is_voice_hold(stroke: &gpui::Keystroke) -> bool {
         && !stroke.modifiers.control && !stroke.modifiers.alt && !stroke.modifiers.function {
         return true;
     }
+    // Matches the host's RegisterHotKey chord so a failed registration still
+    // leaves a focused hold-to-talk.
+    #[cfg(target_os = "windows")]
+    if stroke.key == "space" && stroke.modifiers.control && stroke.modifiers.shift
+        && !stroke.modifiers.platform && !stroke.modifiers.alt && !stroke.modifiers.function {
+        return true;
+    }
     is_copilot(stroke)
 }
 
@@ -171,18 +178,101 @@ impl Workspace {
              window,
              cx| {
                 // A closed recording owner must not navigate the workspace later.
-                if workspace
-                    .slots
-                    .iter()
-                    .any(|slot| !slot.closing && slot.panel == *source)
+                if !workspace.account_sign_in.visible
+                    && workspace
+                        .slots
+                        .iter()
+                        .any(|slot| !slot.closing && slot.panel == *source)
                 {
                     workspace.activate_session(request.0.clone(), window, cx);
+                    workspace.show_voice_navigation_decision("Open session", source, cx);
+                } else {
+                    source.update(cx, |panel, cx| panel.keep_voice_draft(&request.1, cx));
                 }
             },
         );
+        let action_subscription = cx.subscribe_in(
+            panel,
+            window,
+            |workspace,
+             source,
+             request: &crate::panel::voice::VoiceActionRequested,
+             window,
+             cx| {
+                if workspace.account_sign_in.visible
+                    || !workspace
+                        .slots
+                        .iter()
+                        .any(|slot| !slot.closing && slot.panel == *source)
+                {
+                    source.update(cx, |panel, cx| panel.keep_voice_draft(&request.1, cx));
+                    return;
+                }
+                use jcode_base::voice_intent::QuickAction;
+                let label = match request.0 {
+                    QuickAction::NewSession => {
+                        workspace.new_panel(&NewPanel, window, cx);
+                        "New session"
+                    }
+                    QuickAction::NextSession => {
+                        if !workspace.focus_adjacent_voice_session(true, window, cx) {
+                            source.update(cx, |panel, cx| panel.keep_voice_draft(&request.1, cx));
+                            return;
+                        }
+                        "Next session"
+                    }
+                    QuickAction::PreviousSession => {
+                        if !workspace.focus_adjacent_voice_session(false, window, cx) {
+                            source.update(cx, |panel, cx| panel.keep_voice_draft(&request.1, cx));
+                            return;
+                        }
+                        "Previous session"
+                    }
+                };
+                workspace.show_voice_navigation_decision(label, source, cx);
+            },
+        );
         panel.update(cx, |panel, _| {
-            panel.configure_voice_navigation(sessions, subscription)
+            panel.configure_voice_navigation(sessions, subscription);
+            panel.configure_voice_actions(action_subscription);
         });
+    }
+
+    fn focus_adjacent_voice_session(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(active) = self.slots.get(self.active) else { return false };
+        let current = (active.row, self.active);
+        // Follow the sidebar's top-to-bottom strip order, skipping utility and
+        // closing panels. Navigation starts at current focus, not the old owner.
+        let candidates = self.slots.iter().enumerate().filter_map(|(index, slot)| {
+            let position = (slot.row, index);
+            (!slot.closing
+                && slot.panel.read(cx).supports_voice()
+                && if forward { position > current } else { position < current })
+                .then_some(position)
+        });
+        let target = if forward { candidates.min() } else { candidates.max() };
+        let Some((_, index)) = target else { return false };
+        self.set_active(index, cx);
+        self.overview = false;
+        self.overview_progress.set(0.0, Instant::now());
+        self.focus_active(window, cx);
+        cx.notify();
+        true
+    }
+
+    fn show_voice_navigation_decision(&self, action: &str, source: &Entity<Panel>, cx: &mut Context<Self>) {
+        let trace = source.read(cx).voice_trace();
+        if let Some(slot) = self.slots.get(self.active).filter(|slot| !slot.closing) {
+            slot.panel.update(cx, |panel, cx| {
+                panel.show_voice_trace(trace, cx);
+                panel.show_voice_decision(format!("Jev chose: Quick action · {action}"), cx);
+            });
+        }
     }
 
     pub(super) fn toggle_panel_voice(
@@ -215,6 +305,9 @@ impl Workspace {
         }
         self.focus_active(window, cx);
         panel.update(cx, |panel, cx| panel.begin_voice_hold(cx));
+        if panel.read(cx).voice_active() {
+            self.configure_voice_navigation(&panel, window, cx);
+        }
         cx.notify();
     }
 
@@ -238,6 +331,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The kernel-filtered listener supplies both edges even after focus
+        // moves elsewhere. Do not start a second local capture for this press.
+        #[cfg(target_os = "linux")]
+        if self.global_voice.ready() && is_voice_hold(&event.keystroke) {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(first) = self.voice_key.press(event) {
             cx.stop_propagation();
             if first {
@@ -323,6 +423,8 @@ mod tests {
             assert_eq!(workspace.slots.len(), 2);
             assert_eq!(workspace.active, 1);
             assert_eq!(workspace.slots[1].panel.read(cx).session_id, "voice-target");
+            assert_eq!(workspace.slots[1].panel.read(cx).voice_decision_for_test(),
+                Some("Jev chose: Quick action · Open session"));
         });
     }
 
@@ -360,6 +462,157 @@ mod tests {
                 "history-target"
             );
         });
+    }
+
+    #[gpui::test]
+    fn voice_quick_actions_preserve_drafts_and_show_destination_decisions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use jcode_base::voice_intent::{QuickAction, VoiceIntent};
+        for (action, start, expected, label) in [
+            (QuickAction::NextSession, 0, 1, "Next session"),
+            (QuickAction::PreviousSession, 1, 0, "Previous session"),
+            (QuickAction::NewSession, 0, 1, "New session"),
+        ] {
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                workspace.push_test_panel("voice-first", cx);
+                workspace.push_test_panel("voice-second", cx);
+                workspace
+            });
+            let owner = vcx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_active(start, cx);
+                    let owner = workspace.slots[start].panel.clone();
+                    workspace.configure_voice_navigation(&owner, window, cx);
+                    owner.update(cx, |panel, cx| {
+                        panel.input.update(cx, |input, cx| input.set_content("typed draft".into(), cx));
+                        panel.resolve_voice_for_test("navigate", Ok(VoiceIntent::QuickAction(action)), cx);
+                    });
+                    owner
+                })
+            });
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, cx| {
+                assert_eq!(workspace.active, expected, "{label}");
+                assert_eq!(workspace.slots.len(), if label == "New session" { 3 } else { 2 });
+                assert_eq!(owner.read(cx).input.read(cx).content.as_ref(), "typed draft");
+                assert_eq!(workspace.slots[expected].panel.read(cx).voice_decision_for_test(),
+                    Some(format!("Jev chose: Quick action · {label}").as_str()));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn voice_navigation_ignores_modals_and_closed_recording_owners(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use jcode_base::voice_intent::{QuickAction, VoiceIntent};
+        for blocked in ["account", "closing", "removed"] {
+            for session_match in [false, true] {
+                let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                    let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                    workspace.push_test_panel("voice-owner", cx);
+                    workspace.push_test_panel("voice-target", cx);
+                    workspace.sessions = vec![super::super::tests::session_info("voice-target", None)];
+                    workspace
+                });
+                let owner = vcx.update(|window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.set_active(0, cx);
+                        let owner = workspace.slots[0].panel.clone();
+                        workspace.configure_voice_navigation(&owner, window, cx);
+                        match blocked {
+                            "account" => workspace.account_sign_in.visible = true,
+                            "closing" => workspace.slots[0].closing = true,
+                            "removed" => { workspace.slots.remove(0); }
+                            _ => unreachable!(),
+                        }
+                        owner.update(cx, |panel, cx| {
+                            panel.input.update(cx, |input, cx| input.set_content("typed".into(), cx));
+                            let intent = if session_match {
+                                VoiceIntent::OpenSession("voice-target".into())
+                            } else {
+                                VoiceIntent::QuickAction(QuickAction::NewSession)
+                            };
+                            panel.resolve_voice_for_test("navigate", Ok(intent), cx);
+                        });
+                        owner
+                    })
+                });
+                vcx.run_until_parked();
+                workspace.read_with(vcx, |workspace, _| {
+                    assert_eq!(workspace.active, 0, "{blocked}");
+                    assert_eq!(workspace.slots.len(), if blocked == "removed" { 1 } else { 2 });
+                });
+                owner.read_with(vcx, |panel, cx| {
+                    assert_eq!(panel.input.read(cx).content.as_ref(), "typed\nnavigate");
+                });
+                drop(owner);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn voice_adjacent_sessions_skip_utilities_and_closed_chats_across_rows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use jcode_base::voice_intent::{QuickAction, VoiceIntent};
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["first", "utility://settings", "closing", "last"] {
+                workspace.push_test_panel(name, cx);
+            }
+            workspace.slots[2].closing = true;
+            workspace.slots[3].row = 1;
+            workspace
+        });
+        for (action, start, expected) in [
+            (QuickAction::NextSession, 0, 3),
+            (QuickAction::PreviousSession, 3, 0),
+        ] {
+            vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
+                workspace.set_active(start, cx);
+                let owner = workspace.slots[start].panel.clone();
+                workspace.configure_voice_navigation(&owner, window, cx);
+                owner.update(cx, |panel, cx| {
+                    panel.resolve_voice_for_test("navigate", Ok(VoiceIntent::QuickAction(action)), cx);
+                });
+            }));
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, _| {
+                assert_eq!(workspace.active, expected);
+                assert_eq!(workspace.active_row, workspace.slots[expected].row);
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn voice_navigation_at_session_boundary_keeps_the_utterance(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use jcode_base::voice_intent::{QuickAction, VoiceIntent};
+        for action in [QuickAction::NextSession, QuickAction::PreviousSession] {
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                workspace.push_test_panel("only-chat", cx);
+                workspace
+            });
+            vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
+                let owner = workspace.slots[0].panel.clone();
+                workspace.configure_voice_navigation(&owner, window, cx);
+                owner.update(cx, |panel, cx| {
+                    panel.input.update(cx, |input, cx| input.set_content("typed".into(), cx));
+                    panel.resolve_voice_for_test("navigate", Ok(VoiceIntent::QuickAction(action)), cx);
+                });
+            }));
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, cx| {
+                assert_eq!(workspace.active, 0);
+                assert_eq!(workspace.slots.len(), 1);
+                assert_eq!(workspace.slots[0].panel.read(cx).input.read(cx).content.as_ref(), "typed\nnavigate");
+            });
+        }
     }
 
     fn disable_test_microphones(workspace: &mut Workspace, cx: &mut Context<Workspace>) {

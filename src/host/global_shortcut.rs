@@ -1,5 +1,7 @@
-//! Process-lifetime macOS shortcuts, deliberately outside the reloadable UI.
-//! Uses Carbon hotkey registration, not a keyboard monitor or event tap.
+//! Process-lifetime global shortcuts, deliberately outside the reloadable UI.
+//! macOS uses Carbon hotkey registration, not a keyboard monitor or event tap.
+//! Windows uses RegisterHotKey, with key-up detected by global-hotkey 0.7's
+//! GetAsyncKeyState poll. No low-level keyboard hook is installed.
 
 use global_hotkey::{
     GlobalHotKeyEvent, HotKeyState,
@@ -21,8 +23,26 @@ fn activation_hotkey() -> HotKey {
     HotKey::new(Some(Modifiers::CONTROL | Modifiers::SUPER), Code::KeyI)
 }
 
+/// macOS: Command+Shift+M. Windows: Ctrl+Shift+Space, because Win+Shift
+/// chords are largely reserved by the shell and Ctrl+Shift+M is common in apps.
 fn voice_hotkey() -> HotKey {
-    HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM)
+    voice_hotkey_for(cfg!(target_os = "windows"))
+}
+
+fn voice_hotkey_for(windows: bool) -> HotKey {
+    if windows {
+        HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
+    } else {
+        HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM)
+    }
+}
+
+pub fn voice_hotkey_label() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Ctrl+Shift+Space"
+    } else {
+        "Command+Shift+M"
+    }
 }
 
 fn shortcut_event(event: GlobalHotKeyEvent) -> Option<ShortcutEvent> {
@@ -73,7 +93,7 @@ fn forward_shortcut(
 }
 
 // Compile the integration in Linux unit tests too, without registering it.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn install(
     cx: &mut gpui::App,
     mut dispatch: impl FnMut(ShortcutEvent, &mut gpui::App) -> anyhow::Result<()> + 'static,
@@ -95,18 +115,22 @@ pub fn install(
         let state = state.clone();
         move |event| forward_shortcut(event, &sender, &state)
     }));
-    manager
-        .register(activation_hotkey())
-        .context("register Control+Command+I (another app may already own it)")?;
-    // Carbon consumes registered hotkeys, so the matching in-app key binding
-    // does not also start voice when this registration succeeds.
+    // The activation chord is a macOS convention. Windows registers voice only.
+    if cfg!(target_os = "macos") {
+        manager
+            .register(activation_hotkey())
+            .context("register Control+Command+I (another app may already own it)")?;
+    }
+    // Carbon/RegisterHotKey consume registered hotkeys, so the matching in-app
+    // key binding does not also start voice when this registration succeeds.
     // A voice shortcut conflict must not disable the established app shortcut.
+    let label = voice_hotkey_label();
     if let Err(error) = manager.register(voice_hotkey()) {
         eprintln!(
-            "could not register global Command+Shift+M voice shortcut (another app may already own it): {error:#}"
+            "could not register global {label} voice shortcut (another app may already own it): {error:#}"
         );
     } else {
-        eprintln!("registered global Command+Shift+M voice shortcut");
+        eprintln!("registered global {label} voice shortcut");
     }
     cx.set_global(Registration { _manager: manager });
     cx.spawn(async move |cx| {
@@ -121,7 +145,9 @@ pub fn install(
         }
     })
     .detach();
-    eprintln!("registered global Control+Command+I desktop shortcut");
+    if cfg!(target_os = "macos") {
+        eprintln!("registered global Control+Command+I desktop shortcut");
+    }
     Ok(())
 }
 
@@ -138,10 +164,19 @@ mod tests {
 
     #[test]
     fn voice_shortcut_is_command_shift_m_without_control_or_option() {
-        let hotkey = voice_hotkey();
+        let hotkey = voice_hotkey_for(false);
         assert_eq!(hotkey.key, Code::KeyM);
         assert_eq!(hotkey.mods, Modifiers::SUPER | Modifiers::SHIFT);
         assert_ne!(hotkey.id(), activation_hotkey().id());
+    }
+
+    #[test]
+    fn windows_voice_shortcut_is_ctrl_shift_space_without_win_or_alt() {
+        let hotkey = voice_hotkey_for(true);
+        assert_eq!(hotkey.key, Code::Space);
+        assert_eq!(hotkey.mods, Modifiers::CONTROL | Modifiers::SHIFT);
+        assert_ne!(hotkey.id(), activation_hotkey().id());
+        assert_ne!(hotkey.id(), voice_hotkey_for(false).id());
     }
 
     #[test]

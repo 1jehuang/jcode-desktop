@@ -54,6 +54,8 @@ jcode-base = { path = "../../../jcode/crates/jcode-base", features = ["voice-cap
 jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false, features = ["voice-capture"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.19"
+async-io = "2.6"
 gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 arboard = { version = "3", features = ["wayland-data-control"] }
 

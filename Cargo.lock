@@ -4324,6 +4324,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-channel",
+ "async-io",
  "base64",
  "flate2",
  "gpui",
@@ -4356,6 +4357,7 @@ dependencies = [
  "toml 0.8.23",
  "two-face",
  "unicode-segmentation",
+ "zbus",
 ]
 
 [[package]]

@@ -202,7 +202,12 @@ def main():
         app.terminate()
         app.wait(timeout=args.timeout)
         wait_frame('owner-shutdown', lambda image: changed_bounds(baseline, image) is None)
-        objects = assert_native_protocol((root / 'app.log').read_text(errors='replace'))
+        # Production redirects stderr into XDG_STATE_HOME after startup.
+        diagnostic = root / 'logs/jcode-desktop/jcode-desktop.log'
+        protocol = (root / 'app.log').read_text(errors='replace')
+        if diagnostic.exists():
+            protocol += diagnostic.read_text(errors='replace')
+        objects = assert_native_protocol(protocol)
         evidence.append({'native_layer_objects': objects, 'result': 'passed',
                          'scope': 'synthetic preview lifecycle, real native compositor rendering'})
         print('PASS: native overlay visible above focused target, no focus/layout reservation, removed on completion and owner shutdown')
