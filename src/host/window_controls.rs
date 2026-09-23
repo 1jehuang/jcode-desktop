@@ -32,3 +32,16 @@ pub fn install(
         });
     });
 }
+
+/// Shared single-panel hosts close the window whose tab bar asked, and never
+/// suspend it. Other windows of the same process are unaffected.
+pub fn install_close_only(cx: &mut App) {
+    cx.on_action(move |_: &CloseWindow, cx| {
+        let Some(handle) = cx.active_window() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        });
+    });
+}

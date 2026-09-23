@@ -7,8 +7,10 @@ use std::ffi::c_void;
 
 mod image_ids;
 mod launch;
+mod window_launch;
 pub use image_ids::ImageIds;
-pub use launch::LaunchMode;
+pub use launch::{LaunchMode, SHARED_SINGLE_PANEL};
+pub use window_launch::{FORWARDED_ENV, WindowLaunch, WindowLaunches};
 
 pub const ABI_VERSION: u32 = 4;
 pub const STATE_SCHEMA_VERSION: u32 = 1;

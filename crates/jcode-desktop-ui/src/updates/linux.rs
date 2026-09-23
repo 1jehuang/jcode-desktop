@@ -83,11 +83,11 @@ fn reload_enabled(args: &[std::ffi::OsString], environment: bool, development: b
 }
 
 fn socket_path(args: &[std::ffi::OsString]) -> PathBuf {
-    let name =
-        match jcode_desktop_api::LaunchMode::from_args(args).instance_name(std::process::id()) {
-            Some(name) => format!("jcode-desktop-{name}.sock"),
-            None => "jcode-desktop.sock".into(),
-        };
+    let name = match jcode_desktop_api::LaunchMode::instance_name_for_args(args, std::process::id())
+    {
+        Some(name) => format!("jcode-desktop-{name}.sock"),
+        None => "jcode-desktop.sock".into(),
+    };
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(runtime) => PathBuf::from(runtime).join(name),
         None => std::env::temp_dir().join(format!(
@@ -135,14 +135,17 @@ mod tests {
             );
             assert_eq!(
                 socket_path(&[alias.into(), "--single-panel".into()]),
-                parent.join(format!(
-                    "{prefix}jcode-desktop-single-panel-{}.sock",
-                    std::process::id()
-                ))
+                parent.join(format!("{prefix}jcode-desktop-single-panel.sock"))
             );
         }
+        // Shared single-panel windows reload their one host together.
         assert_eq!(
             socket_path(&["--single-panel".into()]),
+            parent.join(format!("{prefix}jcode-desktop-single-panel.sock"))
+        );
+        // An isolated window still owns a per-process socket.
+        assert_eq!(
+            socket_path(&["--single-panel".into(), "--new-process".into()]),
             parent.join(format!(
                 "{prefix}jcode-desktop-single-panel-{}.sock",
                 std::process::id()

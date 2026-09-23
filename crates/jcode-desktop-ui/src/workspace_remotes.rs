@@ -220,7 +220,7 @@ impl Workspace {
                 .remove(Panel::STARTUP_SESSION_ID);
             self.update_startup_status("Retrying connection to the default machine…", false, cx);
             self.create_default_session(
-                default_working_dir(),
+                self.default_working_dir(),
                 Some(Panel::STARTUP_SESSION_ID.into()),
                 cx,
             );
@@ -228,7 +228,7 @@ impl Workspace {
             // Keep the editor, attachments and queued prompts. A fresh request
             // ID rejects a late remote/create reply rather than changing target.
             let directory = if panel.read(cx).is_startup_draft() || remote_host.is_some() {
-                default_working_dir()
+                self.default_working_dir()
             } else {
                 panel.read(cx).working_dir.clone()
             };
@@ -451,7 +451,7 @@ impl Workspace {
         {
             self.remotes.startup_requested = true;
             self.create_default_session(
-                default_working_dir(),
+                self.default_working_dir(),
                 Some(Panel::STARTUP_SESSION_ID.into()),
                 cx,
             );
@@ -788,7 +788,7 @@ impl Workspace {
             self.open_remote_draft(host, cx);
         } else {
             self.remotes.notice = None;
-            self.open_local_draft(default_working_dir(), cx);
+            self.open_local_draft(self.default_working_dir(), cx);
         }
         cx.notify();
     }

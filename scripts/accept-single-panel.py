@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Accept independent single-panel windows on private Xvfb using an existing binary.
+"""Accept isolated (--new-process) single-panel windows on private Xvfb.
+
+Default single-panel launches share one host; see accept-shared-single-panel.py.
 
 Never builds, reloads, connects to a daemon, or sends input to the live desktop.
 The new output directory retains screenshots, state snapshots, logs and results.
@@ -197,7 +199,8 @@ def main():
             protected = {}
             # The workspace shortcut must create the main window even when
             # standalone/sidebar-free windows already exist.
-            for name, mode in (("single-a", ["--single-panel"]), ("single-b", ["--single-panel"]),
+            for name, mode in (("single-a", ["--single-panel", "--new-process"]),
+                               ("single-b", ["--single-panel", "--new-process"]),
                                ("no-sidebar", ["--no-sidebar"]), ("normal", [])):
                 child_env = dict(env, JCODE_DESKTOP_STATE=str(root / (name + ".state")))
                 process = spawn(name, [str(binary), "--no-hot-reload", *mode], child_env)

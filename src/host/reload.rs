@@ -34,6 +34,9 @@ pub struct ReloadManager {
     staging: Option<TempDir>,
     source: Option<PathBuf>,
     window: Option<AnyWindowHandle>,
+    /// Further windows of a shared single-panel host. They reload together
+    /// with `window`, but are closed rather than suspended.
+    extra_windows: Vec<AnyWindowHandle>,
     suspended: Option<(u32, Vec<u8>)>,
     host: Rc<HostState>,
     next_generation: u64,
@@ -63,6 +66,7 @@ impl ReloadManager {
                 .transpose()?,
             source,
             window: Some(window),
+            extra_windows: Vec::new(),
             suspended: None,
             host,
             next_generation: 0,
@@ -98,21 +102,58 @@ impl ReloadManager {
         Ok(())
     }
 
+    /// Activate the current generation in another window of this host. The
+    /// window starts fresh and from then on reloads with every other window.
+    pub fn attach_window(&mut self, window: AnyWindowHandle, cx: &mut App) -> Result<()> {
+        if self.window.is_none() {
+            self.window = Some(window);
+            if let Err(error) = self.activate_generation(self.active, None, cx) {
+                self.window = None;
+                return Err(error);
+            }
+            return Ok(());
+        }
+        self.activate_generation_in(window, self.active, None, cx)?;
+        self.extra_windows.push(window);
+        Ok(())
+    }
+
+    /// Stop tracking a window that closed. Another window takes over as the
+    /// primary so reloads keep reaching every remaining window.
+    pub fn forget_window(&mut self, window: gpui::WindowId) {
+        self.extra_windows
+            .retain(|handle| handle.window_id() != window);
+        if self.window.is_some_and(|handle| handle.window_id() == window) {
+            self.window = (!self.extra_windows.is_empty()).then(|| self.extra_windows.remove(0));
+        }
+    }
+
+    /// Every attached window, primary first.
+    pub fn windows(&self) -> Vec<AnyWindowHandle> {
+        self.window
+            .iter()
+            .chain(self.extra_windows.iter())
+            .copied()
+            .collect()
+    }
+
     pub fn reload(&mut self, cx: &mut App) -> Result<()> {
         let source = self
             .source
             .clone()
             .context("hot reload is disabled; launch with --hot-reload")?;
-        let snapshot = self.snapshot_active(cx)?;
+        let snapshots = self.snapshot_all(cx)?;
         let (library, staged_path, api) = self.load_candidate(&source)?;
         validate_api(api)?;
-        if !api.accepts_state(snapshot.0) {
-            bail!(
-                "UI state schema {} is outside candidate range {}..={}",
-                snapshot.0,
-                api.minimum_state_schema,
-                api.state_schema
-            );
+        for (_, snapshot) in &snapshots {
+            if !api.accepts_state(snapshot.0) {
+                bail!(
+                    "UI state schema {} is outside candidate range {}..={}",
+                    snapshot.0,
+                    api.minimum_state_schema,
+                    api.state_schema
+                );
+            }
         }
 
         // Retain before invoking any candidate code. Even a failed activation
@@ -126,14 +167,15 @@ impl ReloadManager {
             label: staged_path.display().to_string(),
         });
 
-        self.activate_or_restore(index, &snapshot, cx)?;
+        self.activate_all_or_restore(index, &snapshots, cx)?;
         self.generations[index].activated = true;
         self.active = index;
         self.activation_history.push(index);
         eprintln!(
-            "activated UI generation {} from {} ({} libraries retained)",
+            "activated UI generation {} from {} in {} window(s) ({} libraries retained)",
             self.next_generation,
             source.display(),
+            snapshots.len(),
             self.generations.len().saturating_sub(1)
         );
         Ok(())
@@ -145,28 +187,39 @@ impl ReloadManager {
             .get(self.activation_history.len().saturating_sub(2))
             .copied()
             .context("no earlier activated UI generation is available")?;
-        let snapshot = self.snapshot_active(cx)?;
+        let snapshots = self.snapshot_all(cx)?;
         let api = self.generations[target].api;
-        if !api.accepts_state(snapshot.0) {
-            bail!(
-                "previous UI does not accept state schema {} (supports {}..={})",
-                snapshot.0,
-                api.minimum_state_schema,
-                api.state_schema
-            );
+        for (_, snapshot) in &snapshots {
+            if !api.accepts_state(snapshot.0) {
+                bail!(
+                    "previous UI does not accept state schema {} (supports {}..={})",
+                    snapshot.0,
+                    api.minimum_state_schema,
+                    api.state_schema
+                );
+            }
         }
-        self.activate_or_restore(target, &snapshot, cx)?;
+        self.activate_all_or_restore(target, &snapshots, cx)?;
         self.active = target;
         self.activation_history.pop();
         eprintln!("rolled back UI to {}", self.generations[target].label);
         Ok(())
     }
 
-    fn snapshot_active(&self, cx: &mut App) -> Result<(u32, Vec<u8>)> {
-        let window = self.window.context("desktop window is not attached")?;
-        window
-            .update(cx, |_, window, cx| self.snapshot_window(window, cx))
-            .context("update host window while snapshotting")?
+    /// Snapshot every attached window before any of them changes. One
+    /// failure cancels the whole reload, so no window loses its state.
+    fn snapshot_all(&self, cx: &mut App) -> Result<Vec<(AnyWindowHandle, (u32, Vec<u8>))>> {
+        let windows = self.windows();
+        anyhow::ensure!(!windows.is_empty(), "desktop window is not attached");
+        windows
+            .into_iter()
+            .map(|handle| {
+                let snapshot = handle
+                    .update(cx, |_, window, cx| self.snapshot_window(window, cx))
+                    .context("update host window while snapshotting")??;
+                Ok((handle, snapshot))
+            })
+            .collect()
     }
 
     fn snapshot_window(&self, window: &mut Window, cx: &mut App) -> Result<(u32, Vec<u8>)> {
@@ -194,14 +247,23 @@ impl ReloadManager {
         snapshot: Option<&(u32, Vec<u8>)>,
         cx: &mut App,
     ) -> Result<()> {
+        let window = self.window.context("desktop window is not attached")?;
+        self.activate_generation_in(window, index, snapshot, cx)
+    }
+
+    fn activate_generation_in(
+        &self,
+        window: AnyWindowHandle,
+        index: usize,
+        snapshot: Option<&(u32, Vec<u8>)>,
+        cx: &mut App,
+    ) -> Result<()> {
         let api = self.generations[index].api;
         let host_api = self.host.api();
         let (schema, bytes) = snapshot
             .map(|(schema, bytes)| (*schema, bytes.as_slice()))
             .unwrap_or((0, &[]));
-        let result = self
-            .window
-            .context("desktop window is not attached")?
+        let result = window
             .update(cx, |_, window, cx| unsafe {
                 (api.activate)(
                     window as *mut Window as *mut _,
@@ -230,27 +292,55 @@ impl ReloadManager {
     /// the known-good generation from the same snapshot makes that edge case a
     /// real rollback instead of leaving the manager and window on different
     /// generations.
+    #[cfg(test)]
     fn activate_or_restore(
         &self,
         target: usize,
         snapshot: &(u32, Vec<u8>),
         cx: &mut App,
     ) -> Result<()> {
-        let Err(activation_error) = self.activate_generation(target, Some(snapshot), cx) else {
+        let window = self.window.context("desktop window is not attached")?;
+        self.activate_all_or_restore(target, &[(window, snapshot.clone())], cx)
+    }
+
+    /// Every window moves to `target`, or every window stays on the active
+    /// generation. Windows already switched when one fails are restored from
+    /// their own snapshots, so one shared host never runs mixed generations.
+    fn activate_all_or_restore(
+        &self,
+        target: usize,
+        snapshots: &[(AnyWindowHandle, (u32, Vec<u8>))],
+        cx: &mut App,
+    ) -> Result<()> {
+        let mut failure = None;
+        for (index, (window, snapshot)) in snapshots.iter().enumerate() {
+            if let Err(error) = self.activate_generation_in(*window, target, Some(snapshot), cx) {
+                failure = Some((index, error));
+                break;
+            }
+        }
+        let Some((failed, activation_error)) = failure else {
             return Ok(());
         };
 
         let active = self.active;
-        match self.activate_generation(active, Some(snapshot), cx) {
-            Ok(()) => bail!(
+        let mut restore_errors = Vec::new();
+        for (window, snapshot) in &snapshots[..=failed] {
+            if let Err(error) = self.activate_generation_in(*window, active, Some(snapshot), cx) {
+                restore_errors.push(format!("{error:#}"));
+            }
+        }
+        if restore_errors.is_empty() {
+            bail!(
                 "UI activation failed: {activation_error:#}; restored {}",
                 self.generations[active].label
-            ),
-            Err(restore_error) => bail!(
-                "UI activation failed: {activation_error:#}; restoring {} also failed: {restore_error:#}",
-                self.generations[active].label
-            ),
+            )
         }
+        bail!(
+            "UI activation failed: {activation_error:#}; restoring {} also failed: {}",
+            self.generations[active].label,
+            restore_errors.join("; ")
+        )
     }
 
     fn load_candidate(&mut self, source: &Path) -> Result<(Library, PathBuf, PluginApi)> {
@@ -647,6 +737,127 @@ mod tests {
             .expect("the reloaded root must remain attached")
             .update(cx, |_, _, _| {})
             .expect("the reloaded root must occupy the original native window");
+    }
+
+    /// A shared single-panel host reloads every window together and never
+    /// leaves them on different generations when one window rejects the new UI.
+    #[gpui::test]
+    fn shared_host_reloads_all_windows_or_none(cx: &mut TestAppContext) {
+        let open = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| StableRoot))
+                    .unwrap()
+            })
+        };
+        let (first, second, third) = (open(cx), open(cx), open(cx));
+        let mut manager = ReloadManager::new(
+            PluginApi::new(stable_activate, no_snapshot),
+            None,
+            first.into(),
+            Rc::new(HostState::default()),
+        )
+        .unwrap();
+        cx.update(|cx| manager.activate_initial(cx)).unwrap();
+        cx.update(|cx| manager.attach_window(second.into(), cx))
+            .unwrap();
+        cx.update(|cx| manager.attach_window(third.into(), cx))
+            .unwrap();
+        assert_eq!(manager.windows().len(), 3);
+        let snapshots: Vec<_> = manager
+            .windows()
+            .into_iter()
+            .map(|window| (window, (STATE_SCHEMA_VERSION, b"workspace".to_vec())))
+            .collect();
+
+        manager.generations.push(Generation {
+            api: PluginApi::new(reload_activate, no_snapshot),
+            _library: None,
+            _staged_path: None,
+            activated: false,
+            label: "reloaded".into(),
+        });
+        cx.update(|cx| manager.activate_all_or_restore(1, &snapshots, cx))
+            .unwrap();
+        for window in [first, second, third] {
+            AnyWindowHandle::from(window)
+                .update(cx, |_, window, _| {
+                    assert!(matches!(window.root::<ReloadedRoot>(), Some(Some(_))))
+                })
+                .unwrap();
+        }
+        manager.active = 1;
+
+        // The third window rejects generation 2 after the first two switched.
+        // Every window must return to generation 1 from its own snapshot.
+        unsafe extern "C-unwind" fn fail_in_third(
+            window: *mut c_void,
+            app: *mut c_void,
+            host: *const HostApi,
+            snapshot: *const u8,
+            len: usize,
+            schema: u32,
+        ) -> i32 {
+            thread_local!(static CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+            let call = CALLS.with(|calls| {
+                calls.set(calls.get() + 1);
+                calls.get()
+            });
+            if call == 3 {
+                return unsafe { failed_after_replacing_root(window, app, host, snapshot, len, schema) };
+            }
+            unsafe { stable_activate(window, app, host, snapshot, len, schema) }
+        }
+        manager.generations.push(Generation {
+            api: PluginApi::new(fail_in_third, no_snapshot),
+            _library: None,
+            _staged_path: None,
+            activated: false,
+            label: "broken".into(),
+        });
+        let error = cx
+            .update(|cx| manager.activate_all_or_restore(2, &snapshots, cx))
+            .unwrap_err();
+        assert!(error.to_string().contains("restored reloaded"), "{error:#}");
+        for window in [first, second, third] {
+            AnyWindowHandle::from(window)
+                .update(cx, |_, window, _| {
+                    assert!(matches!(window.root::<ReloadedRoot>(), Some(Some(_))))
+                })
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn closing_the_primary_window_promotes_another_for_future_reloads(cx: &mut TestAppContext) {
+        let open = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| StableRoot))
+                    .unwrap()
+            })
+        };
+        let (first, second) = (open(cx), open(cx));
+        let mut manager = ReloadManager::new(
+            PluginApi::new(stable_activate, no_snapshot),
+            None,
+            first.into(),
+            Rc::new(HostState::default()),
+        )
+        .unwrap();
+        cx.update(|cx| manager.activate_initial(cx)).unwrap();
+        cx.update(|cx| manager.attach_window(second.into(), cx))
+            .unwrap();
+        manager.forget_window(first.window_id());
+        assert_eq!(
+            manager.windows().iter().map(|w| w.window_id()).collect::<Vec<_>>(),
+            vec![second.window_id()]
+        );
+        manager.forget_window(second.window_id());
+        assert!(manager.windows().is_empty());
+        // A later window becomes the primary again.
+        let third = open(cx);
+        cx.update(|cx| manager.attach_window(third.into(), cx))
+            .unwrap();
+        assert_eq!(manager.windows().len(), 1);
     }
 
     #[gpui::test]

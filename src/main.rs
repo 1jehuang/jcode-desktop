@@ -319,12 +319,15 @@ fn dispatch_instance_command(
     current_window: &Rc<RefCell<Option<gpui::AnyWindowHandle>>>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
+    if let InstanceCommand::OpenWindow(launch) = command {
+        return open_shared_window(manager, launch, cx);
+    }
     // Releasing a global chord must not pull focus back from another app or
     // reopen a closed surface. Suspending the UI cancels its recording.
     if command != InstanceCommand::VoiceRelease {
         restore_window(manager, current_window, cx)?;
     }
-    if let Some(action) = voice_action(command) {
+    if let Some(action) = voice_action(command.clone()) {
         if let Some(window) = *current_window.borrow() {
             dispatch_ui_action(window, action, cx)?;
         }
@@ -374,6 +377,42 @@ fn dispatch_global_voice(
     dispatch_instance_command(legacy, manager, current_window, cx)
 }
 
+/// Open one more single-panel window inside the shared host. It gets its own
+/// UI root and launch arguments, and closes (not suspends) like any other
+/// standalone chat. The host quits only after its last window closes.
+fn open_shared_window(
+    manager: &Rc<RefCell<ReloadManager>>,
+    launch: jcode_desktop_api::WindowLaunch,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let (width, height) = LaunchMode::SinglePanel.initial_window_size();
+    let bounds = Bounds::centered(None, size(px(width as f32), px(height as f32)), cx);
+    let window = cx.open_window(
+        WindowOptions {
+            app_id: Some(jcode_desktop_ui::APP_ID.into()),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(titlebar_options()),
+            ..Default::default()
+        },
+        |_, cx| cx.new(|_| HostFallback),
+    )?;
+    let handle = gpui::AnyWindowHandle::from(window);
+    jcode_desktop_api::WindowLaunches::insert(cx, handle.window_id().as_u64(), launch);
+    if let Err(error) = manager.borrow_mut().attach_window(handle, cx) {
+        jcode_desktop_api::WindowLaunches::remove(cx, handle.window_id().as_u64());
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+        return Err(error);
+    }
+    let _ = handle.update(cx, |_, window, _| window.activate_window());
+    cx.activate(true);
+    Ok(())
+}
+
+/// The request a single-panel launch forwards to the shared host.
+fn forwarded_launch() -> jcode_desktop_api::WindowLaunch {
+    jcode_desktop_api::WindowLaunch::current_process()
+}
+
 fn launch_quit_mode(mode: LaunchMode, screenshot: bool, lifecycle: bool) -> gpui::QuitMode {
     if mode == LaunchMode::SinglePanel {
         gpui::QuitMode::Default
@@ -394,9 +433,12 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
-    let instance_name = launch_mode.instance_name(std::process::id());
+    // Single-panel windows share one host unless `--new-process` isolates them.
+    let shared_single_panel = LaunchMode::shared_single_panel(env::args_os());
+    let instance_name =
+        LaunchMode::instance_name_for_args(env::args_os().collect::<Vec<_>>(), std::process::id());
     if let Some(command) = env::args_os().find_map(|argument| voice_cli_command(&argument)) {
-        if let Err(error) = instance::notify_named(instance_name.as_deref(), command) {
+        if let Err(error) = instance::notify_named(instance_name.as_deref(), command.clone()) {
             eprintln!(
                 "could not send desktop voice command {command:?}: {error}. Start an updated Jcode Desktop host first."
             );
@@ -417,6 +459,8 @@ fn main() {
     // main instance, which silently ignores the new process's launch flags.
     let requested_command = if env::args_os().any(|argument| argument == "--reload-ui") {
         InstanceCommand::Reload
+    } else if shared_single_panel {
+        InstanceCommand::OpenWindow(forwarded_launch())
     } else {
         InstanceCommand::Show
     };
@@ -493,7 +537,24 @@ fn main() {
         ));
 
         let current_window = Rc::new(RefCell::new(Some(gpui::AnyWindowHandle::from(window))));
-        host::window_controls::install(cx, manager.clone(), current_window.clone());
+        if shared_single_panel {
+            // Marks the App as a shared host for the UI. Later windows
+            // register their own launch arguments under their window ID.
+            jcode_desktop_api::WindowLaunches::install(cx);
+        }
+        cx.on_window_closed({
+            let manager = manager.clone();
+            move |cx, closed| {
+                manager.borrow_mut().forget_window(closed);
+                jcode_desktop_api::WindowLaunches::remove(cx, closed.as_u64());
+            }
+        })
+        .detach();
+        if shared_single_panel {
+            host::window_controls::install_close_only(cx);
+        } else {
+            host::window_controls::install(cx, manager.clone(), current_window.clone());
+        }
         let rebuild_state = Rc::new(RebuildState::default());
         *reopen_state.borrow_mut() = Some((manager.clone(), current_window.clone()));
         // Only the main desktop owns the global shortcut. Auxiliary workspace
@@ -530,15 +591,19 @@ fn main() {
                 eprintln!("could not register global desktop shortcuts: {error:#}");
             }
         }
-        window
-            .update(cx, {
-                let manager = manager.clone();
-                let current_window = current_window.clone();
-                move |_, window, cx| {
-                    install_close_handler(window, cx, manager, current_window);
-                }
-            })
-            .expect("install persistent host close handler");
+        // A shared single-panel host closes windows outright, like separate
+        // processes did. Suspending would keep an invisible chat alive.
+        if !shared_single_panel {
+            window
+                .update(cx, {
+                    let manager = manager.clone();
+                    let current_window = current_window.clone();
+                    move |_, window, cx| {
+                        install_close_handler(window, cx, manager, current_window);
+                    }
+                })
+                .expect("install persistent host close handler");
+        }
         observe_closed_window(cx, current_window.clone());
 
         cx.spawn({
@@ -698,7 +763,7 @@ mod tests {
                 "workspace::EndVoiceHold",
             ),
         ] {
-            assert_eq!(super::voice_cli_command(flag.as_ref()), Some(command));
+            assert_eq!(super::voice_cli_command(flag.as_ref()), Some(command.clone()));
             assert_eq!(super::voice_action(command), Some(action));
         }
         assert_eq!(super::voice_cli_command("--reload-ui".as_ref()), None);

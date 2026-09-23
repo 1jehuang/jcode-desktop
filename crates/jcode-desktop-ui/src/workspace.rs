@@ -623,6 +623,35 @@ pub struct WorkspaceSnapshot {
     folder_picker_error: Option<String>,
     folder_search: Option<PromptInputSnapshot>,
     focus: FocusSnapshot,
+    /// The window's own launch, kept across Ctrl+R in a shared host. Older
+    /// snapshots omit it and fall back to the process launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<LaunchSnapshot>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+struct LaunchSnapshot {
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+impl From<&jcode_desktop_api::WindowLaunch> for LaunchSnapshot {
+    fn from(launch: &jcode_desktop_api::WindowLaunch) -> Self {
+        Self {
+            args: launch
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            env: launch.env.clone(),
+        }
+    }
+}
+
+impl From<LaunchSnapshot> for jcode_desktop_api::WindowLaunch {
+    fn from(launch: LaunchSnapshot) -> Self {
+        Self::from_parts(launch.args, launch.env)
+    }
 }
 
 impl WorkspaceSnapshot {
@@ -681,6 +710,9 @@ pub struct Workspace {
     host: HostHandle,
     /// Launch-only presentation, independent of persisted workspace preferences.
     single_panel: bool,
+    /// Arguments and forwarded environment of the launch that opened this
+    /// window. A shared single-panel host has one per window.
+    launch: jcode_desktop_api::WindowLaunch,
     resume: Option<resume::State>,
     show_sidebar: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
@@ -810,11 +842,17 @@ impl Workspace {
         crate::input::bind_keys(cx);
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
+        let launch = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.launch.clone())
+            .map(Into::into)
+            .unwrap_or_else(|| {
+                jcode_desktop_api::WindowLaunches::get(cx, window.window_handle().window_id().as_u64())
+            });
         let performance_enabled = crate::performance::enabled(std::env::args_os());
-        let resume_requested =
-            jcode_desktop_api::LaunchMode::resume_requested(std::env::args_os());
+        let resume_requested = jcode_desktop_api::LaunchMode::resume_requested(&launch.args);
         let resume_snapshot = snapshot.as_ref().map(|snapshot| snapshot.resume.clone());
-        let single_panel = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
+        let single_panel = jcode_desktop_api::LaunchMode::from_args(&launch.args)
             == jcode_desktop_api::LaunchMode::SinglePanel;
 
         // Wake immediately when a bridge update arrives rather than polling an
@@ -963,16 +1001,14 @@ impl Workspace {
             bridge,
             host,
             single_panel,
+            launch: launch.clone(),
             resume: None,
             show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
             folder_frame: Default::default(),
-            show_sidebar: sidebar_enabled(
-                std::env::args_os(),
-                crate::config::get().workspace.sidebar,
-            ),
+            show_sidebar: sidebar_enabled(&launch.args, crate::config::get().workspace.sidebar),
             compact_sidebar_open: false,
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
@@ -1201,7 +1237,7 @@ impl Workspace {
         // `--session=<id>` launch opens the requested session.
         if fresh_launch
             && let Some(session_id) =
-                jcode_desktop_api::LaunchMode::requested_session(std::env::args_os())
+                jcode_desktop_api::LaunchMode::requested_session(&workspace.launch.args)
         {
             workspace.resume = None;
             workspace.open_requested_session(session_id, window, cx);
@@ -1227,7 +1263,7 @@ impl Workspace {
                     .remotes
                     .default_host
                     .is_none()
-                    .then(default_working_dir)
+                    .then(|| self.default_working_dir())
                     .flatten(),
                 status: "starting".into(),
                 transcript_bytes: None,
@@ -1275,6 +1311,7 @@ impl Workspace {
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
+            launch: Default::default(),
             resume: None,
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
@@ -1438,6 +1475,7 @@ impl Workspace {
             .as_ref()
             .map(|search| search.read(cx).snapshot());
         Ok(WorkspaceSnapshot {
+            launch: Some((&self.launch).into()),
             format_version: SNAPSHOT_FORMAT_VERSION,
             resume: self.resume_snapshot(cx),
             side_panel_snapshots: self.side_panel_snapshots.clone(),
@@ -2846,7 +2884,7 @@ impl Workspace {
         self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_default_draft(
-            self.pinned_working_dir.clone().or_else(default_working_dir),
+            self.pinned_working_dir.clone().or_else(|| self.default_working_dir()),
             cx,
         );
     }
@@ -2855,7 +2893,7 @@ impl Workspace {
         let width_fraction = spawned_panel_width(self.slots.len());
         let panel = cx.new(|cx| {
             Panel::new_terminal(
-                default_working_dir(),
+                self.default_working_dir(),
                 self.bridge.clone(),
                 self.host,
                 None,
@@ -3385,7 +3423,7 @@ impl Workspace {
         self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
         self.folder_picker_dir = Some(
-            default_working_dir()
+            self.default_working_dir()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/")),
         );
@@ -3409,9 +3447,9 @@ impl Workspace {
             return;
         };
         let expanded = if query == "~" {
-            default_working_dir().map(PathBuf::from)
+            self.default_working_dir().map(PathBuf::from)
         } else if let Some(rest) = query.strip_prefix("~/") {
-            default_working_dir().map(|home| PathBuf::from(home).join(rest))
+            self.default_working_dir().map(|home| PathBuf::from(home).join(rest))
         } else {
             let path = PathBuf::from(query);
             Some(if path.is_absolute() {
@@ -3484,7 +3522,7 @@ impl Workspace {
     /// Open a session without attributing the choice to the keyboard. Pointer
     /// paths call this directly, so clicking never earns keyboard credit.
     fn open_new_session(&mut self, cx: &mut Context<Self>) {
-        self.open_default_draft(default_working_dir(), cx);
+        self.open_default_draft(self.default_working_dir(), cx);
     }
 
     fn close_panel(&mut self, _: &ClosePanel, window: &mut Window, cx: &mut Context<Self>) {
@@ -3744,7 +3782,7 @@ impl Workspace {
     fn new_help_session(&mut self, _: &NewHelpSession, _: &mut Window, cx: &mut Context<Self>) {
         self.hints_overlay = false;
         self.hints_progress.set(0.0, Instant::now());
-        self.open_local_draft_kind(default_working_dir(), true, cx);
+        self.open_local_draft_kind(self.default_working_dir(), true, cx);
         cx.notify();
     }
 
@@ -3915,7 +3953,7 @@ impl Workspace {
     /// `JCODE_DESKTOP_STATE` on every render so an automated check can observe
     /// what the running window is actually doing.
     fn dump_state(&self, window: &Window, cx: &App) {
-        let Ok(path) = std::env::var("JCODE_DESKTOP_STATE") else {
+        let Some(path) = self.launch.var("JCODE_DESKTOP_STATE").map(str::to_owned) else {
             return;
         };
         let widths: Vec<f32> = self
@@ -7083,7 +7121,10 @@ impl Workspace {
         }
         for (index, (path, reason)) in entries.into_iter().enumerate() {
             let label = if self.folder_picker_sets_default {
-                default_directory::compact_path(&path.to_string_lossy())
+                default_directory::compact_path_in(
+                    &path.to_string_lossy(),
+                    self.default_working_dir(),
+                )
             } else {
                 path.file_name()
                     .map(|name| name.to_string_lossy().into_owned())
@@ -7254,7 +7295,7 @@ impl Workspace {
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
-                                            if let Some(home) = default_working_dir() {
+                                            if let Some(home) = this.default_working_dir() {
                                                 this.browse_to(PathBuf::from(home), cx);
                                             }
                                         }),
@@ -7794,12 +7835,26 @@ fn sidebar_enabled(
             == jcode_desktop_api::LaunchMode::Workspace
 }
 
+/// The process default, for callers without a window (tests, helpers).
+#[cfg(test)]
 fn default_working_dir() -> Option<String> {
+    launch_working_dir(&jcode_desktop_api::WindowLaunch::current_process())
+}
+
+/// `JCODE_DESKTOP_WORKING_DIR` from the launch that opened a window, so each
+/// window of a shared host keeps the directory its shortcut asked for.
+fn launch_working_dir(launch: &jcode_desktop_api::WindowLaunch) -> Option<String> {
     default_working_dir_from(
-        std::env::var("JCODE_DESKTOP_WORKING_DIR").ok(),
+        launch.var("JCODE_DESKTOP_WORKING_DIR").map(str::to_owned),
         std::env::var("HOME").ok(),
         Path::is_dir,
     )
+}
+
+impl Workspace {
+    fn default_working_dir(&self) -> Option<String> {
+        launch_working_dir(&self.launch)
+    }
 }
 
 fn default_working_dir_from(
@@ -8754,6 +8809,7 @@ mod tests {
             }],
         };
         let snapshot = WorkspaceSnapshot {
+            launch: None,
             format_version: SNAPSHOT_FORMAT_VERSION,
             resume: resume::Snapshot::Closed,
             side_panel_snapshots: HashMap::new(),
@@ -8961,6 +9017,7 @@ mod tests {
         workspace.update(vcx, |workspace, cx| {
             workspace.apply_snapshot(
                 WorkspaceSnapshot {
+                    launch: None,
                     format_version: SNAPSHOT_FORMAT_VERSION,
                     resume: resume::Snapshot::Closed,
                     side_panel_snapshots: HashMap::new(),

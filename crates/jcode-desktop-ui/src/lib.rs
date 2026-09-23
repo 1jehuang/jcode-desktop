@@ -267,7 +267,19 @@ unsafe extern "C-unwind" fn activate(
         // setup can disrupt the first paint, so defer until the next frame.
         window.on_next_frame(|window, _| window.set_app_id(APP_ID));
         bind_workspace_keys(app);
-        app.on_action(|_: &Quit, cx| cx.quit());
+        app.on_action(|_: &Quit, cx| {
+            // A shared single-panel host owns other people's windows. Quit
+            // closes this one; the process exits after its last window.
+            if jcode_desktop_api::WindowLaunches::shared(cx) {
+                if let Some(window) = cx.active_window() {
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |_, window, _| window.remove_window());
+                    });
+                    return;
+                }
+            }
+            cx.quit()
+        });
         let workspace =
             window.replace_root(app, |window, cx| Workspace::new(window, cx, host, snapshot));
         workspace.update(app, |workspace, cx| {

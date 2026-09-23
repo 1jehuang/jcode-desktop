@@ -4,10 +4,25 @@
 jcode-desktop --single-panel
 ```
 
-Each invocation starts an independent process and native window. The visible
-panel fills the window without the workspace sidebar, tab strip, overview, or
-map. Starting another single-panel window does not reuse, replace, or change an
-existing normal, `--no-sidebar`, or single-panel window.
+Each invocation opens a new native window. The visible panel fills the window
+without the workspace sidebar, tab strip, overview, or map. Starting another
+single-panel window does not replace or change an existing normal,
+`--no-sidebar`, or single-panel window.
+
+All single-panel windows share **one host process**. The first launch becomes
+that host. Later launches forward their arguments (`--resume`,
+`--session=<id>`) and window-scoped environment (`JCODE_DESKTOP_WORKING_DIR`,
+`JCODE_DESKTOP_STATE`) over the host's socket and exit immediately. Each window
+keeps its own launch settings, chat, and state. Sharing one GPU context, one UI
+library, and one runtime saves roughly 60 to 150 MiB for every extra window.
+
+```sh
+jcode-desktop --single-panel --new-process
+```
+
+`--new-process` opts out and starts an isolated process, as every
+single-panel launch did before. Use it to test a risky UI build without
+affecting the other windows, or to isolate a window that is doing heavy work.
 
 This is different from `--no-sidebar` (also called `--workspace`), which keeps
 the workspace and its navigation while initially hiding the sidebar. Normal
@@ -52,28 +67,52 @@ python3 scripts/verify-resume-panel.py target/resume-panel.png \
 - Utility views such as review or login may temporarily fill the window.
   Use **Back to chat** to return to the chat rather than creating another
   workspace pane.
-- **Super+Q** closes the chat window and its standalone process. While a utility
-  view is open, it closes that view and returns to the conversation. Other
-  windows continue running.
+- **Super+Q** closes the chat window. While a utility view is open, it closes
+  that view and returns to the conversation. Other windows continue running.
+  The shared host exits after its last window closes.
 - Each launch starts a fresh chat, without reading or overwriting workspace
   crash-recovery files. Normal session history still belongs to Jcode.
-- **Ctrl+R** and `/update` in a source hot-reload build target this window's
-  host and preserve its chat state. `--single-panel --reload-ui` and
+- **Ctrl+R** and `/update` in a source hot-reload build rebuild the shared host
+  once and reload **every** single-panel window, preserving each chat. The
+  reload is all or nothing: if any window rejects the new UI, every window is
+  restored to the previous one. An isolated `--new-process` window reloads
+  alone. `--single-panel --reload-ui` and
   `--single-panel --toggle-voice` are rejected because they cannot identify
   which existing standalone window to target.
 - Existing workspace shortcuts for sidebar toggling, overview, creating or
   moving panels, changing strips, and panel widths are disabled. This mode
   cannot be converted into a workspace with a keyboard shortcut.
 
-On Unix, each standalone instance owns
-`$XDG_RUNTIME_DIR/jcode-desktop-single-panel-<pid>.sock`. Normal and no-sidebar
-instances retain `jcode-desktop.sock` and `jcode-desktop-no-sidebar.sock`.
-Standalone sockets are removed when their process closes normally. Do not
-use the normal instance socket to control an unrelated standalone window.
+On Unix, the shared host owns `$XDG_RUNTIME_DIR/jcode-desktop-single-panel.sock`
+and an isolated `--new-process` window owns
+`jcode-desktop-single-panel-<pid>.sock`. Normal and no-sidebar instances retain
+`jcode-desktop.sock` and `jcode-desktop-no-sidebar.sock`. Sockets are removed
+when their process closes normally. Do not use the normal instance socket to
+control an unrelated standalone window.
+
+Trade-offs of sharing: a crash or a hung UI thread affects every single-panel
+window at once (chat history is safe in the Jcode server, unsent drafts are
+not), and one very busy window can make the others less responsive. Use
+`--new-process` when that isolation matters.
+
+## Shared host acceptance
+
+```sh
+python3 scripts/accept-shared-single-panel.py target/accept-shared-single-panel \
+  --binary target/release/jcode-desktop
+```
+
+It opens several single-panel windows on a private Xvfb, checks they share one
+PID and socket while each keeps its own state file, that `--new-process` stays
+separate, that Super+Q closes one window without stopping the host, that a
+later launch joins the same host, and that the host exits and removes its
+socket after the last window closes. It records the host's PSS after each
+window in `results.json`.
 
 ## Isolated acceptance
 
-Use an already-built host containing the current linked UI:
+This covers `--new-process` windows. Use an already-built host containing the
+current linked UI:
 
 ```sh
 python3 scripts/accept-single-panel.py target/accept-single-panel \

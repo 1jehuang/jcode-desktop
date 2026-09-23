@@ -21,7 +21,7 @@ impl Workspace {
         self.folder_picker_dir = Some(
             self.pinned_working_dir
                 .clone()
-                .or_else(default_working_dir)
+                .or_else(|| self.default_working_dir())
                 .map(PathBuf::from)
                 .unwrap_or_else(filesystem_root),
         );
@@ -131,9 +131,9 @@ impl Workspace {
     pub(super) fn set_searched_default_directory(&mut self, query: &str, cx: &mut Context<Self>) {
         let query = query.trim();
         let path = if query == "~" {
-            default_working_dir().map(PathBuf::from)
+            self.default_working_dir().map(PathBuf::from)
         } else if let Some(rest) = query.strip_prefix("~/") {
-            default_working_dir().map(|home| PathBuf::from(home).join(rest))
+            self.default_working_dir().map(|home| PathBuf::from(home).join(rest))
         } else {
             let path = PathBuf::from(query);
             if path.is_absolute() {
@@ -182,7 +182,7 @@ impl Workspace {
         let current = self
             .pinned_working_dir
             .clone()
-            .or_else(default_working_dir)
+            .or_else(|| self.default_working_dir())
             .unwrap_or_else(|| "Not set".into());
         let scope = match &self.remotes.default_host {
             Some(host) => format!(
@@ -204,11 +204,11 @@ impl Workspace {
         let path = self
             .pinned_working_dir
             .clone()
-            .or_else(default_working_dir)
+            .or_else(|| self.default_working_dir())
             .unwrap_or_else(|| "Not set".into());
         let display = match &self.remotes.default_host {
             Some(_) => "~".into(),
-            None => compact_path(&path),
+            None => compact_path_in(&path, self.default_working_dir()),
         };
         let tooltip = match &self.remotes.default_host {
             Some(host) => format!(
@@ -268,8 +268,13 @@ pub(super) fn spawn_shortcut() -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(super) fn compact_path(path: &str) -> String {
-    if let Some(home) = default_working_dir() {
+    compact_path_in(path, default_working_dir())
+}
+
+pub(super) fn compact_path_in(path: &str, default_dir: Option<String>) -> String {
+    if let Some(home) = default_dir {
         if path == home {
             return "~ (home)".into();
         }

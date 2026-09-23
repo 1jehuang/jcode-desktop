@@ -1,5 +1,6 @@
 #[cfg(unix)]
 mod platform {
+    use jcode_desktop_api::WindowLaunch;
     use std::{
         fs,
         io::{self, Read, Write},
@@ -21,15 +22,20 @@ mod platform {
     const TOGGLE_VOICE: u8 = b'V';
     const VOICE_PRESS: u8 = b'P';
     const VOICE_RELEASE: u8 = b'U';
+    const OPEN_WINDOW: u8 = b'W';
     const OK: &[u8] = b"ok\n";
+    /// Arguments plus a few forwarded variables, never a transcript.
+    const MAX_LAUNCH_BYTES: usize = 64 * 1024;
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum Command {
         Show,
         Reload,
         ToggleVoice,
         VoicePress,
         VoiceRelease,
+        /// Open another window in the shared single-panel host.
+        OpenWindow(WindowLaunch),
     }
 
     pub enum Instance {
@@ -82,7 +88,7 @@ mod platform {
     }
 
     fn acquire_at(path: PathBuf, command: Command) -> io::Result<Instance> {
-        if notify(&path, command).is_ok() {
+        if notify(&path, command.clone()).is_ok() {
             return Ok(Instance::Secondary);
         }
 
@@ -93,7 +99,7 @@ mod platform {
                 // a short opportunity to begin accepting before treating it as stale.
                 for _ in 0..10 {
                     thread::sleep(Duration::from_millis(5));
-                    if notify(&path, command).is_ok() {
+                    if notify(&path, command.clone()).is_ok() {
                         return Ok(Instance::Secondary);
                     }
                 }
@@ -117,13 +123,26 @@ mod platform {
     fn notify(path: &Path, command: Command) -> io::Result<()> {
         let mut stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_millis(250)))?;
-        stream.write_all(&[match command {
+        let mut message = vec![match &command {
             Command::Show => SHOW,
             Command::Reload => RELOAD,
             Command::ToggleVoice => TOGGLE_VOICE,
             Command::VoicePress => VOICE_PRESS,
             Command::VoiceRelease => VOICE_RELEASE,
-        }])?;
+            Command::OpenWindow(_) => OPEN_WINDOW,
+        }];
+        if let Command::OpenWindow(launch) = &command {
+            let payload = launch.encode();
+            if payload.len() > MAX_LAUNCH_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "desktop launch request is too large",
+                ));
+            }
+            message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            message.extend_from_slice(&payload);
+        }
+        stream.write_all(&message)?;
         let mut response = [0; 3];
         stream.read_exact(&mut response)?;
         if response == OK {
@@ -149,6 +168,10 @@ mod platform {
                     TOGGLE_VOICE => Command::ToggleVoice,
                     VOICE_PRESS => Command::VoicePress,
                     VOICE_RELEASE => Command::VoiceRelease,
+                    OPEN_WINDOW => match read_launch(&mut stream) {
+                        Some(launch) => Command::OpenWindow(launch),
+                        None => continue,
+                    },
                     _ => continue,
                 };
                 if commands.send(command).is_ok() {
@@ -158,9 +181,54 @@ mod platform {
         }
     }
 
+    fn read_launch(stream: &mut UnixStream) -> Option<WindowLaunch> {
+        let mut len = [0; 4];
+        stream.read_exact(&mut len).ok()?;
+        let len = u32::from_le_bytes(len) as usize;
+        if len > MAX_LAUNCH_BYTES {
+            return None;
+        }
+        let mut payload = vec![0; len];
+        stream.read_exact(&mut payload).ok()?;
+        WindowLaunch::decode(&payload)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn open_window_carries_its_own_launch_to_the_shared_host() {
+            let (_root, path) = path("shared.sock");
+            let primary = acquire_at(path.clone(), Command::Show).unwrap();
+            let Instance::Primary { commands, .. } = &primary else {
+                panic!()
+            };
+            let launch = WindowLaunch::from_parts(
+                ["--single-panel", "--session=abc"],
+                [("JCODE_DESKTOP_WORKING_DIR".into(), "/srv/project".into())],
+            );
+            assert!(matches!(
+                acquire_at(path.clone(), Command::OpenWindow(launch.clone())),
+                Ok(Instance::Secondary)
+            ));
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Command::OpenWindow(launch)
+            );
+            // A malformed or oversized request is dropped without killing the listener.
+            let mut stream = UnixStream::connect(&path).unwrap();
+            stream.write_all(&[OPEN_WINDOW]).unwrap();
+            stream
+                .write_all(&((MAX_LAUNCH_BYTES as u32) + 1).to_le_bytes())
+                .unwrap();
+            drop(stream);
+            notify(&path, Command::Show).unwrap();
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Command::Show
+            );
+        }
 
         fn path(name: &str) -> (tempfile::TempDir, PathBuf) {
             let root = tempfile::tempdir().unwrap();
@@ -304,7 +372,7 @@ mod platform {
         fn voice_hold_lifecycle_is_forwarded_in_order_without_startup_replay() {
             let (_root, path) = path("hold.sock");
             for command in [Command::VoicePress, Command::VoiceRelease] {
-                assert!(notify(&path, command).is_err());
+                assert!(notify(&path, command.clone()).is_err());
                 assert!(!path.exists(), "explicit edges must not start a host");
             }
             let primary = acquire_at(path.clone(), Command::Show).unwrap();
@@ -322,7 +390,7 @@ mod platform {
                 Command::VoiceRelease,
                 Command::ToggleVoice,
             ] {
-                notify(&path, command).unwrap();
+                notify(&path, command.clone()).unwrap();
                 assert_eq!(
                     commands.recv_timeout(Duration::from_secs(1)).unwrap(),
                     command
@@ -371,13 +439,15 @@ mod platform {
         sync::mpsc::{self, Receiver},
     };
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum Command {
         Show,
         Reload,
         ToggleVoice,
         VoicePress,
         VoiceRelease,
+        #[allow(dead_code)]
+        OpenWindow(jcode_desktop_api::WindowLaunch),
     }
 
     pub enum Instance {

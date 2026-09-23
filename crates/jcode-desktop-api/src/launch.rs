@@ -1,6 +1,9 @@
 //! Launch identity shared by the native host and reloadable UI.
 use std::ffi::OsStr;
 
+/// Socket identity of the shared single-panel host.
+pub const SHARED_SINGLE_PANEL: &str = "single-panel";
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LaunchMode {
     #[default]
@@ -44,6 +47,31 @@ impl LaunchMode {
             Self::NoSidebar => Some("no-sidebar".into()),
             Self::SinglePanel => Some(format!("single-panel-{pid}")),
         }
+    }
+
+    /// Single-panel windows share one host process unless `--new-process`
+    /// asks for an isolated one. The shared host owns a stable socket name
+    /// that later launches forward their own window request to.
+    pub fn shared_single_panel(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> bool {
+        let mut single_panel = false;
+        for arg in args {
+            if arg.as_ref() == "--new-process" {
+                return false;
+            }
+            single_panel |= arg.as_ref() == "--single-panel" || arg.as_ref() == "--resume";
+        }
+        single_panel
+    }
+
+    /// Instance socket identity for a launch, including the shared host.
+    pub fn instance_name_for_args(
+        args: impl IntoIterator<Item = impl AsRef<OsStr>> + Clone,
+        pid: u32,
+    ) -> Option<String> {
+        if Self::shared_single_panel(args.clone()) {
+            return Some(SHARED_SINGLE_PANEL.into());
+        }
+        Self::from_args(args).instance_name(pid)
     }
 
     pub fn initial_window_size(self) -> (u32, u32) {
@@ -111,6 +139,26 @@ mod tests {
             LaunchMode::SinglePanel.instance_name(10),
             LaunchMode::SinglePanel.instance_name(11)
         );
+    }
+
+    #[test]
+    fn single_panel_windows_share_a_host_unless_isolated() {
+        assert!(LaunchMode::shared_single_panel(["--single-panel"]));
+        assert!(LaunchMode::shared_single_panel(["--resume"]));
+        assert!(!LaunchMode::shared_single_panel(["--single-panel", "--new-process"]));
+        assert!(!LaunchMode::shared_single_panel(["--new-process", "--single-panel"]));
+        assert!(!LaunchMode::shared_single_panel(["--no-sidebar"]));
+        assert!(!LaunchMode::shared_single_panel(Vec::<&str>::new()));
+        assert_eq!(
+            LaunchMode::instance_name_for_args(["--single-panel"], 7).as_deref(),
+            Some(SHARED_SINGLE_PANEL)
+        );
+        assert_eq!(
+            LaunchMode::instance_name_for_args(["--single-panel", "--new-process"], 7).as_deref(),
+            Some("single-panel-7")
+        );
+        assert_eq!(LaunchMode::instance_name_for_args(["--workspace"], 7).as_deref(), Some("no-sidebar"));
+        assert_eq!(LaunchMode::instance_name_for_args(Vec::<&str>::new(), 7), None);
     }
 
     #[test]
