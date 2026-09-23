@@ -9,9 +9,11 @@ space.
 There is one indicator per hold, never two. When the Jcode window is focused,
 the chat's own in-panel voice pill is the indicator and no OS pill appears.
 The OS pill appears only while Jcode is unfocused. It mirrors the same panel
-state, and it hands off live if focus changes mid-hold. The result is appended to the original
-Jcode draft. Global capture never sends a message, executes a quick action,
-or routes through the voice intent classifier.
+state, and it hands off live if focus changes mid-hold. After release the
+transcript routes through Jev exactly like a focused hold (coding agent, quick
+action, open one of the last 20 sessions, or keep in the draft). The OS pill
+shows "Jev is choosing…" and then the decision, for example "Jev → Coding
+agent" or "Jev unsure · Kept in draft", for five seconds.
 
 ## Enable explicitly
 
