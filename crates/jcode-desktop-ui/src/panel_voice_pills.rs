@@ -5,16 +5,15 @@ use jcode_base::voice;
 // Keep the shared routing argmax order, including numeric (not lexical) candidates.
 fn concrete_action_rank(id: &str) -> Option<usize> {
     match id {
-        "uncertain" => Some(0),
-        "coding_agent" => Some(1),
-        "new_session" => Some(2),
-        "next_session" => Some(3),
-        "previous_session" => Some(4),
+        "coding_agent" => Some(0),
+        "new_session" => Some(1),
+        "next_session" => Some(2),
+        "previous_session" => Some(3),
         _ => id
             .strip_prefix("candidate_")?
             .parse::<usize>()
             .ok()?
-            .checked_add(5),
+            .checked_add(4),
     }
 }
 
@@ -24,7 +23,6 @@ fn action_label(id: &str) -> String {
         "new_session" => "New conversation".into(),
         "next_session" => "Next conversation".into(),
         "previous_session" => "Previous conversation".into(),
-        "uncertain" => "Uncertain".into(),
         _ => id.into(),
     }
 }
@@ -500,7 +498,7 @@ mod tests {
             },
         ];
         let pills = action_pills(&trace, false, false);
-        assert_eq!(pills.len(), 25);
+        assert_eq!(pills.len(), 24);
         // Ranked by probability: the winner is first, then descending scores.
         assert_eq!(pills[0].id, "candidate_19");
         assert_eq!(pills[1].id, "coding_agent");
@@ -518,10 +516,9 @@ mod tests {
         assert_eq!(winners[0].score, "91.0%");
         assert_eq!(winners[0].label, "Open: Conversation 19");
         // Unanswered rows retain the shared argmax order after answered rows.
-        assert_eq!(pills[2].label, "Uncertain");
-        assert_eq!(pills[3].label, "New conversation");
-        assert_eq!(pills[4].label, "Next conversation");
-        assert_eq!(pills[5].label, "Previous conversation");
+        assert_eq!(pills[2].label, "New conversation");
+        assert_eq!(pills[3].label, "Next conversation");
+        assert_eq!(pills[4].label, "Previous conversation");
     }
 
     #[test]
@@ -529,7 +526,6 @@ mod tests {
         let mut trace = trace_fixture();
         trace.questions.reverse();
         let ids = [
-            "uncertain",
             "coding_agent",
             "new_session",
             "next_session",
@@ -559,7 +555,7 @@ mod tests {
         for (waiting, failed, label) in [(true, false, "Waiting…"), (false, true, "Not returned")]
         {
             let pills = action_pills(&trace, waiting, failed);
-            assert_eq!(pills.len(), 25);
+            assert_eq!(pills.len(), 24);
             assert!(pills.iter().all(|p| p.score == label && !p.winner));
         }
         let mut trace = trace;

@@ -1155,6 +1155,41 @@ impl PromptInput {
         }
     }
 
+    /// Put a recalled queued prompt back into the composer for editing. Any
+    /// existing draft is kept ahead of it so nothing typed is lost.
+    pub(crate) fn recall_prompt(
+        &mut self,
+        content: &str,
+        images: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = self.content.trim_end();
+        let merged = if draft.is_empty() {
+            content.to_string()
+        } else {
+            format!("{draft}\n\n{content}")
+        };
+        for (media_type, encoded) in images {
+            let Some(bytes) = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .ok()
+            else {
+                continue;
+            };
+            let Some(preview) = preview_image(&media_type, bytes) else {
+                continue;
+            };
+            self.attachments.push(Attachment {
+                label: format!("image {}", self.attachments.len() + 1).into(),
+                media_type,
+                encoded,
+                preview,
+                bounds: Default::default(),
+            });
+        }
+        self.set_content(merged, cx);
+    }
+
     pub(crate) fn set_content(&mut self, content: String, cx: &mut Context<Self>) {
         self.content = content.into();
         self.reset_model_groups_after_exit();

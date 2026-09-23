@@ -224,9 +224,8 @@ impl Panel {
             "new_session" => 3,
             "next_session" => 4,
             "previous_session" => 5,
-            "uncertain" => 6,
             id => {
-                7 + id
+                6 + id
                     .strip_prefix("candidate_")
                     .and_then(|index| index.parse::<usize>().ok())
                     .unwrap_or(100)
@@ -241,7 +240,6 @@ impl Panel {
                 "new_session" => "New conversation".to_string(),
                 "next_session" => "Next conversation".to_string(),
                 "previous_session" => "Previous conversation".to_string(),
-                "uncertain" => "Unclear or unsupported request".to_string(),
                 id => id
                     .strip_prefix("candidate_")
                     .and_then(|index| index.parse::<usize>().ok())

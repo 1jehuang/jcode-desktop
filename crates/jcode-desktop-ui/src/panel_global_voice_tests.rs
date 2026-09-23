@@ -56,13 +56,6 @@ fn global_voice_routes_through_jev_and_pill_shows_the_decision(cx: &mut gpui::Te
         panel.set_global_voice_decision("Jev chose: Quick action · Previous session".into(), cx);
         assert_eq!(panel.global_voice_snapshot(&attempt).unwrap().title, "Jev → Previous session");
 
-        panel.voice.decision = None;
-        panel.voice.error =
-            Some("Jev is unsure which route to choose. Transcript kept in the draft.".into());
-        assert_eq!(
-            panel.global_voice_snapshot(&attempt).unwrap().title,
-            "Jev unsure · Kept in draft"
-        );
     });
 }
 

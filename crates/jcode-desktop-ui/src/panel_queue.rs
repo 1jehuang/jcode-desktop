@@ -155,6 +155,36 @@ impl Panel {
         cx.notify();
     }
 
+    /// Send one queued prompt immediately. During an active turn the harness
+    /// delivers it as an urgent steer rather than waiting for the turn to end.
+    pub(super) fn send_queued_prompt_now(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.prompt_queue.prompts.len() || self.is_pending_session() {
+            return;
+        }
+        let prompt = self.prompt_queue.prompts.remove(index);
+        self.send_prompt(prompt.content, prompt.images, cx);
+        cx.notify();
+    }
+
+    /// Move one queued prompt back into the composer for editing.
+    pub(super) fn recall_queued_prompt(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if index >= self.prompt_queue.prompts.len() {
+            return;
+        }
+        let prompt = self.prompt_queue.prompts.remove(index);
+        self.input.update(cx, |input, cx| {
+            input.recall_prompt(&prompt.content, prompt.images, cx)
+        });
+        let focus = self.input.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
     pub(super) fn render_prompt_queue(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.prompt_queue.prompts.is_empty() {
             return None;
@@ -219,24 +249,22 @@ impl Panel {
                                             .child(format!("{}.", index + 1)),
                                     )
                                     .child(div().flex_1().min_w_0().truncate().child(label))
-                                    .child(
-                                        div()
-                                            .id(("remove-queued-prompt", index))
-                                            .debug_selector(move || {
-                                                format!("remove-queued-prompt-{index}").into()
-                                            })
-                                            .flex_none()
-                                            .cursor_pointer()
-                                            .px_2()
-                                            .text_color(theme.TEXT_DIM)
-                                            .child("Remove")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if index < this.prompt_queue.prompts.len() {
-                                                    this.prompt_queue.prompts.remove(index);
-                                                }
-                                                cx.notify();
-                                            })),
-                                    )
+                                    .child(queue_action(
+                                        "send-queued-prompt",
+                                        index,
+                                        include_bytes!("../../../assets/icons/arrow-up.svg"),
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.send_queued_prompt_now(index, cx)
+                                        }),
+                                    ))
+                                    .child(queue_action(
+                                        "recall-queued-prompt",
+                                        index,
+                                        include_bytes!("../../../assets/icons/arrow-down.svg"),
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.recall_queued_prompt(index, window, cx)
+                                        }),
+                                    ))
                             },
                         )),
                 )
@@ -256,6 +284,28 @@ impl Panel {
                 .into_any_element(),
         )
     }
+}
+
+fn queue_action(
+    id: &'static str,
+    index: usize,
+    icon: &'static [u8],
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let theme = Theme::global();
+    div()
+        .id((id, index))
+        .debug_selector(move || format!("{id}-{index}").into())
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.))
+        .rounded_sm()
+        .cursor_pointer()
+        .hover(|el| el.bg(theme.QUOTE_BG))
+        .child(gpui::svg().data(icon).size(px(13.)).text_color(theme.TEXT_DIM))
+        .on_click(on_click)
 }
 
 #[cfg(test)]

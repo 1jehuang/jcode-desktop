@@ -552,7 +552,7 @@ def main():
                     subprocess.run(["import", "-window", "root", str(proof)], env=env, check=True)
                     shutil.copyfile(proof, output)
                     text = subprocess.check_output(["tesseract", str(proof), "stdout"], env=env, stderr=subprocess.DEVNULL).decode()
-                    for expected in ("sends after this response", "Review the final changes", "Then run the tests", "Remove"):
+                    for expected in ("sends after this response", "Review the final changes", "Then run the tests"):
                         if expected not in text:
                             raise RuntimeError("Ctrl+Enter did not paint the expected queue: " + text)
                     print("Native Ctrl+Enter queue verified on the private display")

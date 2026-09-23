@@ -389,21 +389,25 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
         first.size.height >= px(24.),
         "rows must not shrink to fit the stack"
     );
-    let remove = vcx.debug_bounds("remove-queued-prompt-0").unwrap();
+    let send = vcx.debug_bounds("send-queued-prompt-0").unwrap();
+    let recall = vcx.debug_bounds("recall-queued-prompt-0").unwrap();
     assert!(
-        remove.right() <= items.right(),
-        "long text must not push Remove out"
+        recall.right() <= items.right() && send.right() <= recall.left(),
+        "long text must not push the arrows out"
     );
-    vcx.simulate_click(remove.center(), gpui::Modifiers::default());
+    assert!(vcx.debug_bounds("remove-queued-prompt-0").is_none());
+    vcx.simulate_click(recall.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    panel.read_with(vcx, |p, _| {
+    panel.read_with(vcx, |p, cx| {
         assert_eq!(p.prompt_queue.prompts.len(), 11);
+        assert!(p.prompt_queue.prompts[0].content.starts_with("Follow-up 1:"));
         assert!(
-            p.prompt_queue.prompts[0]
-                .content
-                .starts_with("Follow-up 1:")
+            p.input.read(cx).content.starts_with("Follow-up 0:"),
+            "recall puts the prompt back in the composer"
         );
     });
+    // The recalled prompt may grow the composer. Scrolling must not move it.
+    let input = vcx.debug_bounds("prompt-input").unwrap();
     vcx.simulate_event(gpui::ScrollWheelEvent {
         position: items.center(),
         delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-1000.))),
@@ -421,4 +425,28 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
         Some(input),
         "queue scrolling must not move the input"
     );
+}
+
+#[gpui::test]
+fn send_now_arrow_sends_one_queued_prompt_immediately(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let panel = cx.new(|cx| {
+        let mut p = Panel::new("send-now".into(), None, None, bridge, cx);
+        p.history_loaded = true;
+        p.status = "running".into();
+        p.items.push(Item::User("First".into()));
+        p.pending_users.push_back(0);
+        p.submit_or_queue("first queued".into(), vec![], true, cx);
+        p.submit_or_queue("second queued".into(), vec![], true, cx);
+        p
+    });
+    assert!(commands.try_recv().is_err(), "queued while busy");
+    panel.update(cx, |p, cx| p.send_queued_prompt_now(1, cx));
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "second queued")
+    );
+    panel.read_with(cx, |p, _| {
+        assert_eq!(p.prompt_queue.prompts.len(), 1);
+        assert_eq!(p.prompt_queue.prompts[0].content, "first queued");
+    });
 }

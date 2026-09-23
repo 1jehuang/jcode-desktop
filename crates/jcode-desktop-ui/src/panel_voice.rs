@@ -74,7 +74,7 @@ fn voice_shortcut_keycap(color: gpui::Hsla, theme: &Theme) -> gpui::AnyElement {
 
 fn voice_tooltip(action: &str, status: &str) -> String {
     format!(
-        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. After transcription, Jev chooses a coding agent or a quick navigation action. Uncertain requests stay in the draft."
+        "{action} · {VOICE_SHORTCUT}\nHold {VOICE_SHORTCUT} to transcribe, release to finish. {status}. Ctrl+Shift+V toggles recording in the composer. Audio streams to Nari. After transcription, Jev chooses a coding agent or a quick navigation action."
     )
 }
 
@@ -171,9 +171,7 @@ fn global_pill_decision(decision: &str) -> String {
 
 /// Compact OS-pill label for a finished attempt that did not act.
 fn global_pill_error(error: &str) -> String {
-    if error.starts_with("Jev is unsure") {
-        "Jev unsure · Kept in draft".into()
-    } else if error.starts_with("Jev could not match") {
+    if error.starts_with("Jev could not match") {
         "No matching session · Kept in draft".into()
     } else if error.starts_with("Jev routing unavailable") {
         "Jev unavailable · Kept in draft".into()
@@ -740,9 +738,6 @@ impl Panel {
                     .cloned();
                 target.is_none().then(|| "Jev could not match a session in your last 20. Transcript kept in the draft.".to_string())
             }
-            Ok(VoiceIntent::Uncertain) => {
-                Some("Jev is unsure which route to choose. Transcript kept in the draft.".into())
-            }
             Err(error) => Some(format!(
                 "Jev routing unavailable: {error}. Transcript kept in the draft."
             )),
@@ -874,7 +869,7 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn voice_report_retains_actual_answers_and_keeps_uncertain_text(cx: &mut gpui::TestAppContext) {
+    fn voice_report_retains_actual_answers_and_keeps_dictation_text(cx: &mut gpui::TestAppContext) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(cx, |panel, cx| {
             let text = "maybe switch somewhere";
@@ -895,9 +890,9 @@ mod tests {
             panel.finish_voice_report(
                 &attempt,
                 Ok(voice_intent::VoiceClassification {
-                    intent: VoiceIntent::Uncertain,
+                    intent: VoiceIntent::Dictation,
                     answers: vec![voice_intent::VoiceAnswer {
-                        id: "uncertain".into(),
+                        id: "coding_agent".into(),
                         probability: 0.91,
                     }],
                     usage: Some(voice_intent::VoiceUsage {
@@ -910,14 +905,13 @@ mod tests {
             );
             let trace = panel.voice.trace.as_ref().unwrap();
             assert_eq!(trace.transcript, text);
-            assert_eq!(trace.questions.len(), 7);
+            assert_eq!(trace.questions.len(), 6);
             assert_eq!(trace.answers[0].probability, 0.91);
             assert_eq!(trace.usage.unwrap().input_tokens, 1200);
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
                 "typed work\nmaybe switch somewhere"
             );
-            assert!(panel.voice.error.as_ref().unwrap().contains("unsure"));
             // A duplicate completion cannot replace the evidence or append again.
             panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("late failure")), cx);
             assert_eq!(
@@ -961,7 +955,7 @@ mod tests {
             });
             let attempt = panel.voice.canceled.clone();
             panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("provider unavailable")), cx);
-            assert_eq!(panel.voice.trace.as_ref().unwrap().questions.len(), 7);
+            assert_eq!(panel.voice.trace.as_ref().unwrap().questions.len(), 6);
             assert!(panel.voice.trace.as_ref().unwrap().answers.is_empty());
             assert!(
                 panel
@@ -1188,7 +1182,6 @@ mod tests {
     fn voice_routing_non_navigation_retains_draft_and_never_sends(cx: &mut gpui::TestAppContext) {
         for result in [
             Ok(VoiceIntent::Dictation),
-            Ok(VoiceIntent::Uncertain),
             Ok(VoiceIntent::OpenSession("not-offered".into())),
             Err(anyhow::anyhow!("offline")),
         ] {
