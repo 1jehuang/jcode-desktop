@@ -48,12 +48,12 @@ pub(super) struct State {
     window_active: bool,
 }
 
-/// The OS-level pill mirrors live capture only when the chat is not in front
-/// of you, since a focused window already shows the in-panel pill. Jev's
-/// final decision is always shown globally: a global hold's user is often
-/// looking elsewhere, and focus alone does not prove they saw the panel.
-fn os_pill_wanted(window_active: bool, has_status: bool, decided: bool) -> bool {
-    has_status && (!window_active || decided)
+/// Exactly one voice pill is ever visible. The OS-level pill mirrors capture
+/// and its result only while the chat is not in front of you. A focused
+/// window shows both in its own in-panel pill, which the panel hides while
+/// unfocused, so the two never appear together.
+fn os_pill_wanted(window_active: bool, has_status: bool, _decided: bool) -> bool {
+    has_status && !window_active
 }
 
 /// Whether a host global-shortcut press should use the dictation-only global
@@ -510,6 +510,12 @@ impl Workspace {
                 .finished_at
                 .get_or_insert_with(Instant::now);
             if since.elapsed() >= Duration::from_secs(5) {
+                // The result pill expires in both places, so focusing this
+                // window later never reveals a stale "Sent to agent".
+                panel.update(cx, |panel, cx| {
+                    panel
+                        .cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                });
                 self.global_voice.close_overlay(cx);
                 return;
             }
@@ -577,8 +583,13 @@ mod spawn_tests {
             .map(std::ffi::OsString::from);
         assert_eq!(
             spawn_args(own.into_iter()),
-            ["--single-panel", "--new-process", SPAWNED_HOLD_FLAG, "--hot-reload"]
-                .map(std::ffi::OsString::from)
+            [
+                "--single-panel",
+                "--new-process",
+                SPAWNED_HOLD_FLAG,
+                "--hot-reload"
+            ]
+            .map(std::ffi::OsString::from)
         );
     }
 }
@@ -613,11 +624,11 @@ mod pill_tests {
     }
 
     #[test]
-    fn jev_decision_is_always_shown_globally() {
+    fn decision_uses_one_pill_in_panel_when_focused_or_os_level_otherwise() {
         assert!(os_pill_wanted(false, true, true));
         assert!(
-            os_pill_wanted(true, true, true),
-            "a focused window still shows Jev's decision in the OS pill"
+            !os_pill_wanted(true, true, true),
+            "a focused window shows the sent confirmation in the panel only"
         );
         assert!(!os_pill_wanted(true, false, true));
     }

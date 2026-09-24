@@ -19,6 +19,11 @@ impl Panel {
         // Streaming words never resize, move, or replace the draft editor.
         self.input
             .update(cx, |input, cx| input.set_voice_preview(None, cx));
+        // A global hold's status is shown by the OS pill while this window is
+        // unfocused. Never show a second, in-panel copy at the same time.
+        if self.voice.global_capture && !window.is_window_active() {
+            return None;
+        }
         if self.voice.trace.is_some() && !self.voice.trace_expanded {
             return Some(self.render_voice_pills(window, cx));
         }
@@ -579,6 +584,29 @@ mod tests {
                 assert!(vcx.debug_bounds("voice-overlay").is_none());
             }
         }
+    }
+
+    #[gpui::test]
+    fn global_sent_pill_is_in_panel_only_while_focused(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.voice.global_capture = true;
+            panel.voice.decision = Some("Sent to agent".into());
+            cx.notify();
+        });
+        vcx.update(|window, _| window.activate_window());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("voice-overlay").is_some(),
+            "focused: in-panel pill"
+        );
+        vcx.deactivate_window();
+        panel.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("voice-overlay").is_none(),
+            "unfocused: only the OS pill is shown"
+        );
     }
 
     #[gpui::test]
