@@ -14,14 +14,28 @@ pub(super) struct Project {
     pub location: Option<String>,
 }
 
+/// One Git checkout inside a project: the main working tree or a linked
+/// worktree, with the branch it currently has checked out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Checkout {
+    pub path: String,
+    pub branch: String,
+    pub linked: bool,
+}
+
+/// Branches move underneath us (checkout, rebase), so HEAD is re-read after
+/// this interval rather than on every hover repaint.
+const CHECKOUT_TTL: Duration = Duration::from_secs(3);
+
 #[derive(Default)]
 pub(super) struct State {
     /// Explicit disclosure choices. Unset projects use their default.
-    collapsed: HashMap<String, bool>,
+    pub(super) collapsed: HashMap<String, bool>,
     focused: Option<String>,
     /// Working directory to repository root. Filesystem probes run once per
     /// directory, never on every hover repaint.
     roots: HashMap<String, Option<PathBuf>>,
+    checkouts: HashMap<String, (Option<Checkout>, Instant)>,
 }
 
 impl State {
@@ -44,6 +58,23 @@ impl State {
                 self.collapsed.insert(project.to_owned(), false);
             }
         }
+    }
+
+    /// The local checkout a session runs in. Remote sessions never probe local Git.
+    pub(super) fn checkout(&mut self, session: &jcode_sdk::SessionInfo) -> Option<Checkout> {
+        if harness::remote_host(&session.session_id).is_some() {
+            return None;
+        }
+        let directory = session.working_dir.as_deref().map(str::trim).filter(|d| !d.is_empty())?;
+        if let Some((cached, read)) = self.checkouts.get(directory)
+            && read.elapsed() < CHECKOUT_TTL
+        {
+            return cached.clone();
+        }
+        let value = probe_checkout(Path::new(directory));
+        self.checkouts
+            .insert(directory.to_owned(), (value.clone(), Instant::now()));
+        value
     }
 
     fn root(&mut self, directory: &str) -> Option<PathBuf> {
@@ -134,6 +165,43 @@ pub(super) fn git_root(directory: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Nearest enclosing checkout and its branch, read straight from `.git` so the
+/// sidebar never spawns Git while rendering.
+pub(super) fn probe_checkout(directory: &Path) -> Option<Checkout> {
+    for ancestor in directory.ancestors() {
+        let marker = ancestor.join(".git");
+        let (gitdir, linked) = if marker.is_dir() {
+            (marker, false)
+        } else if marker.is_file() {
+            let contents = std::fs::read_to_string(&marker).ok()?;
+            let gitdir = ancestor.join(contents.trim().strip_prefix("gitdir:")?.trim());
+            // Submodules have a gitdir file but no commondir.
+            let linked = gitdir.join("commondir").is_file();
+            (gitdir, linked)
+        } else {
+            continue;
+        };
+        let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+        let head = head.trim();
+        let branch = match head.strip_prefix("ref:") {
+            Some(reference) => {
+                let reference = reference.trim();
+                reference
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(reference)
+                    .to_owned()
+            }
+            None => format!("detached {}", head.chars().take(8).collect::<String>()),
+        };
+        return Some(Checkout {
+            path: ancestor.to_string_lossy().into_owned(),
+            branch,
+            linked,
+        });
+    }
+    None
+}
+
 fn linked_worktree_main(worktree: &Path, marker: &Path) -> Option<PathBuf> {
     let contents = std::fs::read_to_string(marker).ok()?;
     let gitdir = contents.trim().strip_prefix("gitdir:")?.trim();
@@ -145,12 +213,14 @@ fn linked_worktree_main(worktree: &Path, marker: &Path) -> Option<PathBuf> {
 }
 
 impl Workspace {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_project_header(
         &self,
         index: usize,
         project: &Project,
         count: usize,
         collapsed: bool,
+        branch: Option<String>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
@@ -162,17 +232,23 @@ impl Workspace {
             if count == 1 { "" } else { "s" },
         );
         let key = project.key.clone();
+        // Only local directories can host a new thread or worktree from here.
+        let local = Path::new(&project.key).is_absolute().then(|| project.key.clone());
+        let git = local.as_deref().is_some_and(|dir| Path::new(dir).join(".git").exists());
+        let group: &'static str = "sidebar-project-header";
         div()
             .id(("sidebar-project", index))
             .debug_selector(move || format!("sidebar-project-{index}"))
+            .group(group)
             .mx_2()
             .mb_1()
-            .px_2()
+            .pl_2()
+            .pr_1()
             .h(px(24.0))
             .flex()
             .items_center()
             .gap_1()
-            .rounded_md()
+            .rounded_full()
             .cursor_pointer()
             .hover(|el| el.bg(theme.TOOL_BG))
             .tooltip(move |_, cx| {
@@ -198,7 +274,7 @@ impl Workspace {
             )
             .child(
                 div()
-                    .flex_1()
+                    .flex_shrink(1.0)
                     .min_w_0()
                     .truncate()
                     .debug_selector(move || format!("sidebar-project-label-{index}"))
@@ -207,13 +283,164 @@ impl Workspace {
                     .text_color(theme.TEXT_DIM)
                     .child(project.label.clone()),
             )
+            .children(branch.map(|branch| {
+                div()
+                    .debug_selector(move || format!("sidebar-project-branch-{index}"))
+                    .flex_shrink(1.0)
+                    .min_w(px(24.0))
+                    .max_w(px(120.0))
+                    .h(px(16.0))
+                    .px(px(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0))
+                    .rounded_full()
+                    .bg(theme.TOOL_BG)
+                    .text_size(px(9.0))
+                    .text_color(theme.TEXT_DIM)
+                    .child(sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 9.0))
+                    .child(div().min_w_0().truncate().child(branch))
+            }))
+            .child(div().flex_1())
+            .when(git, |el| {
+                let directory = local.clone().unwrap_or_default();
+                el.child(
+                    sidebar_worktrees::header_action(
+                        format!("sidebar-project-worktree-{index}").into(),
+                        "New worktree: start a branch in its own checkout",
+                        sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
+                        false,
+                        group,
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.begin_worktree(directory.clone(), window, cx);
+                        }),
+                    ),
+                )
+            })
+            .when_some(local, |el, directory| {
+                let key = project.key.clone();
+                el.child(
+                    sidebar_worktrees::header_action(
+                        format!("sidebar-project-new-{index}").into(),
+                        "New thread in this project",
+                        div().child("+").into_any_element(),
+                        false,
+                        group,
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.sidebar_projects.collapsed.insert(key.clone(), false);
+                            this.focus_pending = true;
+                            this.open_local_draft(Some(directory.clone()), cx);
+                        }),
+                    ),
+                )
+            })
             .child(
                 div()
                     .flex_none()
+                    .w(px(16.0))
+                    .text_right()
                     .text_size(px(10.0))
                     .text_color(theme.TEXT_DIM)
                     .child(count.to_string()),
             )
+            .into_any_element()
+    }
+
+    /// Branch row separating checkouts of one project.
+    pub(super) fn render_checkout_header(
+        &self,
+        index: usize,
+        checkout: Option<&Checkout>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let group: &'static str = "sidebar-checkout-header";
+        let (label, tooltip) = match checkout {
+            Some(checkout) => (
+                checkout.branch.clone(),
+                format!(
+                    "{} · {}",
+                    if checkout.linked { "Worktree" } else { "Main checkout" },
+                    compact_working_dir(&checkout.path)
+                ),
+            ),
+            None => ("Outside Git".into(), "Threads outside any checkout".into()),
+        };
+        let path = checkout.map(|checkout| checkout.path.clone());
+        div()
+            .id(("sidebar-checkout", index))
+            .debug_selector(move || format!("sidebar-checkout-{index}"))
+            .group(group)
+            .ml(px(18.0))
+            .mr_2()
+            .mb(px(2.0))
+            .pl_1()
+            .pr_1()
+            .h(px(22.0))
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded_full()
+            .text_size(px(11.0))
+            .text_color(theme.TEXT_DIM)
+            .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into())).into())
+            .child(sidebar_worktrees::icon(
+                if checkout.is_some_and(|c| c.linked) {
+                    sidebar_worktrees::BRANCH_ICON
+                } else {
+                    sidebar_worktrees::FOLDER_ICON
+                },
+                11.0,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .debug_selector(move || format!("sidebar-checkout-label-{index}"))
+                    .child(label),
+            )
+            .when(checkout.is_some_and(|c| c.linked), |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .px(px(6.0))
+                        .rounded_full()
+                        .bg(theme.TOOL_BG)
+                        .text_size(px(9.0))
+                        .child("worktree"),
+                )
+            })
+            .when_some(path, |el, path| {
+                el.child(
+                    sidebar_worktrees::header_action(
+                        format!("sidebar-checkout-new-{index}").into(),
+                        "New thread on this branch",
+                        div().child("+").into_any_element(),
+                        false,
+                        group,
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.focus_pending = true;
+                            this.open_local_draft(Some(path.clone()), cx);
+                        }),
+                    ),
+                )
+            })
             .into_any_element()
     }
 }

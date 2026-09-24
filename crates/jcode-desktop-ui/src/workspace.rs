@@ -606,8 +606,6 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     sidebar_view: SidebarView,
     #[serde(default)]
-    worktree_mode: bool,
-    #[serde(default)]
     tutorial_page: usize,
     slots: Vec<SlotSnapshot>,
     active: usize,
@@ -731,7 +729,6 @@ pub struct Workspace {
     layout_mode: crate::config::LayoutMode,
     folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
-    worktree_mode: bool,
     worktrees: sidebar_worktrees::State,
     tutorial_page: usize,
     onboarding_launch: onboarding_simulator::LaunchState,
@@ -1026,7 +1023,6 @@ impl Workspace {
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
-            worktree_mode: false,
             worktrees: sidebar_worktrees::State::default(),
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
@@ -1166,7 +1162,7 @@ impl Workspace {
             workspace.connected = true;
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
-            workspace.init_worktree_fixture();
+            workspace.init_worktree_fixture(cx);
             if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
                 for (index, (label, status)) in [
                     ("API reviewer", "working"),
@@ -1338,7 +1334,6 @@ impl Workspace {
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
-            worktree_mode: false,
             worktrees: sidebar_worktrees::State::default(),
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
@@ -1498,7 +1493,6 @@ impl Workspace {
             layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
-            worktree_mode: self.worktree_mode,
             tutorial_page: self.tutorial_page,
             slots: slots
                 .iter()
@@ -1539,7 +1533,6 @@ impl Workspace {
         self.layout_mode = snapshot.layout_mode;
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_view = snapshot.sidebar_view;
-        self.worktree_mode = snapshot.worktree_mode;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
         for saved in snapshot.slots {
@@ -5099,9 +5092,36 @@ impl Workspace {
         }
         let ordered_sessions = sidebar_session_order(&catalog);
         let swarm = sidebar_swarm::groups(&ordered_sessions);
+        // Swarms and worktrees are one concept here: an agent is a thread. It
+        // nests under its coordinator while it shares that checkout, and
+        // surfaces under its own branch when it works in a separate worktree.
+        let mut agents: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut nested = HashSet::new();
+        for (root, children) in &swarm.children {
+            let root_checkout = catalog
+                .iter()
+                .find(|session| &session.session_id == root)
+                .and_then(|session| self.sidebar_projects.checkout(session))
+                .map(|checkout| checkout.path);
+            for child in children {
+                let own = self
+                    .sidebar_projects
+                    .checkout(&child.session)
+                    .map(|checkout| checkout.path);
+                if own.is_some() && own != root_checkout {
+                    continue;
+                }
+                nested.insert(child.session.session_id.clone());
+                let entry = agents.entry(root.clone()).or_default();
+                entry.0 += 1;
+                if matches!(child.session.swarm_status.as_deref(), Some("working" | "running" | "active")) {
+                    entry.1 += 1;
+                }
+            }
+        }
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
-            .filter(|session| !swarm.nested.contains(&session.session_id))
+            .filter(|session| !nested.contains(&session.session_id))
             .partition(|session| open_marks.contains_key(&session.session_id));
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
@@ -5123,25 +5143,47 @@ impl Workspace {
         });
         // Group by project (Git repository, else spawn directory). Projects
         // appear in the order of their first open panel, then by history
-        // recency. Inside a project, open panels precede history.
+        // recency. Inside a project, threads group by checkout (the main
+        // working tree first, then linked worktrees), and open panels precede
+        // history within each checkout.
         let mut groups: Vec<(sidebar_projects::Project, usize, usize)> = Vec::new();
         let mut members: Vec<Vec<SidebarRow>> = Vec::new();
+        let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
         for (open, session) in open_sessions
             .into_iter()
             .map(|session| (true, session))
             .chain(other_sessions.into_iter().map(|session| (false, session)))
         {
             let (project, subdirectory) = self.sidebar_projects.project(&session);
+            let checkout = self.sidebar_projects.checkout(&session);
             let index = match groups.iter().position(|(p, _, _)| p.key == project.key) {
                 Some(index) => index,
                 None => {
                     groups.push((project, 0, 0));
                     members.push(Vec::new());
+                    project_checkouts.push(Vec::new());
                     groups.len() - 1
                 }
             };
+            if let Some(checkout) = &checkout
+                && !project_checkouts[index].iter().any(|c| c.path == checkout.path)
+            {
+                project_checkouts[index].push(checkout.clone());
+            }
+            // Inside a linked worktree the path relative to the main checkout
+            // is noise. The checkout header already names the branch.
+            let subdirectory = match &checkout {
+                Some(checkout) if checkout.linked => session
+                    .working_dir
+                    .as_deref()
+                    .and_then(|dir| Path::new(dir).strip_prefix(&checkout.path).ok())
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.to_string_lossy().into_owned()),
+                _ => subdirectory,
+            };
             groups[index].1 += usize::from(open);
             groups[index].2 += 1;
+            let agents = agents.get(&session.session_id).copied().unwrap_or_default();
             members[index].push(SidebarRow {
                 open,
                 session,
@@ -5150,8 +5192,37 @@ impl Workspace {
                 header: false,
                 collapsed: false,
                 divider: false,
+                checkout,
+                checkout_header: false,
+                agents,
             });
         }
+        // The main working tree leads, then worktrees in order of first use.
+        for checkouts in &mut project_checkouts {
+            checkouts.sort_by_key(|checkout| checkout.linked);
+        }
+        for (index, rows) in members.iter_mut().enumerate() {
+            let rank = |row: &SidebarRow| {
+                row.checkout
+                    .as_ref()
+                    .and_then(|c| project_checkouts[index].iter().position(|p| p.path == c.path))
+                    .unwrap_or(usize::MAX)
+            };
+            rows.sort_by_key(rank);
+        }
+        // Branch rows appear once a project spans several checkouts. A single
+        // checkout shows its branch on the project header instead.
+        let checkout_rows = project_checkouts
+            .iter()
+            .map(|checkouts| checkouts.len() > 1 || checkouts.iter().any(|c| c.linked))
+            .collect::<Vec<_>>();
+        let project_branches = project_checkouts
+            .iter()
+            .zip(&checkout_rows)
+            .map(|(checkouts, rows)| {
+                (!rows).then(|| checkouts.first().map(|c| c.branch.clone())).flatten()
+            })
+            .collect::<Vec<_>>();
         let active_project = active_id.as_deref().and_then(|id| {
             members
                 .iter()
@@ -5179,6 +5250,7 @@ impl Workspace {
         for (index, rows) in members.into_iter().enumerate() {
             let collapsed = collapsed_projects[index];
             let mut previous: Option<(bool, bool)> = None;
+            let mut previous_checkout: Option<Option<String>> = None;
             for (position, mut row) in rows.into_iter().enumerate() {
                 if collapsed && position > 0 {
                     // One representative keeps the header a real list row.
@@ -5186,6 +5258,12 @@ impl Workspace {
                 }
                 row.header = headers && position == 0;
                 row.collapsed = collapsed;
+                let checkout = row.checkout.as_ref().map(|c| c.path.clone());
+                if previous_checkout.as_ref() != Some(&checkout) {
+                    row.checkout_header = checkout_rows[index] && !collapsed;
+                    previous = None;
+                }
+                previous_checkout = Some(checkout);
                 row.divider = !row.open
                     && previous.is_some_and(|(open, saved)| open || (saved && !row.session.saved));
                 previous = Some((row.open, row.session.saved));
@@ -5211,6 +5289,7 @@ impl Workspace {
                     open: row.open,
                     project: row.project,
                     header: row.header,
+                    checkout_header: row.checkout_header,
                     divider: row.divider,
                     collapsed: row.collapsed,
                     selected,
@@ -5246,6 +5325,10 @@ impl Workspace {
             .min_h_0()
             .overflow_hidden();
         list = list.flex().flex_col();
+        list = list.child(self.render_sidebar_quick_actions(cx));
+        if let Some(form) = self.render_worktree_form(cx) {
+            list = list.child(form);
+        }
         if !self.sidebar_selection.ids.is_empty() {
             list = list.child(
                 div()
@@ -5304,7 +5387,10 @@ impl Workspace {
                                 let (project, _, count) = &groups[row.project];
                                 list = list
                                     .when(sidebar_index > 0, |el| el.pt_3())
-                                    .child(this.render_project_header(row.project, project, *count, collapsed_projects[row.project], cx));
+                                    .child(this.render_project_header(row.project, project, *count, collapsed_projects[row.project], project_branches[row.project].clone(), cx));
+                            }
+                            if row.checkout_header {
+                                list = list.child(this.render_checkout_header(sidebar_index, row.checkout.as_ref(), cx));
                             }
                             if row.collapsed {
                                 return list.into_any_element();
@@ -5352,6 +5438,8 @@ impl Workspace {
                             };
 
                             let group_selected = is_open && this.sidebar_selection.contains(&session.session_id);
+                            let (agent_total, agent_working) = row.agents;
+                            let under_checkout = checkout_rows[row.project];
                             let close_id = session.session_id.clone();
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
@@ -5365,6 +5453,7 @@ impl Workspace {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
+                                    .when(under_checkout, |el| el.ml(px(18.0)))
                                     .mr_2()
                                     .mb(px(2.0))
                                     .relative()
@@ -5438,6 +5527,28 @@ impl Workspace {
                                                     .line_height(relative(1.5))
                                                     .child(title),
                                             )
+                                            .when(agent_total > 0, |row| row.child(
+                                                div()
+                                                    .id(("sidebar-agents", sidebar_index))
+                                                    .debug_selector(move || format!("sidebar-agents-{sidebar_index}"))
+                                                    .flex_none()
+                                                    .h(px(16.0))
+                                                    .px(px(6.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(3.0))
+                                                    .rounded_full()
+                                                    .bg(if agent_working > 0 { Theme::global().ACCENT_DIM } else { Theme::global().TOOL_BG })
+                                                    .text_size(px(9.0))
+                                                    .text_color(Theme::global().TEXT_DIM)
+                                                    .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(format!(
+                                                        "{agent_total} swarm agent{} in this checkout{}",
+                                                        if agent_total == 1 { "" } else { "s" },
+                                                        if agent_working > 0 { format!(", {agent_working} working") } else { String::new() },
+                                                    ).into())).into())
+                                                    .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
+                                                    .child(agent_total.to_string()),
+                                            ))
                                             .when(is_open, |row| row.child(
                                                 div().id(("sidebar-close", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
@@ -5891,9 +6002,6 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .child(div().flex_1().min_w_0().child(navigation))
-                    .when(self.sidebar_view == SidebarView::Sessions, |el| {
-                        el.child(self.render_workflow_switch(cx))
-                    })
             })
             .child(self.render_machine_switcher(cx))
             .child(
@@ -5908,7 +6016,6 @@ impl Workspace {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
                     .child(match self.sidebar_view {
-                        SidebarView::Sessions if self.worktree_mode => self.render_worktrees(cx),
                         SidebarView::Sessions => list.into_any_element(),
                         SidebarView::Learn => self.render_tutorial_guides(cx),
                         SidebarView::Files => self.render_files_sidebar(cx),
@@ -5928,7 +6035,7 @@ impl Workspace {
                         matches!(
                             self.sidebar_view,
                             SidebarView::Sessions | SidebarView::Files
-                        ) && !(self.sidebar_view == SidebarView::Sessions && self.worktree_mode),
+                        ),
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
@@ -8166,6 +8273,7 @@ struct SidebarSessionLayout {
     open: bool,
     project: usize,
     header: bool,
+    checkout_header: bool,
     divider: bool,
     collapsed: bool,
     selected: bool,
@@ -8181,6 +8289,11 @@ struct SidebarRow {
     header: bool,
     collapsed: bool,
     divider: bool,
+    checkout: Option<sidebar_projects::Checkout>,
+    /// First thread of a checkout, which carries its branch row.
+    checkout_header: bool,
+    /// Nested swarm agents: (total, working).
+    agents: (usize, usize),
 }
 
 fn sync_sidebar_session_layout(
@@ -8915,7 +9028,6 @@ mod tests {
             layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
-            worktree_mode: false,
             tutorial_page: 0,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
@@ -9123,8 +9235,7 @@ mod tests {
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
-                    worktree_mode: false,
-                    tutorial_page: 0,
+                            tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             transcript: None,
@@ -9935,15 +10046,8 @@ mod tests {
                 let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
                 assert!(gutter.top() >= directory.bottom());
                 assert!(gutter.top() >= machines.bottom());
-                if view == SidebarView::Sessions {
-                    let workflow = vcx.debug_bounds("sidebar-workflow-switch").unwrap();
-                    assert!(
-                        gutter.top() >= workflow.bottom(),
-                        "workflow switch stays above scrolling content"
-                    );
-                } else {
-                    assert_eq!(gutter.top(), machines.bottom());
-                }
+                assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
+                assert_eq!(gutter.top(), machines.bottom());
                 assert_eq!(gutter.top(), body.top());
                 assert_eq!(gutter.bottom(), body.bottom());
                 let outset = if mode == crate::config::LayoutMode::FolderTabs {

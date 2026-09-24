@@ -56,15 +56,9 @@ fn sidebar_destination_icons_choose_defaults_without_starting_sessions(cx: &mut 
     assert!((cloud.size.width - ssh.size.width).abs() <= px(1.0));
     assert_eq!(local.size.height, cloud.size.height);
     assert_eq!(cloud.size.height, ssh.size.height);
-    let swarm = vcx.debug_bounds("sidebar-mode-swarm").unwrap();
-    let worktrees = vcx.debug_bounds("sidebar-mode-worktrees").unwrap();
-    let navigation = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
-    assert_eq!(swarm.center().y, navigation.center().y);
-    assert_eq!(worktrees.center().y, navigation.center().y);
-    assert!(navigation.right() <= swarm.left());
-    assert!(swarm.right() < worktrees.left());
-    assert_eq!(swarm.size, gpui::size(px(28.0), px(28.0)));
-    assert_eq!(worktrees.size, swarm.size);
+    // Swarms and worktrees share one sidebar. There is no mode switch.
+    assert!(vcx.debug_bounds("sidebar-mode-swarm").is_none());
+    assert!(vcx.debug_bounds("sidebar-mode-worktrees").is_none());
     let directory = vcx.debug_bounds("default-directory-button").unwrap();
     assert_eq!(directory.origin.y, local.origin.y);
     assert!(ssh.right() < directory.left());
@@ -77,11 +71,6 @@ fn sidebar_destination_icons_choose_defaults_without_starting_sessions(cx: &mut 
     assert!(commands.try_recv().is_err(), "selecting cloud must not wake a VM or create a session");
     click(vcx, "default-directory-button");
     assert!(vcx.debug_bounds("default-directory-panel").is_none(), "remote paths must not open a local folder picker");
-    click(vcx, "sidebar-mode-worktrees");
-    workspace.read_with(vcx, |w, _| assert!(w.worktree_mode));
-    assert!(vcx.debug_bounds("sidebar-worktrees").is_some());
-    click(vcx, "sidebar-mode-swarm");
-    workspace.read_with(vcx, |w, _| assert!(!w.worktree_mode));
     assert!(vcx.debug_bounds("sidebar-session-list").is_some());
     click(vcx, "machine-destination-local");
     workspace.read_with(vcx, |w, _| {

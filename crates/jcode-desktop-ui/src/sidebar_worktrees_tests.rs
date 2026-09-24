@@ -1,19 +1,36 @@
 use super::*;
 
-fn entry(path: &str, branch: &str) -> Worktree {
-    Worktree {
-        path: path.into(),
-        branch: Some(format!("refs/heads/{branch}")),
-        head: "abc123456789".into(),
-        bare: false,
-        detached: false,
-        locked: None,
-        prunable: None,
+/// A main checkout at `root/project` on `main` and a linked worktree at
+/// `root/project-search` on `feature/search`, built from real `.git` markers.
+struct Fixture {
+    _temp: tempfile::TempDir,
+    main: String,
+    search: String,
+}
+
+fn fixture() -> Fixture {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let main = root.join("project");
+    let gitdir = main.join(".git/worktrees/search");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::create_dir_all(main.join("src")).unwrap();
+    std::fs::write(main.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let search = root.join("project-search");
+    std::fs::create_dir_all(search.join("crates/ui")).unwrap();
+    std::fs::write(search.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+    std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/search\n").unwrap();
+    Fixture {
+        _temp: temp,
+        main: main.to_string_lossy().into_owned(),
+        search: search.to_string_lossy().into_owned(),
     }
 }
 
 fn setup(
     cx: &mut gpui::TestAppContext,
+    sessions: Vec<jcode_sdk::SessionInfo>,
 ) -> (
     Entity<Workspace>,
     &mut gpui::VisualTestContext,
@@ -27,288 +44,196 @@ fn setup(
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.set_test_bridge(bridge);
-        w.push_test_panel("main-session", cx);
-        w.slots[0]
-            .panel
-            .update(cx, |panel, _| panel.working_dir = Some("/project".into()));
-        let mut session =
-            crate::workspace::tests::session_info("main-session", Some("Main conversation"));
-        session.working_dir = Some("/project/src".into());
-        w.sessions.push(session);
-        w.worktrees.directory = Some("/project".into());
-        w.worktrees.entries = vec![
-            entry("/project", "main"),
-            entry("/project-trees/search", "feature/search"),
-        ];
+        w.sessions = sessions;
         w
     });
     vcx.run_until_parked();
     (workspace, vcx, commands)
 }
 
-fn click(vcx: &mut gpui::VisualTestContext, selector: &'static str) {
-    let bounds = vcx.debug_bounds(selector).expect(selector);
+fn session(id: &str, dir: &str) -> jcode_sdk::SessionInfo {
+    let mut info = crate::workspace::tests::session_info(id, Some(id));
+    info.working_dir = Some(dir.into());
+    info
+}
+
+fn click(vcx: &mut gpui::VisualTestContext, selector: &str) {
+    let bounds = vcx
+        .debug_bounds(selector.to_owned().leak())
+        .unwrap_or_else(|| panic!("missing {selector}"));
     vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
 }
 
-#[test]
-fn worktree_ownership_uses_components_and_most_specific_checkout() {
-    let entries = vec![entry("/repo", "main"), entry("/repo/nested", "nested")];
-    assert_eq!(owner("/repo/src", &entries), Some("/repo"));
-    assert_eq!(owner("/repo/nested/src", &entries), Some("/repo/nested"));
-    assert_eq!(owner("/repo-other", &entries), None);
+fn text(vcx: &mut gpui::VisualTestContext, selector: &str) -> bool {
+    vcx.debug_bounds(selector.to_owned().leak()).is_some()
 }
 
 #[test]
-fn worktree_labels_cover_branch_detached_and_bare_checkouts() {
-    let mut checkout = entry("/project", "feature/long/name");
-    assert_eq!(checkout_label(&checkout), "feature/long/name");
-    checkout.branch = None;
-    checkout.detached = true;
-    assert_eq!(checkout_label(&checkout), "Detached · abc12345");
-    checkout.locked = Some("keep this checkout".into());
-    assert!(checkout_available(&checkout));
-    checkout.prunable = Some("missing".into());
-    assert!(!checkout_available(&checkout));
-    checkout.bare = true;
-    assert_eq!(checkout_label(&checkout), "Bare repository");
+fn checkout_probe_reads_branch_worktree_and_detached_head_without_git() {
+    let f = fixture();
+    let main = sidebar_projects::probe_checkout(Path::new(&f.main).join("src").as_path()).unwrap();
+    assert_eq!(main.path, f.main);
+    assert_eq!(main.branch, "main");
+    assert!(!main.linked);
+    let search =
+        sidebar_projects::probe_checkout(Path::new(&f.search).join("crates/ui").as_path()).unwrap();
+    assert_eq!(search.path, f.search);
+    assert_eq!(search.branch, "feature/search");
+    assert!(search.linked);
+    std::fs::write(Path::new(&f.main).join(".git/HEAD"), "0123456789abcdef\n").unwrap();
+    assert_eq!(
+        sidebar_projects::probe_checkout(Path::new(&f.main)).unwrap().branch,
+        "detached 01234567"
+    );
+    assert!(sidebar_projects::probe_checkout(Path::new("/definitely/not/a/repo")).is_none());
 }
 
 #[gpui::test]
-fn worktree_groups_are_compact_and_collapse_without_navigation(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "sidebar-mode-worktrees");
-    let header = vcx.debug_bounds("worktree-0").unwrap();
-    let chat = vcx.debug_bounds("worktree-session-main-session").unwrap();
-    assert_eq!(header.size.height, px(30.0));
-    assert_eq!(chat.size.height, px(28.0));
-    assert!(chat.left() > header.left());
-    assert!(
-        vcx.debug_bounds("worktree-session-main-session-selected")
-            .is_some()
-    );
-    click(vcx, "worktree-toggle-0");
-    assert!(vcx.debug_bounds("worktree-session-main-session").is_none());
-    assert!(vcx.debug_bounds("worktree-1").is_some());
-    workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.slots.len(), 1);
-        assert!(w.worktrees.collapsed.contains("/project"));
-    });
-    assert!(commands.try_recv().is_err());
-    click(vcx, "worktree-toggle-0");
-    assert!(vcx.debug_bounds("worktree-session-main-session").is_some());
-}
-
-#[gpui::test]
-fn worktree_new_chat_is_local_and_visible_before_backend_reply(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "sidebar-mode-worktrees");
-    click(vcx, "worktree-toggle-0");
-    workspace.update(vcx, |w, _| {
-        w.remotes.default_host = Some("elsewhere".into())
-    });
-    click(vcx, "worktree-new-chat-0");
-    assert!(
-        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/project")
-    );
-    assert!(
-        commands.try_recv().is_err(),
-        "new-chat click must not bubble into checkout navigation"
-    );
-    let id = workspace.read_with(vcx, |w, cx| {
-        assert_eq!(w.slots.len(), 2);
-        assert!(!w.worktrees.collapsed.contains("/project"));
-        assert_eq!(w.worktrees.entries.len(), 2);
-        w.slots[w.active].panel.read(cx).session_id.clone()
-    });
-    assert!(
-        vcx.debug_bounds(format!("worktree-session-{id}").leak())
-            .is_some()
-    );
-    assert!(
-        vcx.debug_bounds(format!("worktree-session-{id}-selected").leak())
-            .is_some()
-    );
-}
-
-#[gpui::test]
-fn worktree_navigation_keeps_groups_and_collapse_state(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "sidebar-mode-worktrees");
-    click(vcx, "worktree-toggle-0");
-    click(vcx, "worktree-empty-1");
-    assert!(
-        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/project-trees/search")
-    );
-    assert!(vcx.debug_bounds("worktree-0").is_some());
-    assert!(vcx.debug_bounds("worktree-1").is_some());
-    assert!(vcx.debug_bounds("worktree-session-main-session").is_none());
-    workspace.read_with(vcx, |w, _| {
-        assert!(w.worktrees.collapsed.contains("/project"));
-        assert!(!w.worktrees.loading);
-        assert!(w.worktrees.error.is_none());
-    });
-    click(vcx, "worktree-toggle-0");
-    click(vcx, "worktree-session-main-session");
-    workspace.read_with(vcx, |w, cx| {
-        assert_eq!(w.slots.len(), 2, "existing chat is reused");
-        assert_eq!(w.slots[w.active].panel.read(cx).session_id, "main-session");
-    });
-    assert!(commands.try_recv().is_err());
-}
-
-#[gpui::test]
-fn worktree_groups_hide_archived_remote_and_sibling_sessions_and_sort_by_recency(
+fn one_sidebar_without_modes_groups_threads_by_branch_under_their_project(
     cx: &mut gpui::TestAppContext,
 ) {
-    let (workspace, vcx, _) = setup(cx);
-    workspace.update(vcx, |w, cx| {
-        for (id, directory, archived, updated) in [
-            ("older", "/project", false, 100),
-            ("newer", "/project/src", false, 200),
-            ("archived", "/project", true, 300),
-            ("ssh://server/remote", "/project", false, 300),
-            ("sibling", "/project-other", false, 300),
-        ] {
-            let mut session = crate::workspace::tests::session_info(id, Some(id));
-            session.working_dir = Some(directory.into());
-            session.archived = archived;
-            session.updated_at_ms = Some(updated);
-            w.sessions.push(session);
-        }
-        cx.notify();
+    let f = fixture();
+    let mut newer = session("search-chat", &format!("{}/crates/ui", f.search));
+    newer.updated_at_ms = Some(300);
+    let mut main_chat = session("main-chat", &f.main);
+    main_chat.updated_at_ms = Some(100);
+    let (workspace, vcx, commands) = setup(cx, vec![newer, main_chat]);
+    assert!(!text(vcx, "sidebar-mode-swarm"));
+    assert!(!text(vcx, "sidebar-mode-worktrees"));
+    assert!(text(vcx, "sidebar-project-0"));
+    assert!(!text(vcx, "sidebar-project-1"), "a worktree belongs to its repository's project");
+    // The main checkout leads even though the worktree thread is more recent.
+    let ids = workspace.read_with(vcx, |w, _| {
+        w.sidebar_session_layout
+            .iter()
+            .map(|row| (row.session_id.clone(), row.checkout_header))
+            .collect::<Vec<_>>()
     });
-    click(vcx, "sidebar-mode-worktrees");
-    assert!(
-        vcx.debug_bounds("worktree-session-newer").unwrap().top()
-            < vcx.debug_bounds("worktree-session-older").unwrap().top()
+    assert_eq!(
+        ids,
+        vec![("main-chat".into(), true), ("search-chat".into(), true)]
     );
-    for id in ["archived", "ssh://server/remote", "sibling"] {
-        assert!(
-            vcx.debug_bounds(format!("worktree-session-{id}").leak())
-                .is_none()
-        );
-    }
-}
-
-#[gpui::test]
-fn worktree_unavailable_checkout_disables_chat_and_creation(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx);
-    workspace.update(vcx, |w, cx| {
-        w.worktrees.entries[1].prunable = Some("missing".into());
-        let mut session = crate::workspace::tests::session_info("missing-chat", Some("History"));
-        session.working_dir = Some("/project-trees/search".into());
-        w.sessions.push(session);
-        cx.notify();
-    });
-    click(vcx, "sidebar-mode-worktrees");
-    assert!(vcx.debug_bounds("worktree-new-chat-1").is_none());
-    click(vcx, "worktree-1");
-    click(vcx, "worktree-session-missing-chat");
-    assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
-    assert!(commands.try_recv().is_err());
-}
-
-#[gpui::test]
-fn worktree_toggle_preserves_sessions_and_persists_with_legacy_default(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (workspace, vcx, commands) = setup(cx);
-    assert!(!workspace.read_with(vcx, |w, _| w.worktree_mode));
-    click(vcx, "sidebar-mode-worktrees");
-    assert!(vcx.debug_bounds("sidebar-worktrees").is_some());
-    assert!(vcx.debug_bounds("sidebar-session-list").is_none());
-    assert!(vcx.debug_bounds("worktree-session-main-session").is_some());
-    let snapshot =
-        vcx.update(|window, cx| workspace.read_with(cx, |w, cx| w.snapshot(window, cx).unwrap()));
-    assert!(snapshot.worktree_mode);
+    let main_row = vcx.debug_bounds("sidebar-checkout-0").unwrap();
+    let search_row = vcx.debug_bounds("sidebar-checkout-1").unwrap();
+    assert!(main_row.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
+    assert!(vcx.debug_bounds("sidebar-session-0").unwrap().bottom() <= search_row.top());
     assert!(
-        WorkspaceSnapshot::decode(&snapshot.encode().unwrap())
+        vcx.debug_bounds("sidebar-session-1").unwrap().left()
+            > vcx.debug_bounds("sidebar-project-0").unwrap().left(),
+        "threads indent beneath their branch"
+    );
+    assert!(!text(vcx, "sidebar-project-branch-0"), "branch rows replace the header pill");
+    assert!(commands.try_recv().is_err(), "rendering never creates sessions");
+}
+
+#[gpui::test]
+fn single_checkout_projects_show_their_branch_on_the_header(cx: &mut gpui::TestAppContext) {
+    let f = fixture();
+    let (_, vcx, _) = setup(cx, vec![session("main-chat", &format!("{}/src", f.main))]);
+    assert!(text(vcx, "sidebar-project-branch-0"));
+    assert!(!text(vcx, "sidebar-checkout-0"));
+}
+
+#[gpui::test]
+fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::TestAppContext) {
+    let f = fixture();
+    let (workspace, vcx, commands) = setup(
+        cx,
+        vec![session("main-chat", &f.main), session("search-chat", &f.search)],
+    );
+    // Local paths must never be forwarded to a configured SSH default.
+    workspace.update(vcx, |w, _| w.remotes.default_host = Some("elsewhere".into()));
+    click(vcx, "sidebar-project-new-0");
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.main)
+    );
+    assert!(commands.try_recv().is_err(), "the click must not also toggle or navigate");
+    let search_header = workspace.read_with(vcx, |w, _| {
+        w.sidebar_session_layout
+            .iter()
+            .position(|row| row.session_id == "search-chat")
             .unwrap()
-            .worktree_mode
-    );
-    let mut legacy = serde_json::to_value(&snapshot).unwrap();
-    legacy.as_object_mut().unwrap().remove("worktree_mode");
-    assert!(
-        !WorkspaceSnapshot::decode(&serde_json::to_vec(&legacy).unwrap())
-            .unwrap()
-            .worktree_mode
-    );
-    click(vcx, "sidebar-mode-swarm");
-    assert!(vcx.debug_bounds("sidebar-session-list").is_some());
-    workspace.read_with(vcx, |w, cx| {
-        assert_eq!(w.slots.len(), 1);
-        assert_eq!(
-            w.slots[0].panel.read(cx).working_dir.as_deref(),
-            Some("/project")
-        );
     });
-    assert!(commands.try_recv().is_err());
-}
-
-#[gpui::test]
-fn worktree_row_reuses_existing_session_and_creates_local_draft_in_other_checkout(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "sidebar-mode-worktrees");
-    click(vcx, "worktree-0");
-    assert_eq!(workspace.read_with(vcx, |w, _| w.slots.len()), 1);
-    // Local navigation must never forward local paths to the configured SSH host.
-    workspace.update(vcx, |w, _| {
-        w.remotes.default_host = Some("elsewhere".into())
-    });
-    click(vcx, "worktree-1");
+    click(vcx, &format!("sidebar-checkout-new-{search_header}"));
     assert!(
-        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == "/project-trees/search")
+        matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.search)
     );
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
-        assert_eq!(
-            w.slots[w.active].panel.read(cx).working_dir.as_deref(),
-            Some("/project-trees/search")
-        );
+        assert_eq!(w.slots[w.active].panel.read(cx).working_dir.as_deref(), Some(f.search.as_str()));
     });
 }
 
 #[gpui::test]
-fn worktree_creation_form_validates_and_cancels_without_git_or_composer_submission(
+fn quick_actions_open_a_thread_and_the_project_picker(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx, Vec::new());
+    click(vcx, "sidebar-open-project");
+    workspace.read_with(vcx, |w, _| assert!(w.folder_search.is_some()));
+    assert!(commands.try_recv().is_err(), "choosing a folder comes before any session");
+    workspace.update(vcx, |w, cx| w.close_folder_picker(cx));
+    click(vcx, "sidebar-new-thread");
+    assert!(matches!(commands.try_recv(), Ok(Command::CreateSession { .. })));
+}
+
+#[gpui::test]
+fn swarm_agents_nest_in_their_checkout_and_worktree_agents_get_their_branch(
     cx: &mut gpui::TestAppContext,
 ) {
-    let (workspace, vcx, commands) = setup(cx);
-    click(vcx, "sidebar-mode-worktrees");
-    click(vcx, "worktree-new");
-    assert!(vcx.debug_bounds("worktree-create-form").is_some());
+    let f = fixture();
+    let lead = session("lead", &f.main);
+    let mut helper = session("helper", &f.main);
+    helper.parent_session_id = Some("lead".into());
+    helper.swarm_status = Some("working".into());
+    let mut isolated = session("isolated", &f.search);
+    isolated.parent_session_id = Some("lead".into());
+    let (workspace, vcx, _) = setup(cx, vec![lead, helper, isolated]);
+    let ids = workspace.read_with(vcx, |w, _| {
+        w.sidebar_session_layout
+            .iter()
+            .map(|row| row.session_id.clone())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(ids, vec!["lead".to_string(), "isolated".to_string()]);
+    assert!(text(vcx, "sidebar-agents-0"), "the coordinator counts its same-checkout agent");
+    assert!(!text(vcx, "sidebar-agents-1"));
+    assert!(text(vcx, "sidebar-checkout-1"), "the worktree agent sits under its own branch");
+}
+
+#[gpui::test]
+fn remote_projects_offer_no_local_thread_or_worktree_actions(cx: &mut gpui::TestAppContext) {
+    let f = fixture();
+    let (_, vcx, _) = setup(cx, vec![session("ssh://server/session", &f.main)]);
+    assert!(text(vcx, "sidebar-project-0"));
+    assert!(!text(vcx, "sidebar-project-new-0"));
+    assert!(!text(vcx, "sidebar-project-worktree-0"));
+    assert!(!text(vcx, "sidebar-project-branch-0"));
+}
+
+#[gpui::test]
+fn worktree_form_validates_and_cancels_without_git_or_composer_submission(
+    cx: &mut gpui::TestAppContext,
+) {
+    let f = fixture();
+    let (workspace, vcx, commands) = setup(cx, vec![session("main-chat", &f.main)]);
+    click(vcx, "sidebar-project-worktree-0");
+    assert!(text(vcx, "worktree-create-form"));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("worktree-error").is_some());
+    assert!(text(vcx, "worktree-error"));
     workspace.read_with(vcx, |w, _| assert!(!w.worktrees.creating));
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("worktree-create-form").is_none());
+    assert!(!text(vcx, "worktree-create-form"));
     assert!(commands.try_recv().is_err());
 }
 
 #[gpui::test]
-fn worktree_remote_sessions_cannot_operate_on_matching_local_paths(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx);
-    workspace.update(vcx, |w, cx| {
-        w.slots[0].panel.update(cx, |panel, _| {
-            panel.session_id = "ssh://server/session".into()
-        });
-        cx.notify();
-    });
-    click(vcx, "sidebar-mode-worktrees");
-    assert!(vcx.debug_bounds("worktree-new").is_none());
-    assert!(vcx.debug_bounds("worktree-0").is_none());
-    assert!(commands.try_recv().is_err());
-}
-
-#[gpui::test]
-fn worktree_create_enter_runs_real_git_and_opens_isolated_session(cx: &mut gpui::TestAppContext) {
+fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
+    cx: &mut gpui::TestAppContext,
+) {
     let temporary = tempfile::tempdir().unwrap();
-    let repository = temporary.path().join("project");
+    let repository = std::fs::canonicalize(temporary.path()).unwrap().join("project");
     std::fs::create_dir(&repository).unwrap();
     let git = |args: &[&str]| {
         let output = std::process::Command::new("git")
@@ -316,11 +241,7 @@ fn worktree_create_enter_runs_real_git_and_opens_isolated_session(cx: &mut gpui:
             .args(args)
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         String::from_utf8(output.stdout).unwrap()
     };
     git(&["init", "-b", "main"]);
@@ -332,59 +253,30 @@ fn worktree_create_enter_runs_real_git_and_opens_isolated_session(cx: &mut gpui:
     git(&["commit", "-m", "fixture"]);
     std::fs::write(repository.join("tracked"), "dirty original").unwrap();
     let directory = repository.to_str().unwrap().to_owned();
-    let (workspace, vcx, commands) = setup(cx);
-    workspace.update(vcx, |w, cx| {
-        w.slots[0]
-            .panel
-            .update(cx, |panel, _| panel.working_dir = Some(directory.clone()));
-        w.worktrees = State::default();
-        cx.notify();
-    });
-    click(vcx, "sidebar-mode-worktrees");
-    assert!(vcx.debug_bounds("worktree-0").is_some());
-    click(vcx, "worktree-new");
+    let (workspace, vcx, commands) = setup(cx, vec![session("main-chat", &directory)]);
+    click(vcx, "sidebar-project-worktree-0");
     vcx.simulate_keystrokes("f e a t u r e - a enter");
     vcx.run_until_parked();
     let created = match commands.try_recv().unwrap() {
-        Command::CreateSession {
-            working_dir: Some(directory),
-            ..
-        } => directory,
+        Command::CreateSession { working_dir: Some(directory), .. } => directory,
         _ => panic!("Expected local CreateSession"),
     };
     assert_ne!(created, directory);
-    assert_eq!(
-        std::fs::read_to_string(Path::new(&created).join("tracked")).unwrap(),
-        "committed"
-    );
-    assert_eq!(
-        std::fs::read_to_string(repository.join("tracked")).unwrap(),
-        "dirty original"
-    );
+    assert_eq!(std::fs::read_to_string(Path::new(&created).join("tracked")).unwrap(), "committed");
+    assert_eq!(std::fs::read_to_string(repository.join("tracked")).unwrap(), "dirty original");
     assert_eq!(git(&["branch", "--show-current"]).trim(), "main");
-    assert_eq!(jcode_sdk::worktrees::list(&directory).unwrap().len(), 2);
     workspace.read_with(vcx, |w, cx| {
         assert!(!w.worktrees.creating);
         assert!(w.worktrees.error.is_none(), "{:?}", w.worktrees.error);
         assert!(w.worktrees.input.is_none());
-        assert_eq!(
-            w.slots[w.active].panel.read(cx).working_dir.as_deref(),
-            Some(created.as_str())
-        );
+        assert_eq!(w.slots[w.active].panel.read(cx).working_dir.as_deref(), Some(created.as_str()));
     });
-}
-
-#[gpui::test]
-fn worktree_remote_review_never_uses_local_git(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx);
-    workspace.update(vcx, |w, cx| {
-        w.slots[0].panel.update(cx, |panel, _| {
-            panel.session_id = "review://ssh://server/session".into()
-        });
-        cx.notify();
+    // The new thread appears under the same project on its own branch row.
+    workspace.update(vcx, |_, cx| cx.notify());
+    vcx.run_until_parked();
+    assert!(!text(vcx, "sidebar-project-1"));
+    let branches = workspace.read_with(vcx, |w, _| {
+        w.sidebar_session_layout.iter().filter(|row| row.checkout_header).count()
     });
-    click(vcx, "sidebar-mode-worktrees");
-    assert!(vcx.debug_bounds("worktree-new").is_none());
-    assert!(vcx.debug_bounds("worktree-0").is_none());
-    assert!(commands.try_recv().is_err());
+    assert_eq!(branches, 2);
 }

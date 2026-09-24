@@ -439,14 +439,11 @@ mod tests {
             assert_eq!(current_body.size.width, body.size.width);
             if expected == SidebarView::Sessions {
                 assert_eq!(current_body, body);
-                assert!(vcx.debug_bounds("sidebar-workflow-switch").is_some());
             } else {
-                assert_eq!(
-                    current_body.top(), body.top(),
-                    "inline workflow icons must not consume a separate content row"
-                );
-                assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
+                assert_eq!(current_body.top(), body.top());
             }
+            // One unified sidebar: no Swarm/Worktrees mode switch in any view.
+            assert!(vcx.debug_bounds("sidebar-workflow-switch").is_none());
             assert!(
                 commands.try_recv().is_err(),
                 "wheel must never dispatch an action"
