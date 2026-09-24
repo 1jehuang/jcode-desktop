@@ -780,7 +780,11 @@ impl Panel {
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| short_id(&self.session_id))
             .into();
-        self.working_dir = session.working_dir;
+        // Older bridges report no directory for a session that has not
+        // persisted yet. Keep the draft's requested directory in that case.
+        if let Some(dir) = session.working_dir.filter(|dir| !dir.trim().is_empty()) {
+            self.working_dir = Some(dir);
+        }
         self.status = "idle".into();
         self.input.update(cx, |input, cx| {
             input.set_submission_enabled(true, cx);
