@@ -1092,7 +1092,10 @@ mod tests {
             .debug_bounds("voice-pending-prompt")
             .expect("routing shows the utterance as it waits to send");
         let composer = vcx.debug_bounds("prompt-editor").unwrap();
-        assert!(pending.bottom() <= composer.top(), "{pending:?} {composer:?}");
+        assert!(
+            pending.bottom() <= composer.top(),
+            "{pending:?} {composer:?}"
+        );
         assert!(commands.try_recv().is_err(), "nothing sent while routing");
         panel.update(vcx, |panel, cx| {
             let attempt = panel.voice.canceled.clone();
@@ -1212,7 +1215,10 @@ mod tests {
             assert!(panel.voice.phase == Phase::Idle);
             assert!(!panel.voice.hold_capture);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
-            assert!(panel.voice.decision.is_none(), "the transcript shows the send");
+            assert!(
+                panel.voice.decision.is_none(),
+                "the transcript shows the send"
+            );
             assert!(
                 panel
                     .items
@@ -1557,6 +1563,12 @@ mod tests {
             });
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("voice-toggle").is_some());
+            if phase == Phase::Recording {
+                assert!(vcx.debug_bounds("voice-cancel").is_none());
+                assert!(vcx.debug_bounds("voice-stop").is_some());
+                panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+                continue;
+            }
             let cancel = vcx
                 .debug_bounds("voice-cancel")
                 .expect("cancel visible during work");

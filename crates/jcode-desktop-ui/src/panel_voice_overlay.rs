@@ -143,29 +143,63 @@ impl Panel {
                     )
                 },
             )
-            .child(
-                div()
-                    .id("voice-cancel")
-                    .debug_selector(|| "voice-cancel".into())
-                    .size(px(22.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .text_color(theme.TEXT_DIM)
-                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| VoiceTooltip("Dismiss or cancel voice request".into()))
-                            .into()
-                    })
-                    .on_click(cx.listener(|panel, _, _, cx| {
-                        panel.cancel_voice(cx);
-                        cx.stop_propagation();
-                    }))
-                    .child("×"),
-            );
+            .when(phase == Phase::Recording, |el| {
+                // While listening, the only control finishes the capture and
+                // sends the transcription, so a mouse-started recording can end.
+                el.child(
+                    div()
+                        .id("voice-stop")
+                        .debug_selector(|| "voice-stop".into())
+                        .size(px(22.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(theme.ACCENT.opacity(0.15))
+                        .hover(|el| el.bg(theme.ACCENT.opacity(0.3)))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| VoiceTooltip("Stop and send transcription".into()))
+                                .into()
+                        })
+                        .on_click(cx.listener(|panel, _, _, cx| {
+                            panel.stop_voice(cx);
+                            cx.stop_propagation();
+                        }))
+                        .child(
+                            div()
+                                .size(px(8.))
+                                .rounded(px(2.))
+                                .bg(theme.ACCENT),
+                        ),
+                )
+            })
+            .when(phase != Phase::Recording, |el| {
+                el.child(
+                    div()
+                        .id("voice-cancel")
+                        .debug_selector(|| "voice-cancel".into())
+                        .size(px(22.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .text_color(theme.TEXT_DIM)
+                        .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| VoiceTooltip("Dismiss or cancel voice request".into()))
+                                .into()
+                        })
+                        .on_click(cx.listener(|panel, _, _, cx| {
+                            panel.cancel_voice(cx);
+                            cx.stop_propagation();
+                        }))
+                        .child("×"),
+                )
+            });
         Some(
             gpui::deferred(
                 gpui::anchored()
@@ -753,11 +787,15 @@ mod tests {
                     footer,
                     "overlay must not reflow the composer"
                 );
-                let cancel = vcx.debug_bounds("voice-cancel").unwrap();
-                assert!(cancel.bottom() <= card.bottom());
-                // The dismiss button is the only capture control. Finishing
-                // goes through the microphone pill or its shortcut.
-                assert!(vcx.debug_bounds("voice-stop").is_none());
+                // While listening, the overlay's single control stops and
+                // sends. Other phases keep the dismiss button.
+                let recording = phase == Phase::Recording;
+                let control = vcx
+                    .debug_bounds(if recording { "voice-stop" } else { "voice-cancel" })
+                    .unwrap();
+                assert!(control.bottom() <= card.bottom());
+                assert_eq!(vcx.debug_bounds("voice-cancel").is_some(), !recording);
+                assert_eq!(vcx.debug_bounds("voice-stop").is_some(), recording);
             }
         }
     }
