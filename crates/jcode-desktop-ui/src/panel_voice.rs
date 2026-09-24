@@ -6,6 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 gpui::actions!(panel_voice, [ToggleVoice]);
 
+/// Jev voice routing is temporarily off. Every finished utterance is sent
+/// straight to its panel's agent. Planned return: Jev chooses between the
+/// focused panel and one of the other open sessions (see docs/jev-actions.md).
+pub(crate) const JEV_ROUTING: bool = false;
+
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([gpui::KeyBinding::new(
         "ctrl-shift-v",
@@ -161,7 +166,9 @@ impl Render for VoiceTooltip {
 
 /// Compact OS-pill label for Jev's decision, e.g. "Jev → Coding agent".
 fn global_pill_decision(decision: &str) -> String {
-    let decision = decision.strip_prefix("Jev chose: ").unwrap_or(decision);
+    let Some(decision) = decision.strip_prefix("Jev chose: ") else {
+        return decision.to_string();
+    };
     let (route, detail) = decision.split_once(" · ").unwrap_or((decision, ""));
     match route {
         "Quick action" if !detail.is_empty() && detail != "Navigation" => format!("Jev → {detail}"),
@@ -566,7 +573,7 @@ impl Panel {
                     cx.notify();
                     return;
                 }
-                if self.voice.sessions.is_some() {
+                if self.voice.sessions.is_some() || !JEV_ROUTING {
                     self.route_voice(text, audio, cx);
                     return;
                 }
@@ -601,10 +608,10 @@ impl Panel {
         {
             return;
         }
-        if allowed && self.voice.sessions.is_some() {
+        if allowed && (self.voice.sessions.is_some() || !JEV_ROUTING) {
             // Length only. Never log transcript content.
             eprintln!(
-                "global voice: routing {} transcript chars through Jev",
+                "global voice: sending {} transcript chars",
                 text.chars().count()
             );
             self.route_voice(text, audio, cx);
@@ -623,7 +630,25 @@ impl Panel {
         }
     }
 
+    /// Send only this utterance, never text or attachments already in the
+    /// composer. Sent ASAP like Enter: an active turn is steered.
+    fn send_voice_directly(&mut self, text: String, cx: &mut Context<Self>) {
+        self.voice.phase = Phase::Idle;
+        self.voice.error = None;
+        self.voice.trace = None;
+        self.voice.live_transcript.clear();
+        // Focused holds show the sent prompt in the transcript. Only the
+        // unfocused OS pill needs a confirmation label.
+        self.voice.decision = self.voice.global_capture.then(|| "Sent to agent".into());
+        self.submit_or_queue(text.trim().to_string(), Vec::new(), false, cx);
+        cx.notify();
+    }
+
     fn route_voice(&mut self, text: String, audio: Option<Duration>, cx: &mut Context<Self>) {
+        if !JEV_ROUTING {
+            self.send_voice_directly(text, cx);
+            return;
+        }
         self.voice.phase = Phase::Routing;
         self.voice.live_transcript = text.clone();
         self.voice.error = None;
@@ -1183,21 +1208,11 @@ mod tests {
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
             assert!(panel.voice.phase == Phase::Recording);
             panel.apply_voice_event(NariEvent::Finished(Ok("fix the bug".into())), cx);
-            assert!(panel.voice.phase == Phase::Routing);
+            // Jev routing is off: the utterance is sent straight to the agent.
+            assert!(panel.voice.phase == Phase::Idle);
             assert!(!panel.voice.hold_capture);
-            // Replace the unpolled task with a deterministic typed Jev response.
-            panel.voice.task = None;
-            let attempt = panel.voice.canceled.clone();
-            panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
             assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
-            assert!(
-                panel
-                    .voice
-                    .decision
-                    .as_ref()
-                    .unwrap()
-                    .contains("Coding agent")
-            );
+            assert!(panel.voice.decision.is_none(), "the transcript shows the send");
             assert!(
                 panel
                     .items
@@ -1348,11 +1363,8 @@ mod tests {
             assert!(!snapshot.contains("live_transcript"));
             let before = panel.items.len();
             panel.apply_voice_event(NariEvent::Finished(Ok("Hello world.".into())), cx);
-            assert_eq!(
-                panel.input.read(cx).content.as_ref(),
-                "typed draft\nHello world."
-            );
-            assert_eq!(panel.items.len(), before, "never auto-submit");
+            assert_eq!(panel.input.read(cx).content.as_ref(), "typed draft");
+            assert_eq!(panel.items.len(), before + 1, "sent exactly once");
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
         });
@@ -1574,7 +1586,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn voice_appends_to_current_draft_without_sending(cx: &mut gpui::TestAppContext) {
+    fn voice_sends_transcript_without_touching_draft(cx: &mut gpui::TestAppContext) {
         let panel = cx.new(|cx| {
             Panel::new(
                 "voice-test".into(),
@@ -1592,18 +1604,23 @@ mod tests {
             panel.finish_voice(Ok("  dictated words  ".into()), cx);
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
-                "Typed while transcribing\ndictated words"
+                "Typed while transcribing"
             );
-            assert_eq!(
-                panel.items.len(),
-                items,
-                "dictation must never submit a prompt"
+            assert!(
+                panel
+                    .items
+                    .iter()
+                    .skip(items)
+                    .any(|item| matches!(item, Item::User(text) if text == "dictated words")),
+                "voice sends only the trimmed utterance"
             );
+            let items = panel.items.len();
             panel.finish_voice(Err(VoiceError::Network), cx);
             assert_eq!(
                 panel.input.read(cx).snapshot().content,
-                "Typed while transcribing\ndictated words"
+                "Typed while transcribing"
             );
+            assert_eq!(panel.items.len(), items);
             assert!(panel.voice.error.is_some());
         });
     }

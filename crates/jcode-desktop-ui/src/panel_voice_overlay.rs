@@ -773,10 +773,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-overlay").is_none());
         panel.read_with(vcx, |panel, cx| {
-            assert_eq!(
-                panel.input.read(cx).content.as_ref(),
-                "Keep my draft\nFinal words."
-            );
+            assert_eq!(panel.input.read(cx).content.as_ref(), "Keep my draft");
         });
     }
 

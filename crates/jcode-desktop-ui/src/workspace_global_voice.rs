@@ -39,6 +39,9 @@ pub(super) struct State {
     last_permission_check: Option<Instant>,
     press_serial: u64,
     held: bool,
+    /// Set in a window Shift+Copilot or an unfocused press just opened, until
+    /// it adopts that hold. Its own first press must never spawn again.
+    adopting_spawned_hold: bool,
     pending_target: Option<WeakEntity<Panel>>,
     /// Whether this Jcode window has focus. The chat's own voice pill is the
     /// single source of truth. The OS pill mirrors it only while unfocused.
@@ -60,7 +63,16 @@ fn host_press_uses_global_owner(window_active: bool, overlay_available: bool) ->
     !window_active && overlay_available
 }
 
-/// Marks a single-panel window opened by Shift+Copilot.
+/// An unfocused global press opens a fresh single-panel window that records
+/// and sends the utterance, so it never lands in whatever chat was last used.
+/// A focused press keeps its in-panel hold. A window that was itself just
+/// spawned adopts the hold instead of spawning again.
+#[cfg(target_os = "linux")]
+fn press_spawns_window(window_active: bool, adopting_spawned_hold: bool) -> bool {
+    !window_active && !adopting_spawned_hold
+}
+
+/// Marks a single-panel window opened by Shift+Copilot or an unfocused press.
 #[cfg(target_os = "linux")]
 const SPAWNED_HOLD_FLAG: &str = "--global-voice-hold";
 
@@ -190,6 +202,7 @@ impl Workspace {
             // Shift+Copilot opened this window. Record the hold that is
             // still down, so the opener's key-up finishes this transcript.
             listener.adopt_held_key();
+            self.global_voice.adopting_spawned_hold = true;
         }
         self.global_voice.listener = Some(listener);
         self.global_voice.set_active(window.is_window_active());
@@ -236,9 +249,20 @@ impl Workspace {
                 .unwrap_or_default();
             for edge in edges {
                 match edge {
+                    Edge::Press
+                        if press_spawns_window(
+                            self.global_voice.window_active,
+                            std::mem::take(&mut self.global_voice.adopting_spawned_hold),
+                        ) =>
+                    {
+                        spawn_voice_window()
+                    }
                     Edge::Press => self.global_voice_press(window, cx),
                     Edge::Spawn => spawn_voice_window(),
-                    Edge::Tap => self.toggle_voice(&ToggleVoice, window, cx),
+                    Edge::Tap => {
+                        self.global_voice.adopting_spawned_hold = false;
+                        self.toggle_voice(&ToggleVoice, window, cx)
+                    }
                     Edge::Release => self.global_voice_release(cx),
                     Edge::Cancel => {
                         eprintln!("global voice: canceled by input listener");
@@ -538,6 +562,14 @@ impl Workspace {
 #[cfg(all(test, target_os = "linux"))]
 mod spawn_tests {
     use super::*;
+
+    #[test]
+    fn only_unfocused_non_adopting_presses_spawn_a_window() {
+        assert!(press_spawns_window(false, false));
+        assert!(!press_spawns_window(true, false));
+        assert!(!press_spawns_window(false, true));
+        assert!(!press_spawns_window(true, true));
+    }
 
     #[test]
     fn spawned_voice_window_is_single_panel_and_keeps_only_reload_choice() {

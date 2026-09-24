@@ -1,5 +1,13 @@
 # Jev voice actions in Jcode Desktop
 
+> **Temporarily disabled.** `JEV_ROUTING` in `panel_voice.rs` is `false`.
+> Every finished utterance is sent straight to its panel's agent. On Linux, an
+> unfocused global Copilot hold opens a new single-panel window that records
+> and sends the utterance. A focused hold sends to the focused panel.
+> Planned replacement: Jev chooses only between sending to the focused panel
+> and sending to one of the other open sessions. The catalog below describes
+> the disabled routing.
+
 This is the complete **Desktop voice-routing** action catalog, based on the
 shared `jcode-base::voice_intent` classifier and Desktop's voice dispatch code.
 Jev chooses an outcome. Desktop performs the action. Jev does not generate shell

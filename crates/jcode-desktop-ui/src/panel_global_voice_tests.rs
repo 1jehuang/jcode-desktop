@@ -2,7 +2,7 @@
 use super::*;
 
 #[gpui::test]
-fn global_voice_without_routing_appends_to_draft_and_pill_says_so(cx: &mut gpui::TestAppContext) {
+fn global_voice_sends_transcript_and_pill_says_so(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("global-voice".into(), None, None, bridge, cx));
     panel.update(cx, |panel, cx| {
@@ -15,26 +15,28 @@ fn global_voice_without_routing_appends_to_draft_and_pill_says_so(cx: &mut gpui:
         let attempt = panel.voice.canceled.clone();
         panel.finish_global_voice_text(&attempt, "note this down".into(), None, true, cx);
         assert!(panel.voice.phase == Phase::Idle);
-        assert!(panel.input.read(cx).content.starts_with("keep my draft"));
-        assert!(panel.input.read(cx).content.ends_with("note this down"));
-        assert!(commands.try_recv().is_err());
+        assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft");
+        assert!(
+            panel
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::User(text) if text == "note this down"))
+        );
+        let _ = commands;
         let pill = panel.global_voice_snapshot(&attempt).unwrap();
-        assert_eq!(pill.title, "Added to draft");
+        assert_eq!(pill.title, "Sent to agent");
         assert!(pill.decided);
     });
 }
 
 #[gpui::test]
-fn global_voice_routes_through_jev_and_pill_shows_the_decision(cx: &mut gpui::TestAppContext) {
+fn global_voice_pill_labels_jev_decisions(cx: &mut gpui::TestAppContext) {
     let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
     panel.update(cx, |panel, cx| {
-        panel.voice.sessions = Some(Vec::new());
         panel.prepare_voice_attempt(true);
         panel.voice.global_capture = true;
-        panel.voice.phase = Phase::Transcribing;
         let attempt = panel.voice.canceled.clone();
-        panel.finish_global_voice_text(&attempt, "open a new session".into(), None, true, cx);
-        assert!(panel.voice.phase == Phase::Routing, "global holds use Jev");
+        panel.voice.phase = Phase::Routing;
         let pill = panel.global_voice_snapshot(&attempt).unwrap();
         assert_eq!(pill.title, "Jev is choosing…");
         assert!(!pill.decided);
@@ -171,10 +173,19 @@ fn global_voice_final_delivery_requires_fresh_permission_and_is_exactly_once(
         let current = panel.voice.canceled.clone();
         panel.finish_global_voice_text(&denied, "old speech".into(), None, true, cx);
         panel.finish_global_voice_text(&current, "new speech".into(), None, true, cx);
-        let after = panel.input.read(cx).content.clone();
+        let after = panel.items.len();
         panel.finish_global_voice_text(&current, "new speech".into(), None, true, cx);
-        assert_eq!(panel.input.read(cx).content, after);
-        assert!(!after.contains("old speech"));
-        assert!(after.ends_with("new speech"));
+        assert_eq!(panel.items.len(), after, "sent exactly once");
+        assert_eq!(panel.input.read(cx).content.as_ref(), "original");
+        let sent: Vec<_> = panel
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(sent.contains(&"new speech"));
+        assert!(!sent.contains(&"old speech") && !sent.contains(&"hidden speech"));
     });
 }
