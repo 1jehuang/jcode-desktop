@@ -332,11 +332,70 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
 }
 
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
-    JcodeClient::connect(ConnectOptions {
-        client_name: format!("jcode-desktop-{client_name}/{}", crate::build_info::VERSION),
-        ensure_runtime: false,
+    let attempt = || {
+        JcodeClient::connect(ConnectOptions {
+            client_name: format!("jcode-desktop-{client_name}/{}", crate::build_info::VERSION),
+            ensure_runtime: false,
+            ..Default::default()
+        })
+    };
+    match attempt() {
+        Err(error) if error.kind == jcode_sdk::ErrorKind::ConnectFailed => {
+            // The runtime was started once at bridge startup. If the harness
+            // API bridge later dies (a self-dev restart interrupted halfway,
+            // a crash), its socket file is left behind with nothing listening
+            // and every panel retried the dead socket forever. Respawn the
+            // runtime here instead. The bridge holds a single-instance lock,
+            // so concurrent respawns from several panels are harmless, and the
+            // throttle keeps a genuinely broken install from fork-looping.
+            if !revive_local_runtime() {
+                return Err(error);
+            }
+            attempt()
+        }
+        other => other,
+    }
+}
+
+/// Minimum spacing between runtime respawn attempts from reconnect paths.
+const RUNTIME_REVIVE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Respawn the harness API bridge when the daemon is up but the bridge is not.
+/// Returns whether a revive was attempted and succeeded.
+///
+/// A missing daemon is left alone on purpose: a self-dev reload takes the
+/// daemon socket away for a moment, and spawning a competing `jcode serve`
+/// from every reconnecting panel would fight the handoff.
+fn revive_local_runtime() -> bool {
+    if !jcode_sdk::socket_accepts(&jcode_sdk::api::legacy_socket_path()) {
+        return false;
+    }
+    static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> =
+        std::sync::Mutex::new(None);
+    {
+        let Ok(mut last) = LAST_ATTEMPT.lock() else {
+            return false;
+        };
+        if !revive_due(*last, std::time::Instant::now()) {
+            return false;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let options = LaunchOptions {
+        binary: Some(crate::platform::companion_executable("jcode")),
         ..Default::default()
-    })
+    };
+    match jcode_sdk::ensure_runtime(&options, &|_| {}) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("jcode desktop: could not revive local runtime: {error}");
+            false
+        }
+    }
+}
+
+fn revive_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= RUNTIME_REVIVE_INTERVAL)
 }
 
 /// Gracefully detach idle attachments, including from older runtimes that use
@@ -2021,6 +2080,14 @@ mod tests {
             delay = next_reconnect_delay(delay, &unknown);
         }
         assert_eq!(delay, MAX_RECONNECT_DELAY);
+    }
+
+    #[test]
+    fn runtime_revive_is_throttled() {
+        let now = Instant::now();
+        assert!(revive_due(None, now));
+        assert!(!revive_due(Some(now), now + Duration::from_millis(500)));
+        assert!(revive_due(Some(now), now + RUNTIME_REVIVE_INTERVAL));
     }
 
     #[test]
