@@ -3,7 +3,7 @@ use super::*;
 
 /// Reserved managed destination, never an SSH alias or the personal AWS alpha.
 pub(super) const MANAGED_CLOUD_HOST: &str = "jcode-cloud";
-pub(super) const MANAGED_CLOUD_UNAVAILABLE: &str = "Jcode Cloud sessions are not available yet. Account sign-in and subscription management are available, but cannot activate a cloud VM yet.";
+pub(super) const MANAGED_CLOUD_STARTING: &str = "Checking your Jcode Cloud machine…";
 
 fn managed_destination(host: &str) -> bool {
     matches!(host, MANAGED_CLOUD_HOST | cloud_alpha::HOST)
@@ -150,9 +150,13 @@ impl Workspace {
             })
         });
         if let Some(id) = request_id {
-            let cloud = pending::remote_draft_host(id) == Some(cloud_alpha::HOST)
+            let cloud = pending::remote_draft_host(id).is_some_and(managed_destination)
                 || (id == Panel::STARTUP_SESSION_ID
-                    && self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST));
+                    && self
+                        .remotes
+                        .default_host
+                        .as_deref()
+                        .is_some_and(managed_destination));
             let live = self
                 .slots
                 .iter()
@@ -271,9 +275,7 @@ impl Workspace {
         });
         let remote = host.is_some();
         let cloud = host.is_some_and(managed_destination);
-        let failed = if cloud {
-            true
-        } else if startup {
+        let failed = if startup {
             self.remotes.startup_failed
         } else {
             panel.read(cx).status.starts_with("Session creation failed")
@@ -314,15 +316,24 @@ impl Workspace {
                                         .h(px(16.))
                                         .text_color(theme.TEXT_DIM),
                                 )
-                                .child("Managed Jcode Cloud"),
+                                .child("Jcode Cloud"),
                         )
                     })
                     .child(
                         div()
                             .text_color(if failed { theme.ERROR } else { theme.TEXT_DIM })
-                            .child(if cloud { MANAGED_CLOUD_UNAVAILABLE.to_owned() } else { panel.read(cx).status.clone() }),
+                            .child(panel.read(cx).status.clone()),
                     )
-
+                    .when_some(
+                        cloud
+                            .then(|| {
+                                self.remotes
+                                    .cloud_progress
+                                    .get(&panel.read(cx).session_id)
+                            })
+                            .flatten(),
+                        |el, progress| el.child(progress.render()),
+                    )
                     .child(div().text_color(theme.TEXT_DIM).child(if failed {
                         "Not sent. Your draft and queued prompts are preserved."
                     } else {
@@ -333,14 +344,14 @@ impl Workspace {
                             .flex()
                             .flex_wrap()
                             .gap_2()
-                            .when(failed && !cloud, |el| {
+                            .when(failed, |el| {
                                 el.child(
                                     div()
                                         .id("pending-session-retry")
                                         .debug_selector(|| "pending-session-retry".into())
-                                        .px_2()
+                                        .px_3()
                                         .py_1()
-                                        .rounded_md()
+                                        .rounded_full()
                                         .bg(theme.ACCENT_DIM)
                                         .cursor_pointer()
                                         .child("Retry connection")
@@ -355,11 +366,11 @@ impl Workspace {
                                         ),
                                 )
                             })
-                            .when(cloud, |el| {
+                            .when(cloud && failed, |el| {
                                 el.child(div()
                                     .id("pending-cloud-account")
                                     .debug_selector(|| "pending-cloud-account".into())
-                                    .px_2().py_1().rounded_md().bg(theme.ACCENT_DIM)
+                                    .px_3().py_1().rounded_full().bg(theme.ACCENT_DIM)
                                     .cursor_pointer().child("Jcode account")
                                     .on_click(|_, _, cx| {
                                         cx.stop_propagation();
@@ -371,9 +382,9 @@ impl Workspace {
                                     div()
                                         .id("pending-session-local")
                                         .debug_selector(|| "pending-session-local".into())
-                                        .px_2()
+                                        .px_3()
                                         .py_1()
-                                        .rounded_md()
+                                        .rounded_full()
                                         .bg(theme.ACCENT_DIM)
                                         .cursor_pointer()
                                         .child("Use this computer")
@@ -467,10 +478,15 @@ impl Workspace {
         request_id: String,
         cx: &mut Context<Self>,
     ) {
-        if managed_destination(&host) {
-            // Restored defaults and drafts from the old Cloud button must not
-            // resume personal AWS provisioning, even before config is saved.
-            let request_id = if host == cloud_alpha::HOST {
+        let host = if managed_destination(&host) {
+            MANAGED_CLOUD_HOST.to_owned()
+        } else {
+            host
+        };
+        if host == MANAGED_CLOUD_HOST {
+            // Restored defaults and drafts from the old personal-alpha button
+            // move to the managed destination. They never run the AWS helper.
+            let request_id = if pending::remote_draft_host(&request_id) == Some(cloud_alpha::HOST) {
                 let managed_id = pending::next_remote_draft_id(MANAGED_CLOUD_HOST);
                 for slot in &self.slots {
                     if !slot.closing
@@ -483,21 +499,20 @@ impl Workspace {
                         });
                     }
                 }
-                if self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST) {
-                    self.remotes.default_host = Some(MANAGED_CLOUD_HOST.into());
-                }
                 managed_id
             } else {
                 request_id
             };
-            self.update_pending_remote_status(
-                Some(&request_id),
-                MANAGED_CLOUD_UNAVAILABLE,
-                true,
-                cx,
-            );
-            self.remotes.status = Some(MANAGED_CLOUD_UNAVAILABLE.into());
-            self.remotes.failed = true;
+            if self.remotes.default_host.as_deref() == Some(cloud_alpha::HOST) {
+                self.remotes.default_host = Some(MANAGED_CLOUD_HOST.into());
+            }
+            self.remotes.cloud_progress.remove(&request_id);
+            self.update_pending_remote_status(Some(&request_id), MANAGED_CLOUD_STARTING, false, cx);
+            self.bridge.send(Command::CreateRemoteSession {
+                host,
+                working_dir: None,
+                request_id: Some(request_id),
+            });
         } else {
             self.bridge.send(Command::CreateRemoteSession {
                 host,
@@ -525,19 +540,25 @@ impl Workspace {
                     && slot.panel.read(cx).is_pending_session()
                 {
                     slot.panel.update(cx, |panel, cx| {
-                        panel.title = "Jcode Cloud unavailable".into();
+                        panel.title = "Jcode Cloud".into();
                         cx.notify();
                     });
                 }
             }
+            if let Some(id) = &request_id {
+                self.remotes.cloud_progress.remove(id);
+            }
             self.update_pending_remote_status(
                 request_id.as_deref(),
-                MANAGED_CLOUD_UNAVAILABLE,
-                true,
+                MANAGED_CLOUD_STARTING,
+                false,
                 cx,
             );
-            self.remotes.status = Some(MANAGED_CLOUD_UNAVAILABLE.into());
-            self.remotes.failed = true;
+            self.bridge.send(Command::CreateRemoteSession {
+                host: MANAGED_CLOUD_HOST.into(),
+                working_dir: None,
+                request_id,
+            });
             return;
         }
         self.bridge.send(match &self.remotes.default_host {
@@ -1025,7 +1046,7 @@ impl Workspace {
     ) -> gpui::AnyElement {
         let is_default = self.remotes.default_host == host;
         let label = match host.as_deref() {
-            Some(MANAGED_CLOUD_HOST) => "Jcode Cloud (not available yet)".into(),
+            Some(MANAGED_CLOUD_HOST) => "Jcode Cloud".into(),
             Some(cloud_alpha::HOST) => "Personal cloud alpha (existing sessions only)".into(),
             Some(host) => host.to_owned(),
             None => "This computer".into(),
@@ -1034,7 +1055,7 @@ impl Workspace {
         let cloud_status = host
             .as_deref()
             .is_some_and(managed_destination)
-            .then(|| MANAGED_CLOUD_UNAVAILABLE.to_owned());
+            .then(|| "Your own machine, run by Jcode. Sleeps when idle.".to_owned());
         div()
             .px_2()
             .py_2()
@@ -1150,7 +1171,9 @@ mod cloud_routing_tests {
     }
 
     #[gpui::test]
-    fn managed_and_legacy_cloud_defaults_fail_closed(cx: &mut gpui::TestAppContext) {
+    fn managed_and_legacy_cloud_defaults_connect_only_to_managed_cloud(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (bridge, commands) = harness::spawn_recording();
         let workspace = cx.new(|cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -1166,28 +1189,29 @@ mod cloud_routing_tests {
                     cx,
                 );
                 assert!(
-                    commands.try_recv().is_err(),
-                    "unavailable cloud must never fall back to SSH or local"
+                    matches!(
+                        commands.try_recv(),
+                        Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
+                            if host == MANAGED_CLOUD_HOST && id == Panel::STARTUP_SESSION_ID
+                    ),
+                    "cloud must never fall back to SSH aliases, the AWS alpha, or local"
                 );
+                assert!(commands.try_recv().is_err());
                 assert!(
                     workspace.remotes.cloud.take_updates().is_empty(),
-                    "must not invoke AWS helper"
+                    "must not invoke the personal AWS helper"
                 );
-                assert!(workspace.remotes.startup_failed);
+                assert!(!workspace.remotes.startup_failed);
                 assert_eq!(
                     workspace.remotes.default_host.as_deref(),
                     Some(MANAGED_CLOUD_HOST)
-                );
-                assert_eq!(
-                    workspace.remotes.status.as_deref(),
-                    Some(MANAGED_CLOUD_UNAVAILABLE)
                 );
             }
         });
     }
 
     #[gpui::test]
-    fn managed_and_legacy_cloud_connect_fail_closed(cx: &mut gpui::TestAppContext) {
+    fn managed_and_legacy_cloud_connect_open_a_managed_draft(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = harness::spawn_recording();
         let workspace = cx.new(|cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -1197,14 +1221,16 @@ mod cloud_routing_tests {
         workspace.update(cx, |workspace, cx| {
             for host in [MANAGED_CLOUD_HOST, cloud_alpha::HOST] {
                 workspace.connect_machine(Some(host.into()), cx);
-                assert!(commands.try_recv().is_err());
-                assert!(workspace.remotes.cloud.take_updates().is_empty());
                 let panel = workspace.slots[workspace.active].panel.read(cx);
-                assert_eq!(
-                    pending::remote_draft_host(&panel.session_id),
-                    Some(MANAGED_CLOUD_HOST)
-                );
-                assert!(panel.status.contains(MANAGED_CLOUD_UNAVAILABLE));
+                let id = panel.session_id.clone();
+                assert_eq!(pending::remote_draft_host(&id), Some(MANAGED_CLOUD_HOST));
+                assert!(panel.status.contains(MANAGED_CLOUD_STARTING));
+                assert!(matches!(
+                    commands.try_recv(),
+                    Ok(Command::CreateRemoteSession { host, request_id: Some(request), .. })
+                        if host == MANAGED_CLOUD_HOST && request == id
+                ));
+                assert!(workspace.remotes.cloud.take_updates().is_empty());
             }
         });
     }

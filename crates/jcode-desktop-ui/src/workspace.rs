@@ -1119,12 +1119,30 @@ impl Workspace {
             workspace.remotes.default_host = Some(remotes::MANAGED_CLOUD_HOST.into());
             workspace.open_startup_draft(cx);
             workspace.start_default_startup(cx);
-            workspace.update_pending_remote_status(
-                Some(Panel::STARTUP_SESSION_ID),
-                remotes::MANAGED_CLOUD_UNAVAILABLE,
-                true,
-                cx,
-            );
+            // Offline fixture: show real managed-cloud phases, never contact the service.
+            let phases: &[&str] = if std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP").as_deref()
+                == Ok("failed")
+            {
+                &[
+                    remotes::MANAGED_CLOUD_STARTING,
+                    "Jcode Cloud requires an active paid Jcode subscription.",
+                ]
+            } else {
+                &[
+                    remotes::MANAGED_CLOUD_STARTING,
+                    "Creating your Jcode Cloud machine…",
+                    "Installing Jcode on your cloud machine…",
+                ]
+            };
+            for (index, message) in phases.iter().enumerate() {
+                let failed = index + 1 == phases.len() && phases.len() == 2;
+                workspace.update_pending_remote_status(
+                    Some(Panel::STARTUP_SESSION_ID),
+                    message,
+                    failed,
+                    cx,
+                );
+            }
         } else if harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_PENDING").as_deref() == Ok("1")
         {
@@ -1664,8 +1682,8 @@ impl Workspace {
                 panel.update(cx, |panel, cx| {
                     panel.status = match pending::remote_draft_host(&panel.session_id) {
                         Some(remotes::MANAGED_CLOUD_HOST) => {
-                            panel.title = "Jcode Cloud unavailable".into();
-                            format!("Session creation failed: {}", remotes::MANAGED_CLOUD_UNAVAILABLE)
+                            panel.title = "Jcode Cloud".into();
+                            format!("{} Your queued prompts are preserved.", remotes::MANAGED_CLOUD_STARTING)
                         }
                         Some(host) => format!("Reconnecting to {host}… Your queued prompts are preserved."),
                         None => "Session creation failed: invalid saved remote destination. No local session was opened.".into(),

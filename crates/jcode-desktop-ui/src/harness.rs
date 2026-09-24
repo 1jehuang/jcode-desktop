@@ -34,6 +34,25 @@ mod transport {
 
     impl RemoteTransports {
         pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
+            self.connect_with_progress(host, &mut |_| {})
+        }
+
+        pub(super) fn connect_with_progress(
+            &self,
+            host: &str,
+            progress: &mut dyn FnMut(&str),
+        ) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
+            if host == crate::managed_cloud::HOST {
+                return crate::managed_cloud::connect(
+                    progress,
+                    format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+                    crate::managed_cloud::request_connect,
+                    jcode_sdk::JcodeClient::connect_ssh,
+                )
+                .map_err(|message| {
+                    jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
+                });
+            }
             jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
                 client_name: format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
                 connect_timeout: std::time::Duration::from_secs(20),
@@ -485,13 +504,25 @@ fn run_with_transports(
                 std::thread::Builder::new()
                     .name("jcode-bridge-ssh-create".into())
                     .spawn(move || {
+                        let progress_updates = updates.clone();
+                        let progress_host = host.clone();
+                        let progress_request = request_id.clone();
                         create_remote_session(
                             host,
                             working_dir,
                             request_id,
                             updates,
                             internal,
-                            |host| transports.connect(host),
+                            move |host| {
+                                transports.connect_with_progress(host, &mut |message| {
+                                    let _ = progress_updates.send(Update::RemoteStatus {
+                                        host: progress_host.clone(),
+                                        message: message.to_owned(),
+                                        request_id: progress_request.clone(),
+                                        failed: false,
+                                    });
+                                })
+                            },
                         );
                     })
                     .expect("spawn remote create thread");
@@ -597,16 +628,25 @@ fn create_remote_session(
     connector: impl FnOnce(&str) -> jcode_sdk::Result<JcodeClient>,
 ) {
     let result = crate::remote_targets::validate_host(&host).and_then(|host| {
+        let managed = host == crate::managed_cloud::HOST;
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
-            message: format!("Connecting to {host} over SSH..."),
+            message: if managed {
+                "Checking your Jcode Cloud machine…".into()
+            } else {
+                format!("Connecting to {host} over SSH...")
+            },
             request_id: request_id.clone(),
             failed: false,
         });
         let client = connector(&host).map_err(|error| error.to_string())?;
         let _ = updates.send(Update::RemoteStatus {
             host: host.clone(),
-            message: "SSH connected. Creating Jcode session...".into(),
+            message: if managed {
+                "Connected. Creating Jcode session…".into()
+            } else {
+                "SSH connected. Creating Jcode session...".into()
+            },
             request_id: request_id.clone(),
             failed: false,
         });

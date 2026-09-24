@@ -1,4 +1,5 @@
-//! A per-request checklist, driven by observed helper/SSH phases, not a timer.
+//! A per-request Jcode Cloud checklist, driven by observed control-plane and
+//! connection phases, not a timer.
 //! A later phase proves earlier phases finished. Unknown messages never do.
 use gpui::{InteractiveElement, IntoElement, ParentElement, Styled, div, px};
 use std::time::{Duration, Instant};
@@ -6,10 +7,10 @@ use std::time::{Duration, Instant};
 use crate::theme::Theme;
 
 const LABELS: [&str; 5] = [
-    "AWS access",
-    "Runtime guard and allowance",
-    "Shared VM running",
-    "Private SSH connection",
+    "Jcode account",
+    "Cloud machine",
+    "Jcode installed",
+    "Secure connection",
     "Jcode session",
 ];
 
@@ -17,7 +18,6 @@ const LABELS: [&str; 5] = [
 pub(super) struct Progress {
     phase: Option<usize>,
     failed: bool,
-    reused: bool,
     started: Option<Instant>,
     phase_started: Option<Instant>,
     elapsed: Duration,
@@ -39,32 +39,24 @@ impl Progress {
         self.tick_at(now);
         for line in message.lines() {
             let line = line.to_ascii_lowercase();
-            let next = if line.contains("reusing recently verified cloud vm") {
-                self.reused = true;
-                Some(3)
-            } else if line.contains("creating jcode session") {
+            let next = if line.contains("creating jcode session") {
                 Some(4)
             } else if !failed
                 && (line.starts_with("connected to ") || line.contains(": connected to "))
             {
                 Some(5)
-            } else if line.contains("private ssm connection")
-                || line.contains("verifying ssh connection")
-                || line.contains("over ssh")
-                || line.contains("is awake. connecting")
-                || line.contains("ssh bootstrap ready")
-            {
+            } else if line.contains("connecting to your jcode cloud machine") {
                 Some(3)
-            } else if line.contains("starting the shared cloud vm")
-                || line.contains("shared cloud vm is starting")
-                || line.contains("shared cloud vm is already running")
-                || line.contains("starting your cloud virtual machine")
-                || line.contains("waiting for shared cloud vm to become reachable")
-            {
+            } else if line.contains("installing jcode") || line.contains("starting jcode on") {
                 Some(2)
-            } else if line.contains("checking cloud runtime guard and allowance") {
+            } else if line.contains("creating your jcode cloud machine")
+                || line.contains("recreating your jcode cloud machine")
+                || line.contains("waking your jcode cloud machine")
+                || line.contains("starting your jcode cloud machine")
+                || line.contains("finishing sleep")
+            {
                 Some(1)
-            } else if line.contains("checking aws sign-in") {
+            } else if line.contains("checking your jcode cloud machine") {
                 Some(0)
             } else {
                 None
@@ -125,14 +117,7 @@ impl Progress {
 
     fn row(&self, index: usize) -> (&'static str, &'static str) {
         match self.phase {
-            Some(phase) if index < phase => (
-                "✓",
-                if self.reused && index < 3 {
-                    "Recently verified"
-                } else {
-                    "Done"
-                },
-            ),
+            Some(phase) if index < phase => ("✓", "Done"),
             Some(phase) if index == phase && self.failed => ("!", "Failed"),
             Some(phase) if index == phase => ("●", "In progress"),
             _ => ("○", "Waiting"),
@@ -183,18 +168,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checklist_advances_only_with_observed_phases() {
+    fn checklist_advances_only_with_observed_managed_phases() {
         let mut progress = Progress::default();
         assert_eq!(progress.row(0), ("○", "Waiting"));
-        progress.observe("Waiting for shared VM jcode-cloud-alpha…", false);
+        progress.observe("Something unrelated", false);
         assert!(progress.phase.is_none());
         for (phase, message) in [
-            "Checking AWS sign-in...",
-            "Checking cloud runtime guard and allowance...",
-            "Starting the shared cloud VM...",
-            "Waiting for cloud host and private SSM connection...",
-            "SSH connected. Creating Jcode session...",
-            "Connected to jcode-cloud-alpha",
+            "Checking your Jcode Cloud machine…",
+            "Creating your Jcode Cloud machine…",
+            "Installing Jcode on your cloud machine…",
+            "Connecting to your Jcode Cloud machine…",
+            "Connected. Creating Jcode session…",
+            "Connected to jcode-cloud",
         ]
         .into_iter()
         .enumerate()
@@ -211,40 +196,33 @@ mod tests {
     }
 
     #[test]
+    fn waking_an_existing_machine_skips_straight_to_the_machine_step() {
+        let mut progress = Progress::default();
+        progress.observe("Waking your Jcode Cloud machine…", false);
+        assert_eq!(progress.row(0), ("✓", "Done"));
+        assert_eq!(progress.row(1), ("●", "In progress"));
+        progress.observe("Checking your Jcode Cloud machine…", false);
+        assert_eq!(progress.row(1), ("●", "In progress"), "never regresses");
+    }
+
+    #[test]
     fn checklist_failure_retains_finished_steps_and_ignores_late_progress() {
         let mut progress = Progress::default();
-        progress.observe(
-            "Verifying SSH connection and cloud bootstrap readiness...",
-            false,
-        );
+        progress.observe("Connecting to your Jcode Cloud machine…", false);
         progress.observe("Remote session failed: connection refused", true);
         assert_eq!(progress.row(2), ("✓", "Done"));
         assert_eq!(progress.row(3), ("!", "Failed"));
         assert_eq!(progress.row(4), ("○", "Waiting"));
-        progress.observe("Checking AWS sign-in...", false);
-        progress.observe("Connected to jcode-cloud-alpha", false);
+        progress.observe("Connected to jcode-cloud", false);
         assert_eq!(progress.row(3), ("!", "Failed"));
     }
 
     #[test]
-    fn checklist_warm_path_labels_recent_checks_honestly() {
+    fn checklist_early_error_does_not_claim_machine_ready() {
         let mut progress = Progress::default();
-        progress.observe("Reusing recently verified cloud VM...", false);
-        assert_eq!(progress.row(0), ("✓", "Recently verified"));
-        assert_eq!(progress.row(2), ("✓", "Recently verified"));
-        assert_eq!(progress.row(3), ("●", "In progress"));
-        assert_eq!(progress.row(4), ("○", "Waiting"));
-        progress.observe("SSH connected. Creating Jcode session...", false);
-        progress.observe("jcode-cloud-alpha is awake. Connecting…", false);
-        assert_eq!(progress.row(4), ("●", "In progress"));
-    }
-
-    #[test]
-    fn checklist_early_error_does_not_claim_vm_or_access_ready() {
-        let mut progress = Progress::default();
-        progress.observe("Personal cloud is not configured", true);
+        progress.observe("Sign in to your Jcode account to use Jcode Cloud.", true);
         assert_eq!(progress.row(0), ("!", "Failed"));
-        assert_eq!(progress.row(2), ("○", "Waiting"));
+        assert_eq!(progress.row(1), ("○", "Waiting"));
         assert_eq!(progress.row(4), ("○", "Waiting"));
     }
 
@@ -252,13 +230,13 @@ mod tests {
     fn elapsed_clock_never_completes_a_step_and_freezes_on_failure() {
         let start = Instant::now();
         let mut progress = Progress::default();
-        progress.observe_at("Checking AWS sign-in...", false, start);
+        progress.observe_at("Checking your Jcode Cloud machine…", false, start);
         assert!(!progress.tick_at(start + Duration::from_millis(500)));
         assert!(progress.tick_at(start + Duration::from_secs(12)));
         assert_eq!(progress.row(0), ("●", "In progress"));
         assert_eq!(progress.timing_label(), "12s elapsed · 12s on this step");
         progress.observe_at(
-            "Checking cloud runtime guard and allowance...",
+            "Creating your Jcode Cloud machine…",
             false,
             start + Duration::from_secs(13),
         );
@@ -267,38 +245,5 @@ mod tests {
         progress.observe_at("failed", true, start + Duration::from_secs(17));
         assert!(!progress.tick_at(start + Duration::from_secs(30)));
         assert_eq!(progress.timing_label(), "Stopped after 17s");
-    }
-
-    #[test]
-    fn boot_wait_does_not_claim_vm_is_running_and_late_phases_do_not_reset_timer() {
-        let start = Instant::now();
-        let mut progress = Progress::default();
-        progress.observe_at(
-            "Waiting for shared cloud VM to become reachable...",
-            false,
-            start,
-        );
-        progress.tick_at(start + Duration::from_secs(20));
-        assert_eq!(progress.row(2), ("●", "In progress"));
-        assert_eq!(progress.row(3), ("○", "Waiting"));
-        progress.observe_at(
-            "Checking AWS sign-in...",
-            false,
-            start + Duration::from_secs(21),
-        );
-        assert_eq!(progress.timing_label(), "21s elapsed · 21s on this step");
-        progress.observe_at(
-            "Shared cloud VM is running. SSH bootstrap ready.",
-            false,
-            start + Duration::from_secs(22),
-        );
-        assert_eq!(progress.row(2), ("✓", "Done"));
-        progress.observe_at(
-            "Connected to jcode-cloud-alpha",
-            false,
-            start + Duration::from_secs(23),
-        );
-        assert!(!progress.tick_at(start + Duration::from_secs(40)));
-        assert_eq!(progress.timing_label(), "Connected in 23s");
     }
 }

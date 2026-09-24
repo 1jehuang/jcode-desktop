@@ -35,9 +35,29 @@ impl RemoteTransports {
     }
 
     pub(super) fn connect(&self, host: &str) -> jcode_sdk::Result<JcodeClient> {
+        self.connect_with_progress(host, &mut |_| {})
+    }
+
+    /// Connect, reporting managed-cloud provisioning phases as they happen.
+    pub(super) fn connect_with_progress(
+        &self,
+        host: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> jcode_sdk::Result<JcodeClient> {
         #[cfg(test)]
         if let Some(connector) = &self.connector {
             return connector(host);
+        }
+        if host == crate::managed_cloud::HOST {
+            // Account-authorized, Jcode-operated host. Never an SSH alias,
+            // the user's SSH config, or a personal AWS profile.
+            return crate::managed_cloud::connect(
+                progress,
+                format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+                crate::managed_cloud::request_connect,
+                JcodeClient::connect_ssh,
+            )
+            .map_err(|message| jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message));
         }
         let host = crate::remote_targets::validate_host(host).map_err(|message| {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)

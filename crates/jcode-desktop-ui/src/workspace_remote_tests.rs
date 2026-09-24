@@ -338,7 +338,7 @@ fn local_connect_keeps_new_panel_selected_after_mouse_release(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
-fn cloud_new_panel_shows_managed_unavailability_without_aws(cx: &mut gpui::TestAppContext) {
+fn cloud_new_panel_connects_to_managed_cloud_without_aws(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
@@ -355,8 +355,9 @@ fn cloud_new_panel_shows_managed_unavailability_without_aws(cx: &mut gpui::TestA
     assert!(vcx.debug_bounds("pending-session-status").is_some());
     assert!(vcx.debug_bounds("pending-cloud-label").is_some());
     assert!(vcx.debug_bounds("pending-cloud-background").is_some());
-    assert!(vcx.debug_bounds("cloud-startup-checklist").is_none());
-    assert!(vcx.debug_bounds("pending-cloud-account").is_some());
+    assert!(vcx.debug_bounds("cloud-startup-checklist").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-account").is_none());
+    let draft = workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).session_id.clone());
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
         assert_eq!(
@@ -365,8 +366,13 @@ fn cloud_new_panel_shows_managed_unavailability_without_aws(cx: &mut gpui::TestA
         );
         assert_eq!(w.remotes.default_host.as_deref(), Some(remotes::MANAGED_CLOUD_HOST));
     });
-    // Managed interactive cloud is unavailable, so no remote creation or
-    // implicit local fallback may be issued. The account action remains mounted.
+    // Exactly one managed creation, correlated with the draft. Never the
+    // personal AWS alpha, an SSH alias, or an implicit local fallback.
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
+            if host == remotes::MANAGED_CLOUD_HOST && id == draft
+    ));
     assert!(commands.try_recv().is_err());
 }
 
@@ -860,7 +866,7 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
 }
 
 #[gpui::test]
-fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
+fn cloud_startup_progress_and_failure_are_visible_in_the_composer(
     cx: &mut gpui::TestAppContext,
 ) {
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
@@ -873,24 +879,33 @@ fn cloud_startup_failure_is_visible_in_the_composer_without_opening_machines(
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("pending-cloud-label").is_some());
     assert!(vcx.debug_bounds("pending-cloud-background").is_some());
-    assert!(vcx.debug_bounds("cloud-startup-checklist").is_none());
-    assert!(vcx.debug_bounds("pending-cloud-account").is_some());
+    // Connecting: no failure actions yet.
+    assert!(vcx.debug_bounds("pending-cloud-account").is_none());
+    assert!(vcx.debug_bounds("pending-session-retry").is_none());
     vcx.simulate_input("preserve my draft");
     workspace.update(vcx, |w, cx| {
-        // Report the real managed availability result, never an AWS login error.
-        w.update_startup_status(remotes::MANAGED_CLOUD_UNAVAILABLE, true, cx);
+        // A real managed-cloud failure, never an AWS login error.
+        w.update_pending_remote_status(
+            Some(Panel::STARTUP_SESSION_ID),
+            "Jcode Cloud requires an active paid Jcode subscription.",
+            true,
+            cx,
+        );
         cx.notify();
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("pending-session-status").is_some());
-    assert!(vcx.debug_bounds("pending-session-retry").is_none());
+    assert!(vcx.debug_bounds("pending-session-retry").is_some());
     assert!(vcx.debug_bounds("pending-session-local").is_some());
+    assert!(vcx.debug_bounds("pending-cloud-account").is_some());
+    assert!(vcx.debug_bounds("cloud-startup-checklist").is_some());
     assert!(vcx.debug_bounds("machines-picker").is_none());
     assert!(vcx.debug_bounds("pending-cloud-label").is_some());
     assert!(vcx.debug_bounds("pending-cloud-background").is_some());
     workspace.read_with(vcx, |w, cx| {
         let panel = w.slots[0].panel.read(cx);
-        assert!(panel.status.contains(remotes::MANAGED_CLOUD_UNAVAILABLE));
+        assert!(panel.status.contains("subscription"));
+        assert!(!panel.status.contains("AWS"));
         assert_eq!(panel.input.read(cx).content.as_ref(), "preserve my draft");
     });
     vcx.simulate_keystrokes("enter");
@@ -1320,7 +1335,7 @@ fn remote_pending_snapshot_restores_destination_with_fresh_request_and_queued_te
 }
 
 #[gpui::test]
-fn legacy_cloud_snapshot_migrates_without_connecting_or_losing_prompts(
+fn legacy_cloud_snapshot_migrates_to_managed_cloud_without_losing_prompts(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(crate::input::bind_keys);
@@ -1347,17 +1362,34 @@ fn legacy_cloud_snapshot_migrates_without_connecting_or_losing_prompts(
             w.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
             let panel = w.slots[0].panel.read(cx);
             assert_eq!(pending::remote_draft_host(&panel.session_id), Some(remotes::MANAGED_CLOUD_HOST));
-            assert!(panel.status.contains(remotes::MANAGED_CLOUD_UNAVAILABLE));
+            assert!(panel.status.contains(remotes::MANAGED_CLOUD_STARTING));
             assert!(!panel.status.contains("AWS"));
-            assert_eq!(panel.title.as_ref(), "Jcode Cloud unavailable");
+            assert_eq!(panel.title.as_ref(), "Jcode Cloud");
             assert_eq!(panel.input.read(cx).content.as_ref(), "unsent cloud draft");
             assert_eq!(serde_json::to_value(panel.snapshot(cx).prompt_queue).unwrap()["prompts"][0]["content"], "queued across cloud migration");
         });
     });
-    assert!(commands.try_recv().is_err(), "migration must not create any local or SSH session");
+    // The migrated draft connects to the managed destination only. The
+    // personal alpha host and local sessions are never used.
+    let mut managed = 0;
+    while let Ok(command) = commands.try_recv() {
+        match command {
+            Command::CreateRemoteSession { host, .. } => {
+                assert_eq!(host, remotes::MANAGED_CLOUD_HOST);
+                managed += 1;
+            }
+            Command::CreateSession { .. } => panic!("migration must not create a local session"),
+            _ => {}
+        }
+    }
+    assert!(managed >= 1, "migrated draft must reconnect to managed Jcode Cloud");
+    workspace.update(vcx, |w, cx| {
+        let id = w.slots[0].panel.read(cx).session_id.clone();
+        w.update_pending_remote_status(Some(&id), "Waking your Jcode Cloud machine…", false, cx);
+    });
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("pending-cloud-account").is_some());
-    assert!(vcx.debug_bounds("cloud-startup-checklist").is_none());
+    assert!(vcx.debug_bounds("pending-cloud-account").is_none());
+    assert!(vcx.debug_bounds("cloud-startup-checklist").is_some());
 }
 
 #[gpui::test]

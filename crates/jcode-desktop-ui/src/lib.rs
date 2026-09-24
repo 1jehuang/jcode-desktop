@@ -25,6 +25,7 @@ mod input;
 mod learning;
 mod live_profile;
 pub mod login_input;
+mod managed_cloud;
 mod markdown;
 mod markdown_inline_code;
 mod memory;

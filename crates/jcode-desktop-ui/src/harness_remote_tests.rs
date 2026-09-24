@@ -482,3 +482,57 @@ fn last_bridge_handle_stops_its_coordinator_for_ssh_cleanup() {
         Ok(Command::Shutdown)
     ));
 }
+
+/// Live end-to-end check of managed Jcode Cloud through Desktop's own create
+/// path. Requires a signed-in, subscribed Jcode account and provisions or wakes
+/// that account's real cloud machine. Uses no AWS credentials or SSH config.
+/// Run: cargo test -p jcode-desktop-ui managed_cloud_live -- --ignored --nocapture
+#[test]
+#[ignore = "live: provisions the account's Jcode Cloud machine"]
+fn managed_cloud_live_session_answers_a_prompt() {
+    let (internal, created) = channel();
+    let (tx, updates) = async_channel::unbounded();
+    let transports = transport::RemoteTransports::default();
+    let printer = std::thread::spawn(move || {
+        while let Ok(update) = updates.recv_blocking() {
+            if let Update::RemoteStatus { message, failed, .. } = update {
+                eprintln!("[cloud] {message}{}", if failed { " (failed)" } else { "" });
+            }
+        }
+    });
+    let started = Instant::now();
+    create_remote_session(
+        crate::managed_cloud::HOST.into(),
+        None,
+        Some("live".into()),
+        UpdateSender(tx),
+        internal,
+        |host| transports.connect_with_progress(host, &mut |m| eprintln!("[cloud] {m}")),
+    );
+    let (session, client) = match created.recv_timeout(Duration::from_secs(5)) {
+        Ok(Command::CreatedInternal { session, client, .. }) => (session, client),
+        _ => panic!("managed cloud session was not created"),
+    };
+    eprintln!("[cloud] session {} after {:?}", session.session_id, started.elapsed());
+    assert!(session.session_id.starts_with("ssh://jcode-cloud/"));
+    let address = remote::SessionAddress::parse(&session.session_id).unwrap();
+    let events = client.events(Some(&address.session_id));
+    client
+        .send_message(&address.session_id, "Reply with exactly: DESKTOP_CLOUD_OK", vec![], None)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut text = String::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match events.next_timeout(left) {
+            Some(jcode_sdk::api::ApiEvent::TextDelta { text: delta, .. }) => text.push_str(&delta),
+            Some(jcode_sdk::api::ApiEvent::TurnDone { .. }) => break,
+            Some(jcode_sdk::api::ApiEvent::TurnStopped { message, .. }) => panic!("turn stopped: {message}"),
+            Some(_) => {}
+            None => break,
+        }
+    }
+    eprintln!("[cloud] reply: {text:?} total {:?}", started.elapsed());
+    assert!(text.contains("DESKTOP_CLOUD_OK"), "unexpected reply {text:?}");
+    drop(client);
+    drop(printer);
+}
