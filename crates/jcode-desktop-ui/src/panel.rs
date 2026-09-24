@@ -51,17 +51,15 @@ mod composer;
 mod diff_review;
 #[path = "panel_flicker.rs"]
 mod flicker;
-#[path = "panel_image_preview.rs"]
-mod image_preview;
 #[path = "panel_image_pane.rs"]
 mod image_pane;
 #[cfg(test)]
 #[path = "panel_image_pane_tests.rs"]
 mod image_pane_tests;
+#[path = "panel_image_preview.rs"]
+mod image_preview;
 #[path = "panel_latest.rs"]
 mod latest;
-#[path = "panel_shortcuts.rs"]
-pub(crate) mod shortcuts;
 #[path = "panel_login.rs"]
 mod login;
 #[path = "panel_preview.rs"]
@@ -72,42 +70,47 @@ mod prompt;
 mod queue;
 #[path = "panel_recovery.rs"]
 mod recovery;
+#[cfg(test)]
+#[path = "panel_scroll_momentum_tests.rs"]
+mod scroll_momentum_tests;
+#[path = "panel_shortcuts.rs"]
+pub(crate) mod shortcuts;
+#[path = "panel_startup.rs"]
+mod startup;
 #[path = "panel_stop_reason.rs"]
 mod stop_reason;
 #[path = "panel_stream_reveal.rs"]
 mod stream_reveal;
 #[cfg(test)]
-#[path = "panel_scroll_momentum_tests.rs"]
-mod scroll_momentum_tests;
-#[path = "panel_startup.rs"]
-mod startup;
-#[cfg(test)]
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
 pub use startup::StartupLayout;
+#[path = "panel_demo_replay.rs"]
+pub(crate) mod demo_replay;
+#[path = "panel_gmail_draft_card.rs"]
+mod gmail_draft_card;
+#[path = "panel_gmail_read_card.rs"]
+mod gmail_read_card;
+#[path = "panel_orchestration.rs"]
+pub(crate) mod orchestration;
 #[path = "panel_response_stats.rs"]
 mod response_stats;
+#[path = "panel_side_document.rs"]
+mod side_document;
 #[path = "panel_tab_emoji.rs"]
 mod tab_emoji;
 #[path = "panel_task_label.rs"]
 mod task_label;
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
-#[path = "panel_gmail_draft_card.rs"]
-mod gmail_draft_card;
 #[path = "panel_usage.rs"]
 pub(crate) mod usage;
 #[path = "panel_voice.rs"]
 pub(crate) mod voice;
-#[path = "panel_side_document.rs"]
-mod side_document;
-#[path = "panel_demo_replay.rs"]
-pub(crate) mod demo_replay;
-#[path = "panel_orchestration.rs"]
-pub(crate) mod orchestration;
 pub use side_document::SideDocumentSnapshot;
 
-pub(crate) type SessionOpener = Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
+pub(crate) type SessionOpener =
+    Arc<dyn Fn(crate::harness::UnfinishedSession, &mut Window, &mut App)>;
 
 // Keep the last message/card clear of the composer and its metadata. This is
 // outside the scrolling list so it remains visible even while reading history.
@@ -696,7 +699,8 @@ impl Panel {
     }
 
     pub(crate) fn sidebar_mark(&self) -> Option<gpui::AnyView> {
-        self.supports_voice().then(|| self.sidebar_spinner.clone().into())
+        self.supports_voice()
+            .then(|| self.sidebar_spinner.clone().into())
     }
 
     fn orb_activity(&self) -> activity::Activity {
@@ -836,8 +840,8 @@ impl Panel {
         transcript_list.set_scroll_handler(move |event, _, cx| {
             let _ = panel_entity.update(cx, |panel, cx| {
                 panel.release_startup_preview();
-                let stick_to_bottom = event.is_following_tail
-                    && !panel.transcript_selection.read(cx).is_dragging();
+                let stick_to_bottom =
+                    event.is_following_tail && !panel.transcript_selection.read(cx).is_dragging();
                 if panel.stick_to_bottom != stick_to_bottom {
                     panel.stick_to_bottom = stick_to_bottom;
                     cx.notify();
@@ -855,16 +859,17 @@ impl Panel {
         let emoji = jcode_core::id::extract_session_name(&session_id)
             .map(jcode_core::id::session_icon)
             .unwrap_or("💫");
-        let activity_status = if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
-            match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
-                Ok("orb-working") => "running",
-                Ok("orb-thinking") => "thinking",
-                Ok("orb-tools") => "running_tools",
-                _ => "idle",
-            }
-        } else {
-            "idle"
-        };
+        let activity_status =
+            if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
+                match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
+                    Ok("orb-working") => "running",
+                    Ok("orb-thinking") => "thinking",
+                    Ok("orb-tools") => "running_tools",
+                    _ => "idle",
+                }
+            } else {
+                "idle"
+            };
         let activity_owner = cx.entity();
         Self {
             session_id,
@@ -892,9 +897,11 @@ impl Panel {
             sound_events: crate::sound_events::SoundEvents::default(),
             activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             show_build_footer: true,
-            latest_activity_spinner: cx.new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
+            latest_activity_spinner: cx
+                .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
-            sidebar_spinner: cx.new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
+            sidebar_spinner: cx
+                .new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
             surface_focused: true,
             input,
             voice: voice::VoiceState::default(),
@@ -3026,7 +3033,8 @@ impl Panel {
                     *slot = error.clone();
                     *output_slot = output.clone();
                     if let Some(started) = self.tool_started.remove(call_id) {
-                        self.tool_durations.insert(call_id.clone(), started.elapsed());
+                        self.tool_durations
+                            .insert(call_id.clone(), started.elapsed());
                     }
                 } else {
                     self.arriving_tools.insert(call_id.clone(), Instant::now());
@@ -3080,20 +3088,29 @@ impl Panel {
                 self.reconcile_reconnect_response();
                 self.finish_response();
             }
-            ApiEvent::TurnStopped { reason, message, provider_stop_reason, .. } => {
+            ApiEvent::TurnStopped {
+                reason,
+                message,
+                provider_stop_reason,
+                ..
+            } => {
                 self.record_stop(stop_reason::StopNotice::from_event(
-                    reason, message, provider_stop_reason.as_deref(),
+                    reason,
+                    message,
+                    provider_stop_reason.as_deref(),
                 ));
             }
             ApiEvent::SessionStatus { status, .. }
-                if status == "attached" || (status == "connected" && self.activity_active()) => {
+                if status == "attached" || (status == "connected" && self.activity_active()) =>
+            {
                 // Transport bookkeeping is not a turn transition. In particular,
                 // a late attach notification must not resurrect a completed turn.
             }
             ApiEvent::SessionStatus { status, .. } => {
                 if let Some(notice) = stop_reason::StopNotice::from_status(status) {
                     // New runtimes send a richer event before their legacy status.
-                    if !matches!(self.items.last(), Some(Item::Stopped(notice)) if !notice.provisional) {
+                    if !matches!(self.items.last(), Some(Item::Stopped(notice)) if !notice.provisional)
+                    {
                         self.record_stop(notice);
                     }
                     cx.notify();
@@ -3177,7 +3194,8 @@ impl Panel {
             }
             ApiEvent::Error { message, .. } => {
                 self.finish_response();
-                if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message) {
+                if !matches!(self.items.last(), Some(Item::Stopped(notice)) if notice.detail == *message)
+                {
                     self.items.push(Item::Error(message.clone()));
                 }
             }
@@ -3225,10 +3243,12 @@ impl Panel {
             || cx.reduce_motion()
             || crate::config::get().appearance.reduce_motion;
         let now = Instant::now();
-        let text = self.text_reveal.tick(self.streaming_text.len(), now, instant);
-        let reasoning =
-            self.reasoning_reveal
-                .tick(self.streaming_reasoning.len(), now, instant);
+        let text = self
+            .text_reveal
+            .tick(self.streaming_text.len(), now, instant);
+        let reasoning = self
+            .reasoning_reveal
+            .tick(self.streaming_reasoning.len(), now, instant);
         if text || reasoning {
             window.request_animation_frame();
         }
@@ -3426,7 +3446,13 @@ impl Panel {
             || activity_state::is_request_phase(&self.connection_phase)
             || matches!(
                 status.as_str(),
-                "generating" | "running" | "busy" | "thinking" | "streaming" | "running_tools" | "compacting"
+                "generating"
+                    | "running"
+                    | "busy"
+                    | "thinking"
+                    | "streaming"
+                    | "running_tools"
+                    | "compacting"
             )
     }
 
@@ -3537,8 +3563,11 @@ impl Panel {
         if finished {
             let duration = self.tool_durations.get(call_id)?;
             // Instant tools need no badge.
-            (duration.as_millis() >= 1_000)
-                .then(|| clock.child(format_tool_elapsed(*duration)).into_any_element())
+            (duration.as_millis() >= 1_000).then(|| {
+                clock
+                    .child(format_tool_elapsed(*duration))
+                    .into_any_element()
+            })
         } else {
             let started = *self.tool_started.get(call_id)?;
             Some(
@@ -3588,29 +3617,30 @@ impl Panel {
                         let gesture_panel = panel.clone();
                         el.child(
                             crate::inline_image::InlineImage::new(index, preview)
-                            .metadata(label.clone())
-                            .on_fit_scroll(move |event, window, cx| {
-                                let _ = scroll_panel.update(cx, |panel, cx| {
-                                    if panel.transcript_list.is_scrollbar_dragging() {
-                                        return;
-                                    }
-                                    let y =
-                                        f32::from(event.delta.pixel_delta(window.line_height()).y);
-                                    if y == 0.0 {
-                                        return;
-                                    }
-                                    if event.delta.precise() {
-                                        panel.glide_transcript_input(-y, true, cx);
-                                    } else {
-                                        panel.glide_transcript_wheel(-y, cx);
-                                    }
-                                });
-                            })
-                            .on_gesture(move |_, cx| {
-                                let _ = gesture_panel.update(cx, |panel, _| {
-                                    panel.cancel_transcript_momentum();
-                                });
-                            }),
+                                .metadata(label.clone())
+                                .on_fit_scroll(move |event, window, cx| {
+                                    let _ = scroll_panel.update(cx, |panel, cx| {
+                                        if panel.transcript_list.is_scrollbar_dragging() {
+                                            return;
+                                        }
+                                        let y = f32::from(
+                                            event.delta.pixel_delta(window.line_height()).y,
+                                        );
+                                        if y == 0.0 {
+                                            return;
+                                        }
+                                        if event.delta.precise() {
+                                            panel.glide_transcript_input(-y, true, cx);
+                                        } else {
+                                            panel.glide_transcript_wheel(-y, cx);
+                                        }
+                                    });
+                                })
+                                .on_gesture(move |_, cx| {
+                                    let _ = gesture_panel.update(cx, |panel, _| {
+                                        panel.cancel_transcript_momentum();
+                                    });
+                                }),
                         )
                     })
                     .when(image.preview.is_none(), |el| {
@@ -3629,7 +3659,11 @@ impl Panel {
                 .px_1()
                 .text_color(Theme::global().TEXT)
                 .child(markdown::with_stream_fade(
-                    if index == usize::MAX { self.text_reveal.fading() } else { 0 },
+                    if index == usize::MAX {
+                        self.text_reveal.fading()
+                    } else {
+                        0
+                    },
                     || {
                         markdown::render_interactive(
                             text,
@@ -3655,7 +3689,11 @@ impl Panel {
                 .text_size(px(12.0))
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
-                    if index == usize::MAX - 1 { self.reasoning_reveal.fading() } else { 0 },
+                    if index == usize::MAX - 1 {
+                        self.reasoning_reveal.fading()
+                    } else {
+                        0
+                    },
                     || {
                         markdown::render_interactive(
                             text,
@@ -3670,16 +3708,32 @@ impl Panel {
                     },
                 ))
                 .into_any_element(),
-            Item::Todos(payload) => render_todo_card_with_style(payload, false, &format!("todo-{index}"), &self.transcript_selection, window, cx),
+            Item::Todos(payload) => render_todo_card_with_style(
+                payload,
+                false,
+                &format!("todo-{index}"),
+                &self.transcript_selection,
+                window,
+                cx,
+            ),
             Item::BackgroundTask {
                 task_id,
                 label,
                 summary,
                 percent,
                 done,
-            } => {
-                background_task::render(index, task_id, label, summary, *percent, *done, &self.transcript_selection, window, cx).into_any_element()
-            }
+            } => background_task::render(
+                index,
+                task_id,
+                label,
+                summary,
+                *percent,
+                *done,
+                &self.transcript_selection,
+                window,
+                cx,
+            )
+            .into_any_element(),
             Item::Tool {
                 call_id,
                 name,
@@ -3711,12 +3765,25 @@ impl Panel {
                     return div()
                         .ml(px(offset))
                         .opacity(opacity)
-                        .child(render_todo_card_with_style(&payload, false, &format!("todo-{index}"), &self.transcript_selection, window, cx))
+                        .child(render_todo_card_with_style(
+                            &payload,
+                            false,
+                            &format!("todo-{index}"),
+                            &self.transcript_selection,
+                            window,
+                            cx,
+                        ))
                         .into_any_element();
                 }
-                if let Some(preview) =
-                    self.render_edit_metadata(call_id, name, input, output, *done, error.as_deref(), cx)
-                {
+                if let Some(preview) = self.render_edit_metadata(
+                    call_id,
+                    name,
+                    input,
+                    output,
+                    *done,
+                    error.as_deref(),
+                    cx,
+                ) {
                     return div()
                         .id(("tool", index))
                         .debug_selector(|| "tool-edit".into())
@@ -3750,6 +3817,36 @@ impl Panel {
                     return div()
                         .id(("tool", index))
                         .debug_selector(|| "tool-gmail-compose".into())
+                        .flex_none()
+                        .ml(px(offset))
+                        .opacity(opacity)
+                        .child(card)
+                        .into_any_element();
+                }
+                if let Some(view) =
+                    gmail_read_card::parse(name, input, output, *done, error.as_deref())
+                {
+                    let expanded = self.expanded_tools.contains(call_id);
+                    let toggle_id = call_id.clone();
+                    let card = gmail_read_card::render(
+                        index,
+                        &view,
+                        expanded,
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            if !this.expanded_tools.remove(&toggle_id) {
+                                this.expanded_tools.insert(toggle_id.clone());
+                            }
+                            this.transcript_measurements.dirty = true;
+                            cx.notify();
+                        }),
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    );
+                    return div()
+                        .id(("tool", index))
+                        .debug_selector(|| "tool-gmail-read".into())
                         .flex_none()
                         .ml(px(offset))
                         .opacity(opacity)
@@ -3826,7 +3923,11 @@ impl Panel {
                                         )),
                                 )
                             })
-                            .children(self.render_tool_clock(index, &call_id, *done || error.is_some()))
+                            .children(self.render_tool_clock(
+                                index,
+                                &call_id,
+                                *done || error.is_some(),
+                            ))
                             // The token pill is the sole expansion control,
                             // including while a tool is still running.
                             .when(has_detail, |el| {
@@ -4106,9 +4207,9 @@ impl Render for Panel {
                                         .pr_3()
                                         .text_align(gpui::TextAlign::Right)
                                         .text_color(Theme::global().CODE_GUTTER)
-                                        .children(contents.lines().enumerate().map(|(index, _)| {
-                                            div().child((index + 1).to_string())
-                                        })),
+                                        .children(contents.lines().enumerate().map(
+                                            |(index, _)| div().child((index + 1).to_string()),
+                                        )),
                                 )
                                 .child(
                                     div()
@@ -4135,18 +4236,15 @@ impl Render for Panel {
                     }
                 }
                 Err(error) => {
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .text_color(Theme::global().ERROR)
-                            .child(text_selection::plain(
-                                self.transcript_selection.clone(),
-                                "code-file-error",
-                                error.clone(),
-                                window,
-                                cx,
-                            )),
-                    );
+                    body = body.child(div().p_4().text_color(Theme::global().ERROR).child(
+                        text_selection::plain(
+                            self.transcript_selection.clone(),
+                            "code-file-error",
+                            error.clone(),
+                            window,
+                            cx,
+                        ),
+                    ));
                 }
             }
             return div()
@@ -4237,12 +4335,9 @@ impl Render for Panel {
                             }
                         },
                     )
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        move |_event, _window, cx| {
-                            cx.stop_propagation();
-                        },
-                    )
+                    .on_mouse_up(gpui::MouseButton::Left, move |_event, _window, cx| {
+                        cx.stop_propagation();
+                    })
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -4333,8 +4428,8 @@ impl Render for Panel {
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
         let publish_tracker = self.render_publish_tracker(latest_todo.as_ref());
-        let pinned_todo = latest_todo
-            .filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
+        let pinned_todo =
+            latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         self.tick_stream_reveal(window, cx);
         let rows = Arc::new(self.transcript_render_rows());
@@ -4400,10 +4495,11 @@ impl Render for Panel {
             self.items.len(),
             row_count,
             (
-                self.reasoning_reveal.visible(&self.streaming_reasoning).len()
+                self.reasoning_reveal
+                    .visible(&self.streaming_reasoning)
+                    .len()
                     + self.reasoning_reveal.fading(),
-                self.text_reveal.visible(&self.streaming_text).len()
-                    + self.text_reveal.fading(),
+                self.text_reveal.visible(&self.streaming_text).len() + self.text_reveal.fading(),
             ),
             (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
         ) {
@@ -4522,9 +4618,8 @@ impl Render for Panel {
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
                                 };
-                                let element = panel.render_item(
-                                    row.index, item, row.show_label, window, cx,
-                                );
+                                let element =
+                                    panel.render_item(row.index, item, row.show_label, window, cx);
                                 div()
                                     .debug_selector(move || {
                                         format!("transcript-row-{row_index}").into()
@@ -4609,7 +4704,9 @@ impl Render for Panel {
             .flex_col()
             .size_full()
             .when(self.image_pane_open, |el| {
-                el.flex_1().min_w_0().min_h_0()
+                el.flex_1()
+                    .min_w_0()
+                    .min_h_0()
                     .when(self.image_pane_stacked, |el| el.h_auto())
             })
             .relative()
@@ -4685,7 +4782,14 @@ impl Render for Panel {
                                     (f32::from(window.viewport_size().height) * 0.25).min(240.)
                                 ))
                                 .overflow_y_scroll()
-                                .child(render_todo_card_with_style(&payload, true, "pinned-todo", &self.transcript_selection, window, cx)),
+                                .child(render_todo_card_with_style(
+                                    &payload,
+                                    true,
+                                    "pinned-todo",
+                                    &self.transcript_selection,
+                                    window,
+                                    cx,
+                                )),
                         )
                     })
             }))
@@ -4765,8 +4869,7 @@ impl Render for Panel {
                     // while more transcript continues below the viewport.
                     // Hidden at the live end so the newest line stays crisp.
                     .when(show_jump_chip && self.startup_layout.is_none(), |el| {
-                        let background =
-                            Theme::global().panel_background(self.surface_focused);
+                        let background = Theme::global().panel_background(self.surface_focused);
                         el.child(
                             div()
                                 .debug_selector(|| "transcript-bottom-fade".into())
@@ -4779,7 +4882,10 @@ impl Render for Panel {
                                     0.,
                                     gpui::linear_color_stop(background, 0.),
                                     gpui::linear_color_stop(
-                                        gpui::Rgba { a: 0., ..background },
+                                        gpui::Rgba {
+                                            a: 0.,
+                                            ..background
+                                        },
                                         1.,
                                     ),
                                 )),
@@ -4886,20 +4992,21 @@ impl Render for Panel {
             .when(
                 !fresh_session && self.startup_layout.is_none() && !self.transcript_only,
                 |el| {
-                el.child(
-                    div().flex_none().min_w_0().px_2().py_2().child(
-                        div()
-                            .relative()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .children(self.render_prompt_queue(cx))
-                            .children(self.render_voice_pending())
-                            .child(self.render_composer(window, cx))
-                            .child(startup::input_marker(input_bounds.clone())),
-                    ),
-                )
-            })
+                    el.child(
+                        div().flex_none().min_w_0().px_2().py_2().child(
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .children(self.render_prompt_queue(cx))
+                                .children(self.render_voice_pending())
+                                .child(self.render_composer(window, cx))
+                                .child(startup::input_marker(input_bounds.clone())),
+                        ),
+                    )
+                },
+            )
             // Slim bottom bar under the composer. Location, model,
             // credential method, and voice live above the input.
             .children((!self.transcript_only).then(|| {
@@ -5257,7 +5364,11 @@ fn pretty_provider_name(provider: &str) -> String {
             // Keep unknown names readable, but drop the credential suffix.
             let len = base.len().min(provider.len());
             let kept = provider[..len].trim();
-            if kept.is_empty() { provider.to_string() } else { kept.to_string() }
+            if kept.is_empty() {
+                provider.to_string()
+            } else {
+                kept.to_string()
+            }
         }
     }
 }
@@ -7139,10 +7250,7 @@ mod tests {
             account_method_label(Some("claude-api"), Some("api key")),
             "Anthropic · API key"
         );
-        assert_eq!(
-            account_method_label(Some("OpenAI API"), None),
-            "OpenAI"
-        );
+        assert_eq!(account_method_label(Some("OpenAI API"), None), "OpenAI");
         assert_eq!(
             account_method_label(Some("My Local Router"), Some("custom-acp")),
             "My Local Router · custom-acp"
@@ -7394,7 +7502,11 @@ mod tests {
 
         for (percent, summary, done) in [
             (Some(35.0), "35% · Running tests", false),
-            (None, "Compiling dependencies and waiting for the linker to finish a very long build\nAdditional output stays in the tooltip", false),
+            (
+                None,
+                "Compiling dependencies and waiting for the linker to finish a very long build\nAdditional output stays in the tooltip",
+                false,
+            ),
             (None, "✓ completed · 8.2s · exit 0", true),
         ] {
             panel.update(vcx, |panel, cx| {
@@ -7416,12 +7528,16 @@ mod tests {
                 .expect("task row paints");
             if done {
                 assert!(vcx.debug_bounds("background-task-completed").is_some());
-                assert!(row.size.height > px(28.0) && row.size.height <= px(100.0),
-                    "finished tasks use a compact result card: {row:?}");
+                assert!(
+                    row.size.height > px(28.0) && row.size.height <= px(100.0),
+                    "finished tasks use a compact result card: {row:?}"
+                );
             } else {
                 assert!(vcx.debug_bounds("background-task-completed").is_none());
-                assert!(row.size.height <= px(28.0),
-                    "running tasks stay one compact row: {row:?}");
+                assert!(
+                    row.size.height <= px(28.0),
+                    "running tasks stay one compact row: {row:?}"
+                );
             }
         }
 
@@ -7520,7 +7636,10 @@ mod tests {
                 vcx.debug_bounds("tool-name").is_some(),
                 "tool names persist after completion"
             );
-            assert_eq!(vcx.debug_bounds("tool-row-running").is_some(), !done && !failed);
+            assert_eq!(
+                vcx.debug_bounds("tool-row-running").is_some(),
+                !done && !failed
+            );
             for selector in ["tool-identity-pill", "tool-summary"] {
                 let text = vcx.debug_bounds(selector).expect("tool label paints");
                 assert_eq!(
@@ -7552,7 +7671,9 @@ mod tests {
                 "tool-icon-running"
             };
             assert!(vcx.debug_bounds(status_selector).is_some());
-            let icon = vcx.debug_bounds("tool-type-icon").expect("tool icon paints");
+            let icon = vcx
+                .debug_bounds("tool-type-icon")
+                .expect("tool icon paints");
             let name = vcx.debug_bounds("tool-summary").unwrap();
             assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
             assert!(icon.right() <= name.left(), "icon precedes the intent");
@@ -8210,7 +8331,9 @@ mod tests {
             vcx.debug_bounds("panel-build").is_none(),
             "build metadata belongs in the workspace header, not each panel"
         );
-        let identity = vcx.debug_bounds("panel-identity").expect("identity tabs paint");
+        let identity = vcx
+            .debug_bounds("panel-identity")
+            .expect("identity tabs paint");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
         // Identity lives in folder tabs on the input, status in the bar below.
@@ -8818,14 +8941,18 @@ Goals: []"#,
 
     #[test]
     fn pinned_todo_completed_label_preserves_group_and_has_meaningful_fallbacks() {
-        let mut payload = parse_todo_tool_output(r#"[
+        let mut payload = parse_todo_tool_output(
+            r#"[
             {"content":"Build header","status":"completed","group":" Desktop "},
             {"content":"Test header","status":"completed","group":"Desktop"},
             {"content":"Document behavior","status":"completed","group":"Docs"},
             {"content":"Discarded work","status":"cancelled","group":"Ignored"}
         ]
-        Plan: {"user_intention":"Keep task context visible"}"#).unwrap();
-        let label = |payload: &TodoCardPayload| pinned_todo_label(payload, &pinned_todo_summary(payload));
+        Plan: {"user_intention":"Keep task context visible"}"#,
+        )
+        .unwrap();
+        let label =
+            |payload: &TodoCardPayload| pinned_todo_label(payload, &pinned_todo_summary(payload));
         assert_eq!(label(&payload), "Desktop · Docs");
         payload.todos[2].group = Some("Desktop".into());
         assert_eq!(label(&payload), "Desktop");
@@ -8963,11 +9090,17 @@ Goals: []"#,
         let transcript = vcx.debug_bounds("transcript").expect("transcript paints");
         assert!(pinned.bottom() <= transcript.top());
         assert_eq!(summary.size.height, px(32.0));
-        let badge = vcx.debug_bounds("pinned-todo-badge").expect("prompt-style badge");
+        let badge = vcx
+            .debug_bounds("pinned-todo-badge")
+            .expect("prompt-style badge");
         assert_eq!(badge.size, gpui::size(px(20.0), px(20.0)));
-        let count = vcx.debug_bounds("pinned-todo-count").expect("readable progress count");
+        let count = vcx
+            .debug_bounds("pinned-todo-count")
+            .expect("readable progress count");
         assert!(count.right() <= summary.right());
-        let icon = vcx.debug_bounds("tool-type-icon").expect("pinned task icon paints");
+        let icon = vcx
+            .debug_bounds("tool-type-icon")
+            .expect("pinned task icon paints");
         assert_eq!(icon.size, gpui::size(px(14.0), px(14.0)));
         let task = vcx.debug_bounds("pinned-todo-task").expect("task label");
         assert!(icon.right() <= task.left());
@@ -8995,12 +9128,18 @@ Goals: []"#,
         });
         vcx.run_until_parked();
         let expanded_summary = vcx.debug_bounds("pinned-todo-summary").unwrap();
-        assert_eq!(expanded_summary, summary, "expansion preserves the compact header");
+        assert_eq!(
+            expanded_summary, summary,
+            "expansion preserves the compact header"
+        );
         assert_eq!(vcx.debug_bounds("pinned-todo-badge").unwrap(), badge);
         let paper = vcx.debug_bounds("pinned-todo-details-paper").unwrap();
         assert_eq!(paper.left(), task.left());
         assert!(paper.top() >= summary.bottom());
-        assert!(vcx.debug_bounds("todo-card").is_none(), "no tool-style card when pinned");
+        assert!(
+            vcx.debug_bounds("todo-card").is_none(),
+            "no tool-style card when pinned"
+        );
         let _expanded = vcx
             .debug_bounds("pinned-todo-expanded")
             .expect("clicking the summary expands the pinned details");
@@ -9105,12 +9244,33 @@ fn demo_items() -> Vec<Item> {
         return gmail_draft_card::fixture_items();
     }
     if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gmail-read")
+    {
+        return gmail_read_card::fixture_items();
+    }
+    if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-icons")
     {
         return [
-            "read", "write", "edit", "multiedit", "apply_patch", "bash", "ls",
-            "agentgrep", "websearch", "webfetch", "browser", "gmail", "memory",
-            "todo", "schedule", "swarm", "batch", "mcp", "custom_tool",
+            "read",
+            "write",
+            "edit",
+            "multiedit",
+            "apply_patch",
+            "bash",
+            "ls",
+            "agentgrep",
+            "websearch",
+            "webfetch",
+            "browser",
+            "gmail",
+            "memory",
+            "todo",
+            "schedule",
+            "swarm",
+            "batch",
+            "mcp",
+            "custom_tool",
         ]
         .into_iter()
         .enumerate()
