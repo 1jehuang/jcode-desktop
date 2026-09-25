@@ -442,6 +442,7 @@ fn configure_system_allocator() {
 
 fn main() {
     configure_system_allocator();
+    jcode_desktop_ui::memory::disable_transparent_huge_pages();
     if env::args_os().any(|argument| argument == "--version" || argument == "-V") {
         println!("Jcode Desktop {}", jcode_desktop_ui::build_version());
         return;

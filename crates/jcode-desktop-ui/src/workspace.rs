@@ -901,6 +901,9 @@ impl Workspace {
         // Streaming markers are local files, so only poll them for a real
         // local daemon, never in tests or offline screenshot fixtures.
         let poll_daemon_running = !cfg!(test) && !harness::screenshot_mode();
+        // Also applied by the host at startup. Repeating it here lets a
+        // hot-reloaded UI fix an older, still-running host process.
+        crate::memory::disable_transparent_huge_pages();
         let housekeeping_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
             // The first catalog read queues cached legacy edit statistics.

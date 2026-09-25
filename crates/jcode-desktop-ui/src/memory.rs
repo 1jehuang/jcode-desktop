@@ -31,6 +31,25 @@ pub fn claim_trim_slot() -> bool {
         .is_ok()
 }
 
+/// Stop khugepaged from collapsing this process's heap into 2 MiB pages.
+///
+/// With THP set to `always`, glibc arenas that hold freed-but-retained pages
+/// get collapsed into huge pages, so every partially used 2 MiB region is
+/// charged in full and `malloc_trim` can no longer return its free parts.
+/// On a private Xvfb fixture this added 36 MiB (198 vs 162 MiB RSS after
+/// four minutes). The live host carried 90 to 135 MiB of anonymous huge
+/// pages. A UI process gains nothing measurable from huge TLB entries.
+/// Setting `JCODE_DESKTOP_THP=1` keeps the system default. Idempotent.
+pub fn disable_transparent_huge_pages() {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("JCODE_DESKTOP_THP").is_none_or(|value| value != "1") {
+        // SAFETY: PR_SET_THP_DISABLE only sets a per-process mm flag.
+        unsafe {
+            libc::prctl(libc::PR_SET_THP_DISABLE, 1, 0, 0, 0);
+        }
+    }
+}
+
 /// Release free heap pages. Blocking; call from a background executor.
 pub fn trim() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -50,5 +69,17 @@ mod tests {
         assert!(claim_trim_slot());
         assert!(!claim_trim_slot());
         trim();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn huge_pages_disabled_for_process() {
+        if std::env::var_os("JCODE_DESKTOP_THP").is_some() {
+            return;
+        }
+        disable_transparent_huge_pages();
+        // SAFETY: PR_GET_THP_DISABLE reads the per-process flag.
+        let flag = unsafe { libc::prctl(libc::PR_GET_THP_DISABLE, 0, 0, 0, 0) };
+        assert_eq!(flag, 1);
     }
 }
