@@ -80,6 +80,7 @@ mod tests {
             .unwrap();
         panel.update(vcx, |panel, cx| {
             panel.items = vec![Item::User("A long prompt line\n".repeat(1000))];
+            panel.expanded_prompts.insert((0, false));
             panel.stick_to_bottom = false;
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
             cx.notify();

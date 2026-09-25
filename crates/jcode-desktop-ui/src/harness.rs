@@ -370,8 +370,7 @@ fn revive_local_runtime() -> bool {
     if !jcode_sdk::socket_accepts(&jcode_sdk::api::legacy_socket_path()) {
         return false;
     }
-    static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> =
-        std::sync::Mutex::new(None);
+    static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     {
         let Ok(mut last) = LAST_ATTEMPT.lock() else {
             return false;

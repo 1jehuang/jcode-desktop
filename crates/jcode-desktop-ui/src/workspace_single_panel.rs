@@ -9,8 +9,10 @@ fn fork_window_args(
     session_id: &str,
     own: impl Iterator<Item = std::ffi::OsString>,
 ) -> Vec<std::ffi::OsString> {
-    let mut args: Vec<std::ffi::OsString> =
-        vec!["--single-panel".into(), format!("--session={session_id}").into()];
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--single-panel".into(),
+        format!("--session={session_id}").into(),
+    ];
     args.extend(own.filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"));
     args
 }
@@ -504,8 +506,7 @@ mod tests {
         let own = ["--hot-reload", "--resume", "--session=old"].map(std::ffi::OsString::from);
         assert_eq!(
             fork_window_args("fork-1", own.into_iter()),
-            ["--single-panel", "--session=fork-1", "--hot-reload"]
-                .map(std::ffi::OsString::from)
+            ["--single-panel", "--session=fork-1", "--hot-reload"].map(std::ffi::OsString::from)
         );
     }
 

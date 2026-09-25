@@ -186,6 +186,8 @@ fn fresh_session_tall_prompt_starts_at_top_then_follows_response(cx: &mut gpui::
             "FIRST LINE\n\n{}LAST LINE",
             "middle line\n\n".repeat(100)
         )));
+        // Long prompts collapse by default. This covers an expanded tall one.
+        panel.expanded_prompts.insert((0, false));
         panel.transcript_list.scroll_to_end(); // submit normally requests the tail
         cx.notify();
     });

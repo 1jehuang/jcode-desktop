@@ -167,12 +167,7 @@ impl Panel {
                             panel.stop_voice(cx);
                             cx.stop_propagation();
                         }))
-                        .child(
-                            div()
-                                .size(px(8.))
-                                .rounded(px(2.))
-                                .bg(theme.ACCENT),
-                        ),
+                        .child(div().size(px(8.)).rounded(px(2.)).bg(theme.ACCENT)),
                 )
             })
             .when(phase != Phase::Recording, |el| {
@@ -791,7 +786,11 @@ mod tests {
                 // sends. Other phases keep the dismiss button.
                 let recording = phase == Phase::Recording;
                 let control = vcx
-                    .debug_bounds(if recording { "voice-stop" } else { "voice-cancel" })
+                    .debug_bounds(if recording {
+                        "voice-stop"
+                    } else {
+                        "voice-cancel"
+                    })
                     .unwrap();
                 assert!(control.bottom() <= card.bottom());
                 assert_eq!(vcx.debug_bounds("voice-cancel").is_some(), !recording);

@@ -42,6 +42,11 @@ fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
             "middle line\n\n".repeat(100)
         ));
         vcx.simulate_keystrokes("enter");
+        // Long prompts collapse by default. This covers an expanded tall one.
+        panel.update(vcx, |panel, cx| {
+            panel.expanded_prompts.insert((0, false));
+            cx.notify();
+        });
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
             assert_eq!(panel.transcript_list.logical_scroll_top().item_ix, 0);

@@ -653,7 +653,10 @@ mod tests {
         };
         assert!(expandable(&View::Read(message)));
         let messages = vec![Message::default(); THREAD_COLLAPSED + 1];
-        assert!(!expandable(&View::Thread { id: "t".into(), messages }));
+        assert!(!expandable(&View::Thread {
+            id: "t".into(),
+            messages
+        }));
         let messages = vec![Message::default(); THREAD_COLLAPSED + 2];
         assert!(expandable(&View::Thread {
             id: "t".into(),

@@ -85,15 +85,25 @@ fn scroll_momentum_switches_to_short_touchpad_smoothing_and_latest_cancels(
     wheel(vcx, false, 3.0);
     frame(vcx, 16);
     wheel(vcx, true, 20.0);
-    let start = panel.read_with(vcx, |panel, _| {
+    // Newly measured rows change pixel estimates, so compare logical positions.
+    let position = |panel: &Panel, _: &App| {
+        let top = panel.transcript_list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    };
+    let start = panel.read_with(vcx, |panel, cx| {
         assert_eq!(panel.transcript_wheel_glide.remaining, -20.0);
-        panel.test_scroll_offset_y()
+        position(panel, cx)
     });
     frame(vcx, 16);
-    let first = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
-    assert!(first > start && first < start + px(20.0));
+    let first = panel.read_with(vcx, position);
+    assert!(first < start);
+    // Short touchpad smoothing delivers part of the delta on the first frame.
+    panel.read_with(vcx, |panel, _| {
+        let remaining = panel.transcript_wheel_glide.remaining;
+        assert!(remaining < 0.0 && remaining > -20.0, "{remaining}");
+    });
     frame(vcx, 16);
-    assert!(panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()) > first);
+    assert!(panel.read_with(vcx, position) < first);
     wheel(vcx, false, 3.0);
     let chip = vcx.debug_bounds("jump-to-latest").unwrap();
     vcx.simulate_click(chip.center(), Default::default());
