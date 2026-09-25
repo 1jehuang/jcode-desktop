@@ -1,6 +1,6 @@
 ## What's new
 
-### Jcode Desktop 0.3.2
+### Jcode Desktop 0.3.3
 
 Voice everywhere, a redesigned first launch, and a project-aware sidebar
 

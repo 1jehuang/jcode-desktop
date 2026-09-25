@@ -17,8 +17,10 @@ import tomllib
 
 
 TARGET = "x86_64-unknown-freebsd"
-REVISION = "bc538def4545534201bbfcac4e95ac34ea6501b6"
-SOURCE = f"git+https://github.com/zed-industries/zed?rev={REVISION}#{REVISION}"
+# The shared host/UI GPUI fork. Its gpui.rs is byte-identical to the previously
+# reviewed upstream revision, so the same before/after hashes still apply.
+REVISION = "ff1a26d02a7326d679583e63fdd4d509fc571291"
+SOURCE = f"git+https://github.com/1jehuang/zed?rev={REVISION}#{REVISION}"
 BEFORE_SHA256 = "7da10d7a7896fabd1bf0a29a989c433b946f322a3355dbd6cd1866243b1ca680"
 AFTER_SHA256 = "1b4154a26a2b84b978cf07903f459398d4c763901be7b7fd570423168d01b972"
 RELATIVE_SOURCE = Path("crates/gpui/src/gpui.rs")

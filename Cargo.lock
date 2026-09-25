@@ -4323,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4341,18 +4341,18 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-api"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "gpui",
 ]
 
 [[package]]
 name = "jcode-desktop-motion"
-version = "0.3.2"
+version = "0.3.3"
 
 [[package]]
 name = "jcode-desktop-ui"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "arboard",
