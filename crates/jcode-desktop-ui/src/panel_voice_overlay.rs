@@ -24,6 +24,15 @@ impl Panel {
         if self.voice.global_capture && !window.is_window_active() {
             return None;
         }
+        // The sent prompt already appears in the transcript. Never add a
+        // boxy in-panel "Sent to agent" card on top of it.
+        if self.voice.global_capture
+            && self.voice.phase == Phase::Idle
+            && self.voice.error.is_none()
+            && self.voice.decision.is_some()
+        {
+            return None;
+        }
         if self.voice.trace.is_some() && !self.voice.trace_expanded {
             return Some(self.render_voice_pills(window, cx));
         }
@@ -616,7 +625,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn global_sent_pill_is_in_panel_only_while_focused(cx: &mut gpui::TestAppContext) {
+    fn global_sent_confirmation_never_shows_an_in_panel_card(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(vcx, |panel, cx| {
             panel.voice.global_capture = true;
@@ -626,8 +635,8 @@ mod tests {
         vcx.update(|window, _| window.activate_window());
         vcx.run_until_parked();
         assert!(
-            vcx.debug_bounds("voice-overlay").is_some(),
-            "focused: in-panel pill"
+            vcx.debug_bounds("voice-overlay").is_none(),
+            "focused: the transcript already shows the sent prompt"
         );
         vcx.deactivate_window();
         panel.update(vcx, |_, cx| cx.notify());
