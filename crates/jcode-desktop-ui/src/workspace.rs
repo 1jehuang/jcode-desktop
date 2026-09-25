@@ -2072,6 +2072,10 @@ impl Workspace {
                 {
                     self.sessions.push(session.clone());
                 }
+                if self.single_panel {
+                    self.open_fork_window(&session_id);
+                    return true;
+                }
                 let inserted = self.open_session(session, cx);
                 self.set_active(inserted, cx);
                 self.focus_pending = true;

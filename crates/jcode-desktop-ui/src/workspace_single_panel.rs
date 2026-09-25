@@ -3,7 +3,48 @@
 //! handles legacy/restored layouts that already contain additional surfaces.
 use super::*;
 
+/// Launch arguments for a forked session's own single-panel window. The shared
+/// single-panel host receives this launch and opens the fork beside this one.
+fn fork_window_args(
+    session_id: &str,
+    own: impl Iterator<Item = std::ffi::OsString>,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["--single-panel".into(), format!("--session={session_id}").into()];
+    args.extend(own.filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"));
+    args
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static FORK_WINDOWS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl Workspace {
+    /// A fork never replaces this window's chat. It opens in a new window.
+    pub(super) fn open_fork_window(&self, session_id: &str) {
+        #[cfg(test)]
+        {
+            FORK_WINDOWS.with(|log| log.borrow_mut().push(session_id.to_owned()));
+        }
+        #[cfg(not(test))]
+        {
+            if harness::screenshot_mode() {
+                return;
+            }
+            let Ok(executable) = std::env::current_exe() else {
+                eprintln!("fork: cannot locate the desktop executable");
+                return;
+            };
+            let mut command = std::process::Command::new(executable);
+            command.args(fork_window_args(session_id, std::env::args_os().skip(1)));
+            if let Err(error) = command.spawn() {
+                eprintln!("fork: could not open forked window: {error}");
+            }
+        }
+    }
+
     pub(super) fn single_panel_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active == 0 {
             return;
@@ -96,6 +137,7 @@ impl Workspace {
             // actions. The host still handles Ctrl+R, and the panel owns chat,
             // model, login, clipboard, image and transcript shortcuts.
             .on_action(cx.listener(Self::close_panel))
+            .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_model_window_or_picker))
@@ -430,5 +472,56 @@ mod tests {
     #[gpui::test]
     fn single_panel_changelog_reuses_child_and_preserves_source(cx: &mut gpui::TestAppContext) {
         assert_separate_utility_window(Utility::Changelog, cx);
+    }
+
+    #[test]
+    fn fork_window_launches_the_fork_in_the_shared_single_panel_host() {
+        let own = ["--hot-reload", "--resume", "--session=old"].map(std::ffi::OsString::from);
+        assert_eq!(
+            fork_window_args("fork-1", own.into_iter()),
+            ["--single-panel", "--session=fork-1", "--hot-reload"]
+                .map(std::ffi::OsString::from)
+        );
+    }
+
+    #[gpui::test]
+    fn single_panel_super_space_forks_into_a_new_window(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|window, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.single_panel = true;
+            w.set_test_bridge(bridge);
+            w.push_test_panel("source-session", cx);
+            w.focus_active(window, cx);
+            w
+        });
+        vcx.run_until_parked();
+        vcx.simulate_input("keep my draft");
+        vcx.simulate_keystrokes("super-space");
+        vcx.run_until_parked();
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Fork { session_id }) if session_id == "source-session")
+        );
+        FORK_WINDOWS.with(|log| log.borrow_mut().clear());
+        workspace.update(vcx, |w, cx| {
+            w.apply(
+                Update::SessionForked {
+                    session: super::super::tests::session_info("fork-1", Some("Fork")),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert_eq!(FORK_WINDOWS.with(|log| log.borrow().clone()), ["fork-1"]);
+        workspace.read_with(vcx, |w, cx| {
+            assert_eq!(w.slots.len(), 1, "the source chat stays in place");
+            assert_eq!(w.active, 0);
+            assert_eq!(w.slots[0].panel.read(cx).session_id, "source-session");
+            assert_eq!(
+                w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+                "keep my draft"
+            );
+        });
     }
 }
