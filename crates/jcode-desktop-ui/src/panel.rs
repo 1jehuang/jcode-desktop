@@ -49,6 +49,8 @@ use scroll_motion::WheelGlide;
 mod composer;
 #[path = "panel_diff.rs"]
 mod diff_review;
+#[path = "panel_effort.rs"]
+mod effort_switch;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_pane.rs"]
@@ -297,6 +299,8 @@ pub struct Panel {
     pub auth_method: Option<String>,
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
+    /// Effort requests the runtime has not answered yet.
+    pending_effort: Option<effort_switch::PendingEffort>,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
     response_stats: response_stats::Tracker,
@@ -890,6 +894,7 @@ impl Panel {
             provider: usage_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
             reasoning_effort: usage_fixture.then(|| "high".into()),
+            pending_effort: None,
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
             items: demo_items(),
@@ -2532,18 +2537,12 @@ impl Panel {
             self.items
                 .push(Item::Assistant(format!("Switching model to `{model}`…")));
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
-            const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-            if EFFORTS.contains(&effort) {
+            let effort = effort.to_ascii_lowercase();
+            if self.request_effort(&effort, cx) {
                 let input = self.input.clone();
                 cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
-                self.run_session_operation(
-                    SessionOperation::SetEffort(effort.to_string()),
-                    format!("Reasoning effort set to `{effort}`."),
-                );
-            } else {
-                self.items.push(Item::Error(format!(
-                    "Usage: `/effort <{}>`",
-                    EFFORTS.join("|")
+                self.items.push(Item::Assistant(format!(
+                    "Reasoning effort set to `{effort}`."
                 )));
             }
         } else if let Some(title) = trimmed.strip_prefix("/rename ").map(str::trim) {
@@ -2651,9 +2650,21 @@ impl Panel {
                         }).detach();
                     }
                 }
-                "/effort" => self.items.push(Item::Assistant(
-                    "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
-                )),
+                "/effort" => {
+                    let ladder = self.effort_ladder();
+                    let current = self.reasoning_effort.as_deref().unwrap_or("default");
+                    let keys = crate::effort::bound_keys_label(cx)
+                        .map(|keys| format!(" or {keys}"))
+                        .unwrap_or_default();
+                    self.items.push(Item::Assistant(if ladder.is_empty() {
+                        "Reasoning effort is not available for this model.".into()
+                    } else {
+                        format!(
+                            "Effort: `{current}`. Use `/effort <{}>`{keys} to change it.",
+                            ladder.join("|")
+                        )
+                    }));
+                }
                 "/rename" => self.items.push(Item::Error(
                     "Usage: `/rename <session name>` or `/rename --clear`.".into(),
                 )),
@@ -3157,7 +3168,7 @@ impl Panel {
                 }
                 // Identity events always carry the current effort, and `None`
                 // means the provider has none, so a stale label never lingers.
-                self.reasoning_effort = reasoning_effort.clone();
+                self.identity_effort(reasoning_effort.clone());
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
                 // current model and must not wipe a still-correct label.
@@ -3168,6 +3179,7 @@ impl Panel {
                         input.set_current_model(self.model.clone(), cx)
                     });
                 }
+                self.sync_effort_menu(cx);
             }
             ApiEvent::RuntimeInfo {
                 provider,
@@ -3179,7 +3191,7 @@ impl Panel {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                self.reasoning_effort = reasoning_effort.clone();
+                self.identity_effort(reasoning_effort.clone());
                 if model.is_some() {
                     self.model = model.clone();
                 }
@@ -3191,6 +3203,7 @@ impl Panel {
                     input.set_model_routes(models, routes, self.model.clone(), cx);
                     input.set_model_logo_providers(self.model_logo_providers.clone(), cx);
                 });
+                self.sync_effort_menu(cx);
             }
             ApiEvent::TokenUsage {
                 input,
@@ -4740,6 +4753,16 @@ impl Render for Panel {
             .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
                 panel.toggle_voice(cx);
             }))
+            .on_action(
+                cx.listener(|panel, _: &crate::effort::IncreaseEffort, _, cx| {
+                    panel.step_effort(1, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|panel, _: &crate::effort::DecreaseEffort, _, cx| {
+                    panel.step_effort(-1, cx);
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);

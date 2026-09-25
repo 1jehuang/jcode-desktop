@@ -138,6 +138,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", Submit, Some("PromptInput")),
         KeyBinding::new("ctrl-enter", Queue, Some("PromptInput")),
     ]);
+    // Registered after the composer keys so the effort chords outrank word
+    // motion in a chat composer. See `effort::bind_keys` for the fallthrough.
+    crate::effort::bind_keys(cx);
 }
 
 pub struct PromptInput {
@@ -162,6 +165,9 @@ pub struct PromptInput {
     attachments: Vec<Attachment>,
     model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
     attachment_notice: Option<SharedString>,
+    /// Short-lived feedback such as `Effort: High`, cleared by a timer.
+    transient_notice: Option<SharedString>,
+    transient_notice_generation: u64,
     /// The newest paste briefly appears at reading size, then flies into its
     /// thumbnail. The index keeps simultaneous attachments independent.
     attachment_preview: Option<paste_preview::Preview>,
@@ -176,6 +182,9 @@ pub struct PromptInput {
     model_details: HashMap<String, model_menu::ModelDetails>,
     expanded_model_groups: HashSet<String>,
     current_model: Option<String>,
+    /// Levels the serving model accepts, for the `/effort` menu.
+    effort_ladder: Vec<&'static str>,
+    current_effort: Option<String>,
     command_scroll: gpui::ListState,
     suggestions_revision: u64,
     suggestions_cache: RefCell<Option<model_picker::SuggestionsCache>>,
@@ -236,6 +245,21 @@ struct CommandSuggestion {
 }
 
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
+    command_suggestions_with_efforts(input, models, EffortMenu::default())
+}
+
+/// What the `/effort` menu offers: the serving model's ladder and its level.
+#[derive(Clone, Copy, Default)]
+struct EffortMenu<'a> {
+    ladder: Option<&'a [&'static str]>,
+    current: Option<&'a str>,
+}
+
+fn command_suggestions_with_efforts(
+    input: &str,
+    models: &[String],
+    efforts: EffortMenu<'_>,
+) -> Vec<CommandSuggestion> {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') || trimmed.contains('\n') {
         return Vec::new();
@@ -264,12 +288,19 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
             .split_once(' ')
             .map(|(_, query)| query.trim().to_ascii_lowercase())
             .unwrap_or_default();
-        return ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-            .into_iter()
+        let fallback = crate::effort::ladder(None, None);
+        let ladder = efforts.ladder.unwrap_or(&fallback);
+        return ladder
+            .iter()
+            .copied()
             .filter(|effort| query.is_empty() || effort.contains(&query))
             .map(|effort| CommandSuggestion {
                 value: format!("/effort {effort}"),
-                help: "Set reasoning effort".into(),
+                help: if efforts.current == Some(effort) {
+                    "Current".into()
+                } else {
+                    "Set reasoning effort".into()
+                },
                 detail: None,
                 header: None,
                 toggle: None,
@@ -474,6 +505,8 @@ impl PromptInput {
             attachments: Vec::new(),
             model_menu_draft: None,
             attachment_notice: None,
+            transient_notice: None,
+            transient_notice_generation: 0,
             attachment_preview: None,
             preview_panel_bounds: Default::default(),
             on_submit: Box::new(on_submit),
@@ -486,6 +519,8 @@ impl PromptInput {
             model_details: HashMap::new(),
             expanded_model_groups: HashSet::new(),
             current_model: None,
+            effort_ladder: crate::effort::ladder(None, None),
+            current_effort: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
             suggestions_cache: RefCell::new(None),
@@ -707,7 +742,14 @@ impl PromptInput {
                 })
                 .collect()
             } else {
-                command_suggestions(&self.content, &self.command_models)
+                command_suggestions_with_efforts(
+                    &self.content,
+                    &self.command_models,
+                    EffortMenu {
+                        ladder: Some(&self.effort_ladder),
+                        current: self.current_effort.as_deref(),
+                    },
+                )
             };
         suggestions
             .into_iter()
@@ -1151,6 +1193,56 @@ impl PromptInput {
             self.attachment_preview = None;
         }
         self.set_content("/effort ".into(), cx);
+        // Open on the current level so Enter keeps it and arrows step from it.
+        if let Some(index) = self
+            .command_suggestions()
+            .iter()
+            .position(|row| row.help == "Current")
+        {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+    }
+
+    /// Short feedback under the composer that clears itself, e.g. after an
+    /// effort key. A newer notice restarts the timer.
+    pub fn set_transient_notice(&mut self, notice: String, cx: &mut Context<Self>) {
+        self.transient_notice_generation += 1;
+        let generation = self.transient_notice_generation;
+        self.transient_notice = Some(notice.into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(2_500))
+                .await;
+            let _ = this.update(cx, |input, cx| {
+                if input.transient_notice_generation == generation {
+                    input.transient_notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transient_notice(&self) -> Option<&str> {
+        self.transient_notice.as_deref()
+    }
+
+    /// The serving model's effort ladder and level, for the `/effort` menu.
+    pub fn set_effort_state(
+        &mut self,
+        ladder: Vec<&'static str>,
+        current: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.effort_ladder != ladder || self.current_effort != current {
+            self.effort_ladder = ladder;
+            self.current_effort = current;
+            self.suggestions_revision += 1;
+            cx.notify();
+        }
     }
 
     pub(crate) fn effort_menu_open(&self) -> bool {
@@ -2166,14 +2258,20 @@ impl Render for PromptInput {
                         .children(attachments),
                 )
             })
-            .children(self.attachment_notice.clone().map(|notice| {
-                div()
-                    .px_3()
-                    .pt_1()
-                    .text_size(px(10.0))
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(notice)
-            }))
+            .children(
+                self.attachment_notice
+                    .clone()
+                    .or_else(|| self.transient_notice.clone())
+                    .map(|notice| {
+                        div()
+                            .debug_selector(|| "composer-notice".into())
+                            .px_3()
+                            .pt_1()
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(notice)
+                    }),
+            )
             .child(
                 div()
                     .w_full()

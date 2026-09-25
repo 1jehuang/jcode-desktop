@@ -126,6 +126,12 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    /// A reasoning effort request finished. `error` is the provider's refusal.
+    EffortSettled {
+        session_id: String,
+        effort: String,
+        error: Option<String>,
+    },
     /// A per-session connection died.
     SessionLost {
         session_id: String,
@@ -1686,12 +1692,26 @@ fn session_worker_with_connector(
                         ) {
                             recovery.supersede();
                         }
+                        // Effort settles the panel's optimistic label either
+                        // way, so its outcome is reported rather than only a
+                        // failure. The identity broadcast that follows carries
+                        // the level the provider actually applied.
+                        if let SessionOperation::SetEffort(effort) = &operation {
+                            let error = client
+                                .set_reasoning_effort(real_id, effort)
+                                .err()
+                                .map(|error| error.to_string());
+                            let _ = updates.send(Update::EffortSettled {
+                                session_id: session_id.clone(),
+                                effort: effort.clone(),
+                                error,
+                            });
+                            continue;
+                        }
                         let result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
                             SessionOperation::Compact => client.compact(real_id).map(|_| ()),
-                            SessionOperation::SetEffort(effort) => {
-                                client.set_reasoning_effort(real_id, &effort)
-                            }
+                            SessionOperation::SetEffort(_) => Ok(()),
                             SessionOperation::Rename(title) => {
                                 client.rename_session(real_id, title)
                             }

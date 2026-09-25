@@ -2184,6 +2184,20 @@ impl Workspace {
                 }
             }
             Update::MessageSubmitted { .. } => {}
+            Update::EffortSettled {
+                session_id,
+                effort,
+                error,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.effort_settled(&effort, error.as_deref(), cx);
+                        });
+                        break;
+                    }
+                }
+            }
             Update::CommandFailed { session_id, reason } => {
                 if session_id == Panel::STARTUP_SESSION_ID {
                     self.remotes.startup_failed = true;
