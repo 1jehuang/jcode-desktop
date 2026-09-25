@@ -55,9 +55,19 @@ impl Workspace {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                         })
                         .hover(|el| el.bg(Theme::global().HEADER_BG))
-                        .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(
-                            format!("Workspace {} · {count} {}", row + 1, if count == 1 { "chat" } else { "chats" }).into()
-                        )).into())
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| {
+                                remotes::HeaderTooltip(
+                                    format!(
+                                        "Workspace {} · {count} {}",
+                                        row + 1,
+                                        if count == 1 { "chat" } else { "chats" }
+                                    )
+                                    .into(),
+                                )
+                            })
+                            .into()
+                        })
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {

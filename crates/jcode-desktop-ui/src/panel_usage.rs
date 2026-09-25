@@ -50,7 +50,9 @@ fn meter(
         .text_color(theme.TEXT_DIM)
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
         .child(div().min_w_0().truncate().child(name))
-        .when(!value.is_empty(), |el| el.child(div().flex_none().child(value)))
+        .when(!value.is_empty(), |el| {
+            el.child(div().flex_none().child(value))
+        })
         .children(used.map(|used| {
             let color = if used >= 90. {
                 theme.ERROR
@@ -105,19 +107,55 @@ fn ring_path(
     if fraction >= 0.999 {
         // Two half arcs per circle: a single full-turn arc is degenerate.
         builder.move_to(at(outer, 0.));
-        builder.arc_to(gpui::point(px(outer), px(outer)), px(0.), false, true, at(outer, 0.5));
-        builder.arc_to(gpui::point(px(outer), px(outer)), px(0.), false, true, at(outer, 0.));
+        builder.arc_to(
+            gpui::point(px(outer), px(outer)),
+            px(0.),
+            false,
+            true,
+            at(outer, 0.5),
+        );
+        builder.arc_to(
+            gpui::point(px(outer), px(outer)),
+            px(0.),
+            false,
+            true,
+            at(outer, 0.),
+        );
         builder.close();
         builder.move_to(at(inner, 0.));
-        builder.arc_to(gpui::point(px(inner), px(inner)), px(0.), false, false, at(inner, 0.5));
-        builder.arc_to(gpui::point(px(inner), px(inner)), px(0.), false, false, at(inner, 0.));
+        builder.arc_to(
+            gpui::point(px(inner), px(inner)),
+            px(0.),
+            false,
+            false,
+            at(inner, 0.5),
+        );
+        builder.arc_to(
+            gpui::point(px(inner), px(inner)),
+            px(0.),
+            false,
+            false,
+            at(inner, 0.),
+        );
         builder.close();
     } else {
         let large = fraction > 0.5;
         builder.move_to(at(outer, 0.));
-        builder.arc_to(gpui::point(px(outer), px(outer)), px(0.), large, true, at(outer, fraction));
+        builder.arc_to(
+            gpui::point(px(outer), px(outer)),
+            px(0.),
+            large,
+            true,
+            at(outer, fraction),
+        );
         builder.line_to(at(inner, fraction));
-        builder.arc_to(gpui::point(px(inner), px(inner)), px(0.), large, false, at(inner, 0.));
+        builder.arc_to(
+            gpui::point(px(inner), px(inner)),
+            px(0.),
+            large,
+            false,
+            at(inner, 0.),
+        );
         builder.close();
     }
     builder.build().ok()
@@ -332,7 +370,11 @@ impl Panel {
                 let detail = format!(
                     "{}: {label}{}.{reset}",
                     account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
-                    if percent.is_some() { " used" } else { " usage not reported" },
+                    if percent.is_some() {
+                        " used"
+                    } else {
+                        " usage not reported"
+                    },
                 );
                 row = row.child(meter(
                     format!("panel-limit-{index}"),
@@ -444,11 +486,7 @@ mod tests {
                         row.size.height >= px(22.) && row.size.height <= px(90.),
                         "width={width}, status={status}: {row:?}"
                     );
-                    for selector in [
-                        "panel-build",
-                        "panel-status",
-                        "panel-usage",
-                    ] {
+                    for selector in ["panel-build", "panel-status", "panel-usage"] {
                         if let Some(child) = vcx.debug_bounds(selector) {
                             assert!(child.top() >= row.top(), "{selector}: {child:?}");
                             assert!(child.bottom() <= row.bottom(), "{selector}: {child:?}");
@@ -532,9 +570,18 @@ mod tests {
 
     #[test]
     fn metered_source_keys_only_for_per_token_routes() {
-        assert_eq!(metered_source_key(Some("anthropic"), Some("api key")).as_deref(), Some("claude:api-key"));
-        assert_eq!(metered_source_key(Some("openai"), Some("api key")).as_deref(), Some("openai:api-key"));
-        assert_eq!(metered_source_key(Some("openrouter"), None).as_deref(), Some("openrouter"));
+        assert_eq!(
+            metered_source_key(Some("anthropic"), Some("api key")).as_deref(),
+            Some("claude:api-key")
+        );
+        assert_eq!(
+            metered_source_key(Some("openai"), Some("api key")).as_deref(),
+            Some("openai:api-key")
+        );
+        assert_eq!(
+            metered_source_key(Some("openrouter"), None).as_deref(),
+            Some("openrouter")
+        );
         assert_eq!(metered_source_key(Some("anthropic"), Some("oauth")), None);
         assert_eq!(metered_source_key(Some("openai"), Some("oauth")), None);
         assert_eq!(metered_source_key(Some("copilot"), None), None);

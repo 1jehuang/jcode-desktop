@@ -121,12 +121,18 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
         // by the exhausted space (4.5px at 640x480 with the default metrics).
         let activity = vcx.debug_bounds("transcript-activity").unwrap();
         let mut expected = initial;
-        expected.origin.y = initial.top().max(activity.bottom() + px(TRANSCRIPT_BOTTOM_GAP));
+        expected.origin.y = initial
+            .top()
+            .max(activity.bottom() + px(TRANSCRIPT_BOTTOM_GAP));
         let small = vcx.debug_bounds("prompt-input").unwrap();
         assert_eq!(small, expected);
         let first_row = vcx.debug_bounds("transcript-row-0").unwrap();
         let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
-        assert_eq!(first_row.top(), viewport.top(), "small response must not scroll");
+        assert_eq!(
+            first_row.top(),
+            viewport.top(),
+            "small response must not scroll"
+        );
         let mut previous = small.top();
         for paragraphs in [10, 20, 40] {
             panel.update(vcx, |panel, cx| {

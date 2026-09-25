@@ -27,17 +27,29 @@ static SEMANTICS: LazyLock<SyntaxTheme> = LazyLock::new(|| {
         ("string", 2),
         ("comment", 3),
         ("constant.numeric", 4),
-        ("entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, entity.name.trait, entity.name.namespace, support.type, support.class", 5),
+        (
+            "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, entity.name.trait, entity.name.namespace, support.type, support.class",
+            5,
+        ),
         ("punctuation", 6),
-        ("entity.name.function, support.function, variable.function", 7),
+        (
+            "entity.name.function, support.function, variable.function",
+            7,
+        ),
         ("variable, meta.object-literal.key, support.variable", 8),
         ("keyword.control", 9),
         ("constant.language, variable.language", 1),
-        ("constant.other, variable.other.constant, entity.name.constant", 10),
+        (
+            "constant.other, variable.other.constant, entity.name.constant",
+            10,
+        ),
         ("entity.name.tag", 11),
         ("entity.other.attribute-name", 12),
         ("keyword.operator", 6),
-        ("keyword.operator.word, keyword.operator.new, keyword.operator.expression", 1),
+        (
+            "keyword.operator.word, keyword.operator.new, keyword.operator.expression",
+            1,
+        ),
         ("string punctuation", 2),
         ("comment punctuation", 3),
     ] {

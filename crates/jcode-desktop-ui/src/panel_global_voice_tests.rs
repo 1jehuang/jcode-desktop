@@ -43,10 +43,7 @@ fn global_voice_pill_labels_jev_decisions(cx: &mut gpui::TestAppContext) {
 
         panel.voice.phase = Phase::Idle;
         for (decision, title) in [
-            (
-                "Jev chose: Coding agent · Sent now",
-                "Jev → Coding agent",
-            ),
+            ("Jev chose: Coding agent · Sent now", "Jev → Coding agent"),
             ("Jev chose: Quick action · Navigation", "Jev → Quick action"),
             ("Jev chose: Quick action · New session", "Jev → New session"),
             (

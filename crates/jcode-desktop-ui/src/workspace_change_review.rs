@@ -72,13 +72,7 @@ impl Workspace {
         let working_dir = source.working_dir.clone();
         if self.single_panel {
             let panel = cx.new(|cx| {
-                Panel::new_change_review(
-                    session_id,
-                    working_dir,
-                    request,
-                    self.bridge.clone(),
-                    cx,
-                )
+                Panel::new_change_review(session_id, working_dir, request, self.bridge.clone(), cx)
             });
             match panel_window::open_panel_window(
                 panel,

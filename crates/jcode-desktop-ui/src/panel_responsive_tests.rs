@@ -119,7 +119,10 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             let model = vcx.debug_bounds("panel-model").unwrap();
             let login = vcx.debug_bounds("panel-login").unwrap();
             assert!(model.left() >= identity.left() && login.right() <= identity.right());
-            assert!(model.right() <= login.left(), "identity controls must not overlap");
+            assert!(
+                model.right() <= login.left(),
+                "identity controls must not overlap"
+            );
             let build = vcx.debug_bounds("panel-build").unwrap();
             assert!(
                 login.right() <= build.left() || login.bottom() <= build.top(),

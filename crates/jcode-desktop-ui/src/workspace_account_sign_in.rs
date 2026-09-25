@@ -111,7 +111,9 @@ impl Stage {
 
 fn looks_like_email(text: &str) -> bool {
     let text = text.trim();
-    let Some((local, domain)) = text.split_once('@') else { return false };
+    let Some((local, domain)) = text.split_once('@') else {
+        return false;
+    };
     !local.is_empty()
         && domain.contains('.')
         && !domain.starts_with('.')
@@ -149,9 +151,12 @@ impl State {
         choices.push(Choice::Theme);
         match self.stage {
             Stage::Complete { .. } => {}
-            Stage::Code { .. } | Stage::Verifying { .. } => {
-                choices.extend([Choice::Field, Choice::Primary, Choice::OpenGmail, Choice::StartOver])
-            }
+            Stage::Code { .. } | Stage::Verifying { .. } => choices.extend([
+                Choice::Field,
+                Choice::Primary,
+                Choice::OpenGmail,
+                Choice::StartOver,
+            ]),
             _ if self.connected => {}
             _ => choices.extend([Choice::Field, Choice::Primary]),
         }
@@ -172,7 +177,10 @@ impl State {
             .enumerate()
             .filter(|(_, candidate)| {
                 let ids = candidate.provider_ids();
-                ids.is_empty() || ids.iter().any(|id| !self.in_jcode.iter().any(|known| known == id))
+                ids.is_empty()
+                    || ids
+                        .iter()
+                        .any(|id| !self.in_jcode.iter().any(|known| known == id))
             })
             .map(|(index, _)| index)
             .collect()
@@ -247,7 +255,9 @@ impl Workspace {
         });
         self.account_sign_in.detect_task = Some(cx.spawn(async move |this, cx| {
             let candidates = detect.await;
-            let _ = this.update(cx, |this, cx| this.set_account_import_candidates(candidates, cx));
+            let _ = this.update(cx, |this, cx| {
+                this.set_account_import_candidates(candidates, cx)
+            });
         }));
     }
 
@@ -304,17 +314,24 @@ impl Workspace {
             cx.spawn(async move |this, cx| {
                 let Some(sample) = sample.await else { return };
                 let _ = this.update(cx, |this, cx| {
-                    let Some(demo) = this.account_sign_in.demo.as_mut() else { return };
+                    let Some(demo) = this.account_sign_in.demo.as_mut() else {
+                        return;
+                    };
                     demo.panel.update(cx, |panel, cx| {
                         panel.title = format!("From {}", sample.source).into();
                         cx.notify();
                     });
-                    demo._replay = crate::panel::demo_replay::run(demo.panel.clone(), sample.turns, cx);
+                    demo._replay =
+                        crate::panel::demo_replay::run(demo.panel.clone(), sample.turns, cx);
                     demo._load = None;
                 });
             })
         });
-        self.account_sign_in.demo = Some(Demo { panel, _replay: replay, _load: load });
+        self.account_sign_in.demo = Some(Demo {
+            panel,
+            _replay: replay,
+            _load: load,
+        });
     }
 
     /// Right-half action: import the checked logins, then enter the workspace.
@@ -329,7 +346,7 @@ impl Workspace {
                         &candidates,
                         &selected,
                     )
-                        .await
+                    .await
                 })
             });
             self.account_sign_in.import_task = Some(cx.spawn(async move |this, cx| {
@@ -356,7 +373,12 @@ impl Workspace {
         self.finish_account_sign_in(window, cx);
     }
 
-    fn activate_account_choice(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_account_choice(
+        &mut self,
+        choice: Choice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match choice {
             Choice::Field => self.focus_account_input(window, cx),
             Choice::Primary => self.account_sign_in_primary(window, cx),
@@ -388,7 +410,11 @@ impl Workspace {
 
     /// Back to the email field, keeping what was typed.
     fn reset_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let email = self.account_sign_in.stage.code_step().map(|(email, _)| email.to_owned());
+        let email = self
+            .account_sign_in
+            .stage
+            .code_step()
+            .map(|(email, _)| email.to_owned());
         self.account_sign_in.task = None;
         self.account_sign_in.stage = Stage::Welcome;
         self.account_sign_in.error = None;
@@ -407,22 +433,31 @@ impl Workspace {
         input
     }
 
-    fn new_account_input(&mut self, content: String, cx: &mut Context<Self>) -> Entity<PromptInput> {
+    fn new_account_input(
+        &mut self,
+        content: String,
+        cx: &mut Context<Self>,
+    ) -> Entity<PromptInput> {
         let code = self.account_sign_in.stage.code_step().is_some();
         let submit = cx.weak_entity();
         let change = cx.weak_entity();
         cx.new(|cx| {
             let mut input = PromptInput::new(
                 cx,
-                if code { "6-digit code" } else { "you@example.com" },
+                if code {
+                    "6-digit code"
+                } else {
+                    "you@example.com"
+                },
                 move |text, _, window, app| {
                     // Deferred: the field is still mid-update when Enter fires.
                     let submit = submit.clone();
                     let handle = window.window_handle();
                     app.defer(move |app| {
                         let _ = handle.update(app, |_, window, app| {
-                            let _ = submit
-                                .update(app, |this, cx| this.submit_account_field(text, window, cx));
+                            let _ = submit.update(app, |this, cx| {
+                                this.submit_account_field(text, window, cx)
+                            });
                         });
                     });
                 },
@@ -454,7 +489,12 @@ impl Workspace {
         })
     }
 
-    fn replace_account_input(&mut self, content: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn replace_account_input(
+        &mut self,
+        content: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = self.new_account_input(content, cx);
         let focus = input.read(cx).focus_handle.clone();
         self.account_sign_in.input = Some(input);
@@ -478,7 +518,8 @@ impl Workspace {
                 if digits.len() == 6 {
                     self.verify_account_code(digits, cx);
                 } else {
-                    self.account_sign_in.error = Some("Enter the 6-digit code from the email.".into());
+                    self.account_sign_in.error =
+                        Some("Enter the 6-digit code from the email.".into());
                     if let Some(input) = self.account_sign_in.input.clone() {
                         input.update(cx, |input, cx| input.set_content(text, cx));
                     }
@@ -506,7 +547,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn start_account_sign_in(&mut self, email: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_account_sign_in(
+        &mut self,
+        email: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let email = email.trim().to_owned();
         self.account_sign_in.keyboard_choice = None;
         if !looks_like_email(&email) {
@@ -547,7 +593,8 @@ impl Workspace {
                 auth::start_email_with_api_base(&reqwest::Client::new(), &api_base, &address).await
             });
             #[cfg(not(test))]
-            let result = network(async { auth::start_email(&reqwest::Client::new(), &address).await });
+            let result =
+                network(async { auth::start_email(&reqwest::Client::new(), &address).await });
             result?.map_err(|error| auth::email_start_error_message(&error))
         });
         self.account_sign_in.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -584,7 +631,10 @@ impl Workspace {
             self.account_sign_in_approved(email, cx);
             return;
         };
-        self.account_sign_in.stage = Stage::Verifying { email: email.clone(), login: Some(login.clone()) };
+        self.account_sign_in.stage = Stage::Verifying {
+            email: email.clone(),
+            login: Some(login.clone()),
+        };
         let pending = login.clone();
         let request = cx.background_executor().spawn(async move {
             network(async { auth::verify_email(&reqwest::Client::new(), &pending, &code).await })
@@ -594,7 +644,10 @@ impl Workspace {
             let _ = this.update(cx, |this, cx| {
                 this.account_sign_in.task = None;
                 let retry = |this: &mut Self, message: String, cx: &mut Context<Self>| {
-                    this.account_sign_in.stage = Stage::Code { email: email.clone(), login: Some(login.clone()) };
+                    this.account_sign_in.stage = Stage::Code {
+                        email: email.clone(),
+                        login: Some(login.clone()),
+                    };
                     if let Some(input) = this.account_sign_in.input.clone() {
                         input.update(cx, |input, cx| input.set_content(String::new(), cx));
                     }
@@ -624,7 +677,8 @@ impl Workspace {
                     Ok(Ok(EmailCodeResult::Expired)) => {
                         this.account_sign_in.stage = Stage::Welcome;
                         this.account_sign_in.input = None;
-                        this.account_sign_in.input = Some(this.new_account_input(email.clone(), cx));
+                        this.account_sign_in.input =
+                            Some(this.new_account_input(email.clone(), cx));
                         this.account_sign_in_failed(
                             "That code expired. Send a new one, or skip for now.".into(),
                             cx,
@@ -641,7 +695,9 @@ impl Workspace {
 
     /// Gmail, filtered to our sign-in email and including Spam.
     fn open_account_gmail(&mut self, cx: &mut Context<Self>) {
-        let Some((email, _)) = self.account_sign_in.stage.code_step() else { return };
+        let Some((email, _)) = self.account_sign_in.stage.code_step() else {
+            return;
+        };
         let url = auth::gmail_search_link(email);
         #[cfg(test)]
         {
@@ -973,12 +1029,18 @@ impl Workspace {
                             this.hover_account_theme(preset, cx);
                         }
                     }))
-                    .on_click(cx.listener(move |this, _, _, cx| this.pick_account_theme(preset, cx)))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.pick_account_theme(preset, cx)),
+                    )
                     .child(theme_swatch(preset, preset == active))
                     .child(
                         div()
                             .text_size(px(11.0))
-                            .text_color(if preset == active { theme.TEXT } else { theme.TEXT_DIM })
+                            .text_color(if preset == active {
+                                theme.TEXT
+                            } else {
+                                theme.TEXT_DIM
+                            })
                             .child(preset.label()),
                     ),
             );
@@ -989,10 +1051,19 @@ impl Workspace {
     /// The right half: the live chat replay, fully visible, with the sign-in
     /// folder tab clipped to the right edge. Trying to type docks the tab
     /// over the demo composer so the chat input becomes the email field.
-    fn account_onboarding_continue(&mut self, narrow: bool, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn account_onboarding_continue(
+        &mut self,
+        narrow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
         let measured = self.account_sign_in.right_bounds.clone();
-        let demo = self.account_sign_in.demo.as_ref().map(|demo| demo.panel.clone());
+        let demo = self
+            .account_sign_in
+            .demo
+            .as_ref()
+            .map(|demo| demo.panel.clone());
         let composer = demo
             .as_ref()
             .and_then(|panel| panel.read(cx).input.read(cx).voice_bounds());
@@ -1000,7 +1071,12 @@ impl Workspace {
         let geometry = measured.get().map(|right| {
             let (width, height) = (f32::from(right.size.width), f32::from(right.size.height));
             let tab_w = TAB_WIDTH.min(width - 16.0).max(0.0);
-            let rest = (width - tab_w, height - TAB_BOTTOM - TAB_HEIGHT, tab_w, TAB_HEIGHT);
+            let rest = (
+                width - tab_w,
+                height - TAB_BOTTOM - TAB_HEIGHT,
+                tab_w,
+                TAB_HEIGHT,
+            );
             let target = composer
                 .map(|c| {
                     (
@@ -1024,12 +1100,14 @@ impl Workspace {
             .account_onboarding_tab(progress, cx)
             .absolute()
             .map(|el| match geometry {
-                Some((left, top, width, height, _)) => el
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(width))
-                    .h(px(height)),
-                None => el.right_0().bottom(px(TAB_BOTTOM)).w(px(TAB_WIDTH)).h(px(TAB_HEIGHT)),
+                Some((left, top, width, height, _)) => {
+                    el.left(px(left)).top(px(top)).w(px(width)).h(px(height))
+                }
+                None => el
+                    .right_0()
+                    .bottom(px(TAB_BOTTOM))
+                    .w(px(TAB_WIDTH))
+                    .h(px(TAB_HEIGHT)),
             });
         let notes = self.account_onboarding_notes(cx).map(|notes| {
             notes.absolute().map(|el| match geometry {
@@ -1068,17 +1146,23 @@ impl Workspace {
                     .flex_1()
                     .min_h(px(0.0))
                     .p(px(if narrow { 8.0 } else { 20.0 }))
-                    .pb(px(if narrow { 8.0 } else { TAB_BOTTOM + TAB_HEIGHT + 16.0 }))
+                    .pb(px(if narrow {
+                        8.0
+                    } else {
+                        TAB_BOTTOM + TAB_HEIGHT + 16.0
+                    }))
                     // The demo is read-only. Reaching for its composer means
                     // "let me type", so the sign-in tab takes its place.
-                    .capture_any_mouse_down(cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        if this.account_sign_in.can_dock()
-                            && composer.is_some_and(|bounds| bounds.contains(&event.position))
-                        {
-                            this.focus_account_input(window, cx);
-                        }
-                        cx.stop_propagation();
-                    }))
+                    .capture_any_mouse_down(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            if this.account_sign_in.can_dock()
+                                && composer.is_some_and(|bounds| bounds.contains(&event.position))
+                            {
+                                this.focus_account_input(window, cx);
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
                     .children(demo),
             )
             .children(notes)
@@ -1088,7 +1172,9 @@ impl Workspace {
     /// 0 at the right edge, 1 over the demo composer. Keeps drawing frames
     /// only while the slide is in flight.
     fn account_dock_progress(&self, window: &mut Window, cx: &App) -> f32 {
-        let Some(started) = self.account_sign_in.docked else { return 0.0 };
+        let Some(started) = self.account_sign_in.docked else {
+            return 0.0;
+        };
         if cx.reduce_motion() || crate::config::get().appearance.reduce_motion {
             return 1.0;
         }
@@ -1100,7 +1186,11 @@ impl Workspace {
     }
 
     /// Email field, sign-in icon and skip icon in one folder tab.
-    fn account_onboarding_tab(&mut self, progress: f32, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn account_onboarding_tab(
+        &mut self,
+        progress: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::global();
         let state = &self.account_sign_in;
         let continue_focused = state.focused(Choice::Continue);
@@ -1120,7 +1210,9 @@ impl Workspace {
             .gap(px(6.0))
             .pl(px(6.0))
             .pr(px(6.0 + 4.0 * (1.0 - progress)))
-            .rounded_l(px(TAB_HEIGHT / 2.0 + (COMPOSER_RADIUS - TAB_HEIGHT / 2.0) * progress))
+            .rounded_l(px(
+                TAB_HEIGHT / 2.0 + (COMPOSER_RADIUS - TAB_HEIGHT / 2.0) * progress
+            ))
             .rounded_tr(edge_radius)
             .rounded_br(edge_radius)
             .border_1()
@@ -1178,9 +1270,9 @@ impl Workspace {
                         state.focused(Choice::Primary),
                     )
                     .when(busy, |el| el.opacity(0.6))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.account_sign_in_primary(window, cx)
-                    })),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.account_sign_in_primary(window, cx)),
+                    ),
                 );
         }
         tab.child(
@@ -1200,7 +1292,10 @@ impl Workspace {
     }
 
     /// Code-sent hint, mailbox shortcuts and errors, floating above the tab.
-    fn account_onboarding_notes(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+    fn account_onboarding_notes(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<gpui::Div>> {
         let theme = Theme::global();
         let state = &self.account_sign_in;
         let code = state.stage.code_step().map(|(email, _)| email.to_owned());
@@ -1239,7 +1334,9 @@ impl Workspace {
                                 .text_size(px(12.0))
                                 .px_3()
                                 .py_1()
-                                .on_click(cx.listener(|this, _, _, cx| this.open_account_gmail(cx))),
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.open_account_gmail(cx)),
+                                ),
                             )
                             .child(
                                 account_button(
@@ -1251,9 +1348,9 @@ impl Workspace {
                                 .text_size(px(12.0))
                                 .px_3()
                                 .py_1()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.reset_account_sign_in(window, cx)
-                                })),
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.reset_account_sign_in(window, cx),
+                                )),
                             ),
                     )
                 })
@@ -1308,7 +1405,11 @@ fn icon_button(
         } else {
             gpui::transparent_black().into()
         })
-        .bg(if primary { theme.ACCENT } else { theme.TEXT.opacity(0.06) })
+        .bg(if primary {
+            theme.ACCENT
+        } else {
+            theme.TEXT.opacity(0.06)
+        })
         .text_color(if primary { theme.BG } else { theme.TEXT_DIM })
         .cursor_pointer()
         .hover(move |el| {
@@ -1318,12 +1419,21 @@ fn icon_button(
                 el.bg(theme.TEXT.opacity(0.12)).text_color(theme.TEXT)
             }
         })
-        .tooltip(move |_, cx| cx.new(|_| super::remotes::HeaderTooltip(tooltip.into())).into())
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::remotes::HeaderTooltip(tooltip.into()))
+                .into()
+        })
         .child(
             gpui::svg()
                 .data(icon)
                 .size(px(14.0))
-                .text_color(if primary { theme.BG } else if focused { theme.TEXT } else { theme.TEXT_DIM }),
+                .text_color(if primary {
+                    theme.BG
+                } else if focused {
+                    theme.TEXT
+                } else {
+                    theme.TEXT_DIM
+                }),
         )
 }
 
@@ -1348,17 +1458,29 @@ fn import_slider(importing: bool, focused: bool) -> gpui::Div {
         .flex_none()
         .rounded_full()
         .border_1()
-        .border_color(if focused { theme.ACCENT } else { gpui::transparent_black().into() })
+        .border_color(if focused {
+            theme.ACCENT
+        } else {
+            gpui::transparent_black().into()
+        })
         .bg(theme.TEXT.opacity(0.08))
         .child(
             div()
                 .absolute()
                 .top(px(2.0))
-                .left(if importing { px(2.0) } else { width - knob - px(4.0) })
+                .left(if importing {
+                    px(2.0)
+                } else {
+                    width - knob - px(4.0)
+                })
                 .w(knob)
                 .h(px(20.0))
                 .rounded_full()
-                .bg(if importing { theme.ACCENT } else { theme.TEXT_DIM }),
+                .bg(if importing {
+                    theme.ACCENT
+                } else {
+                    theme.TEXT_DIM
+                }),
         )
         .child(
             div()
@@ -1440,7 +1562,8 @@ fn login_row(logo: &str, name: String, detail: String, trailing: gpui::Div) -> g
 fn theme_swatch(preset: ThemePreset, active: bool) -> gpui::Div {
     let current = Theme::global();
     let t = Theme::preview(preset);
-    let line = |width: f32, color: gpui::Rgba| div().h(px(3.0)).w(px(width)).rounded_full().bg(color);
+    let line =
+        |width: f32, color: gpui::Rgba| div().h(px(3.0)).w(px(width)).rounded_full().bg(color);
     div()
         .w(px(92.0))
         .h(px(58.0))
@@ -1450,14 +1573,12 @@ fn theme_swatch(preset: ThemePreset, active: bool) -> gpui::Div {
         .rounded_xl()
         .bg(t.BG)
         .border_2()
-        .border_color(if active { current.ACCENT } else { current.PANEL_BORDER })
-        .child(
-            div()
-                .w(px(14.0))
-                .h_full()
-                .rounded_md()
-                .bg(t.HEADER_BG),
-        )
+        .border_color(if active {
+            current.ACCENT
+        } else {
+            current.PANEL_BORDER
+        })
+        .child(div().w(px(14.0)).h_full().rounded_md().bg(t.HEADER_BG))
         .child(
             div()
                 .flex_1()
@@ -1495,13 +1616,21 @@ fn account_button(
         } else {
             gpui::transparent_black().into()
         })
-        .bg(if primary { theme.ACCENT } else { theme.TEXT.opacity(0.06) })
+        .bg(if primary {
+            theme.ACCENT
+        } else {
+            theme.TEXT.opacity(0.06)
+        })
         .text_size(px(14.0))
         .text_color(if primary { theme.BG } else { theme.TEXT })
         .text_center()
         .cursor_pointer()
         .hover(move |el| {
-            if primary { el.opacity(0.9) } else { el.bg(theme.ACCENT.opacity(0.08)) }
+            if primary {
+                el.opacity(0.9)
+            } else {
+                el.bg(theme.ACCENT.opacity(0.08))
+            }
         })
         .child(label)
 }

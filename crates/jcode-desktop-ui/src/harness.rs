@@ -952,7 +952,8 @@ pub(crate) fn live_sessions_from(
             let title = record
                 .as_ref()
                 .and_then(|record| {
-                    non_empty(record.custom_title.clone()).or_else(|| non_empty(record.title.clone()))
+                    non_empty(record.custom_title.clone())
+                        .or_else(|| non_empty(record.title.clone()))
                 })
                 .or_else(|| persisted_todo_title(home, &session_id))
                 .unwrap_or_else(|| session_id.clone());
@@ -1973,13 +1974,18 @@ fn update_turn_activity(event: &ApiEvent, turn_active: &mut bool) {
         | ApiEvent::TextDelta { .. }
         | ApiEvent::ReasoningDelta { .. }
         | ApiEvent::ToolStart { .. } => *turn_active = true,
-        ApiEvent::TurnDone { .. } | ApiEvent::TurnStopped { .. } | ApiEvent::Error { .. } => *turn_active = false,
+        ApiEvent::TurnDone { .. } | ApiEvent::TurnStopped { .. } | ApiEvent::Error { .. } => {
+            *turn_active = false
+        }
         // `attached` describes the transport, not a model turn. Treating every
         // non-idle status as active routed the first prompt in a fresh desktop
         // panel through `soft_interrupt`; with no turn to interrupt, the prompt
         // stayed queued forever and the panel showed only its local echo.
         ApiEvent::SessionStatus { status, .. }
-            if matches!(status.as_str(), "idle" | "cancelled" | "canceled" | "interrupted" | "crashed" | "error" | "failed") =>
+            if matches!(
+                status.as_str(),
+                "idle" | "cancelled" | "canceled" | "interrupted" | "crashed" | "error" | "failed"
+            ) =>
         {
             *turn_active = false;
         }
@@ -2073,8 +2079,14 @@ mod tests {
         );
         let transport = jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, "down");
         let base = Duration::from_millis(300);
-        assert_eq!(next_reconnect_delay(base, &unknown), Duration::from_millis(1200));
-        assert_eq!(next_reconnect_delay(base, &transport), Duration::from_millis(600));
+        assert_eq!(
+            next_reconnect_delay(base, &unknown),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            next_reconnect_delay(base, &transport),
+            Duration::from_millis(600)
+        );
         let mut delay = base;
         for _ in 0..20 {
             delay = next_reconnect_delay(delay, &unknown);
@@ -2092,7 +2104,9 @@ mod tests {
 
     #[test]
     fn reconnect_logging_thins_out() {
-        let logged = (0..1000).filter(|&attempt| should_log_reconnect(attempt)).count();
+        let logged = (0..1000)
+            .filter(|&attempt| should_log_reconnect(attempt))
+            .count();
         assert!(logged <= 13, "{logged}");
         assert!(should_log_reconnect(0));
     }
@@ -2749,19 +2763,26 @@ mod side_panel_routing_tests {
             focus_revision: 7,
             focused_page_id: Some("notes".into()),
             pages: vec![jcode_sdk::SidePanelPage {
-                id: "notes".into(), content: "# Remote PDF".into(),
+                id: "notes".into(),
+                content: "# Remote PDF".into(),
                 format: jcode_sdk::SidePanelPageFormat::Pdf,
                 pdf_data: Some("JVBERi0xLjcK".into()),
                 file_path: "/remote-only/report.pdf".into(),
                 ..Default::default()
             }],
         };
-        let event = namespace_event(ApiEvent::SidePanelState {
-            session_id: "session_one".into(), snapshot: snapshot.clone(),
-        }, &address);
+        let event = namespace_event(
+            ApiEvent::SidePanelState {
+                session_id: "session_one".into(),
+                snapshot: snapshot.clone(),
+            },
+            &address,
+        );
         assert_eq!(event_session_id(&event), Some("ssh://example/session_one"));
         match event {
-            ApiEvent::SidePanelState { snapshot: actual, .. } => assert_eq!(actual, snapshot),
+            ApiEvent::SidePanelState {
+                snapshot: actual, ..
+            } => assert_eq!(actual, snapshot),
             _ => panic!("wrong event"),
         }
     }
@@ -2773,11 +2794,22 @@ mod stop_reason_routing_tests {
 
     #[test]
     fn legacy_abnormal_statuses_settle_worker_activity() {
-        for status in ["cancelled", "canceled", "interrupted", "crashed", "error", "failed"] {
+        for status in [
+            "cancelled",
+            "canceled",
+            "interrupted",
+            "crashed",
+            "error",
+            "failed",
+        ] {
             let mut active = true;
-            update_turn_activity(&ApiEvent::SessionStatus {
-                session_id: "legacy".into(), status: status.into(),
-            }, &mut active);
+            update_turn_activity(
+                &ApiEvent::SessionStatus {
+                    session_id: "legacy".into(),
+                    status: status.into(),
+                },
+                &mut active,
+            );
             assert!(!active, "{status}");
         }
     }
@@ -2850,7 +2882,10 @@ mod stop_reason_routing_tests {
                     },
                     &mut active,
                 );
-                assert!(!active, "a replay or transport attach cannot revive the turn");
+                assert!(
+                    !active,
+                    "a replay or transport attach cannot revive the turn"
+                );
                 update_turn_activity(
                     &ApiEvent::MessageAccepted {
                         session_id: "session_one".into(),

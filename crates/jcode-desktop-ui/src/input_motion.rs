@@ -60,7 +60,11 @@ pub(super) fn placeholder_at(
     let pick = |step: usize| EXAMPLE_PROMPTS[(seed + step) % count];
     let last = pick(SHOWN_PROMPTS - 1);
     if reduce_motion {
-        return if elapsed < STILL_ROTATE { (pick(0), true) } else { (last, false) };
+        return if elapsed < STILL_ROTATE {
+            (pick(0), true)
+        } else {
+            (last, false)
+        };
     }
     let mut t = elapsed;
     for step in 0..SHOWN_PROMPTS {
@@ -130,13 +134,19 @@ impl Glide {
 
     /// Retarget toward `to`, starting from wherever the caret is drawn now.
     /// Large jumps (new line, click far away) snap rather than streak.
-    pub(super) fn retarget(&mut self, to: Point<Pixels>, line_height: Pixels, now: Instant, reduce_motion: bool) {
+    pub(super) fn retarget(
+        &mut self,
+        to: Point<Pixels>,
+        line_height: Pixels,
+        now: Instant,
+        reduce_motion: bool,
+    ) {
         if to == self.to {
             return;
         }
         let current = self.position(now).0;
-        let far = (to.y - current.y).abs() > line_height * 0.5
-            || (to.x - current.x).abs() > px(240.);
+        let far =
+            (to.y - current.y).abs() > line_height * 0.5 || (to.x - current.x).abs() > px(240.);
         self.from = if reduce_motion || far { to } else { current };
         self.to = to;
         self.start = now;
@@ -182,16 +192,25 @@ mod tests {
     fn placeholder_settles_on_the_second_prompt_and_stops_ticking() {
         let first = EXAMPLE_PROMPTS[3].chars().count() as u32;
         let second = EXAMPLE_PROMPTS[4].chars().count() as u32;
-        let settled = TYPE_PER_CHAR * first + HOLD + DELETE_PER_CHAR * first + GAP
-            + TYPE_PER_CHAR * second;
-        assert_eq!(placeholder_at(settled, 3, false), (EXAMPLE_PROMPTS[4], false));
+        let settled =
+            TYPE_PER_CHAR * first + HOLD + DELETE_PER_CHAR * first + GAP + TYPE_PER_CHAR * second;
+        assert_eq!(
+            placeholder_at(settled, 3, false),
+            (EXAMPLE_PROMPTS[4], false)
+        );
         assert_eq!(
             placeholder_at(settled * 10, 3, false),
             (EXAMPLE_PROMPTS[4], false),
             "never rotates to a third prompt"
         );
-        assert_eq!(placeholder_at(Duration::from_secs(1), 0, true), (EXAMPLE_PROMPTS[0], true));
-        assert_eq!(placeholder_at(Duration::from_secs(6), 0, true), (EXAMPLE_PROMPTS[1], false));
+        assert_eq!(
+            placeholder_at(Duration::from_secs(1), 0, true),
+            (EXAMPLE_PROMPTS[0], true)
+        );
+        assert_eq!(
+            placeholder_at(Duration::from_secs(6), 0, true),
+            (EXAMPLE_PROMPTS[1], false)
+        );
     }
 
     #[test]
@@ -205,7 +224,11 @@ mod tests {
     #[test]
     fn caret_breathes_smoothly_then_settles_solid() {
         assert_eq!(caret_alpha(Duration::from_millis(100), false), (1.0, true));
-        let dim = caret_alpha(CARET_SOLID + Duration::from_secs_f32(CARET_PERIOD / 2.), false).0;
+        let dim = caret_alpha(
+            CARET_SOLID + Duration::from_secs_f32(CARET_PERIOD / 2.),
+            false,
+        )
+        .0;
         assert!(dim < 0.25, "caret dips at mid-period: {dim}");
         // Continuous: neighbouring samples never jump like a hard blink.
         let mut last = 1.0;

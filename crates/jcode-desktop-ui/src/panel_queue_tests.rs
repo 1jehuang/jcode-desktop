@@ -400,7 +400,11 @@ fn multiple_queued_prompts_stack_without_squeezing_input(cx: &mut gpui::TestAppC
     vcx.run_until_parked();
     panel.read_with(vcx, |p, cx| {
         assert_eq!(p.prompt_queue.prompts.len(), 11);
-        assert!(p.prompt_queue.prompts[0].content.starts_with("Follow-up 1:"));
+        assert!(
+            p.prompt_queue.prompts[0]
+                .content
+                .starts_with("Follow-up 1:")
+        );
         assert!(
             p.input.read(cx).content.starts_with("Follow-up 0:"),
             "recall puts the prompt back in the composer"

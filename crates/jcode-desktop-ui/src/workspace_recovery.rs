@@ -265,7 +265,10 @@ mod tests {
         use jcode_desktop_api::LaunchMode;
         assert_eq!(filename(LaunchMode::SinglePanel), None);
         assert_eq!(filename(LaunchMode::Workspace), Some("crash-recovery.json"));
-        assert_eq!(filename(LaunchMode::NoSidebar), Some("crash-recovery-no-sidebar.json"));
+        assert_eq!(
+            filename(LaunchMode::NoSidebar),
+            Some("crash-recovery-no-sidebar.json")
+        );
     }
 
     #[test]

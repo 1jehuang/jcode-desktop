@@ -201,12 +201,15 @@ mod tests {
     fn single_panel_voice_hold_press_and_release_reach_focused_chat(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = standalone(cx);
-            workspace.slots[0].panel = cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
+            workspace.slots[0].panel =
+                cx.new(|cx| Panel::new_preview(crate::preview_state::PreviewState::Empty, cx));
             workspace
         });
-        vcx.update(|window, cx| workspace.update(cx, |workspace, cx| {
-            workspace.focus_active(window, cx);
-        }));
+        vcx.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.focus_active(window, cx);
+            })
+        });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("single-panel-root").is_some());
         vcx.simulate_event(gpui::KeyDownEvent {
@@ -216,7 +219,9 @@ mod tests {
         });
         workspace.update(vcx, |workspace, cx| {
             assert!(workspace.voice_key.is_down());
-            workspace.slots[0].panel.update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
+            workspace.slots[0]
+                .panel
+                .update(cx, |panel, _| panel.set_voice_hold_checking_for_test());
         });
         vcx.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse("xf86touchpadoff").unwrap(),
@@ -386,13 +391,21 @@ mod tests {
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
         let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
         let state = workspace.read_with(vcx, |w, _| {
-            (w.active, w.active_row, w.previous, w.slots[0].width_fraction)
+            (
+                w.active,
+                w.active_row,
+                w.previous,
+                w.slots[0].width_fraction,
+            )
         });
         open_utility(utility, &workspace, &source, vcx);
         let child = vcx.update(|_, cx| {
             let windows = cx.windows();
             assert_eq!(windows.len(), 2, "utility must open a separate window");
-            windows.into_iter().find(|handle| *handle != source_window).unwrap()
+            windows
+                .into_iter()
+                .find(|handle| *handle != source_window)
+                .unwrap()
         });
         let hosted = vcx.update(|_, cx| {
             let root = child.downcast::<panel_window::PanelWindow>().unwrap();
@@ -415,7 +428,12 @@ mod tests {
             assert_eq!(w.slots.len(), 1);
             assert_eq!(w.slots[0].panel, source);
             assert_eq!(
-                (w.active, w.active_row, w.previous, w.slots[0].width_fraction),
+                (
+                    w.active,
+                    w.active_row,
+                    w.previous,
+                    w.slots[0].width_fraction
+                ),
                 state,
                 "opening a utility must not alter source layout or selection"
             );
@@ -434,7 +452,11 @@ mod tests {
         child_cx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         vcx.update(|window, cx| {
-            assert_eq!(cx.windows(), vec![source_window], "Escape closes only the child");
+            assert_eq!(
+                cx.windows(),
+                vec![source_window],
+                "Escape closes only the child"
+            );
             assert!(source.read(cx).input_focus_handle(cx).is_focused(window));
         });
         workspace.read_with(vcx, |w, cx| {
@@ -447,7 +469,10 @@ mod tests {
         let reopened = vcx.update(|_, cx| {
             let windows = cx.windows();
             assert_eq!(windows.len(), 2);
-            windows.into_iter().find(|handle| *handle != source_window).unwrap()
+            windows
+                .into_iter()
+                .find(|handle| *handle != source_window)
+                .unwrap()
         });
         let mut reopened_cx = gpui::VisualTestContext::from_window(reopened, vcx);
         reopened_cx.dispatch_action(ClosePanel);

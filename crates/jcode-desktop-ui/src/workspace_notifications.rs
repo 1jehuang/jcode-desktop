@@ -134,9 +134,13 @@ fn showcase_key_icon(key: &str) -> Option<&'static [u8]> {
         };
     }
     Some(match key.to_ascii_lowercase().as_str() {
-        "cmd" | "command" => icon!(r#"<path d="M8 8h8v8H8zM8 8H5a3 3 0 1 1 3-3v3m8 0V5a3 3 0 1 1 3 3h-3m0 8h3a3 3 0 1 1-3 3v-3m-8 0v3a3 3 0 1 1-3-3h3"/>"#),
+        "cmd" | "command" => icon!(
+            r#"<path d="M8 8h8v8H8zM8 8H5a3 3 0 1 1 3-3v3m8 0V5a3 3 0 1 1 3 3h-3m0 8h3a3 3 0 1 1-3 3v-3m-8 0v3a3 3 0 1 1-3-3h3"/>"#
+        ),
         "super" if cfg!(target_os = "macos") => return showcase_key_icon("cmd"),
-        "super" => icon!(r#"<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>"#),
+        "super" => icon!(
+            r#"<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>"#
+        ),
         "shift" => icon!(r#"<path d="m12 3 9 9h-5v9H8v-9H3z"/>"#),
         "ctrl" | "control" => icon!(r#"<path d="m5 15 7-7 7 7"/>"#),
         "alt" | "option" => icon!(r#"<path d="M3 5h6l6 14h6M15 5h6"/>"#),
@@ -144,7 +148,9 @@ fn showcase_key_icon(key: &str) -> Option<&'static [u8]> {
         "tab" => icon!(r#"<path d="M3 12h15m-6-6 6 6-6 6M21 5v14"/>"#),
         "home" => icon!(r#"<path d="M6 18V6h12M6 6l12 12"/>"#),
         "end" => icon!(r#"<path d="M6 6v12h12M6 18 18 6"/>"#),
-        "escape" | "esc" => icon!(r#"<circle cx="12" cy="12" r="9"/><path d="M8 16V8h8M8 8l8 8"/>"#),
+        "escape" | "esc" => {
+            icon!(r#"<circle cx="12" cy="12" r="9"/><path d="M8 16V8h8M8 8l8 8"/>"#)
+        }
         _ => return None,
     })
 }
@@ -510,16 +516,22 @@ mod tests {
     #[test]
     fn showcase_special_keys_have_text_free_icons() {
         for key in [
-            "Super", "Cmd", "Command", "Shift", "Ctrl", "Control", "Alt", "Option",
-            "Enter", "Return", "Tab", "Home", "End", "Escape", "Esc",
+            "Super", "Cmd", "Command", "Shift", "Ctrl", "Control", "Alt", "Option", "Enter",
+            "Return", "Tab", "Home", "End", "Escape", "Esc",
         ] {
             let svg = std::str::from_utf8(showcase_key_icon(key).expect(key)).unwrap();
             assert!(svg.starts_with("<svg ") && svg.ends_with("</svg>"), "{key}");
             assert!(!svg.contains("<text"), "{key}");
-            assert_eq!(showcase_key_icon(key), showcase_key_icon(&key.to_lowercase()));
+            assert_eq!(
+                showcase_key_icon(key),
+                showcase_key_icon(&key.to_lowercase())
+            );
         }
         for key in ["H", "J", "K", "L", "S", "1", "2", "3", "4", "/"] {
-            assert!(showcase_key_icon(key).is_none(), "preserve the {key} key legend");
+            assert!(
+                showcase_key_icon(key).is_none(),
+                "preserve the {key} key legend"
+            );
         }
     }
 

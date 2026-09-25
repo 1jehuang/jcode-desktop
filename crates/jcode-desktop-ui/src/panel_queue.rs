@@ -98,7 +98,9 @@ impl Panel {
     pub(super) fn observe_prompt_queue(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         self.prompt_queue.auto_poke.observe(event);
         match event {
-            ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => self.prompt_queue.paused = true,
+            ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => {
+                self.prompt_queue.paused = true
+            }
             ApiEvent::SessionStatus { status, .. }
                 if matches!(status.as_str(), "cancelled" | "canceled") =>
             {
@@ -304,7 +306,12 @@ fn queue_action(
         .rounded_sm()
         .cursor_pointer()
         .hover(|el| el.bg(theme.QUOTE_BG))
-        .child(gpui::svg().data(icon).size(px(13.)).text_color(theme.TEXT_DIM))
+        .child(
+            gpui::svg()
+                .data(icon)
+                .size(px(13.))
+                .text_color(theme.TEXT_DIM),
+        )
         .on_click(on_click)
 }
 

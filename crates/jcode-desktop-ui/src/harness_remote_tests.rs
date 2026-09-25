@@ -495,7 +495,10 @@ fn managed_cloud_live_session_answers_a_prompt() {
     let transports = transport::RemoteTransports::default();
     let printer = std::thread::spawn(move || {
         while let Ok(update) = updates.recv_blocking() {
-            if let Update::RemoteStatus { message, failed, .. } = update {
+            if let Update::RemoteStatus {
+                message, failed, ..
+            } = update
+            {
                 eprintln!("[cloud] {message}{}", if failed { " (failed)" } else { "" });
             }
         }
@@ -510,15 +513,26 @@ fn managed_cloud_live_session_answers_a_prompt() {
         |host| transports.connect_with_progress(host, &mut |m| eprintln!("[cloud] {m}")),
     );
     let (session, client) = match created.recv_timeout(Duration::from_secs(5)) {
-        Ok(Command::CreatedInternal { session, client, .. }) => (session, client),
+        Ok(Command::CreatedInternal {
+            session, client, ..
+        }) => (session, client),
         _ => panic!("managed cloud session was not created"),
     };
-    eprintln!("[cloud] session {} after {:?}", session.session_id, started.elapsed());
+    eprintln!(
+        "[cloud] session {} after {:?}",
+        session.session_id,
+        started.elapsed()
+    );
     assert!(session.session_id.starts_with("ssh://jcode-cloud/"));
     let address = remote::SessionAddress::parse(&session.session_id).unwrap();
     let events = client.events(Some(&address.session_id));
     client
-        .send_message(&address.session_id, "Reply with exactly: DESKTOP_CLOUD_OK", vec![], None)
+        .send_message(
+            &address.session_id,
+            "Reply with exactly: DESKTOP_CLOUD_OK",
+            vec![],
+            None,
+        )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut text = String::new();
@@ -526,13 +540,18 @@ fn managed_cloud_live_session_answers_a_prompt() {
         match events.next_timeout(left) {
             Some(jcode_sdk::api::ApiEvent::TextDelta { text: delta, .. }) => text.push_str(&delta),
             Some(jcode_sdk::api::ApiEvent::TurnDone { .. }) => break,
-            Some(jcode_sdk::api::ApiEvent::TurnStopped { message, .. }) => panic!("turn stopped: {message}"),
+            Some(jcode_sdk::api::ApiEvent::TurnStopped { message, .. }) => {
+                panic!("turn stopped: {message}")
+            }
             Some(_) => {}
             None => break,
         }
     }
     eprintln!("[cloud] reply: {text:?} total {:?}", started.elapsed());
-    assert!(text.contains("DESKTOP_CLOUD_OK"), "unexpected reply {text:?}");
+    assert!(
+        text.contains("DESKTOP_CLOUD_OK"),
+        "unexpected reply {text:?}"
+    );
     drop(client);
     drop(printer);
 }

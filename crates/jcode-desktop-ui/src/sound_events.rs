@@ -217,8 +217,8 @@ mod tests {
                     message: "Runtime stop detail".into(),
                     provider_stop_reason: Some("provider_finish_reason".into()),
                 };
-                let expected = (reason != jcode_sdk::TurnStopReason::Interrupted)
-                    .then_some(Cue::Error);
+                let expected =
+                    (reason != jcode_sdk::TurnStopReason::Interrupted).then_some(Cue::Error);
                 assert_eq!(sounds.observe(&stopped), expected, "{reason:?}");
                 assert!(!sounds.live_turn);
                 let error = event(json!({

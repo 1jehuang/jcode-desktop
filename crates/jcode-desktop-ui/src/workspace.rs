@@ -44,6 +44,8 @@ pub(crate) mod change_review;
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
+#[path = "sidebar_projects.rs"]
+mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 #[path = "sidebar_swarm.rs"]
@@ -52,8 +54,6 @@ mod sidebar_swarm;
 mod sidebar_workspaces;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
-#[path = "sidebar_projects.rs"]
-mod sidebar_projects;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -109,10 +109,10 @@ mod remotes;
 #[cfg(test)]
 #[path = "super_action_behavior_tests.rs"]
 mod super_action_behavior_tests;
-#[path = "window_navigation.rs"]
-mod window_navigation;
 #[path = "workspace_voice.rs"]
 mod voice;
+#[path = "window_navigation.rs"]
+mod window_navigation;
 #[cfg(test)]
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
@@ -851,7 +851,10 @@ impl Workspace {
             .and_then(|snapshot| snapshot.launch.clone())
             .map(Into::into)
             .unwrap_or_else(|| {
-                jcode_desktop_api::WindowLaunches::get(cx, window.window_handle().window_id().as_u64())
+                jcode_desktop_api::WindowLaunches::get(
+                    cx,
+                    window.window_handle().window_id().as_u64(),
+                )
             });
         let performance_enabled = crate::performance::enabled(std::env::args_os());
         let resume_requested = jcode_desktop_api::LaunchMode::resume_requested(&launch.args);
@@ -1120,7 +1123,8 @@ impl Workspace {
             workspace.open_startup_draft(cx);
             workspace.start_default_startup(cx);
             // Offline fixture: show real managed-cloud phases, never contact the service.
-            let phases: &[&str] = if std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP").as_deref()
+            let phases: &[&str] = if std::env::var("JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP")
+                .as_deref()
                 == Ok("failed")
             {
                 &[
@@ -1437,7 +1441,11 @@ impl Workspace {
         self.snapshot_inner(window, cx, false)
     }
 
-    pub fn snapshot_for_reload(&self, window: &Window, cx: &App) -> anyhow::Result<WorkspaceSnapshot> {
+    pub fn snapshot_for_reload(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> anyhow::Result<WorkspaceSnapshot> {
         self.snapshot_inner(window, cx, true)
     }
 
@@ -1720,7 +1728,8 @@ impl Workspace {
         self.previous = snapshot
             .previous
             .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
-        self.last_voice_chat = snapshot.last_voice_chat
+        self.last_voice_chat = snapshot
+            .last_voice_chat
             .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
         self.camera_x = snapshot.camera_x;
         self.camera_target = snapshot.camera_target;
@@ -1786,9 +1795,7 @@ impl Workspace {
             window.focus(&state.search.focus_handle(cx), cx);
             return;
         }
-        if self.account_sign_in.visible
-            || self.onboarding_launch.error.is_some()
-        {
+        if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -1957,9 +1964,11 @@ impl Workspace {
                 self.status = "connected".into();
                 if let Some(state) = self.resume.as_mut() {
                     state.start_on_close = true;
-                } else if self.slots.get(self.active).is_some_and(|slot| {
-                    slot.panel.read(cx).is_startup_draft()
-                }) {
+                } else if self
+                    .slots
+                    .get(self.active)
+                    .is_some_and(|slot| slot.panel.read(cx).is_startup_draft())
+                {
                     self.start_default_startup(cx);
                 }
             }
@@ -2915,7 +2924,9 @@ impl Workspace {
         self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_default_draft(
-            self.pinned_working_dir.clone().or_else(|| self.default_working_dir()),
+            self.pinned_working_dir
+                .clone()
+                .or_else(|| self.default_working_dir()),
             cx,
         );
     }
@@ -3015,9 +3026,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(source) = self.slots.iter()
+        let Some(source) = self
+            .slots
+            .iter()
             .find(|slot| !slot.closing && slot.panel.entity_id() == request.source)
-            .map(|slot| slot.panel.clone()) else { return; };
+            .map(|slot| slot.panel.clone())
+        else {
+            return;
+        };
         source.update(cx, |panel, cx| panel.toggle_model_picker(window, cx));
     }
 
@@ -3349,7 +3365,12 @@ impl Workspace {
         self.insert_spawned_panel(panel, window, cx);
     }
 
-    fn insert_spawned_panel(&mut self, panel: Entity<Panel>, window: &mut Window, cx: &mut Context<Self>) {
+    fn insert_spawned_panel(
+        &mut self,
+        panel: Entity<Panel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.single_panel {
             if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
                 eprintln!("Could not open panel window: {error:#}");
@@ -3480,7 +3501,8 @@ impl Workspace {
         let expanded = if query == "~" {
             self.default_working_dir().map(PathBuf::from)
         } else if let Some(rest) = query.strip_prefix("~/") {
-            self.default_working_dir().map(|home| PathBuf::from(home).join(rest))
+            self.default_working_dir()
+                .map(|home| PathBuf::from(home).join(rest))
         } else {
             let path = PathBuf::from(query);
             Some(if path.is_absolute() {
@@ -3880,9 +3902,7 @@ impl Workspace {
 
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates must not move focus behind a launch-only modal.
-        if self.account_sign_in.visible
-            || self.onboarding_launch.error.is_some()
-        {
+        if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
             window.focus(&self.focus_handle, cx);
             return;
         }
@@ -5037,7 +5057,9 @@ impl Workspace {
     /// mark of a session that is still running so its animation continues.
     fn set_daemon_running(&mut self, running: HashSet<String>, cx: &mut Context<Self>) {
         if running.len() == self.daemon_running.len()
-            && running.iter().all(|id| self.daemon_running.contains_key(id))
+            && running
+                .iter()
+                .all(|id| self.daemon_running.contains_key(id))
         {
             return;
         }
@@ -5136,7 +5158,10 @@ impl Workspace {
                 nested.insert(child.session.session_id.clone());
                 let entry = agents.entry(root.clone()).or_default();
                 entry.0 += 1;
-                if matches!(child.session.swarm_status.as_deref(), Some("working" | "running" | "active")) {
+                if matches!(
+                    child.session.swarm_status.as_deref(),
+                    Some("working" | "running" | "active")
+                ) {
                     entry.1 += 1;
                 }
             }
@@ -5188,7 +5213,9 @@ impl Workspace {
                 }
             };
             if let Some(checkout) = &checkout
-                && !project_checkouts[index].iter().any(|c| c.path == checkout.path)
+                && !project_checkouts[index]
+                    .iter()
+                    .any(|c| c.path == checkout.path)
             {
                 project_checkouts[index].push(checkout.clone());
             }
@@ -5227,7 +5254,11 @@ impl Workspace {
             let rank = |row: &SidebarRow| {
                 row.checkout
                     .as_ref()
-                    .and_then(|c| project_checkouts[index].iter().position(|p| p.path == c.path))
+                    .and_then(|c| {
+                        project_checkouts[index]
+                            .iter()
+                            .position(|p| p.path == c.path)
+                    })
                     .unwrap_or(usize::MAX)
             };
             rows.sort_by_key(rank);
@@ -5242,7 +5273,9 @@ impl Workspace {
             .iter()
             .zip(&checkout_rows)
             .map(|(checkouts, rows)| {
-                (!rows).then(|| checkouts.first().map(|c| c.branch.clone())).flatten()
+                (!rows)
+                    .then(|| checkouts.first().map(|c| c.branch.clone()))
+                    .flatten()
             })
             .collect::<Vec<_>>();
         let active_project = active_id.as_deref().and_then(|id| {
@@ -5325,8 +5358,11 @@ impl Workspace {
             })
             .collect::<Vec<_>>();
         let newly_opened_active = layout.iter().position(|row| {
-            row.open && row.selected
-                && !self.sidebar_session_layout.iter()
+            row.open
+                && row.selected
+                && !self
+                    .sidebar_session_layout
+                    .iter()
                     .any(|old| old.open && old.session_id == row.session_id)
         });
         sync_sidebar_session_layout(
@@ -5645,379 +5681,389 @@ impl Workspace {
             // Folder mode leaves this transparent: the native path owns its tab.
             .child({
                 let navigation = if folders {
-                self.render_sidebar_roller(fullscreen, cx)
-            } else {
-                div()
-                    .h(px(TITLEBAR_HEIGHT))
-                    // The transparent macOS titlebar puts the traffic lights in
-                    // this row. Start navigation after them; on other platforms
-                    // preserve the existing 12px inset.
-                    .pl(px(sidebar_header_left_padding(fullscreen)))
-                    .pr_3()
-                    .flex()
-                    .items_end()
-                    .justify_start()
-                    .relative()
-                    // Keep one backing tone around the folder's top-left curve.
-                    // A dark navigation rectangle here pinches that curve into a notch.
-                    .bg(if folders {
-                        Theme::global().HEADER_BG
-                    } else {
-                        Theme::global().PANEL_BG
-                    })
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .h(px(1.0))
-                            .bg(Theme::global().PANEL_BORDER),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .flex()
-                            .flex_col()
-                            .justify_end()
-                            // Folder mode uses the tabs' upper contour as the thumb.
-                            // Reserve the same header geometry in both modes.
-                            .child(self.render_sidebar_navigation_scrollbar(cx))
-                            .child(
-                                div()
-                                    .id("sidebar-navigation-tabs")
-                                    .debug_selector(|| "sidebar-navigation-tabs".into())
-                                    .flex_none()
-                                    .h(px(34.0))
-                                    .min_w_0()
-                                    .flex()
-                                    .items_end()
-                                    .gap_1()
-                                    .overflow_x_scroll()
-                                    .track_scroll(&self.sidebar_navigation_scroll)
-                                    .on_scroll_wheel(cx.listener(
-                                        |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                                            let delta =
-                                                event.delta.pixel_delta(window.line_height());
-                                            let dx =
-                                                if delta.x != px(0.0) { delta.x } else { delta.y };
-                                            let handle = &this.sidebar_navigation_scroll;
-                                            let x = (handle.offset().x + dx)
-                                                .clamp(-handle.max_offset().x, px(0.0));
-                                            handle.set_offset(gpui::point(x, px(0.0)));
-                                            cx.stop_propagation();
-                                            cx.notify();
-                                        },
-                                    ))
-                                    .child(
-                                        div()
-                                            .id("sidebar-sessions-tab")
-                                            .debug_selector(|| "sidebar-sessions-tab".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .when(
-                                                self.sidebar_view == SidebarView::Sessions,
-                                                |el| {
-                                                    el.h(px(34.0))
-                                                        .border_b_0()
-                                                        .bg(Theme::global().HEADER_BG)
-                                                },
-                                            )
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(
-                                                if self.sidebar_view == SidebarView::Sessions {
-                                                    Theme::global().TEXT
+                    self.render_sidebar_roller(fullscreen, cx)
+                } else {
+                    div()
+                        .h(px(TITLEBAR_HEIGHT))
+                        // The transparent macOS titlebar puts the traffic lights in
+                        // this row. Start navigation after them; on other platforms
+                        // preserve the existing 12px inset.
+                        .pl(px(sidebar_header_left_padding(fullscreen)))
+                        .pr_3()
+                        .flex()
+                        .items_end()
+                        .justify_start()
+                        .relative()
+                        // Keep one backing tone around the folder's top-left curve.
+                        // A dark navigation rectangle here pinches that curve into a notch.
+                        .bg(if folders {
+                            Theme::global().HEADER_BG
+                        } else {
+                            Theme::global().PANEL_BG
+                        })
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(1.0))
+                                .bg(Theme::global().PANEL_BORDER),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .justify_end()
+                                // Folder mode uses the tabs' upper contour as the thumb.
+                                // Reserve the same header geometry in both modes.
+                                .child(self.render_sidebar_navigation_scrollbar(cx))
+                                .child(
+                                    div()
+                                        .id("sidebar-navigation-tabs")
+                                        .debug_selector(|| "sidebar-navigation-tabs".into())
+                                        .flex_none()
+                                        .h(px(34.0))
+                                        .min_w_0()
+                                        .flex()
+                                        .items_end()
+                                        .gap_1()
+                                        .overflow_x_scroll()
+                                        .track_scroll(&self.sidebar_navigation_scroll)
+                                        .on_scroll_wheel(cx.listener(
+                                            |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                                let delta =
+                                                    event.delta.pixel_delta(window.line_height());
+                                                let dx = if delta.x != px(0.0) {
+                                                    delta.x
                                                 } else {
-                                                    Theme::global().TEXT_DIM
-                                                },
-                                            )
-                                            .hover(|el| el.bg(Theme::global().HEADER_BG))
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| {
-                                                    this.sidebar_view = SidebarView::Sessions;
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("chat"),
-                                    )
-                                    .child(self.render_tutorial_tab(cx))
-                                    .child(
-                                        div()
-                                            .id("sidebar-files-tab")
-                                            .debug_selector(|| "sidebar-files-tab".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .when(self.sidebar_view == SidebarView::Files, |el| {
-                                                el.h(px(34.0))
-                                                    .border_b_0()
-                                                    .bg(Theme::global().HEADER_BG)
-                                            })
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(
-                                                if self.sidebar_view == SidebarView::Files {
-                                                    Theme::global().TEXT
-                                                } else {
-                                                    Theme::global().TEXT_DIM
-                                                },
-                                            )
-                                            .hover(|el| el.bg(Theme::global().HEADER_BG))
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| {
-                                                    this.sidebar_view = SidebarView::Files;
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("files"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("sidebar-accounts-tab")
-                                            .debug_selector(|| "sidebar-accounts-tab".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .when(
-                                                self.sidebar_view == SidebarView::Accounts,
-                                                |el| {
-                                                    el.h(px(34.0))
-                                                        .border_b_0()
-                                                        .bg(Theme::global().HEADER_BG)
-                                                },
-                                            )
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(
-                                                if self.sidebar_view == SidebarView::Accounts {
-                                                    Theme::global().TEXT
-                                                } else {
-                                                    Theme::global().TEXT_DIM
-                                                },
-                                            )
-                                            .hover(|el| el.bg(Theme::global().HEADER_BG))
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _, _, cx| {
-                                                    this.sidebar_view = SidebarView::Accounts;
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("accounts"),
-                                    )
-                                    .child(self.render_preference_tab(
-                                        SidebarView::Theme,
-                                        "theme",
-                                        cx,
-                                    ))
-                                    .child(self.render_preference_tab(
-                                        SidebarView::Settings,
-                                        "settings",
-                                        cx,
-                                    ))
-                                    .child(
-                                        div()
-                                            .id("sidebar-orchestration")
-                                            .debug_selector(|| "sidebar-orchestration".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| {
-                                                el.bg(Theme::global().HEADER_BG)
-                                                    .text_color(Theme::global().TEXT)
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _, window, cx| {
-                                                    this.open_orchestration(&OpenOrchestration, window, cx)
-                                                }),
-                                            )
-                                            .child("orchestration"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("sidebar-unfinished-work")
-                                            .debug_selector(|| "sidebar-unfinished-work".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| {
-                                                el.bg(Theme::global().HEADER_BG)
-                                                    .text_color(Theme::global().TEXT)
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _event, window, cx| {
-                                                    this.new_unfinished_work(
-                                                        &NewUnfinishedWork,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }),
-                                            )
-                                            .child("todos"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("open-todoist")
-                                            .debug_selector(|| "open-todoist".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| {
-                                                el.bg(Theme::global().HEADER_BG)
-                                                    .text_color(Theme::global().TEXT)
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _, window, cx| {
-                                                    this.open_todoist(&OpenTodoist, window, cx)
-                                                }),
-                                            )
-                                            .child("todoist"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("open-gmail")
-                                            .debug_selector(|| "open-gmail".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| {
-                                                el.bg(Theme::global().HEADER_BG)
-                                                    .text_color(Theme::global().TEXT)
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _, window, cx| {
-                                                    this.open_gmail(&OpenGmail, window, cx)
-                                                }),
-                                            )
-                                            .child("email"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("sidebar-open-folder")
-                                            .debug_selector(|| "sidebar-open-folder".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(11.0))
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| {
-                                                el.bg(Theme::global().HEADER_BG)
-                                                    .text_color(Theme::global().TEXT)
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _event, window, cx| {
-                                                    this.open_folder(&OpenFolder, window, cx);
-                                                }),
-                                            )
-                                            .child("folder"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("sidebar-new-session")
-                                            // Tagged so a render test can click the real button
-                                            // and confirm it counts as a slow path, not as
-                                            // knowledge of super-enter.
-                                            .debug_selector(|| "sidebar-new-session".into())
-                                            .flex_none()
-                                            .border_1()
-                                            .border_color(Theme::global().PANEL_BORDER)
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_t_md()
-                                            .h(px(30.0))
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .text_size(px(16.0))
-                                            .text_color(Theme::global().TEXT_DIM)
-                                            .hover(|el| {
-                                                el.bg(Theme::global().HEADER_BG)
-                                                    .text_color(Theme::global().TEXT)
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(|this, _event, _window, cx| {
-                                                    this.missed("new_panel", cx);
-                                                    this.open_new_session(cx);
-                                                }),
-                                            )
-                                            .child("+"),
-                                    ),
-                            ),
-                    )
-                    .into_any_element()
+                                                    delta.y
+                                                };
+                                                let handle = &this.sidebar_navigation_scroll;
+                                                let x = (handle.offset().x + dx)
+                                                    .clamp(-handle.max_offset().x, px(0.0));
+                                                handle.set_offset(gpui::point(x, px(0.0)));
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            },
+                                        ))
+                                        .child(
+                                            div()
+                                                .id("sidebar-sessions-tab")
+                                                .debug_selector(|| "sidebar-sessions-tab".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .when(
+                                                    self.sidebar_view == SidebarView::Sessions,
+                                                    |el| {
+                                                        el.h(px(34.0))
+                                                            .border_b_0()
+                                                            .bg(Theme::global().HEADER_BG)
+                                                    },
+                                                )
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(
+                                                    if self.sidebar_view == SidebarView::Sessions {
+                                                        Theme::global().TEXT
+                                                    } else {
+                                                        Theme::global().TEXT_DIM
+                                                    },
+                                                )
+                                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.sidebar_view = SidebarView::Sessions;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child("chat"),
+                                        )
+                                        .child(self.render_tutorial_tab(cx))
+                                        .child(
+                                            div()
+                                                .id("sidebar-files-tab")
+                                                .debug_selector(|| "sidebar-files-tab".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .when(
+                                                    self.sidebar_view == SidebarView::Files,
+                                                    |el| {
+                                                        el.h(px(34.0))
+                                                            .border_b_0()
+                                                            .bg(Theme::global().HEADER_BG)
+                                                    },
+                                                )
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(
+                                                    if self.sidebar_view == SidebarView::Files {
+                                                        Theme::global().TEXT
+                                                    } else {
+                                                        Theme::global().TEXT_DIM
+                                                    },
+                                                )
+                                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.sidebar_view = SidebarView::Files;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child("files"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("sidebar-accounts-tab")
+                                                .debug_selector(|| "sidebar-accounts-tab".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .when(
+                                                    self.sidebar_view == SidebarView::Accounts,
+                                                    |el| {
+                                                        el.h(px(34.0))
+                                                            .border_b_0()
+                                                            .bg(Theme::global().HEADER_BG)
+                                                    },
+                                                )
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(
+                                                    if self.sidebar_view == SidebarView::Accounts {
+                                                        Theme::global().TEXT
+                                                    } else {
+                                                        Theme::global().TEXT_DIM
+                                                    },
+                                                )
+                                                .hover(|el| el.bg(Theme::global().HEADER_BG))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.sidebar_view = SidebarView::Accounts;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child("accounts"),
+                                        )
+                                        .child(self.render_preference_tab(
+                                            SidebarView::Theme,
+                                            "theme",
+                                            cx,
+                                        ))
+                                        .child(self.render_preference_tab(
+                                            SidebarView::Settings,
+                                            "settings",
+                                            cx,
+                                        ))
+                                        .child(
+                                            div()
+                                                .id("sidebar-orchestration")
+                                                .debug_selector(|| "sidebar-orchestration".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        this.open_orchestration(
+                                                            &OpenOrchestration,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    }),
+                                                )
+                                                .child("orchestration"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("sidebar-unfinished-work")
+                                                .debug_selector(|| "sidebar-unfinished-work".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _event, window, cx| {
+                                                        this.new_unfinished_work(
+                                                            &NewUnfinishedWork,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }),
+                                                )
+                                                .child("todos"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("open-todoist")
+                                                .debug_selector(|| "open-todoist".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        this.open_todoist(&OpenTodoist, window, cx)
+                                                    }),
+                                                )
+                                                .child("todoist"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("open-gmail")
+                                                .debug_selector(|| "open-gmail".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        this.open_gmail(&OpenGmail, window, cx)
+                                                    }),
+                                                )
+                                                .child("email"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("sidebar-open-folder")
+                                                .debug_selector(|| "sidebar-open-folder".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_size(px(11.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _event, window, cx| {
+                                                        this.open_folder(&OpenFolder, window, cx);
+                                                    }),
+                                                )
+                                                .child("folder"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("sidebar-new-session")
+                                                // Tagged so a render test can click the real button
+                                                // and confirm it counts as a slow path, not as
+                                                // knowledge of super-enter.
+                                                .debug_selector(|| "sidebar-new-session".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_size(px(16.0))
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _event, _window, cx| {
+                                                        this.missed("new_panel", cx);
+                                                        this.open_new_session(cx);
+                                                    }),
+                                                )
+                                                .child("+"),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
                 };
                 div()
                     .flex_none()
@@ -7587,7 +7633,8 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         Theme::sync_window_background(window, &mut self.window_background);
         if let Some(slot) = self.slots.get(self.active)
-            && !slot.closing && slot.panel.read(cx).supports_voice()
+            && !slot.closing
+            && slot.panel.read(cx).supports_voice()
         {
             self.last_voice_chat = Some(slot.panel.entity_id());
         }
@@ -8102,7 +8149,9 @@ mod default_working_dir_tests {
     fn nonexistent_directory_or_file_retains_home_unchanged() {
         for home in [None, Some(String::new()), Some("relative-home".to_owned())] {
             assert_eq!(
-                default_working_dir_from(Some("/not-a-directory".to_owned()), home.clone(), |_| false),
+                default_working_dir_from(Some("/not-a-directory".to_owned()), home.clone(), |_| {
+                    false
+                }),
                 home
             );
         }
@@ -8120,8 +8169,14 @@ mod default_working_dir_tests {
             WindowLaunch::from_parts(
                 args.iter().copied(),
                 [
-                    ("JCODE_DESKTOP_WORKING_DIR".into(), dir.display().to_string()),
-                    ("JCODE_DESKTOP_STATE".into(), format!("{}/state", dir.display())),
+                    (
+                        "JCODE_DESKTOP_WORKING_DIR".into(),
+                        dir.display().to_string(),
+                    ),
+                    (
+                        "JCODE_DESKTOP_STATE".into(),
+                        format!("{}/state", dir.display()),
+                    ),
                 ],
             )
         };
@@ -8133,7 +8188,10 @@ mod default_working_dir_tests {
         assert!(LaunchMode::resume_requested(&second.args));
         let restored: WindowLaunch = LaunchSnapshot::from(&second).into();
         assert_eq!(restored, second);
-        assert_eq!(launch_working_dir(&restored).as_deref(), beta.path().to_str());
+        assert_eq!(
+            launch_working_dir(&restored).as_deref(),
+            beta.path().to_str()
+        );
     }
 }
 
@@ -9257,7 +9315,7 @@ mod tests {
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
-                            tutorial_page: 0,
+                    tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
                             transcript: None,
@@ -9416,7 +9474,10 @@ mod tests {
         assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
         assert!(vcx.debug_bounds(spinner(1 - row).leak()).is_none());
         let mark = workspace.read_with(vcx, |workspace, _| {
-            workspace.daemon_running_mark("background-run").unwrap().entity_id()
+            workspace
+                .daemon_running_mark("background-run")
+                .unwrap()
+                .entity_id()
         });
 
         // A repeated poll keeps the same mark so its animation never restarts.
@@ -9425,18 +9486,25 @@ mod tests {
         });
         workspace.read_with(vcx, |workspace, _| {
             assert_eq!(
-                workspace.daemon_running_mark("background-run").unwrap().entity_id(),
+                workspace
+                    .daemon_running_mark("background-run")
+                    .unwrap()
+                    .entity_id(),
                 mark
             );
         });
 
-        workspace.update(vcx, |workspace, cx| workspace.set_daemon_running(running(&[]), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.set_daemon_running(running(&[]), cx)
+        });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(spinner(row).leak()).is_none());
     }
 
     #[gpui::test]
-    fn sidebar_mark_persists_for_open_sessions_through_idle_and_activity(cx: &mut gpui::TestAppContext) {
+    fn sidebar_mark_persists_for_open_sessions_through_idle_and_activity(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("sidebar-activity", cx);
@@ -9949,7 +10017,10 @@ mod tests {
         vcx.run_until_parked();
 
         workspace.read_with(vcx, |workspace, _| {
-            assert_eq!(workspace.sidebar_session_layout[0].session_id, "session_fox_open");
+            assert_eq!(
+                workspace.sidebar_session_layout[0].session_id,
+                "session_fox_open"
+            );
             assert!(workspace.sidebar_session_layout[1].divider);
         });
         assert!(
@@ -10078,9 +10149,7 @@ mod tests {
                     0.0
                 };
                 assert_eq!(gutter.right(), body.right() + px(outset));
-                if view == SidebarView::Sessions
-                    && mode == crate::config::LayoutMode::FolderTabs
-                {
+                if view == SidebarView::Sessions && mode == crate::config::LayoutMode::FolderTabs {
                     let scrollbar = vcx.debug_bounds("sidebar-scrollbar").unwrap();
                     let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
                     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
@@ -10210,7 +10279,11 @@ mod tests {
                     .iter()
                     .map(|item| item.session_id.as_str())
                     .collect::<Vec<_>>(),
-                vec!["session_owl_upper_left", "session_hare_upper_right", "session_fox_lower"]
+                vec![
+                    "session_owl_upper_left",
+                    "session_hare_upper_right",
+                    "session_fox_lower"
+                ]
             );
         });
         for (selector, expected_session) in [
@@ -10359,7 +10432,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn clicking_an_unfinished_work_card_reuses_its_open_chat_session(cx: &mut gpui::TestAppContext) {
+    fn clicking_an_unfinished_work_card_reuses_its_open_chat_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(crate::learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
@@ -10409,7 +10484,13 @@ mod tests {
                 assert_eq!(workspace.slots[workspace.active].panel, chat);
             });
             workspace.update_in(vcx, |_, window, cx| {
-                assert!(chat.read(cx).input.read(cx).focus_handle(cx).is_focused(window));
+                assert!(
+                    chat.read(cx)
+                        .input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
             });
         }
     }

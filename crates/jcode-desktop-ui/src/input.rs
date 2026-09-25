@@ -351,7 +351,9 @@ pub struct AttachmentSnapshot {
 impl PromptInput {
     pub fn snapshot(&self) -> PromptInputSnapshot {
         // A transient picker must never replace the user's persisted draft.
-        let (content, attachments) = self.model_menu_draft.as_ref()
+        let (content, attachments) = self
+            .model_menu_draft
+            .as_ref()
             .map(|(content, attachments)| (content, attachments))
             .unwrap_or((&self.content, &self.attachments));
         let selection = if self.model_menu_draft.is_some() {
@@ -367,7 +369,8 @@ impl PromptInput {
             history: self.history.clone(),
             history_index: self.history_index,
             live_draft: self.live_draft.clone(),
-            attachments: attachments.iter()
+            attachments: attachments
+                .iter()
                 .map(|attachment| AttachmentSnapshot {
                     media_type: attachment.media_type.clone(),
                     encoded: attachment.encoded.clone(),
@@ -506,7 +509,11 @@ impl PromptInput {
     }
 
     /// Placeholder shown at `now`, and whether it is still animating.
-    fn placeholder_text(&self, now: Instant, cx: &App) -> (SharedString, Option<&'static str>, bool) {
+    fn placeholder_text(
+        &self,
+        now: Instant,
+        cx: &App,
+    ) -> (SharedString, Option<&'static str>, bool) {
         if !self.example_prompts {
             return (self.placeholder.clone(), None, false);
         }
@@ -674,7 +681,11 @@ impl PromptInput {
             return Vec::new();
         }
         let now = model_menu::now_unix_secs();
-        let current = model_menu::current_spec(self.current_model.as_deref(), &self.command_models, &self.model_details);
+        let current = model_menu::current_spec(
+            self.current_model.as_deref(),
+            &self.command_models,
+            &self.model_details,
+        );
         let trimmed = self.content.trim_start();
         let suggestions =
             if !trimmed.contains('\n') && (trimmed == "/model" || trimmed.starts_with("/model ")) {
@@ -708,8 +719,7 @@ impl PromptInput {
                             .map(|details| details.label(now))
                             .unwrap_or_else(|| model_menu::usage_label(None, now)),
                     );
-                    suggestion.help = if current == Some(model)
-                    {
+                    suggestion.help = if current == Some(model) {
                         "Current".into()
                     } else {
                         String::new()
@@ -1123,9 +1133,11 @@ impl PromptInput {
             self.set_command_models(fallback_models, cx);
         }
         if self.model_menu_draft.is_none()
-            && !(self.content.trim() == "/model" || self.content.trim_start().starts_with("/model "))
+            && !(self.content.trim() == "/model"
+                || self.content.trim_start().starts_with("/model "))
         {
-            self.model_menu_draft = Some((self.content.clone(), std::mem::take(&mut self.attachments)));
+            self.model_menu_draft =
+                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
             self.attachment_preview = None;
         }
         self.set_content("/model ".into(), cx);
@@ -1134,7 +1146,8 @@ impl PromptInput {
     /// Show the `/effort` suggestions, stashing the draft like the model menu.
     pub(crate) fn open_effort_menu(&mut self, cx: &mut Context<Self>) {
         if self.model_menu_draft.is_none() && !self.effort_menu_open() {
-            self.model_menu_draft = Some((self.content.clone(), std::mem::take(&mut self.attachments)));
+            self.model_menu_draft =
+                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
             self.attachment_preview = None;
         }
         self.set_content("/effort ".into(), cx);
@@ -1159,7 +1172,9 @@ impl PromptInput {
         if let Some((draft, attachments)) = self.model_menu_draft.take() {
             self.attachments = attachments;
             self.set_content(draft.to_string(), cx);
-        } else if self.content.trim() == "/model" || self.content.trim_start().starts_with("/model ") {
+        } else if self.content.trim() == "/model"
+            || self.content.trim_start().starts_with("/model ")
+        {
             self.set_content(String::new(), cx);
         }
     }
@@ -1617,7 +1632,11 @@ impl Element for TextElement {
 
         let mut placeholder_full = None;
         let mut placeholder_live = false;
-        let text_indent = if content.is_empty() { PLACEHOLDER_INDENT } else { px(0.) };
+        let text_indent = if content.is_empty() {
+            PLACEHOLDER_INDENT
+        } else {
+            px(0.)
+        };
         let wrap_width = (bounds.size.width - text_indent).max(px(0.));
         let (display_text, text_color) = if content.is_empty() {
             let (mut text, full, live) = input.placeholder_text(now, cx);
@@ -1674,13 +1693,7 @@ impl Element for TextElement {
         let line = PromptLayout::new(
             window
                 .text_system()
-                .shape_text(
-                    display_text,
-                    font_size,
-                    &runs,
-                    Some(wrap_width),
-                    None,
-                )
+                .shape_text(display_text, font_size, &runs, Some(wrap_width), None)
                 .expect("prompt text should shape"),
         );
         let line_height = window.line_height();
@@ -1717,34 +1730,45 @@ impl Element for TextElement {
         );
         let focused = self.input.read(cx).focus_handle.is_focused(window);
         let reduced = motion_reduced(cx);
-        let (cursor_pos, caret_alpha, caret_live, caret_gliding) = self.input.update(cx, |input, _| {
-            let key = (input.content.clone(), cursor);
-            if input.motion.key.as_ref() != Some(&key) {
-                if key.0.is_empty()
-                    && input.motion.key.as_ref().is_some_and(|(old, _)| !old.is_empty())
-                {
-                    // Emptying the composer starts a fresh example.
-                    input.motion.seed = input.motion.seed.wrapping_add(1);
+        let (cursor_pos, caret_alpha, caret_live, caret_gliding) =
+            self.input.update(cx, |input, _| {
+                let key = (input.content.clone(), cursor);
+                if input.motion.key.as_ref() != Some(&key) {
+                    if key.0.is_empty()
+                        && input
+                            .motion
+                            .key
+                            .as_ref()
+                            .is_some_and(|(old, _)| !old.is_empty())
+                    {
+                        // Emptying the composer starts a fresh example.
+                        input.motion.seed = input.motion.seed.wrapping_add(1);
+                    }
+                    input.motion.key = Some(key);
+                    input.motion.epoch = now;
                 }
-                input.motion.key = Some(key);
-                input.motion.epoch = now;
-            }
-            let glide = input
-                .motion
-                .glide
-                .get_or_insert_with(|| motion::Glide::new(target, now));
-            glide.retarget(target, line_height, now, reduced);
-            let (position, gliding) = glide.position(now);
-            let (alpha, breathing) =
-                motion::caret_alpha(now.saturating_duration_since(input.motion.epoch), reduced);
-            (position, alpha, focused && (gliding || breathing), focused && gliding)
-        });
+                let glide = input
+                    .motion
+                    .glide
+                    .get_or_insert_with(|| motion::Glide::new(target, now));
+                glide.retarget(target, line_height, now, reduced);
+                let (position, gliding) = glide.position(now);
+                let (alpha, breathing) =
+                    motion::caret_alpha(now.saturating_duration_since(input.motion.epoch), reduced);
+                (
+                    position,
+                    alpha,
+                    focused && (gliding || breathing),
+                    focused && gliding,
+                )
+            });
         if caret_gliding {
             // The 33ms ticker is too coarse for a 55ms glide. Draw every frame.
             window.request_animation_frame();
         }
         let motion_live = caret_live || placeholder_live;
-        self.input.update(cx, |input, _| input.motion.live = motion_live);
+        self.input
+            .update(cx, |input, _| input.motion.live = motion_live);
         let (selection, cursor) = if selected_range.is_empty() {
             let mut color = to_hsla(Theme::global().CURSOR);
             color.a *= caret_alpha;
@@ -1984,23 +2008,25 @@ impl Render for PromptInput {
             .relative()
             .child({
                 let measured = self.composer_bounds.clone();
-                gpui::canvas(|_, _, _| (), move |bounds, _, _, _| {
-                    // Absolute children fill the padding box. Include the root's
-                    // one-pixel border so reparenting preserves its exact footprint.
-                    measured.set(Some(Bounds::new(
-                        bounds.origin - point(px(1.0), px(1.0)),
-                        size(bounds.size.width + px(2.0), bounds.size.height + px(2.0)),
-                    )));
-                })
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, _, _| {
+                        // Absolute children fill the padding box. Include the root's
+                        // one-pixel border so reparenting preserves its exact footprint.
+                        measured.set(Some(Bounds::new(
+                            bounds.origin - point(px(1.0), px(1.0)),
+                            size(bounds.size.width + px(2.0), bounds.size.height + px(2.0)),
+                        )));
+                    },
+                )
                 .absolute()
                 .top_0()
                 .left_0()
                 .size_full()
             })
-            .when(
-                command_visible,
-                |el| {
-                    el.child(gpui::deferred(popup::Popup::new(
+            .when(command_visible, |el| {
+                el.child(
+                    gpui::deferred(popup::Popup::new(
                         div()
                             .id("slash-command-suggestions")
                             .debug_selector(|| "slash-command-overlay".into())
@@ -2029,8 +2055,10 @@ impl Render for PromptInput {
                                             .min_h_0()
                                             .flex()
                                             .flex_col()
-                                            .max_h(popup::scroll_height(window.viewport_size().height,
-                                                self.content.trim_start().starts_with("/model")))
+                                            .max_h(popup::scroll_height(
+                                                window.viewport_size().height,
+                                                self.content.trim_start().starts_with("/model"),
+                                            ))
                                             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
                                             .pr(px(crate::scrollbar::GUTTER - 4.0))
                                             .when(suggestions.is_empty(), |el| {
@@ -2045,12 +2073,25 @@ impl Render for PromptInput {
                                             })
                                             .when(!suggestions.is_empty(), |el| {
                                                 let input = cx.entity();
-                                                el.child(gpui::list(self.command_scroll.clone(), move |index, _, cx| {
-                                                    input.update(cx, |input, cx| input.render_command_row(index, suggestions[index].clone(), cx))
-                                                })
-                                                .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
-                                                .min_h_0()
-                                                .w_full())
+                                                el.child(
+                                                    gpui::list(
+                                                        self.command_scroll.clone(),
+                                                        move |index, _, cx| {
+                                                            input.update(cx, |input, cx| {
+                                                                input.render_command_row(
+                                                                    index,
+                                                                    suggestions[index].clone(),
+                                                                    cx,
+                                                                )
+                                                            })
+                                                        },
+                                                    )
+                                                    .with_sizing_behavior(
+                                                        gpui::ListSizingBehavior::Infer,
+                                                    )
+                                                    .min_h_0()
+                                                    .w_full(),
+                                                )
                                             }),
                                     )
                                     .child(crate::scrollbar::vertical_list(
@@ -2059,9 +2100,10 @@ impl Render for PromptInput {
                                     )),
                             ),
                         px(4.0 + 6.0 * (1.0 - menu_progress)),
-                    )).with_priority(1))
-                },
-            )
+                    ))
+                    .with_priority(1),
+                )
+            })
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -2699,7 +2741,8 @@ mod tests {
         cx.run_until_parked();
         window
             .update(cx, |input, window, _| {
-                let height = input.last_bounds.unwrap().size.height / input.visual_line_count as f32;
+                let height =
+                    input.last_bounds.unwrap().size.height / input.visual_line_count as f32;
                 let caret = input
                     .last_layout
                     .as_ref()

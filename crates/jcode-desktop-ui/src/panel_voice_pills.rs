@@ -288,14 +288,22 @@ impl Panel {
                         .py(px(2.))
                         .rounded_md()
                         .bg(background)
-                        .text_color(if pill.winner { theme.TEXT_USER } else { theme.TEXT_DIM })
+                        .text_color(if pill.winner {
+                            theme.TEXT_USER
+                        } else {
+                            theme.TEXT_DIM
+                        })
                         .child(div().min_w_0().truncate().child(pill.label))
                         .child(
                             div()
                                 .flex_shrink_0()
                                 .font_family(theme.FONT_MONO)
                                 .text_size(px(10.))
-                                .text_color(if pill.winner { theme.ACCENT } else { theme.TEXT_DIM })
+                                .text_color(if pill.winner {
+                                    theme.ACCENT
+                                } else {
+                                    theme.TEXT_DIM
+                                })
                                 .child(if pill.winner {
                                     format!("✓ {}", pill.score)
                                 } else {
@@ -343,9 +351,7 @@ impl Panel {
                     .min_w_0()
                     .child(
                         div()
-                            .debug_selector(|| {
-"voice-heard".into()
-                            })
+                            .debug_selector(|| "voice-heard".into())
                             .flex_1()
                             .min_w_0()
                             .truncate()
@@ -353,7 +359,12 @@ impl Panel {
                             .child(format!("“{}”", trace.transcript)),
                     )
                     .when(self.voice.trace_preview, |el| {
-                        el.child(div().flex_shrink_0().text_color(theme.TEXT_DIM).child("Preview"))
+                        el.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(theme.TEXT_DIM)
+                                .child("Preview"),
+                        )
                     })
                     .child(
                         div()
@@ -368,7 +379,11 @@ impl Panel {
                                 cx.notify();
                                 cx.stop_propagation();
                             }))
-                            .child(if hidden > 0 { format!("+{hidden}") } else { "Details".into() }),
+                            .child(if hidden > 0 {
+                                format!("+{hidden}")
+                            } else {
+                                "Details".into()
+                            }),
                     )
                     .child(
                         div()
@@ -470,8 +485,15 @@ mod tests {
         assert_eq!(cost_lines(&trace, false)[0].1, "Not reported");
         assert_eq!(cost_lines(&trace, false)[2].2, "$0.0010+");
         assert_eq!(format_usd(0.25), "$0.2500");
-        trace.usage = Some(voice_intent::VoiceUsage { input_tokens: 4_812, output_tokens: 9, requests: 1 });
-        assert_eq!(cost_summary(&trace, false), "4,812 tok $0.00020 · 30.0s $0.0010 · $0.0012 est.");
+        trace.usage = Some(voice_intent::VoiceUsage {
+            input_tokens: 4_812,
+            output_tokens: 9,
+            requests: 1,
+        });
+        assert_eq!(
+            cost_summary(&trace, false),
+            "4,812 tok $0.00020 · 30.0s $0.0010 · $0.0012 est."
+        );
         assert_eq!(format_tokens(999), "999");
         assert_eq!(format_tokens(1_000_000), "1,000,000");
     }
@@ -503,9 +525,11 @@ mod tests {
         assert_eq!(pills[0].id, "candidate_19");
         assert_eq!(pills[1].id, "coding_agent");
         assert!(pills[2..].iter().all(|p| p.probability.is_none()));
-        assert!(!pills
-            .iter()
-            .any(|p| p.id == "navigation" || p.id == "quick_action"));
+        assert!(
+            !pills
+                .iter()
+                .any(|p| p.id == "navigation" || p.id == "quick_action")
+        );
         let coding = pills.iter().find(|p| p.id == "coding_agent").unwrap();
         assert_eq!(coding.label, "Coding agent");
         assert_eq!(coding.score, "87.6%");

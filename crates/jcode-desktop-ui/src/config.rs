@@ -520,15 +520,31 @@ mod tests {
             assert!(voice.global_hold);
             assert_eq!(voice.global_devices, vec![PathBuf::from(device)]);
             assert_eq!(voice.spawn_working_dir, None);
-            let voice = parse(&format!("[{prefix}]\nspawn_working_dir = '/repo'\n"), standalone).unwrap().voice;
+            let voice = parse(
+                &format!("[{prefix}]\nspawn_working_dir = '/repo'\n"),
+                standalone,
+            )
+            .unwrap()
+            .voice;
             assert_eq!(voice.spawn_working_dir, Some(PathBuf::from("/repo")));
-            let voice = parse(&format!("[{prefix}]\nglobal_hold = true\n"), standalone).unwrap().voice;
+            let voice = parse(&format!("[{prefix}]\nglobal_hold = true\n"), standalone)
+                .unwrap()
+                .voice;
             assert!(voice.global_hold);
             assert!(voice.global_devices.is_empty());
-            let voice = parse(&format!("[{prefix}]\nglobal_devices = ['{device}']\n"), standalone).unwrap().voice;
+            let voice = parse(
+                &format!("[{prefix}]\nglobal_devices = ['{device}']\n"),
+                standalone,
+            )
+            .unwrap()
+            .voice;
             assert!(!voice.global_hold);
             assert_eq!(voice.global_devices, vec![PathBuf::from(device)]);
-            for invalid in ["global_hold = 'true'", "global_devices = 'all'", "global_devices = [42]"] {
+            for invalid in [
+                "global_hold = 'true'",
+                "global_devices = 'all'",
+                "global_devices = [42]",
+            ] {
                 assert!(parse(&format!("[{prefix}]\n{invalid}\n"), standalone).is_err());
             }
         }

@@ -775,7 +775,10 @@ mod tests {
         ]});
         let merged = tool("edit", input.clone());
         assert_eq!(merged[0].lines, tool("multiedit", input)[0].lines);
-        assert_eq!(merged[0].lines, ["-a", "+b", "@@ next requested edit @@", "-b", "+c"]);
+        assert_eq!(
+            merged[0].lines,
+            ["-a", "+b", "@@ next requested edit @@", "-b", "+c"]
+        );
     }
 
     #[test]

@@ -65,7 +65,11 @@ impl State {
         if harness::remote_host(&session.session_id).is_some() {
             return None;
         }
-        let directory = session.working_dir.as_deref().map(str::trim).filter(|d| !d.is_empty())?;
+        let directory = session
+            .working_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())?;
         if let Some((cached, read)) = self.checkouts.get(directory)
             && read.elapsed() < CHECKOUT_TTL
         {
@@ -233,8 +237,12 @@ impl Workspace {
         );
         let key = project.key.clone();
         // Only local directories can host a new thread or worktree from here.
-        let local = Path::new(&project.key).is_absolute().then(|| project.key.clone());
-        let git = local.as_deref().is_some_and(|dir| Path::new(dir).join(".git").exists());
+        let local = Path::new(&project.key)
+            .is_absolute()
+            .then(|| project.key.clone());
+        let git = local
+            .as_deref()
+            .is_some_and(|dir| Path::new(dir).join(".git").exists());
         let group: &'static str = "sidebar-project-header";
         div()
             .id(("sidebar-project", index))
@@ -370,7 +378,11 @@ impl Workspace {
                 checkout.branch.clone(),
                 format!(
                     "{} · {}",
-                    if checkout.linked { "Worktree" } else { "Main checkout" },
+                    if checkout.linked {
+                        "Worktree"
+                    } else {
+                        "Main checkout"
+                    },
                     compact_working_dir(&checkout.path)
                 ),
             ),
@@ -393,7 +405,10 @@ impl Workspace {
             .rounded_full()
             .text_size(px(11.0))
             .text_color(theme.TEXT_DIM)
-            .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into())).into())
+            .tooltip(move |_, cx| {
+                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
+                    .into()
+            })
             .child(sidebar_worktrees::icon(
                 if checkout.is_some_and(|c| c.linked) {
                     sidebar_worktrees::BRANCH_ICON
@@ -459,7 +474,10 @@ mod tests {
         std::fs::create_dir_all(&feature).unwrap();
         std::fs::write(
             feature.join(".git"),
-            format!("gitdir: {}\n", repo.join(".git/worktrees/feature").display()),
+            format!(
+                "gitdir: {}\n",
+                repo.join(".git/worktrees/feature").display()
+            ),
         )
         .unwrap();
         std::fs::write(repo.join(".git/worktrees/feature/commondir"), "../..\n").unwrap();
@@ -501,7 +519,10 @@ mod tests {
         assert!(!state.collapsed("/a", true));
         state.toggle("/a", false);
         state.sync_focus(Some("s1"), Some("/a"));
-        assert!(state.collapsed("/a", false), "same focus must not undo manual collapse");
+        assert!(
+            state.collapsed("/a", false),
+            "same focus must not undo manual collapse"
+        );
         state.sync_focus(Some("s2"), Some("/a"));
         assert!(!state.collapsed("/a", true));
     }
@@ -513,15 +534,24 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sessions_group_under_project_headers_with_open_panels_first(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn sessions_group_under_project_headers_with_open_panels_first(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-            panel_in(&mut workspace, "session_fox_alpha_one", "/nowhere/alpha", cx);
+            panel_in(
+                &mut workspace,
+                "session_fox_alpha_one",
+                "/nowhere/alpha",
+                cx,
+            );
             panel_in(&mut workspace, "session_owl_beta_one", "/nowhere/beta", cx);
-            panel_in(&mut workspace, "session_hare_alpha_two", "/nowhere/alpha", cx);
-            let mut history = super::super::tests::session_info("session_cat_alpha_old", Some("old"));
+            panel_in(
+                &mut workspace,
+                "session_hare_alpha_two",
+                "/nowhere/alpha",
+                cx,
+            );
+            let mut history =
+                super::super::tests::session_info("session_cat_alpha_old", Some("old"));
             history.working_dir = Some("/nowhere/alpha".into());
             let mut gamma = super::super::tests::session_info("session_elk_gamma", Some("gamma"));
             gamma.working_dir = Some("/nowhere/gamma".into());
@@ -563,7 +593,10 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-project-1").is_some());
         assert!(vcx.debug_bounds("sidebar-session-title-3").is_none());
         workspace.read_with(vcx, |w, cx| {
-            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "session_fox_alpha_one");
+            assert_eq!(
+                w.slots[w.active].panel.read(cx).session_id,
+                "session_fox_alpha_one"
+            );
         });
         // Focusing a session inside a collapsed project reveals it.
         workspace.update(vcx, |w, cx| {
@@ -591,14 +624,21 @@ mod tests {
         });
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, _| {
-            assert!(workspace.sessions.is_empty(), "rendering must not populate the catalog");
+            assert!(
+                workspace.sessions.is_empty(),
+                "rendering must not populate the catalog"
+            );
             assert_eq!(
                 workspace
                     .sidebar_session_layout
                     .iter()
                     .map(|item| item.session_id.as_str())
                     .collect::<Vec<_>>(),
-                vec!["session_owl_upper_left", "session_hare_upper_right", "session_fox_lower"],
+                vec![
+                    "session_owl_upper_left",
+                    "session_hare_upper_right",
+                    "session_fox_lower"
+                ],
             );
         });
         assert!(
@@ -614,8 +654,15 @@ mod tests {
             vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, cx| {
-                assert_eq!(workspace.slots.len(), 3, "clicking a live row must not open a duplicate");
-                assert_eq!(workspace.slots[workspace.active].panel.read(cx).session_id, expected);
+                assert_eq!(
+                    workspace.slots.len(),
+                    3,
+                    "clicking a live row must not open a duplicate"
+                );
+                assert_eq!(
+                    workspace.slots[workspace.active].panel.read(cx).session_id,
+                    expected
+                );
             });
         }
     }

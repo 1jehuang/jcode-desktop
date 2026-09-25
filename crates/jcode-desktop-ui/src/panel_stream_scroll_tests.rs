@@ -319,7 +319,10 @@ fn native_scrollbar_catch_up_resumes_following_streamed_output(cx: &mut gpui::Te
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
             assert!(!panel.transcript_list.is_scrollbar_dragging());
-            assert!(panel.stick_to_bottom, "scrollbar mode {mode} must resume follow");
+            assert!(
+                panel.stick_to_bottom,
+                "scrollbar mode {mode} must resume follow"
+            );
             assert!(panel.transcript_end_visible);
         });
         panel.update(vcx, |panel, cx| {
@@ -335,7 +338,10 @@ fn native_scrollbar_catch_up_resumes_following_streamed_output(cx: &mut gpui::Te
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {
             assert!(panel.stick_to_bottom);
-            assert!(panel.transcript_end_visible, "scrollbar mode {mode} must follow growth");
+            assert!(
+                panel.transcript_end_visible,
+                "scrollbar mode {mode} must follow growth"
+            );
         });
     }
 }

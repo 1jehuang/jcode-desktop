@@ -473,7 +473,8 @@ mod tests {
         let chevron = vcx.debug_bounds("sidebar-section-chevron").unwrap();
         assert!(label.left() >= trigger.left());
         assert_eq!(
-            label.center().x, trigger.center().x,
+            label.center().x,
+            trigger.center().x,
             "section title is centered independently of the chevron"
         );
         assert!(label.right() < chevron.left());

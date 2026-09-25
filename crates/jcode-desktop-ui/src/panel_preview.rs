@@ -60,24 +60,49 @@ impl Panel {
         match state {
             PreviewState::Empty => {}
             PreviewState::Interrupted | PreviewState::Crashed => {
-                self.items.push(Item::User("Review the implementation.".into()));
-                self.apply(&ApiEvent::TextDelta {
-                    message_id: None,
-                    session_id: self.session_id.clone(),
-                    text: "I checked the implementation and started reviewing its tests.".into(),
-                }, cx);
+                self.items
+                    .push(Item::User("Review the implementation.".into()));
+                self.apply(
+                    &ApiEvent::TextDelta {
+                        message_id: None,
+                        session_id: self.session_id.clone(),
+                        text: "I checked the implementation and started reviewing its tests."
+                            .into(),
+                    },
+                    cx,
+                );
                 let (reason, message) = if state == PreviewState::Interrupted {
-                    (jcode_sdk::TurnStopReason::Interrupted, "You interrupted this response.")
+                    (
+                        jcode_sdk::TurnStopReason::Interrupted,
+                        "You interrupted this response.",
+                    )
                 } else {
-                    (jcode_sdk::TurnStopReason::Crash, "The session task panicked while processing the response.")
+                    (
+                        jcode_sdk::TurnStopReason::Crash,
+                        "The session task panicked while processing the response.",
+                    )
                 };
-                self.apply(&ApiEvent::TurnStopped {
-                    session_id: self.session_id.clone(), reason, message: message.into(),
-                    provider_stop_reason: None,
-                }, cx);
-                self.apply(&ApiEvent::TurnDone { session_id: self.session_id.clone() }, cx);
+                self.apply(
+                    &ApiEvent::TurnStopped {
+                        session_id: self.session_id.clone(),
+                        reason,
+                        message: message.into(),
+                        provider_stop_reason: None,
+                    },
+                    cx,
+                );
+                self.apply(
+                    &ApiEvent::TurnDone {
+                        session_id: self.session_id.clone(),
+                    },
+                    cx,
+                );
             }
-            PreviewState::VoiceConnecting | PreviewState::VoiceListening | PreviewState::VoiceRouting | PreviewState::VoiceCodingAgent | PreviewState::VoiceQuickAction => {
+            PreviewState::VoiceConnecting
+            | PreviewState::VoiceListening
+            | PreviewState::VoiceRouting
+            | PreviewState::VoiceCodingAgent
+            | PreviewState::VoiceQuickAction => {
                 self.seed_voice_preview(state);
             }
             PreviewState::Streaming => {
@@ -133,7 +158,11 @@ impl Panel {
             if matches!(content.trim(), "/model" | "/models") {
                 self.open_model_picker(cx);
             } else if let Some(model) = content.trim().strip_prefix("/model ") {
-                if self.available_models.iter().any(|available| available == model) {
+                if self
+                    .available_models
+                    .iter()
+                    .any(|available| available == model)
+                {
                     self.model = Some(model.to_string());
                     self.items.push(Item::Assistant(format!(
                         "Offline preview: selected `{model}` locally. No account or session was changed."

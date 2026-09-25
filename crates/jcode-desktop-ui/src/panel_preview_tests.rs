@@ -18,7 +18,12 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
             }
             PreviewState::LoginDialogError => assert!(panel.login.is_some()),
             PreviewState::Interrupted | PreviewState::Crashed => {
-                assert!(panel.items.iter().any(|item| matches!(item, Item::Stopped(_))));
+                assert!(
+                    panel
+                        .items
+                        .iter()
+                        .any(|item| matches!(item, Item::Stopped(_)))
+                );
                 assert!(!panel.activity_active());
             }
             _ => assert!(

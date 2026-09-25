@@ -95,11 +95,7 @@ fn chunks(text: &str) -> Vec<String> {
 }
 
 /// Drive `panel` through `script` until the returned task is dropped.
-pub(crate) fn run(
-    panel: Entity<Panel>,
-    script: Vec<SampleTurn>,
-    cx: &mut App,
-) -> gpui::Task<()> {
+pub(crate) fn run(panel: Entity<Panel>, script: Vec<SampleTurn>, cx: &mut App) -> gpui::Task<()> {
     // Weak, so closing onboarding drops the panel and ends the loop.
     let panel = panel.downgrade();
     cx.spawn(async move |cx| {
@@ -126,7 +122,12 @@ pub(crate) fn run(
                         // The first prompt appears at once so the panel is never blank.
                         if in_turn {
                             let _ = panel.update(cx, |panel, cx| {
-                                panel.demo_event(ApiEvent::TurnDone { session_id: session_id.clone() }, cx)
+                                panel.demo_event(
+                                    ApiEvent::TurnDone {
+                                        session_id: session_id.clone(),
+                                    },
+                                    cx,
+                                )
                             });
                             sleep(TURN_GAP).await;
                         }
@@ -154,9 +155,16 @@ pub(crate) fn run(
                                     let session_id = session_id.clone();
                                     panel.demo_event(
                                         if reasoning {
-                                            ApiEvent::ReasoningDelta { session_id, text: piece }
+                                            ApiEvent::ReasoningDelta {
+                                                session_id,
+                                                text: piece,
+                                            }
                                         } else {
-                                            ApiEvent::TextDelta { session_id, text: piece, message_id: None }
+                                            ApiEvent::TextDelta {
+                                                session_id,
+                                                text: piece,
+                                                message_id: None,
+                                            }
                                         },
                                         cx,
                                     )
@@ -182,7 +190,11 @@ pub(crate) fn run(
                         }
                         ok
                     }
-                    SampleTurn::Tool { name, input, output } => {
+                    SampleTurn::Tool {
+                        name,
+                        input,
+                        output,
+                    } => {
                         call += 1;
                         let call_id = format!("demo-{call}");
                         let started = panel
@@ -228,7 +240,12 @@ pub(crate) fn run(
                 }
             }
             let _ = panel.update(cx, |panel, cx| {
-                panel.demo_event(ApiEvent::TurnDone { session_id: session_id.clone() }, cx)
+                panel.demo_event(
+                    ApiEvent::TurnDone {
+                        session_id: session_id.clone(),
+                    },
+                    cx,
+                )
             });
             sleep(LAP_GAP).await;
         }
@@ -252,7 +269,11 @@ mod tests {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_demo("Demo", cx));
         let script = vec![
             SampleTurn::User("Fix it".into()),
-            SampleTurn::Tool { name: "bash".into(), input: r#"{"command":"ls"}"#.into(), output: "ok".into() },
+            SampleTurn::Tool {
+                name: "bash".into(),
+                input: r#"{"command":"ls"}"#.into(),
+                output: "ok".into(),
+            },
             SampleTurn::Assistant("All done.".into()),
         ];
         let task = vcx.update(|_, cx| run(panel.clone(), script, cx));
@@ -263,8 +284,15 @@ mod tests {
         panel.read_with(vcx, |panel, _| {
             assert!(panel.demo);
             assert!(matches!(panel.items.first(), Some(Item::User(text)) if text == "Fix it"));
-            assert!(panel.items.iter().any(|item| matches!(item, Item::Tool { done: true, output, .. } if output == "ok")));
-            assert!(panel.items.iter().any(|item| matches!(item, Item::Assistant(text) if text == "All done.")));
+            assert!(panel.items.iter().any(
+                |item| matches!(item, Item::Tool { done: true, output, .. } if output == "ok")
+            ));
+            assert!(
+                panel
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::Assistant(text) if text == "All done."))
+            );
         });
         drop(task);
     }

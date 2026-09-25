@@ -474,13 +474,19 @@ mod tests {
             workspace.push_test_panel("image-session", cx);
             workspace
         });
-        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0)).unwrap();
-        vcx.update(|window, cx| panel.update(cx, |panel, cx| {
-            panel.items = vec![Item::Image(fixture_image())];
-            panel.input.update(cx, |input, cx| input.set_content("draft".into(), cx));
-            panel.focus_input(window, cx);
-            cx.notify();
-        }));
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.items = vec![Item::Image(fixture_image())];
+                panel
+                    .input
+                    .update(cx, |input, cx| input.set_content("draft".into(), cx));
+                panel.focus_input(window, cx);
+                cx.notify();
+            })
+        });
         vcx.run_until_parked();
         let before = vcx.debug_bounds("inline-image-viewport").unwrap();
         vcx.simulate_click(before.center(), gpui::Modifiers::default());
@@ -491,12 +497,18 @@ mod tests {
         assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
         assert!(vcx.debug_bounds("image-preview").is_none());
         vcx.simulate_keystrokes("x");
-        assert_eq!(panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content), "draftx");
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
+            "draftx"
+        );
         let fit = vcx.debug_bounds("inline-image-fit").unwrap();
         assert!(fit.top() >= expanded.bottom());
         vcx.simulate_click(fit.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
-        assert_eq!(vcx.debug_bounds("inline-image-viewport").unwrap().size, before.size);
+        assert_eq!(
+            vcx.debug_bounds("inline-image-viewport").unwrap().size,
+            before.size
+        );
     }
 
     #[gpui::test]
@@ -516,9 +528,11 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
-        vcx.update(|window, cx| panel.update(cx, |panel, cx| {
-            panel.open_image_preview(fixture_image(), window, cx);
-        }));
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_image_preview(fixture_image(), window, cx);
+            })
+        });
         vcx.run_until_parked();
         let viewport = vcx.debug_bounds("image-preview-viewport").unwrap();
         let before = vcx.debug_bounds("image-preview-full").unwrap();

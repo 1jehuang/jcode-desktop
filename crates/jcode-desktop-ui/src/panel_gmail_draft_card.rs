@@ -23,8 +23,12 @@ pub(super) struct Compose {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Outcome {
     Writing,
-    Drafted { draft_id: Option<String> },
-    Sent { message_id: Option<String> },
+    Drafted {
+        draft_id: Option<String>,
+    },
+    Sent {
+        message_id: Option<String>,
+    },
     /// The tool finished without composing, e.g. a missing attachment.
     Note(String),
 }
@@ -187,9 +191,8 @@ pub(super) fn render(
     } else {
         "Email draft"
     };
-    let plain = |key: String, text: String| {
-        text_selection::plain(selection.clone(), key, text, window, cx)
-    };
+    let plain =
+        |key: String, text: String| text_selection::plain(selection.clone(), key, text, window, cx);
     let field = |label: &'static str, value: String, key: &str, strong: bool| {
         div()
             .flex()
@@ -231,7 +234,11 @@ pub(super) fn render(
         .my_1()
         .rounded_lg()
         .border_1()
-        .border_color(if failed { theme.ERROR } else { theme.TOOL_BORDER })
+        .border_color(if failed {
+            theme.ERROR
+        } else {
+            theme.TOOL_BORDER
+        })
         .bg(theme.TOOL_BG)
         .overflow_hidden()
         .text_size(px(13.0))
@@ -293,7 +300,11 @@ pub(super) fn render(
                 .pb_2()
                 .child(field(
                     "To",
-                    if compose.to.is_empty() { "…".into() } else { compose.to.clone() },
+                    if compose.to.is_empty() {
+                        "…".into()
+                    } else {
+                        compose.to.clone()
+                    },
                     "to",
                     false,
                 ))
@@ -303,7 +314,11 @@ pub(super) fn render(
                 .child(field(
                     "Subject",
                     if compose.subject.is_empty() {
-                        if writing { "…".into() } else { "(no subject)".into() }
+                        if writing {
+                            "…".into()
+                        } else {
+                            "(no subject)".into()
+                        }
                     } else {
                         compose.subject.clone()
                     },
@@ -327,29 +342,41 @@ pub(super) fn render(
                     .child(plain(format!("gmail-body-{index}"), body)),
             )
         })
-        .when(hidden > 0 || (expanded && compose.body.lines().count() > BODY_LINES), |el| {
-            el.child(
-                div()
-                    .id(("gmail-body-toggle", index))
-                    .debug_selector(|| "gmail-compose-more".into())
-                    .mx_3()
-                    .mb_2()
-                    .text_size(px(12.0))
-                    .text_color(theme.TEXT_DIM)
-                    .cursor_pointer()
-                    .hover(|style| style.text_color(theme.TEXT))
-                    .on_click(on_toggle)
-                    .child(if expanded {
-                        "Show less".to_owned()
-                    } else {
-                        format!("Show {hidden} more line{}", if hidden == 1 { "" } else { "s" })
-                    }),
-            )
-        })
+        .when(
+            hidden > 0 || (expanded && compose.body.lines().count() > BODY_LINES),
+            |el| {
+                el.child(
+                    div()
+                        .id(("gmail-body-toggle", index))
+                        .debug_selector(|| "gmail-compose-more".into())
+                        .mx_3()
+                        .mb_2()
+                        .text_size(px(12.0))
+                        .text_color(theme.TEXT_DIM)
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(theme.TEXT))
+                        .on_click(on_toggle)
+                        .child(if expanded {
+                            "Show less".to_owned()
+                        } else {
+                            format!(
+                                "Show {hidden} more line{}",
+                                if hidden == 1 { "" } else { "s" }
+                            )
+                        }),
+                )
+            },
+        )
         .when(!compose.attachments.is_empty(), |el| {
             el.child(
-                div().flex().flex_row().flex_wrap().gap_1().mx_3().mb_2().children(
-                    compose.attachments.iter().enumerate().map(|(n, path)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_1()
+                    .mx_3()
+                    .mb_2()
+                    .children(compose.attachments.iter().enumerate().map(|(n, path)| {
                         div()
                             .id(("gmail-attachment", index * 64 + n))
                             .px_2()
@@ -358,8 +385,7 @@ pub(super) fn render(
                             .text_size(px(12.0))
                             .text_color(theme.TEXT_DIM)
                             .child(format!("📎 {}", file_name(path)))
-                    }),
-                ),
+                    })),
             )
         })
         .when_some(
@@ -431,7 +457,12 @@ mod tests {
         assert_eq!(draft.subject, "Hi");
         assert!(draft.reply);
         assert_eq!(draft.attachments, vec!["/x/y.pdf"]);
-        assert_eq!(parse("gmail", r#"{"action":"send","to":"a"}"#).unwrap().action, "send");
+        assert_eq!(
+            parse("gmail", r#"{"action":"send","to":"a"}"#)
+                .unwrap()
+                .action,
+            "send"
+        );
     }
 
     #[test]
@@ -439,7 +470,11 @@ mod tests {
         assert!(parse("gmail", r#"{"intent":"x","act"#).is_none());
         let partial = parse("gmail", r#"{"action":"draft","to":"sam@ex","#).unwrap();
         assert_eq!(partial.to, "sam@ex");
-        let partial = parse("gmail", r#"{"action":"draft","to":"s","body":"Line one\nLine tw"#).unwrap();
+        let partial = parse(
+            "gmail",
+            r#"{"action":"draft","to":"s","body":"Line one\nLine tw"#,
+        )
+        .unwrap();
         assert_eq!(partial.body, "Line one\nLine tw");
         assert!(partial.subject.is_empty());
     }
@@ -449,21 +484,35 @@ mod tests {
         assert_eq!(outcome("", false), Outcome::Writing);
         assert_eq!(
             outcome("Draft created successfully.\nDraft ID: r-1\nTo: a", true),
-            Outcome::Drafted { draft_id: Some("r-1".into()) }
+            Outcome::Drafted {
+                draft_id: Some("r-1".into())
+            }
         );
         assert_eq!(
-            outcome("Email sent successfully.\nMessage ID: 18abc\nThread ID: t", true),
-            Outcome::Sent { message_id: Some("18abc".into()) }
+            outcome(
+                "Email sent successfully.\nMessage ID: 18abc\nThread ID: t",
+                true
+            ),
+            Outcome::Sent {
+                message_id: Some("18abc".into())
+            }
         );
         assert_eq!(
             outcome("Attachment not found or not a file: /x", true),
             Outcome::Note("Attachment not found or not a file: /x".into())
         );
         assert_eq!(
-            gmail_url(&Outcome::Sent { message_id: Some("18abc".into()) }).unwrap(),
+            gmail_url(&Outcome::Sent {
+                message_id: Some("18abc".into())
+            })
+            .unwrap(),
             "https://mail.google.com/mail/u/0/#all/18abc"
         );
-        assert!(gmail_url(&Outcome::Drafted { draft_id: None }).unwrap().ends_with("#drafts"));
+        assert!(
+            gmail_url(&Outcome::Drafted { draft_id: None })
+                .unwrap()
+                .ends_with("#drafts")
+        );
         assert!(gmail_url(&Outcome::Writing).is_none());
     }
 

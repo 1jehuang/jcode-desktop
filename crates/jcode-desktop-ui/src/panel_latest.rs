@@ -28,8 +28,8 @@ impl Panel {
     pub(super) fn resume_transcript_follow_after_scroll(&mut self, cx: &Context<Self>) {
         let offset = self.transcript_list.scroll_px_offset_for_scrollbar().y;
         let max = self.transcript_list.max_offset_for_scrollbar().y;
-        self.stick_to_bottom = (max + offset).abs() <= px(1.)
-            && !self.transcript_selection.read(cx).is_dragging();
+        self.stick_to_bottom =
+            (max + offset).abs() <= px(1.) && !self.transcript_selection.read(cx).is_dragging();
     }
 
     pub(super) fn transcript_end_observer(

@@ -1654,7 +1654,14 @@ pub(crate) fn render_prompt(
     background: gpui::Rgba,
 ) -> gpui::AnyElement {
     render_prompt_with_prefix(
-        source, row, &row.to_string(), selection, window, cx, on_preview, background,
+        source,
+        row,
+        &row.to_string(),
+        selection,
+        window,
+        cx,
+        on_preview,
+        background,
     )
 }
 
@@ -1804,7 +1811,11 @@ fn render_document_with_prompt_background(
                 | Block::Numbered { .. }
                 | Block::Quote(..)
         );
-        LEAF_FADE.set(if prose && block_index == last_block { stream_fade } else { 0 });
+        LEAF_FADE.set(if prose && block_index == last_block {
+            stream_fade
+        } else {
+            0
+        });
         let block = match block {
             Block::Paragraph(ref text) if reasoning => reasoning_section_title(text)
                 .map(|title| Block::Heading(3, title.to_owned()))
@@ -1976,8 +1987,10 @@ fn render_document_with_prompt_background(
                         .line_height(relative(1.5))
                         .children({
                             let fade = LEAF_FADE.take();
-                            let lines: Vec<&String> =
-                                lines.iter().filter(|line| !line.trim().is_empty()).collect();
+                            let lines: Vec<&String> = lines
+                                .iter()
+                                .filter(|line| !line.trim().is_empty())
+                                .collect();
                             let last_line = lines.len().saturating_sub(1);
                             lines
                                 .into_iter()
@@ -2001,14 +2014,17 @@ fn render_document_with_prompt_background(
             {
                 crate::diff_block::DiffBlock::new(&body, text_key()).into_any_element()
             }
-            Block::Code { lang, body } => code_block_with_selection(
-                &lang, &body, window, Some((selection, text_key(), cx)),
-            ),
+            Block::Code { lang, body } => {
+                code_block_with_selection(&lang, &body, window, Some((selection, text_key(), cx)))
+            }
             Block::HtmlPreview(body) if !reasoning => {
                 crate::html_preview::HtmlPreview::new(body, row, block_index).into_any_element()
             }
             Block::HtmlPreview(body) => code_block_with_selection(
-                "html-preview", &body, window, Some((selection, text_key(), cx)),
+                "html-preview",
+                &body,
+                window,
+                Some((selection, text_key(), cx)),
             ),
             Block::Mermaid(body) => mermaid_diagram(&body, text_key(), on_preview.clone()),
             Block::Table { header, rows } => table(header, rows, selection, text_key(), window, cx),
@@ -2143,16 +2159,14 @@ fn table(
                 .flex_row()
                 .when(row_index % 2 == 1, |el| el.bg(Theme::global().TABLE_STRIPE))
                 .text_color(Theme::global().TEXT)
-                .children(
-                    (0..columns).map(|index| {
-                        cell(
-                            row.get(index).map(String::as_str).unwrap_or(""),
-                            row_index + 1,
-                            index,
-                            window,
-                        )
-                    }),
-                )
+                .children((0..columns).map(|index| {
+                    cell(
+                        row.get(index).map(String::as_str).unwrap_or(""),
+                        row_index + 1,
+                        index,
+                        window,
+                    )
+                }))
         }))
         .into_any_element()
 }
@@ -2368,14 +2382,20 @@ mod tests {
     #[test]
     fn prompt_line_breaks_are_preserved_without_changing_assistant_markdown() {
         let source = "A longer first line\nShort.\n\nAnother paragraph.";
-        assert_eq!(parse_with_line_breaks(source, true), vec![
-            Block::Paragraph("A longer first line\nShort.".into()),
-            Block::Paragraph("Another paragraph.".into()),
-        ]);
-        assert_eq!(parse(source), vec![
-            Block::Paragraph("A longer first line Short.".into()),
-            Block::Paragraph("Another paragraph.".into()),
-        ]);
+        assert_eq!(
+            parse_with_line_breaks(source, true),
+            vec![
+                Block::Paragraph("A longer first line\nShort.".into()),
+                Block::Paragraph("Another paragraph.".into()),
+            ]
+        );
+        assert_eq!(
+            parse(source),
+            vec![
+                Block::Paragraph("A longer first line Short.".into()),
+                Block::Paragraph("Another paragraph.".into()),
+            ]
+        );
     }
 
     #[test]
@@ -2748,7 +2768,11 @@ mod tests {
             }
         });
         for (source, expected, header) in [
-            ("```rust\nlet βeta = 1;\nprintln!(\"hello\");\n```", "let βeta = 1;\nprintln!(\"hello\");", true),
+            (
+                "```rust\nlet βeta = 1;\nprintln!(\"hello\");\n```",
+                "let βeta = 1;\nprintln!(\"hello\");",
+                true,
+            ),
             ("```\nβeta\n```", "βeta", false),
         ] {
             view.update(vcx, |view, cx| {
@@ -2780,15 +2804,24 @@ mod tests {
             });
             vcx.run_until_parked();
             view.read_with(vcx, |view, cx| {
-                assert!(view.selection.read(cx).highlight("0-0", expected.len()).is_some());
+                assert!(
+                    view.selection
+                        .read(cx)
+                        .highlight("0-0", expected.len())
+                        .is_some()
+                );
             });
             vcx.simulate_keystrokes("ctrl-c");
             assert_eq!(
-                vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).as_deref(),
+                vcx.update(|_, cx| cx.read_from_clipboard())
+                    .and_then(|item| item.text())
+                    .as_deref(),
                 Some(expected),
             );
             if let Some(copy) = vcx.debug_bounds("code-copy") {
-                vcx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into())));
+                vcx.update(|_, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into()))
+                });
                 vcx.simulate_event(gpui::MouseDownEvent {
                     button: gpui::MouseButton::Left,
                     position: copy.center(),
@@ -2797,7 +2830,9 @@ mod tests {
                     first_mouse: false,
                 });
                 assert_eq!(
-                    vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).as_deref(),
+                    vcx.update(|_, cx| cx.read_from_clipboard())
+                        .and_then(|item| item.text())
+                        .as_deref(),
                     Some(expected),
                 );
             }

@@ -129,7 +129,10 @@ mod tests {
         let after_one = start + Duration::from_millis(16);
         reveal.tick(400, after_one, false);
         let shown = reveal.shown_len();
-        assert!(shown > 0 && shown < 400, "first frames reveal part of a burst: {shown}");
+        assert!(
+            shown > 0 && shown < 400,
+            "first frames reveal part of a burst: {shown}"
+        );
         assert!(reveal.fading() > 0);
 
         let now = run(&mut reveal, 400, after_one, 90);
@@ -151,7 +154,11 @@ mod tests {
             now += Duration::from_millis(16);
             reveal.tick(len, now, false);
         }
-        assert!(len - reveal.shown_len() <= 60, "lag {}", len - reveal.shown_len());
+        assert!(
+            len - reveal.shown_len() <= 60,
+            "lag {}",
+            len - reveal.shown_len()
+        );
         assert!(reveal.fading() as f64 <= MAX_FADE);
     }
 
@@ -173,12 +180,20 @@ mod tests {
 
     #[test]
     fn visible_prefix_respects_char_boundaries() {
-        let mut reveal = StreamReveal { shown: 2.0, engaged: true, ..Default::default() };
+        let mut reveal = StreamReveal {
+            shown: 2.0,
+            engaged: true,
+            ..Default::default()
+        };
         assert_eq!(reveal.visible("αβγ"), "α");
         reveal.shown = 3.0;
         assert_eq!(reveal.visible("αβγ"), "α");
         reveal.snap(3);
-        assert_eq!(reveal.visible("αβγ"), "αβγ", "unengaged reveal passes text through");
+        assert_eq!(
+            reveal.visible("αβγ"),
+            "αβγ",
+            "unengaged reveal passes text through"
+        );
     }
 }
 
@@ -225,7 +240,11 @@ mod panel_tests {
         vcx.run_until_parked();
         let partial = panel.read_with(vcx, |panel, _| live_text(panel, usize::MAX - 1));
         let partial = partial.expect("live reasoning row");
-        assert!(!partial.is_empty() && partial.len() < reasoning.len(), "{}", partial.len());
+        assert!(
+            !partial.is_empty() && partial.len() < reasoning.len(),
+            "{}",
+            partial.len()
+        );
         assert!(panel.read_with(vcx, |panel, _| panel.reasoning_reveal.fading() > 0));
 
         panel.update(vcx, |panel, cx| {
@@ -252,7 +271,10 @@ mod panel_tests {
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
         panel.read_with(vcx, |panel, _| {
-            assert_eq!(live_text(panel, usize::MAX).as_deref(), Some(answer.as_str()));
+            assert_eq!(
+                live_text(panel, usize::MAX).as_deref(),
+                Some(answer.as_str())
+            );
             assert_eq!(panel.text_reveal.fading(), 0);
         });
     }

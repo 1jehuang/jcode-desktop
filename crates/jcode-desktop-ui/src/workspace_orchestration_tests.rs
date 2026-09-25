@@ -66,7 +66,11 @@ fn shortcut_opens_one_orchestration_panel_and_reuses_it(cx: &mut gpui::TestAppCo
     panel.update(vcx, |panel, cx| {
         panel.set_live_sessions(
             vec![
-                live("busy", true, &[("Ship it", "in_progress"), ("Plan", "completed")]),
+                live(
+                    "busy",
+                    true,
+                    &[("Ship it", "in_progress"), ("Plan", "completed")],
+                ),
                 live("quiet", false, &[]),
             ],
             cx,

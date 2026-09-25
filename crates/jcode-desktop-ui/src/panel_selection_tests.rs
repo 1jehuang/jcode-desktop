@@ -331,7 +331,10 @@ fn begin_drag(vcx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pix
     vcx.run_until_parked();
 }
 
-fn finish_drag_copy(vcx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>) -> String {
+fn finish_drag_copy(
+    vcx: &mut gpui::VisualTestContext,
+    position: gpui::Point<gpui::Pixels>,
+) -> String {
     vcx.simulate_event(gpui::MouseMoveEvent {
         position,
         pressed_button: Some(gpui::MouseButton::Left),
@@ -388,7 +391,8 @@ fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpu
     let first = vcx.debug_bounds("selectable-text-0-0").unwrap();
     let last = vcx.debug_bounds("selectable-text-3-0").unwrap();
     // The tool name pill reads inline with its command.
-    let expected = "Prompt βeta\nFirst paragraph.\nSecond paragraph.\nbash printf hello\nFinal answer.";
+    let expected =
+        "Prompt βeta\nFirst paragraph.\nSecond paragraph.\nbash printf hello\nFinal answer.";
     begin_drag(vcx, point(first.left() + px(0.1), first.center().y), false);
     assert_eq!(
         finish_drag_copy(vcx, point(last.right() - px(0.1), last.center().y)),

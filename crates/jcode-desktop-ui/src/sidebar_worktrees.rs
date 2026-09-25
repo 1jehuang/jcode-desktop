@@ -41,7 +41,10 @@ pub(super) fn header_action(
         .text_color(Theme::global().TEXT_DIM)
         .opacity(if visible { 1.0 } else { 0.0 })
         .group_hover(group, |el| el.opacity(1.0))
-        .hover(|el| el.bg(Theme::global().PANEL_BG).text_color(Theme::global().TEXT))
+        .hover(|el| {
+            el.bg(Theme::global().PANEL_BG)
+                .text_color(Theme::global().TEXT)
+        })
         .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.into())).into())
         .child(content)
 }
@@ -63,14 +66,18 @@ impl Workspace {
             return;
         }
         // Real `.git` markers so the sidebar exercises its filesystem probe.
-        let root = std::env::temp_dir().join(format!("jcode-worktree-fixture-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("jcode-worktree-fixture-{}", std::process::id()));
         let main = root.join("example");
         let _ = std::fs::create_dir_all(main.join(".git/worktrees/search"));
         let _ = std::fs::write(main.join(".git/HEAD"), "ref: refs/heads/main\n");
         let search = root.join("example-search");
         let _ = std::fs::create_dir_all(&search);
         let gitdir = main.join(".git/worktrees/search");
-        let _ = std::fs::write(search.join(".git"), format!("gitdir: {}\n", gitdir.display()));
+        let _ = std::fs::write(
+            search.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        );
         let _ = std::fs::write(gitdir.join("commondir"), "../..\n");
         let _ = std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/search\n");
         let main = main.to_string_lossy().into_owned();
@@ -79,7 +86,8 @@ impl Workspace {
             first.working_dir = Some(main.clone());
         }
         for slot in &self.slots {
-            slot.panel.update(cx, |panel, _| panel.working_dir = Some(main.clone()));
+            slot.panel
+                .update(cx, |panel, _| panel.working_dir = Some(main.clone()));
         }
         let mut session = self.sessions[0].clone();
         session.session_id = "worktree-fixture-search".into();
@@ -244,7 +252,11 @@ impl Workspace {
     /// Always-visible entry points at the top of the thread list.
     pub(super) fn render_sidebar_quick_actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let pill = |id: &'static str, label: &'static str, glyph: gpui::AnyElement| {
-            let tip = if id == "sidebar-open-project" { "Open a project folder" } else { "New thread in the default directory" };
+            let tip = if id == "sidebar-open-project" {
+                "Open a project folder"
+            } else {
+                "New thread in the default directory"
+            };
             div()
                 .id(id)
                 .debug_selector(move || id.into())
@@ -262,7 +274,10 @@ impl Workspace {
                 .bg(Theme::global().TOOL_BG)
                 .text_size(px(11.0))
                 .text_color(Theme::global().TEXT_DIM)
-                .hover(|el| el.bg(Theme::global().PANEL_BG).text_color(Theme::global().TEXT))
+                .hover(|el| {
+                    el.bg(Theme::global().PANEL_BG)
+                        .text_color(Theme::global().TEXT)
+                })
                 .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tip.into())).into())
                 .child(glyph)
                 .child(div().min_w_0().truncate().child(label))
@@ -277,16 +292,20 @@ impl Workspace {
             .flex()
             .gap_2()
             .child(
-                pill("sidebar-new-thread", "Thread", div().child("+").into_any_element())
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.missed("new_panel", cx);
-                            this.open_new_session(cx);
-                        }),
-                    ),
+                pill(
+                    "sidebar-new-thread",
+                    "Thread",
+                    div().child("+").into_any_element(),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.missed("new_panel", cx);
+                        this.open_new_session(cx);
+                    }),
+                ),
             )
             .child(
                 pill("sidebar-open-project", "Project", icon(FOLDER_ICON, 12.0)).on_mouse_down(

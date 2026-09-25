@@ -57,7 +57,9 @@ impl RemoteTransports {
                 crate::managed_cloud::request_connect,
                 JcodeClient::connect_ssh,
             )
-            .map_err(|message| jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message));
+            .map_err(|message| {
+                jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
+            });
         }
         let host = crate::remote_targets::validate_host(host).map_err(|message| {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)

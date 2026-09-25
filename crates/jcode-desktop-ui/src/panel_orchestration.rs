@@ -66,7 +66,11 @@ impl Panel {
             })
         });
         panel.orchestration = Some(State {
-            sessions: if fixture { fixture_sessions() } else { Vec::new() },
+            sessions: if fixture {
+                fixture_sessions()
+            } else {
+                Vec::new()
+            },
             loaded: fixture,
             scroll: ScrollHandle::new(),
             opener: Some(opener),
@@ -148,23 +152,12 @@ impl Panel {
                             .debug_selector(|| "orchestration-summary".into())
                             .text_size(px(11.))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(format!(
-                                "{} live · {running} running",
-                                state.sessions.len()
-                            )),
+                            .child(format!("{} live · {running} running", state.sessions.len())),
                     ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .child(list)
-                    .child(crate::scrollbar::vertical(
-                        &state.scroll,
-                        "orchestration-scrollbar",
-                    )),
-            )
+            .child(div().flex_1().min_h_0().relative().child(list).child(
+                crate::scrollbar::vertical(&state.scroll, "orchestration-scrollbar"),
+            ))
             .into_any_element()
     }
 }
@@ -253,7 +246,11 @@ fn render_session(
 
 fn status_pill(index: usize, running: bool) -> impl IntoElement {
     let theme = Theme::global();
-    let color = if running { theme.PANEL_BG } else { theme.TEXT_FAINT };
+    let color = if running {
+        theme.PANEL_BG
+    } else {
+        theme.TEXT_FAINT
+    };
     div()
         .debug_selector(move || {
             format!(
@@ -265,7 +262,11 @@ fn status_pill(index: usize, running: bool) -> impl IntoElement {
         .px_2()
         .py(px(1.))
         .rounded_full()
-        .bg(if running { theme.ACCENT } else { theme.PANEL_BG })
+        .bg(if running {
+            theme.ACCENT
+        } else {
+            theme.PANEL_BG
+        })
         .flex()
         .items_center()
         .gap_1()

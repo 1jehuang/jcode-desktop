@@ -290,7 +290,11 @@ impl TextSelection {
         let clear = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(COPIED_DURATION).await;
             let _ = this.update(cx, |selection, cx| {
-                if selection.copied.as_ref().is_some_and(|copied| copied.at == at) {
+                if selection
+                    .copied
+                    .as_ref()
+                    .is_some_and(|copied| copied.at == at)
+                {
                     selection.copied = None;
                     cx.notify();
                 }
@@ -950,7 +954,10 @@ fn selected_line_bounds(
 /// starts a new card, so the highlight follows the text's own line structure.
 fn paint_selection(lines: &[(Bounds<Pixels>, usize, Pixels)], window: &mut Window) {
     let color = Theme::global().SELECTION;
-    let lines: Vec<_> = lines.iter().map(|(bounds, logical, _)| (*bounds, *logical)).collect();
+    let lines: Vec<_> = lines
+        .iter()
+        .map(|(bounds, logical, _)| (*bounds, *logical))
+        .collect();
     for group in selection_groups(&lines) {
         if let Some(path) = crate::prompt_background::rounded_union(&group, SELECTION_RADIUS) {
             window.paint_path(path, color);
@@ -1237,7 +1244,8 @@ mod tests {
             selection.finish_and_copy(cx);
             assert!(selection.copied_visible());
         });
-        cx.executor().advance_clock(COPIED_DURATION + Duration::from_millis(50));
+        cx.executor()
+            .advance_clock(COPIED_DURATION + Duration::from_millis(50));
         cx.run_until_parked();
         selection.read_with(cx, |selection, _| assert!(!selection.copied_visible()));
     }

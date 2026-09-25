@@ -133,7 +133,8 @@ impl Workspace {
         let path = if query == "~" {
             self.default_working_dir().map(PathBuf::from)
         } else if let Some(rest) = query.strip_prefix("~/") {
-            self.default_working_dir().map(|home| PathBuf::from(home).join(rest))
+            self.default_working_dir()
+                .map(|home| PathBuf::from(home).join(rest))
         } else {
             let path = PathBuf::from(query);
             if path.is_absolute() {

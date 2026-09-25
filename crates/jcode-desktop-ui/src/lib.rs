@@ -68,9 +68,9 @@ use workspace::{
     ClosePanel, CycleTheme, CycleWidth, FocusDown, FocusFirst, FocusLast, FocusLeft, FocusPrevious,
     FocusRight, FocusUp, ForkPanel, MaximizeWidth, MovePanelDown, MovePanelLeft, MovePanelRight,
     MovePanelToFirst, MovePanelToLast, MovePanelUp, NewHelpSession, NewPanel,
-    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOrchestration, OpenTodoist, Quit, ToggleHints,
-    ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1, WidthPreset2, WidthPreset3,
-    WidthPreset4, Workspace,
+    NewPanelInPinnedDirectory, NewTerminal, OpenFolder, OpenGmail, OpenOrchestration, OpenTodoist,
+    Quit, ToggleHints, ToggleOverview, ToggleShowcase, ToggleSidebar, WidthPreset1, WidthPreset2,
+    WidthPreset3, WidthPreset4, Workspace,
 };
 
 /// The workspace keymap. Extracted so tests can dispatch through exactly the
@@ -287,10 +287,9 @@ unsafe extern "C-unwind" fn activate(
         workspace.update(app, |workspace, cx| {
             workspace.restore_focus(window, cx);
             let fixture = harness::screenshot_mode();
-            let changelog_enabled =
-                jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
-                    != jcode_desktop_api::LaunchMode::SinglePanel
-                    && (!fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some());
+            let changelog_enabled = jcode_desktop_api::LaunchMode::from_args(std::env::args_os())
+                != jcode_desktop_api::LaunchMode::SinglePanel
+                && (!fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some());
             if changelog_enabled && changelog::should_open(snapshot_len != 0) {
                 workspace.open_changelog(&workspace::OpenChangelog, window, cx);
             }

@@ -35,7 +35,9 @@ fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn sidebar_destination_icons_choose_defaults_without_starting_sessions(cx: &mut gpui::TestAppContext) {
+fn sidebar_destination_icons_choose_defaults_without_starting_sessions(
+    cx: &mut gpui::TestAppContext,
+) {
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -65,12 +67,21 @@ fn sidebar_destination_icons_choose_defaults_without_starting_sessions(cx: &mut 
 
     click(vcx, "machine-destination-cloud");
     workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.remotes.default_host.as_deref(), Some(remotes::MANAGED_CLOUD_HOST));
+        assert_eq!(
+            w.remotes.default_host.as_deref(),
+            Some(remotes::MANAGED_CLOUD_HOST)
+        );
         assert_eq!(w.slots.len(), 1);
     });
-    assert!(commands.try_recv().is_err(), "selecting cloud must not wake a VM or create a session");
+    assert!(
+        commands.try_recv().is_err(),
+        "selecting cloud must not wake a VM or create a session"
+    );
     click(vcx, "default-directory-button");
-    assert!(vcx.debug_bounds("default-directory-panel").is_none(), "remote paths must not open a local folder picker");
+    assert!(
+        vcx.debug_bounds("default-directory-panel").is_none(),
+        "remote paths must not open a local folder picker"
+    );
     assert!(vcx.debug_bounds("sidebar-session-list").is_some());
     click(vcx, "machine-destination-local");
     workspace.read_with(vcx, |w, _| {
@@ -357,14 +368,19 @@ fn cloud_new_panel_connects_to_managed_cloud_without_aws(cx: &mut gpui::TestAppC
     assert!(vcx.debug_bounds("pending-cloud-background").is_some());
     assert!(vcx.debug_bounds("cloud-startup-checklist").is_some());
     assert!(vcx.debug_bounds("pending-cloud-account").is_none());
-    let draft = workspace.read_with(vcx, |w, cx| w.slots[w.active].panel.read(cx).session_id.clone());
+    let draft = workspace.read_with(vcx, |w, cx| {
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
         assert_eq!(
             pending::remote_draft_host(&w.slots[w.active].panel.read(cx).session_id),
             Some(remotes::MANAGED_CLOUD_HOST)
         );
-        assert_eq!(w.remotes.default_host.as_deref(), Some(remotes::MANAGED_CLOUD_HOST));
+        assert_eq!(
+            w.remotes.default_host.as_deref(),
+            Some(remotes::MANAGED_CLOUD_HOST)
+        );
     });
     // Exactly one managed creation, correlated with the draft. Never the
     // personal AWS alpha, an SSH alias, or an implicit local fallback.
@@ -866,9 +882,7 @@ fn startup_enter_queues_and_inline_local_recovery_preserves_it_without_remote_fa
 }
 
 #[gpui::test]
-fn cloud_startup_progress_and_failure_are_visible_in_the_composer(
-    cx: &mut gpui::TestAppContext,
-) {
+fn cloud_startup_progress_and_failure_are_visible_in_the_composer(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|window, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.remotes.default_host = Some("jcode-cloud-alpha".into());
@@ -1382,7 +1396,10 @@ fn legacy_cloud_snapshot_migrates_to_managed_cloud_without_losing_prompts(
             _ => {}
         }
     }
-    assert!(managed >= 1, "migrated draft must reconnect to managed Jcode Cloud");
+    assert!(
+        managed >= 1,
+        "migrated draft must reconnect to managed Jcode Cloud"
+    );
     workspace.update(vcx, |w, cx| {
         let id = w.slots[0].panel.read(cx).session_id.clone();
         w.update_pending_remote_status(Some(&id), "Waking your Jcode Cloud machine…", false, cx);

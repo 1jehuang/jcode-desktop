@@ -578,7 +578,9 @@ impl Listener {
         self.adopt_until = Some(Instant::now() + ADOPT_WINDOW);
     }
     fn adopt(&mut self, edges: &mut Vec<Edge>) {
-        let Some(until) = self.adopt_until else { return };
+        let Some(until) = self.adopt_until else {
+            return;
+        };
         if Instant::now() >= until {
             self.adopt_until = None;
             return;

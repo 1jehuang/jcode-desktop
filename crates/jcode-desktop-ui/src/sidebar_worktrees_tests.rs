@@ -18,7 +18,11 @@ fn fixture() -> Fixture {
     std::fs::write(main.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let search = root.join("project-search");
     std::fs::create_dir_all(search.join("crates/ui")).unwrap();
-    std::fs::write(search.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    std::fs::write(
+        search.join(".git"),
+        format!("gitdir: {}\n", gitdir.display()),
+    )
+    .unwrap();
     std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
     std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/search\n").unwrap();
     Fixture {
@@ -83,7 +87,9 @@ fn checkout_probe_reads_branch_worktree_and_detached_head_without_git() {
     assert!(search.linked);
     std::fs::write(Path::new(&f.main).join(".git/HEAD"), "0123456789abcdef\n").unwrap();
     assert_eq!(
-        sidebar_projects::probe_checkout(Path::new(&f.main)).unwrap().branch,
+        sidebar_projects::probe_checkout(Path::new(&f.main))
+            .unwrap()
+            .branch,
         "detached 01234567"
     );
     assert!(sidebar_projects::probe_checkout(Path::new("/definitely/not/a/repo")).is_none());
@@ -102,7 +108,10 @@ fn one_sidebar_without_modes_groups_threads_by_branch_under_their_project(
     assert!(!text(vcx, "sidebar-mode-swarm"));
     assert!(!text(vcx, "sidebar-mode-worktrees"));
     assert!(text(vcx, "sidebar-project-0"));
-    assert!(!text(vcx, "sidebar-project-1"), "a worktree belongs to its repository's project");
+    assert!(
+        !text(vcx, "sidebar-project-1"),
+        "a worktree belongs to its repository's project"
+    );
     // The main checkout leads even though the worktree thread is more recent.
     let ids = workspace.read_with(vcx, |w, _| {
         w.sidebar_session_layout
@@ -123,8 +132,14 @@ fn one_sidebar_without_modes_groups_threads_by_branch_under_their_project(
             > vcx.debug_bounds("sidebar-project-0").unwrap().left(),
         "threads indent beneath their branch"
     );
-    assert!(!text(vcx, "sidebar-project-branch-0"), "branch rows replace the header pill");
-    assert!(commands.try_recv().is_err(), "rendering never creates sessions");
+    assert!(
+        !text(vcx, "sidebar-project-branch-0"),
+        "branch rows replace the header pill"
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "rendering never creates sessions"
+    );
 }
 
 #[gpui::test]
@@ -140,15 +155,23 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
     let f = fixture();
     let (workspace, vcx, commands) = setup(
         cx,
-        vec![session("main-chat", &f.main), session("search-chat", &f.search)],
+        vec![
+            session("main-chat", &f.main),
+            session("search-chat", &f.search),
+        ],
     );
     // Local paths must never be forwarded to a configured SSH default.
-    workspace.update(vcx, |w, _| w.remotes.default_host = Some("elsewhere".into()));
+    workspace.update(vcx, |w, _| {
+        w.remotes.default_host = Some("elsewhere".into())
+    });
     click(vcx, "sidebar-project-new-0");
     assert!(
         matches!(commands.try_recv(), Ok(Command::CreateSession { working_dir: Some(dir), .. }) if dir == f.main)
     );
-    assert!(commands.try_recv().is_err(), "the click must not also toggle or navigate");
+    assert!(
+        commands.try_recv().is_err(),
+        "the click must not also toggle or navigate"
+    );
     let search_header = workspace.read_with(vcx, |w, _| {
         w.sidebar_session_layout
             .iter()
@@ -161,7 +184,10 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
     );
     workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 2);
-        assert_eq!(w.slots[w.active].panel.read(cx).working_dir.as_deref(), Some(f.search.as_str()));
+        assert_eq!(
+            w.slots[w.active].panel.read(cx).working_dir.as_deref(),
+            Some(f.search.as_str())
+        );
     });
 }
 
@@ -170,10 +196,16 @@ fn quick_actions_open_a_thread_and_the_project_picker(cx: &mut gpui::TestAppCont
     let (workspace, vcx, commands) = setup(cx, Vec::new());
     click(vcx, "sidebar-open-project");
     workspace.read_with(vcx, |w, _| assert!(w.folder_search.is_some()));
-    assert!(commands.try_recv().is_err(), "choosing a folder comes before any session");
+    assert!(
+        commands.try_recv().is_err(),
+        "choosing a folder comes before any session"
+    );
     workspace.update(vcx, |w, cx| w.close_folder_picker(cx));
     click(vcx, "sidebar-new-thread");
-    assert!(matches!(commands.try_recv(), Ok(Command::CreateSession { .. })));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::CreateSession { .. })
+    ));
 }
 
 #[gpui::test]
@@ -195,9 +227,15 @@ fn swarm_agents_nest_in_their_checkout_and_worktree_agents_get_their_branch(
             .collect::<Vec<_>>()
     });
     assert_eq!(ids, vec!["lead".to_string(), "isolated".to_string()]);
-    assert!(text(vcx, "sidebar-agents-0"), "the coordinator counts its same-checkout agent");
+    assert!(
+        text(vcx, "sidebar-agents-0"),
+        "the coordinator counts its same-checkout agent"
+    );
     assert!(!text(vcx, "sidebar-agents-1"));
-    assert!(text(vcx, "sidebar-checkout-1"), "the worktree agent sits under its own branch");
+    assert!(
+        text(vcx, "sidebar-checkout-1"),
+        "the worktree agent sits under its own branch"
+    );
 }
 
 #[gpui::test]
@@ -233,7 +271,9 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
     cx: &mut gpui::TestAppContext,
 ) {
     let temporary = tempfile::tempdir().unwrap();
-    let repository = std::fs::canonicalize(temporary.path()).unwrap().join("project");
+    let repository = std::fs::canonicalize(temporary.path())
+        .unwrap()
+        .join("project");
     std::fs::create_dir(&repository).unwrap();
     let git = |args: &[&str]| {
         let output = std::process::Command::new("git")
@@ -241,7 +281,11 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
             .args(args)
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8(output.stdout).unwrap()
     };
     git(&["init", "-b", "main"]);
@@ -258,25 +302,40 @@ fn worktree_create_runs_real_git_and_the_new_branch_joins_its_project(
     vcx.simulate_keystrokes("f e a t u r e - a enter");
     vcx.run_until_parked();
     let created = match commands.try_recv().unwrap() {
-        Command::CreateSession { working_dir: Some(directory), .. } => directory,
+        Command::CreateSession {
+            working_dir: Some(directory),
+            ..
+        } => directory,
         _ => panic!("Expected local CreateSession"),
     };
     assert_ne!(created, directory);
-    assert_eq!(std::fs::read_to_string(Path::new(&created).join("tracked")).unwrap(), "committed");
-    assert_eq!(std::fs::read_to_string(repository.join("tracked")).unwrap(), "dirty original");
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&created).join("tracked")).unwrap(),
+        "committed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.join("tracked")).unwrap(),
+        "dirty original"
+    );
     assert_eq!(git(&["branch", "--show-current"]).trim(), "main");
     workspace.read_with(vcx, |w, cx| {
         assert!(!w.worktrees.creating);
         assert!(w.worktrees.error.is_none(), "{:?}", w.worktrees.error);
         assert!(w.worktrees.input.is_none());
-        assert_eq!(w.slots[w.active].panel.read(cx).working_dir.as_deref(), Some(created.as_str()));
+        assert_eq!(
+            w.slots[w.active].panel.read(cx).working_dir.as_deref(),
+            Some(created.as_str())
+        );
     });
     // The new thread appears under the same project on its own branch row.
     workspace.update(vcx, |_, cx| cx.notify());
     vcx.run_until_parked();
     assert!(!text(vcx, "sidebar-project-1"));
     let branches = workspace.read_with(vcx, |w, _| {
-        w.sidebar_session_layout.iter().filter(|row| row.checkout_header).count()
+        w.sidebar_session_layout
+            .iter()
+            .filter(|row| row.checkout_header)
+            .count()
     });
     assert_eq!(branches, 2);
 }

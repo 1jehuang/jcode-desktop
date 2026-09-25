@@ -254,7 +254,9 @@ fn recovery_many_routes_stay_compact_until_choose_model_is_clicked(cx: &mut gpui
     let choose = vcx.debug_bounds("recovery-choose-model").unwrap();
     vcx.simulate_click(choose.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    let picker = vcx.debug_bounds("slash-command-overlay").expect("shared model menu");
+    let picker = vcx
+        .debug_bounds("slash-command-overlay")
+        .expect("shared model menu");
     assert!(picker.top() >= px(0.), "menu must stay inside the viewport");
     assert!(picker.size.height <= px(490.));
     assert!(vcx.debug_bounds("recovery-model-picker").is_none());
