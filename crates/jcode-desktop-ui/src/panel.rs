@@ -85,6 +85,8 @@ mod stream_reveal;
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
 pub use startup::StartupLayout;
+#[path = "panel_applet.rs"]
+pub(crate) mod applet_panel;
 #[path = "panel_demo_replay.rs"]
 pub(crate) mod demo_replay;
 #[path = "panel_gmail_draft_card.rs"]
@@ -379,6 +381,8 @@ pub struct Panel {
     /// A read-only source file opened from the workspace file browser.
     code_file: Option<CodeFile>,
     side_document: Option<side_document::SideDocument>,
+    /// One mounted applet instance, rendered from the shared applet runtime.
+    applet: Option<applet_panel::AppletPanel>,
     /// A native, read-only view of the locally connected Gmail inbox.
     gmail_inbox: Option<GmailInboxState>,
     /// The message currently opened from the Gmail inbox.
@@ -729,6 +733,7 @@ impl Panel {
             || self.is_side_document()
             || self.gmail_inbox.is_some()
             || self.gmail_message.is_some()
+            || self.applet.is_some()
             || self.todoist.is_some()
             || self.orchestration.is_some()
             || self.terminal.is_some()
@@ -961,6 +966,7 @@ impl Panel {
             unfinished_session_opener: None,
             code_file: None,
             side_document: None,
+            applet: None,
             gmail_inbox: None,
             gmail_message: None,
             gmail_scroll: ScrollHandle::new(),
@@ -2319,6 +2325,13 @@ impl Panel {
                             return;
                         }
                         // First-run launch is local, including before a session connects.
+                        if images.is_empty() && content.trim() == "/applets" {
+                            _window.dispatch_action(
+                                Box::new(crate::workspace::OpenAppletShowcase),
+                                app,
+                            );
+                            return;
+                        }
                         if images.is_empty()
                             && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
                         {
@@ -4058,6 +4071,7 @@ impl Panel {
             || self.code_file.is_some()
             || self.is_side_document()
             || self.gmail_inbox.is_some()
+            || self.applet.is_some()
         {
             // Read-only panels do not render their prompt input. Focusing that
             // detached handle prevents workspace actions such as FocusLeft from
@@ -4281,6 +4295,9 @@ impl Render for Panel {
                 )
                 .child(body)
                 .into_any_element();
+        }
+        if self.applet.is_some() {
+            return self.render_applet(window, cx);
         }
         if self.gmail_inbox.is_some() {
             return self.render_gmail(cx);

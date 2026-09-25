@@ -1,0 +1,327 @@
+{
+  "revision": 1,
+  "title": "Applet showcase",
+  "state": {
+    "query": "",
+    "notify": true,
+    "view": "grid",
+    "tab": "components"
+  },
+  "assets": [
+    {
+      "id": "preview",
+      "mime": "image/png",
+      "data": "@preview-png"
+    }
+  ],
+  "view": {
+    "type": "stack",
+    "gap": "lg",
+    "children": [
+      {
+        "type": "text",
+        "style": "caption",
+        "text": "Declarative, native, sandboxed UI. Any provider can mount this anywhere: a panel, the sidebar, an overlay, or inline in a chat."
+      },
+      {
+        "type": "tabs",
+        "bind": "tab",
+        "tabs": [
+          {
+            "id": "components",
+            "label": "Components",
+            "children": [
+              {
+                "type": "stack",
+                "direction": "horizontal",
+                "gap": "sm",
+                "children": [
+                  {
+                    "type": "button",
+                    "label": "Primary",
+                    "variant": "primary",
+                    "on_press": {
+                      "action": "primary"
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "label": "Secondary",
+                    "on_press": {
+                      "action": "secondary"
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "label": "Copy link",
+                    "variant": "compact",
+                    "icon": "link",
+                    "on_press": {
+                      "action": "host.copy",
+                      "args": {
+                        "text": "https://github.com/1jehuang/jcode"
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "label": "Disabled",
+                    "disabled": true,
+                    "on_press": {
+                      "action": "never"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "stack",
+                "direction": "horizontal",
+                "gap": "xs",
+                "children": [
+                  {
+                    "type": "chip",
+                    "label": "default"
+                  },
+                  {
+                    "type": "chip",
+                    "label": "accent",
+                    "tone": "accent"
+                  },
+                  {
+                    "type": "chip",
+                    "label": "success",
+                    "tone": "success",
+                    "icon": "check"
+                  },
+                  {
+                    "type": "chip",
+                    "label": "warning",
+                    "tone": "warning"
+                  },
+                  {
+                    "type": "chip",
+                    "label": "danger",
+                    "tone": "danger"
+                  }
+                ]
+              },
+              {
+                "type": "input",
+                "bind": "query",
+                "placeholder": "Search anything…",
+                "on_submit": {
+                  "action": "search"
+                }
+              },
+              {
+                "type": "toggle",
+                "label": "Notify me when this changes",
+                "bind": "notify"
+              },
+              {
+                "type": "select",
+                "bind": "view",
+                "options": [
+                  {
+                    "value": "grid",
+                    "label": "Grid"
+                  },
+                  {
+                    "value": "list",
+                    "label": "List"
+                  },
+                  {
+                    "value": "table",
+                    "label": "Table"
+                  }
+                ]
+              },
+              {
+                "type": "progress",
+                "value": 0.62,
+                "label": "Indexing 62%"
+              },
+              {
+                "type": "error",
+                "message": "Could not reach the server",
+                "retry": {
+                  "action": "retry"
+                }
+              }
+            ]
+          },
+          {
+            "id": "media",
+            "label": "Images",
+            "children": [
+              {
+                "type": "image",
+                "source": {
+                  "asset": "preview"
+                },
+                "alt": "Preview image",
+                "aspect_ratio": 1.6667,
+                "fit": "cover"
+              },
+              {
+                "type": "grid",
+                "min_column_width": 140,
+                "gap": "sm",
+                "children": [
+                  {
+                    "type": "image",
+                    "key": "g1",
+                    "source": {
+                      "asset": "preview"
+                    },
+                    "alt": "One",
+                    "aspect_ratio": 1.0,
+                    "fit": "cover"
+                  },
+                  {
+                    "type": "image",
+                    "key": "g2",
+                    "source": {
+                      "asset": "preview"
+                    },
+                    "alt": "Two",
+                    "aspect_ratio": 1.0,
+                    "fit": "contain"
+                  },
+                  {
+                    "type": "image",
+                    "key": "g3",
+                    "source": {
+                      "asset": "preview"
+                    },
+                    "alt": "Three",
+                    "aspect_ratio": 1.0,
+                    "fit": "fill"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "data",
+            "label": "Data",
+            "children": [
+              {
+                "type": "key_value",
+                "rows": [
+                  {
+                    "key": "Schema",
+                    "value": "jcode.applet/1"
+                  },
+                  {
+                    "key": "Placement",
+                    "value": "panel"
+                  },
+                  {
+                    "key": "Lifetime",
+                    "value": "session (survives Ctrl+R)"
+                  }
+                ]
+              },
+              {
+                "type": "table",
+                "columns": [
+                  "Provider",
+                  "Transport",
+                  "Status"
+                ],
+                "rows": [
+                  [
+                    "Agent",
+                    "harness API",
+                    "planned"
+                  ],
+                  [
+                    "Local process",
+                    "stdio JSON lines",
+                    "ready"
+                  ],
+                  [
+                    "MCP server",
+                    "UI resources",
+                    "planned"
+                  ]
+                ]
+              },
+              {
+                "type": "code",
+                "language": "json",
+                "text": "{\"type\": \"button\", \"label\": \"Go\", \"on_press\": {\"action\": \"go\"}}"
+              },
+              {
+                "type": "markdown",
+                "text": "Markdown works too: **bold**, `code`, and [links](https://github.com/1jehuang/jcode)."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "list",
+        "children": [
+          {
+            "type": "list_item",
+            "key": "l1",
+            "title": "Invoice from Stripe",
+            "subtitle": "Your receipt for September",
+            "meta": "2h",
+            "badges": [
+              "unread"
+            ],
+            "emphasized": true,
+            "leading": {
+              "type": "image",
+              "source": {
+                "asset": "preview"
+              },
+              "alt": "",
+              "width": 28,
+              "height": 28,
+              "shape": "circle",
+              "fit": "cover"
+            },
+            "on_press": {
+              "action": "open",
+              "args": {
+                "id": "l1"
+              }
+            }
+          },
+          {
+            "type": "list_item",
+            "key": "l2",
+            "title": "Design review notes",
+            "subtitle": "Pills, not boxes",
+            "meta": "Tue",
+            "leading": {
+              "type": "icon",
+              "name": "mail",
+              "tone": "accent"
+            },
+            "on_press": {
+              "action": "open",
+              "args": {
+                "id": "l2"
+              }
+            }
+          },
+          {
+            "type": "list_item",
+            "key": "l3",
+            "title": "A node from the future",
+            "subtitle": "Unknown types degrade to fallback text"
+          }
+        ]
+      },
+      {
+        "type": "map_view",
+        "fallback": "(A newer applet element rendered as its fallback text.)"
+      }
+    ]
+  }
+}

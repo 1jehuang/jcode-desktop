@@ -7,6 +7,9 @@
 #[path = "workspace_account_sign_in.rs"]
 mod account_sign_in;
 
+#[path = "workspace_applets.rs"]
+pub(crate) mod applets;
+
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
@@ -173,6 +176,7 @@ actions!(
         OpenGmail,
         OpenTodoist,
         OpenOrchestration,
+        OpenAppletShowcase,
         NewUnfinishedWork,
         OpenFolder,
         ClosePanel,
@@ -1210,6 +1214,9 @@ impl Workspace {
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("publish") {
                 workspace.open_publish_fixture(cx);
             }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("applet") {
+                workspace.open_applet_fixture(cx);
+            }
             let panel_count = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANELS")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
@@ -1646,6 +1653,11 @@ impl Workspace {
             } else if let Some(path) = panel_state.session_id.strip_prefix("file://") {
                 let path = PathBuf::from(path);
                 cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx))
+            } else if let Some(instance) = panel_state
+                .session_id
+                .strip_prefix(crate::panel::applet_panel::APPLET_PREFIX)
+            {
+                cx.new(|cx| Panel::new_applet(instance.to_owned(), self.bridge.clone(), cx))
             } else if panel_state.session_id == "gmail://inbox" {
                 cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx))
             } else if panel_state.session_id == "todoist://tasks" {
@@ -7937,6 +7949,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::rename_session))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
+            .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::publish_desktop))

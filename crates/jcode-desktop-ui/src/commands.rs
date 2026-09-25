@@ -152,6 +152,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public("/version", "Show current version"),
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),
+    RegisteredCommand::public("/applets", "Open the applet component showcase"),
     RegisteredCommand::public("/info", "Show session info and tokens"),
     RegisteredCommand::public("/usage", "Show connected provider usage limits"),
     RegisteredCommand::public(

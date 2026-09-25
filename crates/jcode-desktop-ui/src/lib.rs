@@ -2,6 +2,9 @@
 
 mod accounts;
 mod ack;
+mod applet_host;
+mod applet_runtime;
+mod applet_view;
 mod build_info;
 mod changelog;
 mod clipboard_image;
@@ -295,6 +298,7 @@ unsafe extern "C-unwind" fn activate(
             }
         });
         workspace::recovery::install(&workspace, window, app);
+        workspace::applets::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup
         // rebuild must not steal OS focus if the user switched applications.
     }));
