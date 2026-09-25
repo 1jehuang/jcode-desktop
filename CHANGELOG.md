@@ -1,5 +1,41 @@
 ## What's new
 
+### Jcode Desktop 0.3.2
+
+Voice everywhere, a redesigned first launch, and a project-aware sidebar
+
+#### Themes
+
+- Hold-to-talk voice works even when Desktop is unfocused, with an OS-level pill that shows what was heard and sent.
+- A redesigned first launch with inline email sign-in, login import, and a live chat replay.
+- A sidebar organized by project, with branches, worktrees, and swarm threads nested inside.
+
+#### Highlights
+
+- Global voice with a compact audio-reactive pill, a stop-and-send button, and Shift+Copilot to open a new voice window.
+- Split-page onboarding: inline email code sign-in, per-row login import, theme hover preview, and pill buttons throughout.
+- Sidebar sessions grouped by Git project, with running daemon sessions spinning even without an open panel.
+- A redesigned composer with model, method, effort, and voice pills, a location line, and typewriter example prompts.
+- Single-panel windows share one host process, open sessions directly with `--session=<id>`, and fork into a new window with Super+Space.
+- New Glass, Pure Black, Dark Neutral, Light Neutral, and ChatGPT Light themes.
+
+#### Improvements
+
+- An orchestration panel with live sessions, running state, and todos.
+- Gmail tool calls render as email cards for drafts, sends, reads, and threads.
+- A resume picker with real conversation previews, `/save` labels, and markers for sessions working now or open in Desktop.
+- The footer shows a context ring gauge, API session cost, and live tool elapsed time.
+- Queued prompts have send-now and recall actions. Long prompts and pinned reminders collapse by default.
+- Merged edits, unified-diff patches, and replacements render as diffs. Code, tool output, tasks, and documents are selectable.
+- Accounts can redeem banked OpenAI and Claude usage resets after a confirmed review. The Cloud button connects to managed Jcode Cloud.
+
+#### Fixes
+
+- Session reconnects back off instead of retrying every 300 ms, and a dead harness API bridge is respawned.
+- Lower memory use: fewer per-window threads, retained heap returned, and hot-reload copies staged off tmpfs.
+- Live transcripts, drafts, and the resume picker survive Desktop UI reloads.
+- Transcript follow resumes after scrolling back to the bottom, and selection no longer drags past text bounds.
+
 ### Jcode Desktop 0.3.1
 
 Clearer navigation and richer session feedback

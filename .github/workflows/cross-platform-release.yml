@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 3d7f5073ac10d93f4c099494771e1bde86911910 # Desktop 0.3.1 runtime: keyed ACP and NDJSON tool input, validated native CLI build
+          ref: 691c6f52687077060fa04a0bde9824a1d7550c11 # Desktop 0.3.2 runtime: jcode master with save labels, voice intents and auth progress
           path: jcode
           submodules: recursive
       - name: Validate release target and publication contracts
