@@ -25,6 +25,9 @@ spec.loader.exec_module(policy)
 spec = importlib.util.spec_from_file_location("prepare_release", ROOT / "scripts/prepare-public-release.py")
 prepare = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prepare)
+spec = importlib.util.spec_from_file_location("release_notes", ROOT / "scripts/release_notes.py")
+notes = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(notes)
 BUILD = tuple(policy.BUILD_WORKFLOWS.values())
 DOWNSTREAM = {
     "publish-public-release.yml": "Publish",
@@ -70,6 +73,45 @@ def verify_website(tag):
                 or not re.fullmatch(r"[a-f0-9]{64}", asset.get("sha256", ""))
                 or asset.get("browser_download_url") != f"{prepare.PUBLIC_BASE}/{tag}/{asset['name']}"):
             raise ValueError(f"Invalid website release asset: {asset.get('name')}")
+
+
+def allowed_versions(tags):
+    """Next legal versions: one SemVer step past the latest stable, or its next beta.
+
+    See docs/release-orchestration.md "Choosing the version" for which step to use.
+    """
+    keys = {policy.version_key(t) for t in tags if policy.TAG_RE.fullmatch(t)}
+    stable = max((k[:3] for k in keys if k[3] == float("inf")), default=None)
+    if stable is None:
+        return None
+    major, minor, patch = stable
+    allowed = set()
+    for base in ((major, minor, patch + 1), (major, minor + 1, 0), (major + 1, 0, 0)):
+        text = ".".join(map(str, base))
+        allowed.add(text)
+        betas = [k[3] for k in keys if k[:3] == base and k[3] != float("inf")]
+        if (*base, float("inf")) not in keys:
+            allowed.add(f"{text}-beta.{max(betas, default=0) + 1}")
+    return {v for v in allowed if policy.version_key("desktop-v" + v) not in keys}
+
+
+def remote_tags():
+    """Read-only, current view of release tags on origin."""
+    output = policy.git("ls-remote", "--tags", "--refs", "origin", "desktop-v*")
+    return [line.split("refs/tags/", 1)[1] for line in output.splitlines() if "refs/tags/" in line]
+
+
+def validate_next_version(sha, version, tags):
+    allowed = allowed_versions(tags)
+    if allowed is not None and version not in allowed:
+        raise ValueError(f"{version} is not a valid next Desktop version. Choose one of: "
+                         + ", ".join(sorted(allowed, key=lambda v: policy.version_key('desktop-v' + v)))
+                         + ". See docs/release-orchestration.md (Choosing the version).")
+    if "-beta." not in version:
+        changelog = policy.git("show", f"{sha}:CHANGELOG.md")
+        if not notes.changelog_section(changelog, version):
+            raise ValueError(f"CHANGELOG.md has no '### Jcode Desktop {version}' section with bullets. "
+                             "Stable releases need curated notes for GitHub, Discord and the updates panel.")
 
 
 def tag_for(version):
@@ -208,6 +250,7 @@ def main(argv=None):
     policy.validate_runtime_pins(sha)
     if not existing:
         validate_versions(sha, args.version)
+        validate_next_version(sha, args.version, remote_tags())
         remote = github.api("commits/main")["sha"]
         if sha != remote:
             raise ValueError("New release must match current remote main. Fetch and review main first.")

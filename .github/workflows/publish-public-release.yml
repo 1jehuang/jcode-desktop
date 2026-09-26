@@ -39,6 +39,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
+          # Full history and tags let release notes fall back to commit subjects.
+          fetch-depth: 0
           persist-credentials: false
       - name: Validate tag and publication tools
         run: |

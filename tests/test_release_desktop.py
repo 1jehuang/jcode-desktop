@@ -102,6 +102,8 @@ class OrchestratorTests(unittest.TestCase):
                 patch.object(release.policy, "git", return_value=SHA), \
                 patch.object(release.policy, "validate_runtime_pins"), \
                 patch.object(release, "validate_versions"), \
+                patch.object(release, "validate_next_version"), \
+                patch.object(release, "remote_tags", return_value=[]), \
                 patch.object(release, "monitor") as monitor, \
                 patch.object(release.subprocess, "run") as command:
             self.assertEqual(release.main(["0.3.0"]), 0)
@@ -117,7 +119,9 @@ class OrchestratorTests(unittest.TestCase):
                 patch.object(release, "resolve_tag", return_value=None), \
                 patch.object(release.policy, "git", return_value=SHA), \
                 patch.object(release.policy, "validate_runtime_pins"), \
-                patch.object(release, "validate_versions"):
+                patch.object(release, "validate_versions"), \
+                patch.object(release, "validate_next_version"), \
+                patch.object(release, "remote_tags", return_value=[]):
             with self.assertRaisesRegex(ValueError, "current remote main"):
                 release.main(["0.3.0", "--apply"])
         gh.dispatch.assert_not_called()
@@ -163,6 +167,27 @@ class OrchestratorTests(unittest.TestCase):
         with patch.object(release.policy, "git", return_value='[package]\nversion="0.3.0"\n') as git:
             release.validate_versions(SHA, "0.3.0")
         self.assertEqual(git.call_count, 4)
+
+    def test_next_version_is_one_semver_step(self):
+        tags = ["desktop-v0.3.2", "desktop-v0.3.2-beta.3", "desktop-v0.3.3", "desktop-v0.3.4-beta.1",
+                "desktop-v0.1.0-beta.33"]
+        self.assertEqual(release.allowed_versions(tags),
+                         {"0.3.4", "0.3.4-beta.2", "0.4.0", "0.4.0-beta.1", "1.0.0", "1.0.0-beta.1"})
+        changelog = "### Jcode Desktop 0.4.0\n\n#### Highlights\n- New panel\n"
+        with patch.object(release.policy, "git", return_value=changelog):
+            release.validate_next_version(SHA, "0.4.0", tags)
+            release.validate_next_version(SHA, "0.3.4-beta.2", tags)
+            for bad in ("0.3.3", "0.3.5", "0.5.0", "2.0.0", "0.3.4-beta.1", "0.3.2"):
+                with self.assertRaisesRegex(ValueError, "not a valid next Desktop version"):
+                    release.validate_next_version(SHA, bad, tags)
+            with self.assertRaisesRegex(ValueError, "CHANGELOG.md has no"):
+                release.validate_next_version(SHA, "0.3.4", tags)
+
+    def test_versioning_policy_is_documented_for_every_bump_level(self):
+        doc = (ROOT / "docs/release-orchestration.md").read_text()
+        section = doc[doc.index("## Choosing the version"):doc.index("## Release notes")]
+        for level in ("| Patch |", "| Minor |", "| Major |"):
+            self.assertIn(level, section)
 
     def website_manifest(self):
         groups = release.prepare.expected_assets(TAG)

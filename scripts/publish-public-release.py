@@ -18,7 +18,13 @@ import urllib.request
 SPEC = importlib.util.spec_from_file_location("prepare", Path(__file__).with_name("prepare-public-release.py"))
 PREPARE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE)
+NOTES_SPEC = importlib.util.spec_from_file_location("publish_release_notes", Path(__file__).with_name("release_notes.py"))
+NOTES = importlib.util.module_from_spec(NOTES_SPEC)
+NOTES_SPEC.loader.exec_module(NOTES)
 PUBLIC_REPOSITORY = "1jehuang/jcode-desktop-releases"
+INTRO = ("Download at https://jcode.sh/desktop. See the attached macOS, Linux, Windows, and FreeBSD packages "
+         "for available architectures. macOS packages are signed and notarized. Older Mac betas using the private "
+         "update URL need a one-time DMG reinstall. Application source is not published here.")
 CHANNEL = "desktop-latest"
 
 
@@ -60,6 +66,12 @@ def verify_download(url, expected_hash, expected_size):
     print(f"Verified anonymous download: {url} ({size} bytes)", flush=True)
 
 
+def release_body(tag):
+    """Public release page text: download guidance followed by the release notes."""
+    notes = NOTES.to_markdown(NOTES.notes_for_tag(tag))
+    return f"{INTRO}\n\n## What's new\n\n{notes}" if notes else INTRO
+
+
 def publish(directory, tag):
     manifest = PREPARE.validate(directory, tag)
     prerelease = f"--prerelease={str(manifest['prerelease']).lower()}"
@@ -76,7 +88,7 @@ def publish(directory, tag):
         if not current:
             gh("release", "create", tag, "--repo", PUBLIC_REPOSITORY,
                "--target", "main", "--draft", prerelease, "--title", manifest["name"],
-               "--notes", "Download at https://jcode.sh/desktop. See the attached macOS, Linux, Windows, and FreeBSD packages for available architectures. macOS packages are signed and notarized. Older Mac betas using the private update URL need a one-time DMG reinstall. Application source is not published here.")
+               "--notes", release_body(tag))
         gh("release", "upload", tag, "--repo", PUBLIC_REPOSITORY, "--clobber", *map(str, files))
         gh("release", "edit", tag, "--repo", PUBLIC_REPOSITORY, "--draft=false", prerelease)
 

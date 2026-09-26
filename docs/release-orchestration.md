@@ -13,10 +13,52 @@ and Discord secrets on GitHub. Fetch and review main before invoking the command
 A new version must resolve to the current remote main SHA. Existing versions resume
 their original immutable commit, regardless of how main has subsequently advanced.
 
+## Choosing the version
+
+Desktop uses SemVer tags `desktop-vMAJOR.MINOR.PATCH[-beta.N]`. Pick the bump
+from the user-visible changes since the last stable tag, not from commit count.
+When changes span several levels, the highest level wins.
+
+| Bump | Example | Use when the release contains |
+| --- | --- | --- |
+| Patch | 0.3.3 to 0.3.4 | Only fixes, performance work, visual polish, copy changes, new themes, and small additions to existing surfaces. No new workflow a user would need announced, and no saved-state, config, or applet API change that needs migration. |
+| Minor | 0.3.4 to 0.4.0 | A new headline feature or panel, a redesign of an existing workflow (onboarding, sidebar, composer), a new supported platform or architecture, a Jcode runtime pin that requires newer CLI/SDK protocol behavior, or any saved-state, config, keybinding, or applet API change. While Desktop is 0.x, breaking changes also go here, with a migration and a `#### Fixes` or `#### Improvements` note describing it. |
+| Major | 0.x to 1.0.0 | Reserved for an explicit stability declaration by the maintainer. After 1.0, a major bump means an incompatible change to saved data, config, the applet API, or supported platforms without automatic migration. Never pick major on your own. |
+
+Rule of thumb: if the CHANGELOG entry needs a `#### Themes` section with a new
+headline capability, it is at least a minor release. If every bullet belongs
+under `#### Fixes` or small `#### Improvements`, it is a patch.
+
+Betas are prereleases of the next intended version. Automatic betas from
+`scripts/auto-release.py` continue the current line (`0.3.4-beta.1`,
+`-beta.2`, ...). An explicit release may promote a beta line to its stable
+version, or start a new minor/major line. Skipping versions, reusing a published
+version, or going backwards is rejected by `release-desktop.py`.
+
+## Release notes
+
+Every stable release needs a curated `### Jcode Desktop X.Y.Z` section at the top
+of `CHANGELOG.md` (optional one-line headline, then `#### Themes`,
+`#### Highlights`, `#### Improvements`, `#### Fixes` bullet lists). Move the
+previously current release under `## Previous releases`. `release-desktop.py`
+refuses a new stable tag whose commit lacks that section.
+
+`scripts/release_notes.py TAG` renders the notes used everywhere a release is
+announced: the public GitHub release page, the Discord announcement, and the
+in-app updates panel all read the same `CHANGELOG.md` section. Betas without a
+curated section fall back to user-visible commit subjects since the previous
+tag, so automatic betas still carry notes. Preview before tagging:
+
+```sh
+python3 scripts/release_notes.py desktop-v0.3.4 --limit 1850
+```
+
 ## What the command owns
 
 1. Validate the explicit version against all four source manifests and consistent
-   immutable runtime pins.
+   immutable runtime pins. A new version must be exactly one SemVer step past the
+   latest tag (see Choosing the version), and a new stable version must have its
+   `CHANGELOG.md` section.
 2. For a new version, reject other active release pipelines, dirty or stale checkouts,
    then run the complete Python release contract suite before creating an atomic tag.
 3. Observe tag-triggered macOS and cross-platform builds. If using `GITHUB_TOKEN`,

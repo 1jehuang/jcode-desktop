@@ -26,6 +26,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
+          # Release notes come from CHANGELOG.md, with commit subjects since the
+          # previous tag as the fallback, which needs tags and full history.
+          fetch-depth: 0
           persist-credentials: false
       - name: Announce only verified live public downloads
         env:

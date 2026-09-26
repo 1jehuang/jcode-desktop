@@ -27,6 +27,9 @@ MARKER_PREFIX = "jcode-desktop-discord-announced"
 SPEC = importlib.util.spec_from_file_location("prepare_discord", Path(__file__).with_name("prepare-public-release.py"))
 PREPARE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE)
+NOTES_SPEC = importlib.util.spec_from_file_location("discord_release_notes", Path(__file__).with_name("release_notes.py"))
+NOTES = importlib.util.module_from_spec(NOTES_SPEC)
+NOTES_SPEC.loader.exec_module(NOTES)
 
 
 def announcement_marker(tag):
@@ -57,14 +60,31 @@ def release_notes_for_discord(body):
     return "\n".join(lines).strip().replace("@", "@\u200b")
 
 
-def format_message(*, tag, body, url):
+def sanitize(text):
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).replace("@", "@\u200b").strip()
+
+
+def format_message(*, tag, body, url, notes=None):
+    """Discord post for a tag. `notes` come from release_notes.notes_for_tag.
+
+    Curated CHANGELOG.md notes (or commit subjects) are preferred. The source
+    release body is only a fallback, since build workflows create it with a
+    fixed placeholder rather than the changelog.
+    """
     title = f"## Jcode Desktop {tag.removeprefix('desktop-v')}"
     links = f"\n\nDownload: <{WEBSITE}>\nPublic binaries: <{url}>"
-    notes = release_notes_for_discord(body) or "New Desktop release available."
     budget = DISCORD_LIMIT - len(title) - len(links) - 1
-    if len(notes) > budget:
-        notes = notes[:budget - 1].rstrip() + "…"
-    return f"{title}\n{notes}{links}"
+    text = ""
+    if notes and notes.get("sections"):
+        # Sanitize before measuring so mention escapes cannot overflow the limit.
+        sanitized = {"headline": sanitize(notes.get("headline", "")),
+                     "sections": [(name, [sanitize(i) for i in items]) for name, items in notes["sections"]]}
+        text = NOTES.to_markdown(sanitized, limit=budget)
+    if not text:
+        text = release_notes_for_discord(body) or "New Desktop release available."
+    if len(text) > budget:
+        text = text[:budget - 1].rstrip() + "…"
+    return f"{title}\n{text}{links}"
 
 
 def request_json(url, *, token=None, method="GET", payload=None):
@@ -185,7 +205,11 @@ def announce_release(*, repository, tag, token, webhook_url):
     public = verify_publication(tag)
     if public is None:
         return None
-    message = post_to_discord(webhook_url=webhook_url, content=format_message(tag=tag, body=source.get("body") or "", url=public["html_url"]))
+    notes = NOTES.notes_for_tag(tag)
+    if notes["source"] == "none":
+        print("::warning::No CHANGELOG.md section or commits found for this tag; falling back to the release body.")
+    message = post_to_discord(webhook_url=webhook_url, content=format_message(
+        tag=tag, body=source.get("body") or "", url=public["html_url"], notes=notes))
     try:
         latest = fetch_release(repository=repository, tag=tag, token=token)
         if latest["id"] != source["id"]:

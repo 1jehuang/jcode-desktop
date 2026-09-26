@@ -80,7 +80,7 @@ Keep each item's text unchanged. Mark an item in_progress when its stage starts 
 Stages:
 1. Commit: inspect git state in {root}, make logical commits for the current uncommitted work, preserve unrelated changes, and validate appropriately. Follow AGENTS.md, including the Git identity guard. Never override the configured identity.
 2. Push: push without force. Releases are cut from origin/main, so if the work is on another branch, land it on main using the repository's established convention (fast-forward or merge, never a force push or history rewrite). Stop if that cannot be done safely.
-3. Release: fetch origin, determine the next version from existing desktop-v* tags and the user-visible changes, then follow docs/release-orchestration.md. Bump only the four package manifests and their own Cargo.lock entries, update CHANGELOG.md, confirm the runtime pins, run the release contract tests, commit, and push to main. Run `python3 scripts/release-desktop.py <version>` without --apply first and read its plan.
+3. Release: fetch origin, choose the next version by applying the patch/minor/major rules in the "Choosing the version" section of docs/release-orchestration.md to the user-visible changes since the last stable desktop-v* tag (the highest applicable level wins, and never pick a major bump on your own), then follow the rest of that document. Bump only the four package manifests and their own Cargo.lock entries, add a curated `### Jcode Desktop <version>` section to CHANGELOG.md (these notes are what GitHub, Discord and the updates panel show), preview them with `python3 scripts/release_notes.py desktop-v<version> --limit 1850`, confirm the runtime pins, run the release contract tests, commit, and push to main. Run `python3 scripts/release-desktop.py <version>` without --apply first and read its plan. State the chosen bump level and why in your summary.
 4. Tag: run `python3 scripts/release-desktop.py <version> --apply` in the background with progress notifications. It owns tagging and build dispatch. Never move an existing tag.
 5. Build: monitor the orchestrator's JSON gate lines until the macOS and cross-platform build workflows succeed. Report run URLs as they appear.
 6. Publish: keep monitoring until the public-download publisher, macOS installation acceptance, Discord announcement, and website manifest verification all pass. A green build alone is not a published release.
@@ -138,6 +138,8 @@ mod tests {
         assert!(prompt.contains("scripts/release-desktop.py <version> --apply"));
         assert!(prompt.contains("Never move an existing tag"));
         assert!(prompt.contains("without force"));
+        assert!(prompt.contains("Choosing the version"));
+        assert!(prompt.contains("scripts/release_notes.py"));
     }
 
     #[test]

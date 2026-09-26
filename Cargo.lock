@@ -4182,6 +4182,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-applet-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jcode-auth-types"
 version = "0.1.0"
 dependencies = [
@@ -4221,6 +4229,7 @@ dependencies = [
  "hex",
  "image",
  "jcode-agent-runtime",
+ "jcode-applet-types",
  "jcode-auth-types",
  "jcode-azure-auth",
  "jcode-background-types",
@@ -4405,6 +4414,7 @@ dependencies = [
 name = "jcode-harness-api"
 version = "0.1.0"
 dependencies = [
+ "jcode-applet-types",
  "jcode-session-types",
  "jcode-side-panel-types",
  "jcode-usage-types",
@@ -4465,6 +4475,7 @@ dependencies = [
 name = "jcode-protocol"
 version = "0.1.0"
 dependencies = [
+ "jcode-applet-types",
  "jcode-batch-types",
  "jcode-config-types",
  "jcode-message-types",
@@ -4633,6 +4644,7 @@ name = "jcode-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "jcode-applet-types",
  "jcode-harness-api",
  "jcode-provider-metadata",
  "jcode-transport",
