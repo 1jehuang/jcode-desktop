@@ -881,8 +881,7 @@ impl Workspace {
         let update_bridge = bridge.clone();
         let bridge_task = cx.spawn(async move |this, cx| {
             while let Some(first) = update_bridge.recv().await {
-                let mut updates = vec![first];
-                updates.extend(update_bridge.drain_up_to(127));
+                let updates = update_bridge.extend_batch(vec![first], 127);
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     let mut changed = false;
                     for update in updates {

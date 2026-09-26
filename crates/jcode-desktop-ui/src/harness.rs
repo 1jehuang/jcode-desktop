@@ -271,18 +271,61 @@ impl Bridge {
 
     /// Leave excess updates queued so a busy producer cannot monopolize the UI.
     pub fn drain_up_to(&self, limit: usize) -> Vec<Update> {
-        let mut out = Vec::new();
-        while out.len() < limit {
+        self.extend_batch(Vec::new(), limit)
+    }
+
+    /// Append up to `limit` more updates to `batch`, collapsing runtime info.
+    ///
+    /// Every `RuntimeInfo` carries the complete route catalog (hundreds of
+    /// KiB) and is rebroadcast on each model usage change. Applying one is
+    /// slow, so a UI thread that falls behind used to let thousands of them
+    /// pile up in the unbounded channel, growing the heap by gigabytes. Each
+    /// is a full identity snapshot, so only the newest per session matters.
+    /// Superseded copies do not count toward `limit`, which lets the consumer
+    /// discard a backlog quickly instead of rendering every stale catalog.
+    pub fn extend_batch(&self, batch: Vec<Update>, limit: usize) -> Vec<Update> {
+        const MAX_SCAN: usize = 8192;
+        let mut slots: Vec<Option<Update>> = Vec::with_capacity(batch.len());
+        let mut runtime_slot: HashMap<String, usize> = HashMap::new();
+        let mut live = 0usize;
+        let mut push = |slots: &mut Vec<Option<Update>>, live: &mut usize, update: Update| {
+            if let Some(session) = runtime_info_session(&update) {
+                if let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len()) {
+                    slots[previous] = None;
+                    *live -= 1;
+                }
+            }
+            slots.push(Some(update));
+            *live += 1;
+        };
+        for update in batch {
+            push(&mut slots, &mut live, update);
+        }
+        let target = live.saturating_add(limit);
+        let mut scanned = 0;
+        while live < target && scanned < MAX_SCAN {
             let Ok(update) = self.updates.try_recv() else {
                 break;
             };
-            out.push(update);
+            scanned += 1;
+            push(&mut slots, &mut live, update);
         }
-        out
+        slots.into_iter().flatten().collect()
     }
 
     pub async fn recv(&self) -> Option<Update> {
         self.updates.recv().await.ok()
+    }
+}
+
+/// The panel session whose identity snapshot this update replaces wholesale.
+fn runtime_info_session(update: &Update) -> Option<&str> {
+    match update {
+        Update::Event {
+            session_id,
+            event: ApiEvent::RuntimeInfo { .. },
+        } => Some(session_id),
+        _ => None,
     }
 }
 
@@ -2246,6 +2289,65 @@ mod tests {
         assert!(bridge.drain_up_to(128).is_empty());
         drop(updates);
         assert!(bridge.drain_up_to(128).is_empty());
+    }
+
+    #[test]
+    fn runtime_info_backlog_collapses_to_newest_per_session_in_order() {
+        let (updates, receiver) = async_channel::unbounded();
+        let (commands, _command_rx) = channel();
+        let bridge = Bridge {
+            _lifetime: std::sync::Arc::new(BridgeLifetime(commands.clone())),
+            commands,
+            updates: receiver,
+        };
+        let runtime = |session: &str, model: &str| Update::Event {
+            session_id: session.into(),
+            event: ApiEvent::RuntimeInfo {
+                session_id: session.into(),
+                provider: None,
+                model: Some(model.into()),
+                reasoning_effort: None,
+                routes: Vec::new(),
+            },
+        };
+        // A usage-update storm: thousands of full catalogs for two panels,
+        // interleaved with ordinary updates that must all survive in order.
+        for index in 0..5000 {
+            updates.try_send(runtime("a", &format!("a{index}"))).unwrap();
+            updates.try_send(runtime("b", &format!("b{index}"))).unwrap();
+            if index % 1000 == 0 {
+                updates.try_send(Update::Status(index.to_string())).unwrap();
+            }
+        }
+        let first = bridge.updates.try_recv().unwrap();
+        let batch = bridge.extend_batch(vec![first], 127);
+        let mut rest = batch;
+        while !bridge.updates.is_empty() {
+            rest.extend(bridge.drain_up_to(127));
+        }
+        let describe = |update: &Update| match update {
+            Update::Status(value) => format!("status {value}"),
+            Update::Event {
+                event: ApiEvent::RuntimeInfo { model, .. },
+                ..
+            } => format!("runtime {}", model.clone().unwrap_or_default()),
+            _ => panic!("unexpected update"),
+        };
+        let seen: Vec<_> = rest.iter().map(describe).collect();
+        let runtime_count = seen.iter().filter(|s| s.starts_with("runtime")).count();
+        // At most one catalog per session per MAX_SCAN window, never thousands.
+        assert!(runtime_count <= 6, "{runtime_count} catalogs applied: {seen:?}");
+        assert!(seen.contains(&"runtime a4999".to_string()));
+        assert!(seen.contains(&"runtime b4999".to_string()));
+        let statuses: Vec<_> = seen.iter().filter(|s| s.starts_with("status")).collect();
+        assert_eq!(
+            statuses,
+            ["status 0", "status 1000", "status 2000", "status 3000", "status 4000"]
+        );
+        // The last catalogs follow every status update that preceded them.
+        let last_status = seen.iter().rposition(|s| s.starts_with("status")).unwrap();
+        let last_a = seen.iter().rposition(|s| s == "runtime a4999").unwrap();
+        assert!(last_a > last_status);
     }
 
     fn session_info(id: &str) -> SessionInfo {
