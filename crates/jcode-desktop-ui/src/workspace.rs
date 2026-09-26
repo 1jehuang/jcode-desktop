@@ -6523,6 +6523,43 @@ impl Workspace {
                 if has_resets {
                     details = details.child(pills);
                 }
+                if let Some((label, url)) = account.upgrade_offer() {
+                    details = details.child(
+                        div().mt(px(3.0)).flex().child(
+                            div()
+                                .id(("account-upgrade", index))
+                                .debug_selector({
+                                    let id = account.id.clone();
+                                    move || format!("account-{id}-upgrade")
+                                })
+                                .flex_none()
+                                .px(px(8.0))
+                                .h(px(16.0))
+                                .flex()
+                                .items_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .text_size(px(9.0))
+                                .bg(Theme::global().WARN.opacity(0.16))
+                                .text_color(Theme::global().WARN)
+                                .hover(|el| el.bg(Theme::global().WARN.opacity(0.26)))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        remotes::HeaderTooltip(
+                                            "Opens Jcode pricing in your browser. Nothing is purchased here."
+                                                .into(),
+                                        )
+                                    })
+                                    .into()
+                                })
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.open_url(&url);
+                                })
+                                .child(label),
+                        ),
+                    );
+                }
             }
 
             if account.shows_oauth_history() {
@@ -6587,7 +6624,8 @@ impl Workspace {
 
             // Rows with history or a reset pill need more than the compact height.
             let grows = account.shows_oauth_history()
-                || (available && account.offerable_resets().next().is_some());
+                || (available && account.offerable_resets().next().is_some())
+                || (available && account.upgrade_offer().is_some());
             list = list.child(
                 div()
                     .flex_none()
@@ -10864,6 +10902,53 @@ mod tests {
         assert!(vcx.debug_bounds("accounts-connected-heading").is_none());
         assert!(vcx.debug_bounds("accounts-disconnected-heading").is_some());
         assert!(vcx.debug_bounds("account-openrouter-status").is_some());
+    }
+
+    #[gpui::test]
+    fn jcode_account_row_shows_daily_limits_and_upgrade_pill(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        // Real `jcode usage --json` shape captured from the live gateway.
+        let usage = r#"{"providers":[{"provider_name":"Jcode subscription","limits":[
+            {"name":"Memory recall (daily)","usage_percent":100.0,"reset_in":"19h 34m"},
+            {"name":"Browser automation (daily)","usage_percent":0.1,"reset_in":"19h 34m"}
+          ],"extra_info":[["Plan","Plus"],["Upgrade","Pro raises daily limits: https://jcode.sh/pricing"]]}]}"#;
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            w.accounts = accounts::parse(
+                r#"{"providers":[
+                {"id":"jcode","display_name":"Jcode","status":"available","auth_kind":"API key"}
+            ]}"#,
+            )
+            .unwrap();
+            accounts::merge_usage_for_tests(&mut w.accounts, usage);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("account-jcode").unwrap();
+        let memory = vcx.debug_bounds("account-jcode-limit-0").unwrap();
+        let pill = vcx.debug_bounds("account-jcode-upgrade").unwrap();
+        assert!(memory.top() >= row.top() && memory.bottom() <= row.bottom());
+        assert!(
+            pill.top() >= row.top() && pill.bottom() <= row.bottom(),
+            "pill clipped: {pill:?} in {row:?}"
+        );
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.accounts[0].upgrade_offer()),
+            Some((
+                "Pro raises daily limits".into(),
+                "https://jcode.sh/pricing".into()
+            ))
+        );
+        // Below the hint threshold `jcode usage` omits Upgrade and no pill renders.
+        workspace.update(vcx, |w, cx| {
+            w.accounts[0].usage_reports[0]
+                .extra_info
+                .retain(|(key, _)| key != "Upgrade");
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("account-jcode-upgrade").is_none());
     }
 
     #[gpui::test]

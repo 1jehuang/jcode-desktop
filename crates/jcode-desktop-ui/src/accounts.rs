@@ -187,6 +187,21 @@ impl Account {
     pub fn shows_oauth_history(&self) -> bool {
         self.id == "openai" && self.status != "not_configured"
     }
+
+    /// Jcode plan upgrade suggested by `jcode usage` when a daily included
+    /// allowance is running out: (label, url). Only jcode.sh links are offered.
+    pub fn upgrade_offer(&self) -> Option<(String, String)> {
+        if self.id != "jcode" {
+            return None;
+        }
+        self.usage_reports.iter().find_map(|report| {
+            let (_, value) = report.extra_info.iter().find(|(key, _)| key == "Upgrade")?;
+            let (label, url) = value.rsplit_once(": ")?;
+            let url = url.trim();
+            (url.starts_with("https://jcode.sh/") || url.starts_with("https://www.jcode.sh/"))
+                .then(|| (label.trim().to_owned(), url.to_owned()))
+        })
+    }
 }
 
 /// Resolve the credential, not the model family (Claude can use OpenRouter).
@@ -421,6 +436,11 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
         .collect();
     accounts.sort_by_key(|account| !account.available());
     Some(accounts)
+}
+
+#[cfg(test)]
+pub(crate) fn merge_usage_for_tests(accounts: &mut [Account], json: &str) {
+    merge_usage(accounts, json)
 }
 
 /// Merge the usage command's provider reports into the canonical auth rows.
@@ -891,6 +911,41 @@ mod tests {
                 .iter()
                 .any(|(key, value)| key == "Upgrade" && value.contains("https://jcode.sh/pricing"))
         );
+    }
+
+    #[test]
+    fn upgrade_offer_only_for_jcode_with_jcode_sh_links() {
+        let mut accounts = parse(
+            r#"{"providers":[{"id":"jcode","display_name":"Jcode","status":"available","auth_kind":"API key"},
+                             {"id":"openrouter","display_name":"OpenRouter","status":"available","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        let jcode = accounts.iter().position(|a| a.id == "jcode").unwrap();
+        let other = accounts.iter().position(|a| a.id == "openrouter").unwrap();
+        for index in [jcode, other] {
+            accounts[index].usage_reports.push(UsageReport {
+                provider_name: "Jcode subscription".into(),
+                account_label: None,
+                banked_reset: None,
+                limits: Vec::new(),
+                extra_info: vec![(
+                    "Upgrade".into(),
+                    "Pro raises daily limits: https://jcode.sh/pricing".into(),
+                )],
+            });
+        }
+        assert_eq!(
+            accounts[jcode].upgrade_offer(),
+            Some((
+                "Pro raises daily limits".into(),
+                "https://jcode.sh/pricing".into()
+            ))
+        );
+        assert_eq!(accounts[other].upgrade_offer(), None);
+        accounts[jcode].usage_reports[0].extra_info[0].1 = "Pro: https://evil.example/pay".into();
+        assert_eq!(accounts[jcode].upgrade_offer(), None);
+        accounts[jcode].usage_reports[0].extra_info[0].1 = "no link here".into();
+        assert_eq!(accounts[jcode].upgrade_offer(), None);
     }
 
     #[test]
