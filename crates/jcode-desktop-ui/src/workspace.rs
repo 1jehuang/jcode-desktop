@@ -10,10 +10,10 @@ mod account_sign_in;
 #[path = "workspace_applets.rs"]
 pub(crate) mod applets;
 
-#[path = "workspace_side_panel.rs"]
-mod side_panel;
 #[path = "workspace_applet_surfaces.rs"]
 mod applet_surfaces;
+#[path = "workspace_side_panel.rs"]
+mod side_panel;
 
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
@@ -1723,7 +1723,10 @@ impl Workspace {
             } else if !panel.read(cx).is_default_directory() {
                 Panel::connect_input(&panel, cx);
             }
-            panel.update(cx, |panel, cx| panel.restore_snapshot(panel_state, cx));
+            panel.update(cx, |panel, cx| {
+                panel.restore_snapshot(panel_state, cx);
+                panel.prefetch_persisted_history(cx);
+            });
             if panel
                 .read(cx)
                 .session_id
@@ -2339,6 +2342,7 @@ impl Workspace {
         });
         Panel::connect_input(&panel, cx);
         if !Panel::is_pending_session_id(&session_id) {
+            panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
             self.bridge.send(Command::Watch { session_id });
         }
         let slot = Slot {

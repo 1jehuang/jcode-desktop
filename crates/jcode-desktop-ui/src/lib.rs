@@ -41,6 +41,7 @@ mod panel;
 mod pdf_render;
 mod pdf_viewer;
 mod performance;
+mod persisted_history;
 mod platform;
 mod preview_control;
 pub mod preview_state;

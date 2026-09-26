@@ -28,6 +28,10 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 #[path = "panel_selection_tests.rs"]
 mod selection_tests;
 
+#[cfg(test)]
+#[path = "panel_provisional_history_tests.rs"]
+mod provisional_history_tests;
+
 #[path = "panel_text_document.rs"]
 mod text_document;
 
@@ -370,6 +374,13 @@ pub struct Panel {
     history_loaded: bool,
     reconnect_response: Option<jcode_sdk::HistoryMessage>,
     restored_transcript: bool,
+    /// Leading items painted from the persisted session record while the
+    /// runtime attaches. The authoritative history reply replaces them.
+    provisional_items: usize,
+    provisional_task: Option<gpui::Task<()>>,
+    /// A stored transcript is being read. Suppress the fresh-session empty
+    /// state so an established conversation never flashes the new-chat prompt.
+    awaiting_persisted: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
     pinned_task_label: Entity<task_label::TypeInLabel>,
@@ -970,6 +981,9 @@ impl Panel {
             history_loaded: false,
             reconnect_response: None,
             restored_transcript: false,
+            provisional_items: 0,
+            provisional_task: None,
+            awaiting_persisted: false,
             expanded_tools: HashSet::new(),
             pinned_task_label: cx.new(task_label::TypeInLabel::new),
             tool_detail_motion: HashMap::new(),
@@ -2831,56 +2845,13 @@ impl Panel {
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
     }
 
-    pub(crate) fn history_loaded(&self) -> bool {
-        self.history_loaded
-    }
-
-    pub fn load_history(
-        &mut self,
+    /// Convert protocol history into transcript items. Shared by the
+    /// authoritative reply and the provisional on-disk prefix so both paint
+    /// identically.
+    fn history_items(
         messages: Vec<jcode_sdk::HistoryMessage>,
         images: Vec<jcode_sdk::RenderedImage>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.is_side_document() {
-            return;
-        }
-        self.transcript_measurements.dirty = true;
-        if self.restored_transcript {
-            self.hydrate_restored_prefix(&messages);
-            // An empty/behind reply still completes the connection handshake.
-            // Keep the cache reconciliation marker independent of readiness.
-            self.history_loaded = true;
-            self.input
-                .update(cx, |input, cx| input.set_pending_session(false, cx));
-        }
-        if self.history_loaded {
-            // History is persisted message state, not a replay of the live turn.
-            // Wait for authoritative idle before reconciling it with a saved
-            // suffix. Buffered deltas must not be appended to a history prefix.
-            self.defer_reconnect_history(&messages);
-            for image in images {
-                self.insert_rendered_image(image);
-            }
-            self.send_queued_prompts(cx);
-            cx.notify();
-            return;
-        }
-        self.history_loaded = true;
-        if !self.is_pending_session() {
-            self.input
-                .update(cx, |input, cx| input.set_pending_session(false, cx));
-        }
-        // An established session can paint an empty placeholder before its
-        // history arrives. That must not adopt a new conversation's layout.
-        if !messages.is_empty()
-            && self.pending_users.is_empty()
-            && self
-                .startup_layout
-                .as_ref()
-                .is_some_and(|layout| !layout.committed)
-        {
-            self.startup_layout = None;
-        }
+    ) -> Vec<Item> {
         let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
@@ -2949,6 +2920,167 @@ impl Panel {
                 .into_iter()
                 .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
         );
+        items
+    }
+
+    /// Paint the locally persisted transcript while the runtime attaches.
+    /// Attaching restores the agent before `get_history` can answer, which
+    /// takes hundreds of milliseconds. The stored record renders in a few, so
+    /// the reader sees the conversation at once and the authoritative reply
+    /// swaps in underneath (usually as a no-op when nothing changed).
+    pub fn prefetch_persisted_history(&mut self, cx: &mut Context<Self>) {
+        if cfg!(test) || crate::harness::screenshot_mode() {
+            return;
+        }
+        let id = self.session_id.clone();
+        if !crate::persisted_history::is_local_session_id(&id)
+            || !jcode_base::session::session_path(&id).is_ok_and(|path| path.exists())
+        {
+            return;
+        }
+        self.prefetch_history_with(move || crate::persisted_history::load(&id), cx);
+    }
+
+    pub(crate) fn prefetch_history_with(
+        &mut self,
+        loader: impl FnOnce() -> Result<crate::persisted_history::History, String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_show_provisional() {
+            return;
+        }
+        self.awaiting_persisted = true;
+        let started = Instant::now();
+        // Parse, render, and decode images off the UI thread.
+        let request = cx.background_executor().spawn(async move {
+            loader().map(|(messages, images)| Self::history_items(messages, images))
+        });
+        self.provisional_task = Some(cx.spawn(async move |this, cx| {
+            let result = request.await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.provisional_task = None;
+                if std::mem::take(&mut panel.awaiting_persisted) {
+                    cx.notify();
+                }
+                let Ok(items) = result else { return };
+                if items.is_empty() || !panel.can_show_provisional() {
+                    return;
+                }
+                eprintln!(
+                    "jcode desktop: provisional transcript items={} in {:?}",
+                    items.len(),
+                    started.elapsed()
+                );
+                panel.provisional_items = items.len();
+                panel.items = items;
+                panel.transcript_measurements.dirty = true;
+                if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
+                    panel.startup_layout = None;
+                }
+                if panel.pending_history_scroll.is_none() && panel.stick_to_bottom {
+                    panel.transcript_list.scroll_to_end();
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Only an untouched, not-yet-hydrated transcript may borrow the disk copy.
+    fn can_show_provisional(&self) -> bool {
+        !self.history_loaded
+            && !self.restored_transcript
+            && !self.transcript_only
+            && !self.is_side_document()
+            && self.provisional_items == 0
+            && self.items.is_empty()
+            && self.pending_users.is_empty()
+            && self.streaming_text.is_empty()
+            && self.streaming_reasoning.is_empty()
+    }
+
+    /// Retire the provisional prefix before the authoritative history lands.
+    /// Returns true when the reply matched it exactly and nothing else is
+    /// needed, which keeps measurements and scroll position untouched.
+    fn adopt_authoritative_over_provisional(&mut self, items: &[Item]) -> bool {
+        self.provisional_task = None;
+        self.awaiting_persisted = false;
+        let count = std::mem::take(&mut self.provisional_items).min(self.items.len());
+        if count == 0 {
+            return false;
+        }
+        if self.items[..count] == *items {
+            return true;
+        }
+        self.items.drain(..count);
+        self.pending_users = self
+            .pending_users
+            .drain(..)
+            .filter_map(|index| index.checked_sub(count))
+            .collect();
+        self.accepted_users = std::mem::take(&mut self.accepted_users)
+            .into_iter()
+            .filter_map(|(index, at)| Some((index.checked_sub(count)?, at)))
+            .collect();
+        self.expanded_prompts.clear();
+        false
+    }
+
+    pub(crate) fn history_loaded(&self) -> bool {
+        self.history_loaded
+    }
+
+    pub fn load_history(
+        &mut self,
+        messages: Vec<jcode_sdk::HistoryMessage>,
+        images: Vec<jcode_sdk::RenderedImage>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_side_document() {
+            return;
+        }
+        self.transcript_measurements.dirty = true;
+        if self.restored_transcript {
+            self.hydrate_restored_prefix(&messages);
+            // An empty/behind reply still completes the connection handshake.
+            // Keep the cache reconciliation marker independent of readiness.
+            self.history_loaded = true;
+            self.input
+                .update(cx, |input, cx| input.set_pending_session(false, cx));
+        }
+        if self.history_loaded {
+            // History is persisted message state, not a replay of the live turn.
+            // Wait for authoritative idle before reconciling it with a saved
+            // suffix. Buffered deltas must not be appended to a history prefix.
+            self.defer_reconnect_history(&messages);
+            for image in images {
+                self.insert_rendered_image(image);
+            }
+            self.send_queued_prompts(cx);
+            cx.notify();
+            return;
+        }
+        self.history_loaded = true;
+        if !self.is_pending_session() {
+            self.input
+                .update(cx, |input, cx| input.set_pending_session(false, cx));
+        }
+        // An established session can paint an empty placeholder before its
+        // history arrives. That must not adopt a new conversation's layout.
+        if !messages.is_empty()
+            && self.pending_users.is_empty()
+            && self
+                .startup_layout
+                .as_ref()
+                .is_some_and(|layout| !layout.committed)
+        {
+            self.startup_layout = None;
+        }
+        let mut items = Self::history_items(messages, images);
+        if self.adopt_authoritative_over_provisional(&items) {
+            self.send_queued_prompts(cx);
+            cx.notify();
+            return;
+        }
         // History goes first; anything echoed locally before it arrived is
         // appended, minus the duplicate the server already knows about.
         let mut existing = std::mem::take(&mut self.items);
@@ -4636,6 +4768,7 @@ impl Render for Panel {
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
         let fresh_session = !self.transcript_only
+            && !self.awaiting_persisted
             && self.items.is_empty()
             && row_count == 0
             && !self.activity_active()

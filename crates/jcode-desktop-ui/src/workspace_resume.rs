@@ -963,41 +963,7 @@ fn load_preview_history(id: &str) -> Result<PreviewHistory, String> {
             "Preview unavailable for this session. Resume to load its conversation.".into(),
         );
     }
-    let path = jcode_base::session::session_path(id)
-        .map_err(|_| "Conversation storage unavailable.".to_owned())?;
-    load_preview_path(&path)
-}
-
-fn load_preview_path(path: &std::path::Path) -> Result<PreviewHistory, String> {
-    let session = jcode_base::session::Session::load_from_path(path)
-        .map_err(|_| "Conversation preview unavailable. Resume to load this session.".to_owned())?;
-    Ok(preview_history(&session))
-}
-
-/// Same rendering the server uses for `History`, converted through the same
-/// wire shape the harness API delivers to a resumed chat panel.
-fn preview_history(session: &jcode_base::session::Session) -> PreviewHistory {
-    let (messages, images) = jcode_base::session::render_messages_and_images(session);
-    let messages = messages
-        .into_iter()
-        .map(|message| jcode_sdk::HistoryMessage {
-            response_stats: message
-                .response_stats
-                .and_then(|stats| serde_json::to_value(stats).ok())
-                .and_then(|stats| serde_json::from_value(stats).ok()),
-            role: message.role,
-            content: message.content,
-        })
-        .collect();
-    let images = images
-        .into_iter()
-        .filter_map(|image| {
-            serde_json::to_value(image)
-                .ok()
-                .and_then(|image| serde_json::from_value(image).ok())
-        })
-        .collect();
-    (messages, images)
+    crate::persisted_history::load(id)
 }
 
 #[cfg(test)]
@@ -1031,7 +997,7 @@ mod tests {
                 }],
             );
         }
-        let history = preview_history(&session);
+        let history = crate::persisted_history::render(&session);
         // Identical to the server History payload: no truncation or clipping.
         let expected: Vec<_> = jcode_base::session::render_messages(&session)
             .into_iter()
@@ -1106,7 +1072,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert_eq!(
-            roles_and_text(&load_preview_path(&path).unwrap()),
+            roles_and_text(&crate::persisted_history::load_path(&path).unwrap()),
             vec![
                 ("user".into(), "Persisted user question".into()),
                 ("assistant".into(), "Persisted assistant answer".into()),
@@ -1118,9 +1084,11 @@ mod tests {
             modified
         );
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
-        assert!(load_preview_path(&directory.path().join("missing.json")).is_err());
+        assert!(
+            crate::persisted_history::load_path(&directory.path().join("missing.json")).is_err()
+        );
         std::fs::write(&path, b"malformed").unwrap();
-        assert!(load_preview_path(&path).is_err());
+        assert!(crate::persisted_history::load_path(&path).is_err());
     }
 
     #[test]
