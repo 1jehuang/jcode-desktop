@@ -1,0 +1,171 @@
+name: macOS legacy auto-update matrix
+run-name: Update every published macOS build to the live appcast
+
+# Installs every published macOS Desktop build exactly as a user has it, lets
+# its embedded Sparkle updater check the live production appcast, quits it the
+# way a user does, and requires the bundle to become the advertised build and
+# relaunch. Nothing here builds from source: only immutable public artifacts
+# and the live feed are exercised, so this proves the real upgrade path.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: Optional space-separated desktop-v tags. Empty tests every published macOS build.
+        required: false
+        default: ""
+  push:
+    branches: [ci/macos-update-matrix]
+  schedule:
+    - cron: "41 9 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      tags: ${{ steps.plan.outputs.tags }}
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: Read live appcast and list published macOS builds
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          feed=$(curl --fail --silent --show-error --location --retry 3 https://jcode.sh/desktop/appcast.xml)
+          build=$(printf '%s' "$feed" | python3 -c 'import sys,xml.etree.ElementTree as E;n={"s":"http://www.andymatuschak.org/xml-namespaces/sparkle"};i=E.fromstring(sys.stdin.read()).find("./channel/item");print(i.find("s:version",n).text)')
+          version=$(printf '%s' "$feed" | python3 -c 'import sys,xml.etree.ElementTree as E;n={"s":"http://www.andymatuschak.org/xml-namespaces/sparkle"};i=E.fromstring(sys.stdin.read()).find("./channel/item");print(i.find("s:shortVersionString",n).text)')
+          if [[ -n "$REQUESTED" ]]; then
+            tags=$(printf '%s\n' $REQUESTED | jq -R . | jq -sc .)
+          else
+            # Published (non-draft) releases that ship a macOS DMG, excluding
+            # the build the feed already advertises.
+            tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              | jq -s --arg latest "desktop-v$version" -c '[.[][]
+                  | select(.draft == false and (.tag_name | startswith("desktop-v")) and .tag_name != $latest)
+                  | select(any(.assets[]; .name == "Jcode-macOS-universal.dmg"))
+                  | .tag_name]')
+          fi
+          echo "Feed advertises $version (build $build)"
+          echo "Testing: $tags"
+          test "$tags" != "[]"
+          {
+            echo "tags=$tags"
+            echo "build=$build"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  update:
+    needs: plan
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        tag: ${{ fromJSON(needs.plan.outputs.tags) }}
+    env:
+      TAG: ${{ matrix.tag }}
+      EXPECTED_BUILD: ${{ needs.plan.outputs.build }}
+      APP: /Applications/Jcode.app
+      BUNDLE_ID: dev.solosystems.jcode.desktop
+    steps:
+      - name: Install the published build like a user
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern Jcode-macOS-universal.dmg --pattern SHA256SUMS
+          shasum -a 256 -c SHA256SUMS --ignore-missing
+          mkdir -p "$RUNNER_TEMP/mount"
+          hdiutil attach Jcode-macOS-universal.dmg -mountpoint "$RUNNER_TEMP/mount" -nobrowse
+          sudo rm -rf "$APP"
+          ditto "$RUNNER_TEMP/mount/Jcode.app" "$APP"
+          hdiutil detach "$RUNNER_TEMP/mount"
+          codesign --verify --deep --strict "$APP"
+          before=$(defaults read "$APP/Contents/Info" CFBundleVersion)
+          feed=$(defaults read "$APP/Contents/Info" SUFeedURL 2>/dev/null || true)
+          echo "Installed $TAG build $before, feed ${feed:-<none>}"
+          echo "BEFORE_BUILD=$before" >> "$GITHUB_ENV"
+          if [[ -z "$feed" ]]; then
+            echo "::error::$TAG was published without an update feed and can never auto-update"
+            exit 1
+          fi
+          test "$before" -lt "$EXPECTED_BUILD"
+
+      - name: Launch, let Sparkle stage the update, and quit normally
+        run: |
+          set -euo pipefail
+          # Stream Sparkle's own diagnostics for the log artifact.
+          log stream --style compact --predicate 'subsystem == "org.sparkle-project.Sparkle" OR process == "Autoupdate" OR process == "Installer" OR eventMessage CONTAINS "Jcode update"' \
+            > "$RUNNER_TEMP/sparkle.log" 2>&1 &
+          echo "LOG_PID=$!" >> "$GITHUB_ENV"
+          open "$APP"
+          for _ in {1..60}; do pgrep -x jcode-desktop >/dev/null && break; sleep 1; done
+          pgrep -x jcode-desktop >/dev/null
+
+          # Every updater-enabled build checks at launch and, with
+          # SUAutomaticallyUpdate, downloads and prepares the installer in the
+          # background. Wait until Sparkle has an installer staged.
+          staged=0
+          for i in {1..150}; do
+            if pgrep -fl 'Autoupdate|Updater.app' >/dev/null 2>&1 \
+               || ls "$HOME/Library/Caches/$BUNDLE_ID/org.sparkle-project.Sparkle/Installation" >/dev/null 2>&1; then
+              staged=1
+              break
+            fi
+            sleep 2
+          done
+          echo "Installer staged: $staged after $((i * 2))s"
+          sleep 10
+
+          # The same Apple Event as Cmd+Q, not a signal.
+          osascript -e "tell application id \"$BUNDLE_ID\" to quit" || true
+          for _ in {1..30}; do pgrep -x jcode-desktop >/dev/null || break; sleep 1; done
+          if pgrep -x jcode-desktop >/dev/null; then
+            echo "::warning::Quit did not finish in 30s, sending SIGTERM"
+            pkill -TERM -x jcode-desktop || true
+          fi
+
+      - name: Require the advertised build and relaunch it
+        run: |
+          set -euo pipefail
+          build=""
+          for i in {1..180}; do
+            # The bundle is briefly absent during Sparkle's atomic swap.
+            build=$(defaults read "$APP/Contents/Info" CFBundleVersion 2>/dev/null || true)
+            [[ "$build" == "$EXPECTED_BUILD" ]] && break
+            sleep 1
+          done
+          echo "Bundle build after quit: ${build:-<missing>} (expected $EXPECTED_BUILD)"
+          test "$build" = "$EXPECTED_BUILD"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
+          sleep 5
+          open "$APP"
+          sleep 15
+          pgrep -x jcode-desktop >/dev/null
+          osascript -e "tell application id \"$BUNDLE_ID\" to quit" || true
+          echo "### $TAG (build $BEFORE_BUILD) updated to build $build and relaunched" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect updater diagnostics
+        if: always()
+        run: |
+          kill "${LOG_PID:-0}" 2>/dev/null || true
+          mkdir -p diagnostics
+          cp "$RUNNER_TEMP/sparkle.log" diagnostics/ 2>/dev/null || true
+          defaults read "$BUNDLE_ID" > diagnostics/defaults.txt 2>&1 || true
+          ls -laR "$HOME/Library/Caches/$BUNDLE_ID" > diagnostics/caches.txt 2>&1 || true
+          tail -50 diagnostics/sparkle.log 2>/dev/null || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: update-${{ matrix.tag }}
+          path: diagnostics
+          if-no-files-found: ignore
