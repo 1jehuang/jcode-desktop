@@ -1,8 +1,11 @@
 # Applet API: a standard layer for custom UI in Jcode Desktop
 
-Status: foundation implemented. Shared types live in `jcode/crates/jcode-applet-types`.
-The Desktop host, renderer, panel placement and stdio provider live in `jcode-desktop-ui`.
-The agent provider, the MCP bridge and the non-panel placements are next.
+Status: implemented. Shared types live in `jcode/crates/jcode-applet-types`. The
+Desktop host, renderer, every placement, consent, launchers, tool cards and the
+stdio provider live in `jcode-desktop-ui`. The agent provider (the `applet` tool)
+and the MCP-UI bridge live in `jcode-app-core`, persisted per session by
+`jcode-base::applets` and carried by `ApiEvent::AppletState`,
+`ApiRequest::AppletAction` and `ApiRequest::CloseApplet`.
 
 ## Why
 
@@ -29,8 +32,8 @@ anyone can describe it, and Desktop renders it natively, safely and on-theme.
 flowchart LR
   subgraph Providers
     L[Local process<br/>~/.jcode/applets/id]
-    A[Agent tool<br/>planned]
-    M[MCP server<br/>planned]
+    A[Agent applet tool]
+    M[MCP-UI resources]
     N[Built-in<br/>showcase]
   end
   subgraph Types["jcode-applet-types (shared)"]
@@ -58,12 +61,12 @@ flowchart LR
 | Placement | Use | Status |
 | --- | --- | --- |
 | `panel` | First-class tiled panel, like the Gmail inbox | Implemented (`applet://<instance>` panels, restored after reload) |
-| `inline` + `tool_call` anchor | Replaces a tool call's generic row (tool cards) | Host lookup implemented, transcript hook next |
-| `inline` + `after_message` / `end` | Cards in a chat that aren't tied to any tool call | Types and host implemented, transcript hook next |
-| `sidebar` | Compact status and launchers | Types and host implemented |
-| `composer` | A strip above a session's composer (suggestions, pickers) | Types and host implemented |
-| `overlay` | A floating corner HUD (timers, now playing) | Types and host implemented |
-| `background` | No UI. Posts toasts and launches panels | Types and host implemented |
+| `inline` + `tool_call` anchor | Replaces a tool call's generic row (tool cards) | Implemented |
+| `inline` + `after_message` / `end` | Cards in a chat that aren't tied to any tool call. Pinned where they first appear | Implemented |
+| `sidebar` | Compact status cards, plus manifest `sidebar` launcher pills | Implemented |
+| `composer` | A strip above a session's composer (suggestions, pickers) | Implemented |
+| `overlay` | A floating corner HUD (timers, now playing), above the composer | Implemented |
+| `background` | No UI. Posts toasts and launches panels | Implemented |
 
 `Move` lets a provider promote an instance (for example, an inline card to a panel) without
 losing state. `Scope` (`global`, `workspace`, `session`) controls where an instance is
@@ -198,16 +201,42 @@ a `rejected` reply and is otherwise ignored.
 The host/UI C ABI is unchanged. Applets are all in the reloadable UI crate, and the runtime
 is an App global, so instances survive Ctrl+R.
 
-## Next steps
+## Agent applets
 
-1. **Transcript placements:** render `inline` instances at their anchor. Tool-call anchors
-   replace the generic row. Then move the Gmail read and draft cards onto this path.
-2. **Agent provider:** add an `applet` tool in `jcode-app-core` (`mount`, `patch`, `close`)
-   plus harness API events, so the agent can build interactive UI and receive actions as
-   tool events.
-3. **Sidebar, overlay and composer hosts** in the workspace, plus a launcher row driven by
-   manifest `launchers`.
-4. **Capability consent UI:** approve once per applet, revoke in settings.
-5. **MCP bridge:** map MCP UI resources onto applet documents.
-6. **Migrate the Gmail inbox and Todoist panels** to applets, and delete their bespoke
-   `Panel` fields.
+The agent's `applet` tool mounts validated native UI into its own session. By
+default the card replaces the tool call's row. `placement` accepts `inline`,
+`end`, `panel`, `sidebar`, `overlay` or `composer`. Custom actions return to the
+agent as an `[applet action]` message with the instance state, or as the tool
+result with `wait: true`. The server stores each session's instances in
+`~/.jcode/agent_applets/<session>.json` and publishes full snapshots, so a
+reattached or restarted Desktop shows the same cards. Desktop namespaces agent
+instances per session and skips unchanged revisions, so typed-but-unsent input
+survives updates.
+
+MCP tool results with a `ui://` HTML resource render inline as sandboxed HTML.
+Resources typed `application/vnd.jcode.applet+json` render natively.
+
+## Consent
+
+Third-party applets must be granted the capabilities they declare. Desktop asks
+once per applet with a pill prompt (Allow, Deny, Not now). Decisions persist in
+`~/.jcode/applets/grants.json` and can be revoked under Settings > Applets.
+Host actions are checked at dispatch time, and the renderer blocks `html`,
+`path` and `url` images without a grant. Built-in applets (the showcase and the
+agent) are trusted.
+
+## Tool cards and launchers
+
+A manifest's `tool_cards` claims tool calls by name and `action`. Claiming
+providers receive `HostMessage::ToolCall` when a matching call starts and
+finishes, and mount an `inline` instance anchored to its `call_id`.
+`launchers` add sidebar pills (`sidebar`) or mount on connect (`startup`).
+Firing a launcher sends `HostMessage::Launch`. A mounted singleton is focused
+instead.
+
+## Remaining work
+
+1. Command palette and shortcut launcher triggers (types exist, no host UI yet).
+2. Migrate the Gmail inbox and Todoist panels to applets, and delete their
+   bespoke `Panel` fields. Bundled Gmail and GitHub applets already exist under
+   `applets/`.
