@@ -2187,6 +2187,39 @@ impl Workspace {
                 }
             }
             Update::MessageSubmitted { .. } => {}
+            Update::SessionSaved {
+                session_id,
+                saved,
+                label,
+            } => {
+                let label = label
+                    .map(|label| label.trim().to_string())
+                    .filter(|label| !label.is_empty());
+                if let Some(session) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.session_id == session_id)
+                {
+                    session.saved = saved;
+                    if !saved {
+                        session.save_label = None;
+                    } else if let Some(label) = &label {
+                        session.save_label = Some(label.clone());
+                        session.title = Some(label.clone());
+                    }
+                }
+                if saved && let Some(label) = &label {
+                    for slot in &self.slots {
+                        if slot.panel.read(cx).session_id == session_id {
+                            slot.panel.update(cx, |panel, cx| {
+                                panel.title = label.clone().into();
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+                self.bridge.send(Command::RefreshSessions);
+            }
             Update::EffortSettled {
                 session_id,
                 effort,

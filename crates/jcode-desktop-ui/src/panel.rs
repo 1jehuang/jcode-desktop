@@ -2512,6 +2512,15 @@ impl Panel {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn handle_slash_command_for_test(
+        &mut self,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.handle_slash_command(content, cx)
+    }
+
     fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         if self.is_side_document() {
             return true;
@@ -2554,6 +2563,23 @@ impl Panel {
                 let title = (title != "--clear").then(|| title.to_string());
                 self.run_session_operation(SessionOperation::Rename(title), "Session renamed.");
             }
+        } else if trimmed == "/save" || trimmed.starts_with("/save ") {
+            let label = trimmed["/save".len()..].trim();
+            let label = (!label.is_empty()).then(|| label.to_string());
+            let message = match &label {
+                Some(label) => {
+                    format!(
+                        "📌 Session saved as \"{label}\". It will appear at the top of /resume."
+                    )
+                }
+                None => "📌 Session saved. It will appear at the top of /resume.".to_string(),
+            };
+            self.run_session_operation(SessionOperation::SetSaved(true, label), message);
+        } else if trimmed == "/unsave" {
+            self.run_session_operation(
+                SessionOperation::SetSaved(false, None),
+                "Session removed from saved.",
+            );
         } else if let Some(target) = trimmed.strip_prefix("/rewind ").map(str::trim) {
             if target == "undo" {
                 self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");

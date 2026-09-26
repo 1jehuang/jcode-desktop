@@ -274,3 +274,55 @@ fn rename_button_stays_clickable_without_squeezing_compact_tabs(cx: &mut gpui::T
     }
     assert!(commands.try_recv().is_err());
 }
+
+#[gpui::test]
+fn save_with_label_names_the_session_in_tabs_and_resume(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/save  yc mcp ", cx));
+        });
+    });
+    match commands.try_recv().unwrap() {
+        Command::SessionOperation {
+            session_id,
+            operation: harness::SessionOperation::SetSaved(true, Some(label)),
+        } => {
+            assert_eq!(session_id, "session_fox_original");
+            assert_eq!(label, "yc mcp");
+        }
+        _ => panic!("expected save"),
+    }
+    workspace.update(vcx, |w, cx| {
+        w.apply(
+            Update::SessionSaved {
+                session_id: "session_fox_original".into(),
+                saved: true,
+                label: Some("yc mcp".into()),
+            },
+            cx,
+        );
+        assert_eq!(w.slots[0].panel.read(cx).title.as_ref(), "yc mcp");
+        assert!(w.sessions[0].saved);
+        assert_eq!(w.sessions[0].save_label.as_deref(), Some("yc mcp"));
+        assert_eq!(sidebar_session_title(&w.sessions[0]).1, "yc mcp");
+        assert_eq!(
+            w.slots[1].panel.read(cx).title.as_ref(),
+            "session_owl_neighbor"
+        );
+    });
+    assert!(matches!(commands.try_recv(), Ok(Command::RefreshSessions)));
+
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/unsave", cx));
+        });
+    });
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::SessionOperation {
+            operation: harness::SessionOperation::SetSaved(false, None),
+            ..
+        })
+    ));
+}

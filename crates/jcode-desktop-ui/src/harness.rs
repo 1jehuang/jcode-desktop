@@ -141,6 +141,12 @@ pub enum Update {
     SessionConnected {
         session_id: String,
     },
+    /// A session was bookmarked or unbookmarked. A label also names it.
+    SessionSaved {
+        session_id: String,
+        saved: bool,
+        label: Option<String>,
+    },
     /// The control connection died; the bridge will retry.
     Disconnected {
         reason: String,
@@ -207,6 +213,8 @@ pub enum SessionOperation {
     Compact,
     SetEffort(String),
     Rename(Option<String>),
+    /// Bookmark (`true`) or unbookmark. A label also becomes the title.
+    SetSaved(bool, Option<String>),
     Rewind(usize),
     RewindUndo,
 }
@@ -810,6 +818,8 @@ struct PersistedSession {
     #[serde(default)]
     saved: bool,
     #[serde(default)]
+    save_label: Option<String>,
+    #[serde(default)]
     status: serde_json::Value,
 }
 
@@ -1079,6 +1089,8 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         saved: json_value_field(&tail, "saved", true)
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        save_label: json_string_field(&tail, "save_label", true)
+            .or_else(|| json_string_field(&head, "save_label", false)),
         status: json_value_field(&tail, "status", true).unwrap_or_default(),
     })
 }
@@ -1240,9 +1252,15 @@ pub(crate) fn merge_persisted_sessions(
         else {
             continue;
         };
+        let save_label = record
+            .saved
+            .then_some(record.save_label)
+            .flatten()
+            .filter(|label| !label.trim().is_empty());
         let title = record
             .custom_title
             .filter(|title| !title.trim().is_empty())
+            .or_else(|| save_label.clone())
             .or_else(|| persisted_todo_title(home, &id))
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
         let status = persisted_session_status(&record.status);
@@ -1259,7 +1277,7 @@ pub(crate) fn merge_persisted_sessions(
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
-                save_label: None,
+                save_label,
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
@@ -1708,10 +1726,30 @@ fn session_worker_with_connector(
                             });
                             continue;
                         }
+                        if let SessionOperation::SetSaved(saved, label) = &operation {
+                            match client.set_session_saved(real_id, *saved, label.clone()) {
+                                Ok(()) => {
+                                    let _ = updates.send(Update::SessionSaved {
+                                        session_id: session_id.clone(),
+                                        saved: *saved,
+                                        label: label.clone(),
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = updates.send(Update::CommandFailed {
+                                        session_id: session_id.clone(),
+                                        reason: format!("Failed to save session: {error}"),
+                                    });
+                                }
+                            }
+                            continue;
+                        }
                         let result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
                             SessionOperation::Compact => client.compact(real_id).map(|_| ()),
-                            SessionOperation::SetEffort(_) => Ok(()),
+                            SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
+                                Ok(())
+                            }
                             SessionOperation::Rename(title) => {
                                 client.rename_session(real_id, title)
                             }
