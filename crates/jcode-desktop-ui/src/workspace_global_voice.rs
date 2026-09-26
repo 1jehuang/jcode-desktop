@@ -16,6 +16,9 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 #[path = "workspace_global_voice_fixture.rs"]
 mod fixture;
+#[cfg(target_os = "linux")]
+#[path = "workspace_global_voice_cli.rs"]
+mod cli;
 
 struct Capture {
     panel: WeakEntity<Panel>,
@@ -48,6 +51,12 @@ pub(super) struct State {
     /// Whether this Jcode window has focus. The chat's own voice pill is the
     /// single source of truth. The OS pill mirrors it only while unfocused.
     window_active: bool,
+    /// Hold recorded for a focused Jcode CLI terminal instead of a chat.
+    #[cfg(target_os = "linux")]
+    cli: Option<cli::CliCapture>,
+    /// Resolving whether the focused window is a Jcode CLI.
+    #[cfg(target_os = "linux")]
+    cli_resolve: Option<Task<()>>,
 }
 
 /// Exactly one voice pill is ever visible. The OS-level pill mirrors capture
@@ -152,6 +161,8 @@ impl State {
         #[cfg(target_os = "linux")]
         {
             self.listener = None;
+            self.cli = None;
+            self.cli_resolve = None;
         }
         self.host_held_since = None;
         if let Some(panel) = self.owner.as_ref().and_then(|owner| owner.panel.upgrade()) {
@@ -265,13 +276,22 @@ impl Workspace {
                             std::mem::take(&mut self.global_voice.adopting_spawned_hold),
                         ) =>
                     {
-                        spawn_voice_window()
+                        // A focused Jcode CLI gets the transcript. Anything
+                        // else opens a new voice window, as before.
+                        self.global_press_unfocused(window, cx)
                     }
                     Edge::Press => self.global_voice_press(window, cx),
                     Edge::Spawn => spawn_voice_window(),
                     Edge::Tap => {
                         self.global_voice.adopting_spawned_hold = false;
                         self.toggle_voice(&ToggleVoice, window, cx)
+                    }
+                    Edge::Release
+                        if self.global_voice.cli_resolve.is_some()
+                            || self.global_voice.cli.as_ref().is_some_and(|c| c.recording()) =>
+                    {
+                        self.global_voice.cli_resolve = None;
+                        self.cli_release()
                     }
                     Edge::Release => self.global_voice_release(cx),
                     Edge::Cancel => {
@@ -289,7 +309,11 @@ impl Workspace {
             eprintln!("global voice: host shortcut hold exceeded its deadline");
             self.cancel_global_voice_capture(cx);
         }
-        if self.global_voice.owner.is_some()
+        #[cfg(target_os = "linux")]
+        let cli_recording = self.global_voice.cli.as_ref().is_some_and(|c| c.recording());
+        #[cfg(not(target_os = "linux"))]
+        let cli_recording = false;
+        if (self.global_voice.owner.is_some() || cli_recording)
             && self.global_voice.permission_task.is_none()
             && self
                 .global_voice
@@ -297,6 +321,10 @@ impl Workspace {
                 .is_none_or(|last| last.elapsed() >= Duration::from_millis(250))
         {
             self.check_global_voice_permission(false, window, cx);
+        }
+        #[cfg(target_os = "linux")]
+        if self.poll_cli_capture(cx) {
+            return;
         }
         self.update_global_voice_overlay(cx);
     }
@@ -376,6 +404,11 @@ impl Workspace {
 
     fn cancel_global_voice_capture(&mut self, cx: &mut Context<Self>) {
         self.global_voice.held = false;
+        #[cfg(target_os = "linux")]
+        {
+            self.global_voice.cli = None;
+            self.global_voice.cli_resolve = None;
+        }
         self.global_voice.host_held_since = None;
         self.global_voice.pending_target = None;
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);

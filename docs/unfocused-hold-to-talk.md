@@ -126,3 +126,20 @@ These checks do not establish physical Copilot firmware behavior or a live
 microphone-to-Nari transcription on the user's current desktop. A physical
 hold/release trial is a separate acceptance check, never simulated into the
 user's active session.
+
+## Holding Copilot over a Jcode CLI terminal
+
+If the focused window is a terminal running the Jcode CLI (TUI), an unfocused
+hold records in Desktop and sends the final transcript to that CLI session
+instead of opening a new voice window. Delivery goes through the shared
+server, like `jcode transcript --session <id>`, so the CLI submits it as a
+prompt (it steers the turn if one is already running). The OS pill shows
+Listening, Transcribing, Sending to CLI, and then "Sent to CLI" or the
+reason it failed.
+
+The session is found from the focused niri window. It uses the CLI's own
+PID-to-session record (`~/.jcode/client_sessions`, written on focus), then the
+window title, then the client's argv, then the last-focused CLI session. Any
+other focused app keeps the new-window behavior. Resolution runs off the UI
+thread, and a release before resolution finishes counts as a tap and is
+ignored.
