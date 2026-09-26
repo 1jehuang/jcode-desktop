@@ -95,15 +95,19 @@ impl Workspace {
         });
         self.global_voice.cli_resolve = Some(cx.spawn_in(window, async move |this, cx| {
             let result = resolve.await;
-            let _ = this.update_in(cx, |this, _window, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.global_voice.press_serial != serial {
                     return;
                 }
                 this.global_voice.cli_resolve = None;
                 match result {
                     None => {
-                        this.global_voice.held = false;
-                        spawn_voice_window();
+                        let held = std::mem::replace(&mut this.global_voice.held, false);
+                        // Never drop an unfocused hold silently. If no window
+                        // could open, record here behind the OS pill instead.
+                        if !spawn_voice_window() && held {
+                            this.global_voice_press(window, cx);
+                        }
                     }
                     Some((_, false)) => {
                         eprintln!("global voice: denied by session check");

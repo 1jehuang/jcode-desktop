@@ -90,10 +90,10 @@ const SPAWNED_HOLD_FLAG: &str = "--global-voice-hold";
 /// Shift+Copilot: a new single-panel window in `voice.spawn_working_dir`
 /// that takes over the current hold. This window only launches it.
 #[cfg(target_os = "linux")]
-fn spawn_voice_window() {
-    let Ok(executable) = std::env::current_exe() else {
+fn spawn_voice_window() -> bool {
+    let Ok(executable) = crate::platform::self_executable() else {
         eprintln!("global voice: cannot locate the desktop executable to spawn");
-        return;
+        return false;
     };
     let mut command = std::process::Command::new(executable);
     command.args(spawn_args(std::env::args_os().skip(1)));
@@ -101,8 +101,14 @@ fn spawn_voice_window() {
         command.env("JCODE_DESKTOP_WORKING_DIR", dir);
     }
     match command.spawn() {
-        Ok(child) => eprintln!("global voice: spawned voice window {}", child.id()),
-        Err(error) => eprintln!("global voice: could not spawn voice window: {error}"),
+        Ok(child) => {
+            eprintln!("global voice: spawned voice window {}", child.id());
+            true
+        }
+        Err(error) => {
+            eprintln!("global voice: could not spawn voice window: {error}");
+            false
+        }
     }
 }
 
@@ -281,7 +287,11 @@ impl Workspace {
                         self.global_press_unfocused(window, cx)
                     }
                     Edge::Press => self.global_voice_press(window, cx),
-                    Edge::Spawn => spawn_voice_window(),
+                    Edge::Spawn => {
+                        if !spawn_voice_window() {
+                            self.global_voice_press(window, cx)
+                        }
+                    }
                     Edge::Tap => {
                         self.global_voice.adopting_spawned_hold = false;
                         self.toggle_voice(&ToggleVoice, window, cx)
