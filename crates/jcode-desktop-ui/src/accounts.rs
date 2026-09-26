@@ -389,7 +389,7 @@ fn shared_poller() -> &'static Poller {
     })
 }
 
-fn fetch() -> Option<Vec<Account>> {
+pub(crate) fn fetch() -> Option<Vec<Account>> {
     let output = std::process::Command::new(crate::platform::companion_executable("jcode"))
         .args(["auth", "status", "--json"])
         .output()

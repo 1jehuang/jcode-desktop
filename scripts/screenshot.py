@@ -36,6 +36,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--accounts", action="store_true",
+                        help="open the Accounts panel with offline multi-account fixtures")
     parser.add_argument("--release-status", choices=("current", "newer", "checking", "error", "source"),
                         help="render an offline Desktop release status in the workspace top bar")
     parser.add_argument("--account-sign-in", action="store_true",
@@ -448,6 +450,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         if args.changelog:
             env["JCODE_DESKTOP_SCREENSHOT_CHANGELOG"] = "1"
+        if args.accounts:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNTS"] = "1"
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
@@ -537,7 +541,7 @@ def main():
                 # while it is still visible. Other fixtures can fully settle.
                 time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
-                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact):
+                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)

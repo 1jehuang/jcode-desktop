@@ -1244,6 +1244,15 @@ impl Workspace {
                 workspace.active = panel_count / 2;
             }
             workspace.focus_pending = true;
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
+                && let Some(slot) = workspace.slots.first()
+            {
+                let source = slot.panel.clone();
+                let session = source.read(cx).session_id.clone();
+                let bridge = workspace.bridge.clone();
+                let panel = cx.new(|cx| Panel::new_accounts(&session, None, bridge, cx));
+                workspace.slots[0].panel = panel;
+            }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_HISTORY").as_deref() == Ok("1") {
                 for index in 0..80 {
                     let mut session = workspace.sessions[0].clone();

@@ -8,6 +8,8 @@ use jcode_sdk::{
 #[path = "panel_login_status.rs"]
 mod connection;
 use connection::{ConnectionStatus, ConnectionStatuses};
+#[path = "panel_login_accounts.rs"]
+mod accounts;
 #[path = "panel_login_catalog.rs"]
 mod catalog;
 
@@ -32,6 +34,8 @@ pub(super) struct LoginState {
     status_task: Option<Task<()>>,
     search: Entity<PromptInput>,
     usage: Option<catalog::MethodUsage>,
+    accounts: accounts::AccountsData,
+    accounts_task: Option<Task<()>>,
 }
 
 impl Drop for LoginState {
@@ -156,6 +160,8 @@ impl Panel {
             status_task: None,
             search,
             usage: None,
+            accounts: accounts::AccountsData::default(),
+            accounts_task: None,
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
@@ -178,6 +184,26 @@ impl Panel {
         }
         state.status_loading = true;
         state.statuses = None;
+        let accounts_task = cx.background_executor().spawn(async move {
+            if offline {
+                accounts::offline_data()
+            } else {
+                accounts::AccountsData {
+                    accounts: crate::accounts::fetch(),
+                    logins: jcode_base::auth::account_pool::oauth_logins(),
+                    pool: jcode_base::auth::account_pool::AccountPool::load(),
+                }
+            }
+        });
+        state.accounts_task = Some(cx.spawn(async move |this, cx| {
+            let data = accounts_task.await;
+            let _ = this.update(cx, |panel, cx| {
+                if let Some(state) = panel.login.as_mut() {
+                    state.accounts = data;
+                    cx.notify();
+                }
+            });
+        }));
         let provider_ids: Vec<_> = state
             .providers
             .iter()
@@ -262,6 +288,17 @@ impl Panel {
     }
 
     fn select_login_provider(&mut self, provider: LoginProvider, cx: &mut Context<Self>) {
+        self.select_login_provider_for(provider, None, cx)
+    }
+
+    /// Sign in to `provider`. `account` names an OAuth login to refresh, or an
+    /// unknown label to add another login next to the existing ones.
+    fn select_login_provider_for(
+        &mut self,
+        provider: LoginProvider,
+        account: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.login_is_remote() {
             return;
         }
@@ -297,7 +334,7 @@ impl Panel {
             }
             state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
         } else {
-            match state.client.begin(provider.id, None) {
+            match state.client.begin(provider.id, account.as_deref()) {
                 Ok(flow) => {
                     state.flow = Some(flow.clone());
                     self.run_login_task(
@@ -808,68 +845,8 @@ impl Panel {
                         .child("No accounts match your search."),
                 );
             }
-            for provider in &providers {
-                let provider = provider.clone();
-                let id = format!("login-provider-{}", provider.id);
-                let status = connection::status_for(
-                    state.statuses.as_ref(),
-                    provider.id,
-                    state.status_loading,
-                );
-                let color = status.color();
-                let status_id = format!("login-status-{}", provider.id);
-                let label = provider.display_name;
-                body = body.child(
-                    div()
-                        .id(SharedString::from(id.clone()))
-                        .debug_selector(move || id.clone())
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.PANEL_BORDER)
-                        .bg(theme.HEADER_BG)
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(theme.ACCENT_DIM))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_login_provider(provider.clone(), cx)
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .flex_wrap()
-                                .child(login_method_icon(provider.method))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(80.))
-                                        .whitespace_normal()
-                                        .child(label),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(move || status_id.clone())
-                                        .flex_none()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .bg(color.opacity(0.12))
-                                        .text_size(px(11.))
-                                        .text_color(color)
-                                        .child(div().size(px(6.)).rounded_full().bg(color))
-                                        .child(status.label()),
-                                ),
-                        ),
-                );
-            }
+            let rows = self.render_account_catalog(&providers, cx);
+            body = body.children(rows);
         }
         Some(
             div()
@@ -972,7 +949,6 @@ fn login_method_icon(method: LoginMethod) -> gpui::AnyElement {
     };
     div()
         .debug_selector(move || format!("login-method-{icon}"))
-        .w(px(110.))
         .flex_none()
         .flex()
         .items_center()
@@ -1018,9 +994,9 @@ fn login_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::D
     div()
         .id(id)
         .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
+        .px_4()
+        .py_1p5()
+        .rounded_full()
         .bg(Theme::global().ACCENT_DIM)
         .text_color(Theme::global().TEXT)
         .cursor_pointer()
