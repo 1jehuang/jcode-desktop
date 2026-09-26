@@ -802,9 +802,11 @@ mod tests {
                 vcx.debug_bounds("panel-activity-label").is_none(),
                 "{terminal}"
             );
-            assert!(
+            let idle = panel.read_with(vcx, |panel, _| panel.status_line() == "Ready");
+            assert_eq!(
                 vcx.debug_bounds("panel-status-badge").is_some(),
-                "non-active status stays in footer"
+                !idle,
+                "non-active, non-idle status stays in footer ({terminal})"
             );
             panel.read_with(vcx, |panel, _| {
                 assert!(!panel.activity_active(), "{terminal}");

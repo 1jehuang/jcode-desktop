@@ -967,7 +967,8 @@ impl Panel {
     /// Footer status text. Active work is shown by the transcript activity
     /// indicator instead, so the footer does not duplicate it.
     pub(super) fn render_voice_status(&self, status: String) -> Option<gpui::AnyElement> {
-        if self.activity_active() {
+        // Idle "Ready" is noise. Only surface states worth reading.
+        if self.activity_active() || status == "Ready" {
             return None;
         }
         Some(
@@ -1650,10 +1651,9 @@ mod tests {
                 assert!(icon.right() <= shortcut.left());
                 assert!(shortcut.right() <= button.right());
                 if phase == Phase::Idle {
-                    let status = vcx.debug_bounds("voice-ready-status").unwrap();
                     assert!(
-                        status.top() >= input.bottom(),
-                        "status sits in the bottom bar"
+                        vcx.debug_bounds("voice-ready-status").is_none(),
+                        "idle Ready status is hidden"
                     );
                 }
             }

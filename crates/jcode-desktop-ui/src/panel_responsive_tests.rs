@@ -102,12 +102,7 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             assert!(input.left() >= px(0.) && input.right() <= px(width));
             assert!(footer.bottom() <= px(height));
-            for selector in [
-                "panel-model",
-                "panel-login",
-                "panel-build",
-                "panel-status-badge",
-            ] {
+            for selector in ["panel-model", "panel-login", "panel-build"] {
                 let bounds = vcx.debug_bounds(selector).unwrap();
                 assert!(
                     bounds.left() >= footer.left() && bounds.right() <= footer.right(),

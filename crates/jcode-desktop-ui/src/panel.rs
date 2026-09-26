@@ -5382,7 +5382,7 @@ impl Render for Panel {
                             .gap_2()
                             .overflow_hidden()
                             .children(usage_meters)
-                            .child(self.render_image_pane_toggle(cx))
+                            .children(self.render_image_pane_toggle(cx))
                             .children(self.render_voice_status(status_line)),
                     )
             }))
