@@ -217,6 +217,15 @@ pub enum SessionOperation {
     SetSaved(bool, Option<String>),
     Rewind(usize),
     RewindUndo,
+    /// The user acted on an agent applet instance.
+    AppletAction {
+        instance: String,
+        action: jcode_applet_types::Action,
+        state: serde_json::Value,
+        source_key: Option<String>,
+    },
+    /// The user closed an agent applet instance.
+    CloseApplet(String),
 }
 
 enum SessionCommand {
@@ -1750,6 +1759,15 @@ fn session_worker_with_connector(
                             SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }
+                            SessionOperation::AppletAction {
+                                instance,
+                                action,
+                                state,
+                                source_key,
+                            } => client.applet_action(real_id, &instance, action, state, source_key),
+                            SessionOperation::CloseApplet(instance) => {
+                                client.close_applet(real_id, &instance)
+                            }
                             SessionOperation::Rename(title) => {
                                 client.rename_session(real_id, title)
                             }
@@ -1889,6 +1907,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
         | ApiEvent::SidePanelState { session_id, .. }
+        | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
@@ -1927,6 +1946,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
         | ApiEvent::SidePanelState { session_id, .. }
+        | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }

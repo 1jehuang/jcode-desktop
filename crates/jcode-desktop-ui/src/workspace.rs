@@ -12,6 +12,8 @@ pub(crate) mod applets;
 
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
+#[path = "workspace_applet_surfaces.rs"]
+mod applet_surfaces;
 
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
@@ -712,6 +714,14 @@ pub struct Workspace {
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
+    /// Latest applet toast and when it arrived.
+    applet_toast: Option<(String, Instant)>,
+    /// Applet ids whose consent prompt the user dismissed for this run.
+    applet_consent_dismissed: HashSet<String>,
+    /// Text selection scope for sidebar and overlay applet cards.
+    applet_text_selection: Option<Entity<crate::text_selection::TextSelection>>,
+    /// Sidebar applet section, rendered with window access before the sidebar.
+    sidebar_applets: Option<gpui::AnyElement>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -1018,6 +1028,10 @@ impl Workspace {
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
+            applet_toast: None,
+            applet_consent_dismissed: HashSet::new(),
+            applet_text_selection: None,
+            sidebar_applets: None,
             bridge,
             host,
             single_panel,
@@ -1360,6 +1374,10 @@ impl Workspace {
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
+            applet_toast: None,
+            applet_consent_dismissed: HashSet::new(),
+            applet_text_selection: None,
+            sidebar_applets: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -2131,6 +2149,12 @@ impl Workspace {
                 if let jcode_sdk::ApiEvent::SidePanelState { snapshot, .. } = &event {
                     return self.apply_side_panel(&session_id, snapshot, cx);
                 }
+                if let jcode_sdk::ApiEvent::AppletState { snapshot, .. } = &event {
+                    // Keyed by the panel's session id, which for remote
+                    // hosts is namespaced, so instances land in that panel.
+                    return crate::applet_runtime::get(cx).sync_agent(&session_id, snapshot);
+                }
+                self.forward_tool_call(&session_id, &event, cx);
                 if sidebar_edits::refresh_after(&event) {
                     self.bridge.send(Command::RefreshSessions);
                 }
@@ -5455,6 +5479,9 @@ impl Workspace {
             .overflow_hidden();
         list = list.flex().flex_col();
         list = list.child(self.render_sidebar_quick_actions(cx));
+        if let Some(applets) = self.sidebar_applets.take() {
+            list = list.child(applets);
+        }
         if let Some(form) = self.render_worktree_form(cx) {
             list = list.child(form);
         }
@@ -6880,9 +6907,11 @@ impl Workspace {
                         .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
                 ),
         );
+        let applet_settings = self.render_applet_settings(cx);
         settings
             .child(self.render_account_settings(cx))
             .child(self.render_sound_settings(cx))
+            .children(applet_settings)
             .child(
                 div()
                     .id("settings-machines")
@@ -7763,6 +7792,7 @@ impl Render for Workspace {
         if self.single_panel {
             return self.render_single_panel(window, cx);
         }
+        self.sidebar_applets = self.render_sidebar_applets(window, cx);
         self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar
             && self.layout_mode == crate::config::LayoutMode::Normal
@@ -8159,7 +8189,10 @@ impl Render for Workspace {
             })
             .when(self.show_beta_notice, |root| {
                 root.child(self.render_beta_notice(window, cx))
-            });
+            })
+            .children(self.render_applet_overlays(window, cx))
+            .children(self.render_applet_consent(cx))
+            .children(self.render_applet_toast(cx));
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
         let action_capture_pending = self

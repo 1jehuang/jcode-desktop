@@ -4,6 +4,7 @@ mod accounts;
 mod ack;
 mod applet_host;
 mod applet_runtime;
+mod applet_surface;
 mod applet_view;
 mod build_info;
 mod changelog;

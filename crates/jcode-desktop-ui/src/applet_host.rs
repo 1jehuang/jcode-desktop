@@ -9,14 +9,34 @@
 //! (`Inline` anchored to a call id) among panels, sidebar sections, overlays,
 //! composer strips, and inline cards anchored to messages or the transcript end.
 use jcode_applet_types::{
-    HostMessage, Instance, Limits, Manifest, Placement, ProviderMessage, apply_patch,
+    Capability, HostMessage, Instance, Limits, Manifest, Placement, ProviderMessage, apply_patch,
+    manifest::{Launcher, Trigger},
     placement::{Anchor, Lifetime, Scope},
     validate::{validate_document, validate_manifest},
     view::{Action, host_action},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// The user's capability decisions, keyed by applet id. An applet may use a
+/// capability only when its manifest declares it AND the user granted it.
+/// Recorded once per applet and revocable from settings.
+pub(crate) type Grants = BTreeMap<String, BTreeSet<Capability>>;
+
+/// Human wording for a capability in consent prompts and settings.
+pub(crate) fn capability_label(capability: Capability) -> &'static str {
+    match capability {
+        Capability::OpenUrl => "open links",
+        Capability::Clipboard => "copy to the clipboard",
+        Capability::StartChat => "start new chats",
+        Capability::SendPrompt => "send prompts to sessions",
+        Capability::ReadFiles => "read local files",
+        Capability::RemoteImages => "load remote images",
+        Capability::Notifications => "show notifications",
+        Capability::Html => "run sandboxed web content",
+    }
+}
 
 /// What the host must do after the core accepts an action.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,8 +71,7 @@ pub(crate) struct Mounted {
 
 /// Persisted instances. The runtime is an App global, so Ctrl+R keeps it
 /// without a snapshot. This is the format for `persistent` instances across
-/// app restarts, which the workspace recovery file will carry next.
-#[allow(dead_code)]
+/// app restarts, written to `~/.jcode/applets/instances.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct HostSnapshot {
     pub manifests: Vec<Manifest>,
@@ -66,6 +85,10 @@ pub(crate) struct AppletHost {
     limits: Limits,
     /// Messages for providers, drained by the transport.
     outbox: Vec<(String, HostMessage)>,
+    /// Built-in applets (showcase, agent) whose capabilities need no consent.
+    trusted: BTreeSet<String>,
+    /// Capability decisions. An applet absent here has not been asked yet.
+    grants: Grants,
 }
 
 impl AppletHost {
@@ -73,10 +96,216 @@ impl AppletHost {
         Self::default()
     }
 
-    // Placement queries used by transcript and sidebar hosts.
-    #[allow(dead_code)]
     pub fn manifest(&self, applet: &str) -> Option<&Manifest> {
         self.manifests.get(applet)
+    }
+
+    pub fn manifests(&self) -> impl Iterator<Item = &Manifest> {
+        self.manifests.values()
+    }
+
+    /// Treat an applet as built in: its declared capabilities need no consent.
+    pub fn trust(&mut self, applet: &str) {
+        self.trusted.insert(applet.to_owned());
+    }
+
+    pub fn grants(&self) -> &Grants {
+        &self.grants
+    }
+
+    pub fn set_grants(&mut self, grants: Grants) {
+        self.grants = grants;
+    }
+
+    /// Record the user's decision. Denying records an empty set, so the
+    /// prompt is not shown again until the applet asks for something new.
+    pub fn decide(&mut self, applet: &str, granted: BTreeSet<Capability>) {
+        self.grants.insert(applet.to_owned(), granted);
+    }
+
+    /// Forget every decision for an applet, revoking its capabilities.
+    pub fn revoke(&mut self, applet: &str) {
+        self.grants.remove(applet);
+    }
+
+    /// Whether an applet may use a capability right now.
+    pub fn allowed(&self, applet: &str, capability: Capability) -> bool {
+        let Some(manifest) = self.manifests.get(applet) else {
+            return false;
+        };
+        manifest.allows(capability)
+            && (self.trusted.contains(applet)
+                || self
+                    .grants
+                    .get(applet)
+                    .is_some_and(|granted| granted.contains(&capability)))
+    }
+
+    /// Effective capabilities of an applet, for the renderer.
+    pub fn effective(&self, applet: &str) -> Vec<Capability> {
+        self.manifests
+            .get(applet)
+            .map(|manifest| {
+                manifest
+                    .capabilities
+                    .iter()
+                    .copied()
+                    .filter(|capability| self.allowed(applet, *capability))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Applets that declared capabilities the user has not decided on yet,
+    /// with the undecided capabilities.
+    pub fn pending_consent(&self) -> Vec<(Manifest, Vec<Capability>)> {
+        self.manifests
+            .values()
+            .filter(|manifest| !self.trusted.contains(&manifest.id))
+            .filter_map(|manifest| {
+                let decided = self.grants.get(&manifest.id);
+                let asked: Vec<Capability> = manifest
+                    .capabilities
+                    .iter()
+                    .copied()
+                    .filter(|capability| {
+                        decided.is_none_or(|decided| !decided.contains(capability))
+                    })
+                    .collect();
+                // An applet that was already asked is only prompted again for
+                // capabilities it newly requests after the decision.
+                let fresh = match decided {
+                    None => asked,
+                    Some(_) => Vec::new(),
+                };
+                (!fresh.is_empty()).then(|| (manifest.clone(), fresh))
+            })
+            .collect()
+    }
+
+    /// Every launcher across registered applets: `(applet, index, launcher)`.
+    pub fn launchers(&self) -> Vec<(String, usize, Launcher)> {
+        self.manifests
+            .values()
+            .flat_map(|manifest| {
+                manifest
+                    .launchers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, launcher)| (manifest.id.clone(), index, launcher.clone()))
+            })
+            .collect()
+    }
+
+    /// Fire a launcher. A singleton launcher whose instance is still mounted
+    /// returns that instance for the caller to focus. Otherwise the provider
+    /// is asked to mount `instance` and `None` is returned.
+    pub fn launch(&mut self, applet: &str, index: usize) -> Option<String> {
+        let launcher = self.manifests.get(applet)?.launchers.get(index)?.clone();
+        let instance = format!("{applet}#launch{index}");
+        if launcher.singleton && self.instances.contains_key(&instance) {
+            return Some(instance);
+        }
+        self.outbox.push((
+            applet.to_owned(),
+            HostMessage::Launch {
+                applet: applet.to_owned(),
+                launcher: index,
+                instance,
+            },
+        ));
+        None
+    }
+
+    /// Launchers that mount automatically when their provider registers.
+    pub fn startup_launchers(&self, applet: &str) -> Vec<usize> {
+        self.manifests
+            .get(applet)
+            .map(|manifest| {
+                manifest
+                    .launchers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, launcher)| matches!(launcher.trigger, Trigger::Startup))
+                    .map(|(index, _)| index)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Applets whose manifest claims this tool call as a card.
+    pub fn tool_card_claims(&self, tool: &str, action: Option<&str>) -> Vec<String> {
+        self.manifests
+            .values()
+            .filter(|manifest| {
+                manifest
+                    .tool_cards
+                    .iter()
+                    .any(|claim| claim.matches(tool, action))
+            })
+            .map(|manifest| manifest.id.clone())
+            .collect()
+    }
+
+    /// Tell claiming providers that a tool call started or finished.
+    pub fn notify_tool_call(&mut self, message: HostMessage) -> usize {
+        let HostMessage::ToolCall { tool, input, .. } = &message else {
+            return 0;
+        };
+        let action = input.get("action").and_then(Value::as_str);
+        let claims = self.tool_card_claims(tool, action);
+        for applet in &claims {
+            self.outbox.push((applet.clone(), message.clone()));
+        }
+        claims.len()
+    }
+
+    /// Mount or replace an instance on behalf of a provider the host itself
+    /// speaks for (the agent), without echoing anything back to it.
+    pub fn upsert(&mut self, instance: Instance) -> Result<(), String> {
+        let manifest = self
+            .manifests
+            .get(&instance.applet)
+            .ok_or_else(|| format!("applet {} is not registered", instance.applet))?;
+        validate_document(&instance.document, manifest, &self.limits)
+            .map_err(|error| error.to_string())?;
+        let busy = self
+            .instances
+            .get(&instance.id)
+            .is_some_and(|mounted| mounted.busy);
+        self.instances.insert(
+            instance.id.clone(),
+            Mounted {
+                instance,
+                busy,
+                last_error: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove an instance without notifying its provider, because the
+    /// provider is the one that removed it.
+    pub fn remove_silently(&mut self, instance: &str) -> bool {
+        self.instances.remove(instance).is_some()
+    }
+
+    /// Visible inline, composer and sidebar instances for a session.
+    pub fn inline_for<'a>(&'a self, session_id: &'a str) -> impl Iterator<Item = &'a Mounted> + 'a {
+        self.instances.values().filter(move |mounted| {
+            matches!(&mounted.instance.placement,
+                Placement::Inline { session_id: s, .. } if s == session_id)
+        })
+    }
+
+    pub fn composer_for<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> impl Iterator<Item = &'a Mounted> + 'a {
+        self.instances.values().filter(move |mounted| {
+            matches!(&mounted.instance.placement,
+                Placement::Composer { session_id: s } if s == session_id)
+        })
     }
 
     pub fn instance(&self, id: &str) -> Option<&Mounted> {
@@ -98,8 +327,6 @@ impl AppletHost {
     }
 
     /// The inline instance that replaces a tool call's generic row.
-    // Placement queries used by transcript and sidebar hosts.
-    #[allow(dead_code)]
     pub fn tool_card(&self, session_id: &str, call_id: &str) -> Option<&Mounted> {
         self.instances.values().find(|mounted| {
             matches!(
@@ -334,7 +561,9 @@ impl AppletHost {
                 .to_owned()
         };
         use jcode_applet_types::Capability as C;
-        let allowed = |capability| manifest.allows(capability);
+        let _ = manifest;
+        let applet = mounted.instance.applet.clone();
+        let allowed = |capability| self.allowed(&applet, capability);
         let effect = match action.action.as_str() {
             host_action::OPEN_URL if allowed(C::OpenUrl) => {
                 let url = arg("url");
@@ -407,8 +636,6 @@ impl AppletHost {
     }
 
     /// Whether an instance is visible for the active workspace and session.
-    // Placement queries used by transcript and sidebar hosts.
-    #[allow(dead_code)]
     pub fn in_scope(mounted: &Mounted, dir: Option<&str>, session: Option<&str>) -> bool {
         match &mounted.instance.scope {
             Scope::Global => true,
@@ -419,7 +646,6 @@ impl AppletHost {
 
     /// Snapshot for hot reload (everything except ephemeral) or restart
     /// (persistent only).
-    #[allow(dead_code)]
     pub fn snapshot(&self, restart: bool) -> HostSnapshot {
         HostSnapshot {
             manifests: self.manifests.values().cloned().collect(),
@@ -438,7 +664,6 @@ impl AppletHost {
 
     /// Restore a snapshot, revalidating everything: a snapshot written by an
     /// older UI generation must not bypass validation.
-    #[allow(dead_code)]
     pub fn restore(&mut self, snapshot: HostSnapshot) -> usize {
         let mut dropped = 0;
         for manifest in snapshot.manifests {

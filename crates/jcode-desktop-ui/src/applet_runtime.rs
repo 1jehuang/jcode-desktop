@@ -58,10 +58,51 @@ pub(crate) struct Runtime {
     processes: RefCell<HashMap<String, Process>>,
     inbound_tx: mpsc::Sender<Inbound>,
     inbound_rx: RefCell<mpsc::Receiver<Inbound>>,
+    /// Host effects that need workspace access (new chats, prompts).
+    pub effects: RefCell<Vec<Effect>>,
     /// Toasts waiting to be shown by the workspace.
     pub toasts: RefCell<Vec<(String, jcode_applet_types::view::Tone)>>,
     /// Bumped on every visible change, so views know to re-render.
     pub generation: std::cell::Cell<u64>,
+    /// Actions on agent instances, for the workspace to forward to the SDK:
+    /// `(session_id, local instance id, message)`.
+    pub agent_outbox: RefCell<Vec<AgentOutbound>>,
+    /// Persistent instances were restored from disk once per process.
+    restored: std::cell::Cell<bool>,
+    /// Last persisted bytes, so unchanged state is not rewritten.
+    persisted: RefCell<Vec<u8>>,
+}
+
+/// A user intent on an agent-mounted instance, bound for the SDK.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AgentOutbound {
+    Action {
+        session_id: String,
+        instance: String,
+        action: jcode_applet_types::Action,
+        state: serde_json::Value,
+        source_key: Option<String>,
+    },
+    Close {
+        session_id: String,
+        instance: String,
+    },
+}
+
+/// Host-wide id of an agent instance: session ids are globally unique and
+/// agent instance ids are only unique within their session.
+pub(crate) fn agent_instance_id(session_id: &str, local: &str) -> String {
+    format!(
+        "{}@{session_id}/{local}",
+        jcode_applet_types::agent::APPLET_ID
+    )
+}
+
+/// Split a host-wide agent instance id into `(session_id, local id)`.
+pub(crate) fn split_agent_instance(id: &str) -> Option<(&str, &str)> {
+    id.strip_prefix(jcode_applet_types::agent::APPLET_ID)?
+        .strip_prefix('@')?
+        .rsplit_once('/')
 }
 
 impl Global for Runtime {}
@@ -69,14 +110,30 @@ impl Global for Runtime {}
 impl Default for Runtime {
     fn default() -> Self {
         let (inbound_tx, inbound_rx) = mpsc::channel();
+        let mut host = AppletHost::new();
+        host.trust(crate::workspace::applets::SHOWCASE_ID);
+        host.trust(jcode_applet_types::agent::APPLET_ID);
+        let _ = host.apply(
+            jcode_applet_types::agent::APPLET_ID,
+            ProviderMessage::Register {
+                manifest: jcode_applet_types::agent::manifest(),
+            },
+        );
+        if !cfg!(test) {
+            host.set_grants(load_grants());
+        }
         Self {
-            host: RefCell::new(AppletHost::new()),
+            host: RefCell::new(host),
             assets: RefCell::new(AssetCache::default()),
             processes: RefCell::new(HashMap::new()),
             inbound_tx,
             inbound_rx: RefCell::new(inbound_rx),
             toasts: RefCell::new(Vec::new()),
             generation: std::cell::Cell::new(0),
+            agent_outbox: RefCell::new(Vec::new()),
+            effects: RefCell::new(Vec::new()),
+            restored: std::cell::Cell::new(false),
+            persisted: RefCell::new(Vec::new()),
         }
     }
 }
@@ -106,10 +163,176 @@ impl Runtime {
         if let ProviderMessage::Toast { text, tone, .. } = &message {
             self.toasts.borrow_mut().push((text.clone(), *tone));
         }
+        let registering = matches!(message, ProviderMessage::Register { .. });
         let result = self.host.borrow_mut().apply(applet, message);
+        if registering && result.is_ok() {
+            let startup = self.host.borrow().startup_launchers(applet);
+            for index in startup {
+                let _ = self.host.borrow_mut().launch(applet, index);
+            }
+        }
         self.bump();
         self.flush();
         result
+    }
+
+    /// Replace one session's agent instances with the server's snapshot.
+    /// Unchanged revisions are left alone, so typed-but-unsent input and
+    /// scroll positions survive. Instances the snapshot omits are removed.
+    pub fn sync_agent(
+        &self,
+        session_id: &str,
+        snapshot: &jcode_applet_types::AgentApplets,
+    ) -> bool {
+        use jcode_applet_types::Placement;
+        let mut host = self.host.borrow_mut();
+        let prefix = agent_instance_id(session_id, "");
+        let mut keep = std::collections::HashSet::new();
+        let mut changed = false;
+        for instance in &snapshot.instances {
+            let id = agent_instance_id(session_id, &instance.id);
+            keep.insert(id.clone());
+            let mut next = instance.clone();
+            next.id = id.clone();
+            next.applet = jcode_applet_types::agent::APPLET_ID.to_owned();
+            // Placement session ids come from the server's view of the
+            // session. The Desktop panel may know it under a namespaced id
+            // (remote hosts), so the snapshot's session is authoritative.
+            next.placement = match next.placement {
+                Placement::Inline { anchor, .. } => Placement::Inline {
+                    session_id: session_id.to_owned(),
+                    anchor,
+                },
+                Placement::Composer { .. } => Placement::Composer {
+                    session_id: session_id.to_owned(),
+                },
+                other => other,
+            };
+            next.scope = jcode_applet_types::Scope::Session {
+                session_id: session_id.to_owned(),
+            };
+            let same = host.instance(&id).is_some_and(|mounted| {
+                mounted.instance.document.revision == next.document.revision
+                    && mounted.instance.placement == next.placement
+            });
+            if same {
+                continue;
+            }
+            match host.upsert(next) {
+                Ok(()) => changed = true,
+                Err(error) => host.mark_error(&id, error),
+            }
+        }
+        let stale: Vec<String> = host
+            .instances()
+            .filter(|mounted| mounted.instance.id.starts_with(&prefix))
+            .map(|mounted| mounted.instance.id.clone())
+            .filter(|id| !keep.contains(id))
+            .collect();
+        for id in stale {
+            changed |= host.remove_silently(&id);
+        }
+        drop(host);
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    /// Restore persistent instances from the last run, once per process.
+    pub fn restore_persistent(&self) {
+        if self.restored.replace(true) || cfg!(test) {
+            return;
+        }
+        let Some(path) = applets_dir().map(|dir| dir.join("instances.json")) else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(snapshot) = serde_json::from_str(&text) else {
+            return;
+        };
+        let dropped = self.host.borrow_mut().restore(snapshot);
+        if dropped > 0 {
+            eprintln!("jcode desktop: dropped {dropped} invalid persisted applet instances");
+        }
+        self.bump();
+    }
+
+    /// Write persistent instances for the next run. Agent instances are
+    /// owned by the server and restored through session attachment.
+    pub fn persist(&self) {
+        if cfg!(test) || crate::harness::screenshot_mode() {
+            return;
+        }
+        let Some(dir) = applets_dir() else { return };
+        let mut snapshot = self.host.borrow().snapshot(true);
+        snapshot
+            .instances
+            .retain(|mounted| mounted.instance.applet != jcode_applet_types::agent::APPLET_ID);
+        snapshot
+            .manifests
+            .retain(|manifest| manifest.id != jcode_applet_types::agent::APPLET_ID);
+        let Ok(json) = serde_json::to_vec_pretty(&snapshot) else {
+            return;
+        };
+        if *self.persisted.borrow() == json {
+            return;
+        }
+        let _ = std::fs::create_dir_all(&dir);
+        if std::fs::write(dir.join("instances.json"), &json).is_ok() {
+            *self.persisted.borrow_mut() = json;
+        }
+    }
+
+    /// Record a capability decision and persist every decision.
+    pub fn decide(
+        &self,
+        applet: &str,
+        granted: std::collections::BTreeSet<jcode_applet_types::Capability>,
+    ) {
+        self.host.borrow_mut().decide(applet, granted);
+        self.save_grants();
+        self.bump();
+    }
+
+    pub fn revoke(&self, applet: &str) {
+        self.host.borrow_mut().revoke(applet);
+        self.save_grants();
+        self.bump();
+    }
+
+    fn save_grants(&self) {
+        if cfg!(test) {
+            return;
+        }
+        let Some(dir) = applets_dir() else { return };
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(json) = serde_json::to_vec_pretty(self.host.borrow().grants()) {
+            let _ = std::fs::write(dir.join("grants.json"), json);
+        }
+    }
+
+    /// Fire a launcher, starting its local provider first if needed.
+    /// Returns an already-mounted singleton instance to focus.
+    pub fn launch(&self, applet: &str, index: usize) -> Option<String> {
+        if let Some(dir) = applets_dir()
+            && let Some(local) = discover(&dir).into_iter().find(|a| a.id == applet)
+            && let Err(error) = self.start(&local)
+        {
+            eprintln!("jcode desktop: {error}");
+        }
+        let focus = self.host.borrow_mut().launch(applet, index);
+        self.flush();
+        focus
+    }
+
+    /// Forward a transcript tool call to providers whose manifest claims it.
+    pub fn notify_tool_call(&self, message: HostMessage) {
+        if self.host.borrow_mut().notify_tool_call(message) > 0 {
+            self.flush();
+        }
     }
 
     /// Drain provider output and deliver host messages. Returns whether
@@ -157,7 +380,41 @@ impl Runtime {
 
     fn flush(&self) {
         for (applet, message) in self.host.borrow_mut().drain_outbox() {
-            self.send(&applet, &message);
+            if applet == jcode_applet_types::agent::APPLET_ID {
+                self.route_agent(message);
+            } else {
+                self.send(&applet, &message);
+            }
+        }
+    }
+
+    /// The agent is not a process: its intents travel to the server through
+    /// the workspace's SDK bridge.
+    fn route_agent(&self, message: HostMessage) {
+        let outbound = match message {
+            HostMessage::Action {
+                instance,
+                action,
+                state,
+                source_key,
+                ..
+            } => split_agent_instance(&instance).map(|(session_id, local)| AgentOutbound::Action {
+                session_id: session_id.to_owned(),
+                instance: local.to_owned(),
+                action,
+                state,
+                source_key,
+            }),
+            HostMessage::Closed { instance } => {
+                split_agent_instance(&instance).map(|(session_id, local)| AgentOutbound::Close {
+                    session_id: session_id.to_owned(),
+                    instance: local.to_owned(),
+                })
+            }
+            _ => None,
+        };
+        if let Some(outbound) = outbound {
+            self.agent_outbox.borrow_mut().push(outbound);
         }
     }
 
@@ -324,6 +581,13 @@ pub(crate) fn discover(root: &Path) -> Vec<LocalApplet> {
     applets
 }
 
+fn load_grants() -> crate::applet_host::Grants {
+    applets_dir()
+        .and_then(|dir| std::fs::read_to_string(dir.join("grants.json")).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
 pub(crate) fn applets_dir() -> Option<PathBuf> {
     std::env::var_os("JCODE_HOME")
         .map(PathBuf::from)
@@ -392,5 +656,201 @@ for line in sys.stdin:
             .title
             == "Got hi")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bundled GitHub applet: launch, list, open a PR, run a write action.
+    /// A fake `gh` on PATH stands in for GitHub, so this runs offline.
+    #[test]
+    fn bundled_github_applet_renders_valid_documents() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("jcode-gh-applet-{}", std::process::id()));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = root.join("gh.log");
+        let fake_gh = format!(
+            r#"#!/usr/bin/env python3
+import json, sys
+open({log:?}, "a").write(" ".join(sys.argv[1:]) + "\n")
+args = sys.argv[1:]
+pr = "https://github.com/acme/app/pull/7"
+if args[:2] == ["search", "prs"]:
+    print(json.dumps([{{"number": 7, "title": "Add pills", "url": pr, "isDraft": True,
+        "repository": {{"nameWithOwner": "acme/app"}}, "author": {{"login": "ana"}},
+        "updatedAt": "2026-01-01T00:00:00Z", "labels": [{{"name": "ui"}}], "commentsCount": 2}}]))
+elif args[:2] == ["search", "issues"]:
+    print("[]")
+elif args[:2] == ["pr", "view"]:
+    print(json.dumps({{"number": 7, "title": "Add pills", "url": pr, "state": "OPEN",
+        "isDraft": False, "author": {{"login": "ana"}}, "body": "**Hi**",
+        "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z",
+        "baseRefName": "main", "headRefName": "pills", "additions": 3, "deletions": 1,
+        "changedFiles": 1, "reviewDecision": "REVIEW_REQUIRED", "mergeable": "MERGEABLE",
+        "statusCheckRollup": [{{"conclusion": "FAILURE"}}, {{"conclusion": "SUCCESS"}}],
+        "labels": [], "comments": [{{"author": {{"login": "bo"}}, "body": "lgtm",
+        "createdAt": "2026-01-02T00:00:00Z"}}], "reviewRequests": [], "assignees": []}}))
+elif args[:2] == ["pr", "comment"]:
+    pass
+elif args[:2] == ["api", "user"]:
+    print("me")
+else:
+    sys.exit("unexpected gh call")
+"#
+        );
+        std::fs::write(bin.join("gh"), fake_gh).unwrap();
+        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../applets/github");
+        let mut applet = discover(dir.parent().unwrap())
+            .into_iter()
+            .find(|a| a.id == "github")
+            .expect("bundled github applet");
+        assert!(applet.autostart);
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        applet.env.insert("PATH".into(), path);
+
+        let runtime = Runtime::default();
+        runtime.start(&applet).unwrap();
+        let wait = |what: &str, check: &dyn Fn(&Runtime) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while std::time::Instant::now() < deadline {
+                runtime.pump();
+                if check(&runtime) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("timed out waiting for {what}");
+        };
+        wait("register", &|r| {
+            r.host.borrow().manifest("github").is_some()
+        });
+        let sidebar = runtime
+            .host
+            .borrow()
+            .launchers()
+            .into_iter()
+            .position(|(applet, _, l)| {
+                applet == "github"
+                    && matches!(l.trigger, jcode_applet_types::manifest::Trigger::Sidebar)
+            })
+            .expect("sidebar launcher");
+        assert_eq!(runtime.launch("github", sidebar), None);
+        let instance = format!("github#launch{sidebar}");
+        let doc = |r: &Runtime| {
+            r.host
+                .borrow()
+                .instance(&instance)
+                .map(|m| serde_json::to_string(&m.instance.document).unwrap())
+                .unwrap_or_default()
+        };
+        wait("inbox rows", &|r| doc(r).contains("acme/app#7"));
+        assert!(doc(&runtime).contains("Review requested 1"));
+
+        let open = jcode_applet_types::view::Action {
+            action: "open".into(),
+            args: json!({"url": "https://github.com/acme/app/pull/7"}),
+        };
+        runtime.dispatch(&instance, &open, None);
+        wait("pr detail", &|r| doc(r).contains("1 failing"));
+        let detail = doc(&runtime);
+        for expected in [
+            "pills → main",
+            "lgtm",
+            "Ask Jcode",
+            "host.start_chat",
+            "review required",
+            "\"Approve\"",
+            "ask_close",
+        ] {
+            assert!(
+                detail.contains(expected),
+                "detail lacks {expected}: {detail}"
+            );
+        }
+
+        runtime.set_state(&instance, "comment", json!("Looks good"));
+        let comment = jcode_applet_types::view::Action {
+            action: "comment".into(),
+            args: json!({"url": "https://github.com/acme/app/pull/7"}),
+        };
+        runtime.dispatch(&instance, &comment, None);
+        wait("comment posted", &|_| {
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("pr comment https://github.com/acme/app/pull/7 --body Looks good")
+        });
+        assert!(
+            runtime
+                .host
+                .borrow()
+                .instance(&instance)
+                .is_some_and(|m| m.last_error.is_none()),
+            "provider documents must validate"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn snapshot(revision: u64, ids: &[&str]) -> jcode_applet_types::AgentApplets {
+        serde_json::from_value(json!({"instances": ids.iter().map(|id| json!({
+            "id": id,
+            "applet": "jcode.agent",
+            "placement": {"kind": "inline", "session_id": "server-side", "anchor": {"kind": "tool_call", "call_id": "c1"}},
+            "document": {"revision": revision, "title": "Pick", "state": {"q": ""},
+                "view": {"type": "button", "label": "Go", "on_press": {"action": "go"}}}
+        })).collect::<Vec<_>>()}))
+        .unwrap()
+    }
+
+    #[test]
+    fn agent_snapshots_sync_namespaced_and_actions_route_to_the_sdk() {
+        let runtime = Runtime::default();
+        assert!(runtime.sync_agent("sess", &snapshot(1, &["a", "b"])));
+        let id = agent_instance_id("sess", "a");
+        assert_eq!(split_agent_instance(&id), Some(("sess", "a")));
+        {
+            let host = runtime.host.borrow();
+            let mounted = host.instance(&id).unwrap();
+            // The panel's session id is authoritative for placement.
+            assert!(host.tool_card("sess", "c1").is_some());
+            assert!(matches!(&mounted.instance.scope,
+                jcode_applet_types::Scope::Session { session_id } if session_id == "sess"));
+        }
+        // Local state survives an unchanged revision.
+        runtime.set_state(&id, "q", json!("typed"));
+        assert!(!runtime.sync_agent("sess", &snapshot(1, &["a", "b"])));
+        assert_eq!(runtime.host.borrow().state(&id, "q"), Some(&json!("typed")));
+
+        runtime.dispatch(&id, &jcode_applet_types::Action::new("go"), None);
+        let outbound = std::mem::take(&mut *runtime.agent_outbox.borrow_mut());
+        assert!(
+            matches!(&outbound[..], [AgentOutbound::Action { session_id, instance, state, .. }]
+            if session_id == "sess" && instance == "a" && state["q"] == "typed")
+        );
+
+        // Omitted instances disappear without echoing a close to the server.
+        assert!(runtime.sync_agent("sess", &snapshot(2, &["a"])));
+        assert!(
+            runtime
+                .host
+                .borrow()
+                .instance(&agent_instance_id("sess", "b"))
+                .is_none()
+        );
+        assert!(runtime.agent_outbox.borrow().is_empty());
+
+        // A user close is forwarded.
+        runtime.close(&id);
+        assert!(matches!(&runtime.agent_outbox.borrow()[..],
+            [AgentOutbound::Close { session_id, instance }] if session_id == "sess" && instance == "a"));
     }
 }

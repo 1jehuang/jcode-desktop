@@ -5,7 +5,7 @@
 //! moved between placements without losing state.
 use super::*;
 use crate::applet_host::Effect;
-use crate::applet_view::{self, RenderCx, ViewEvent};
+use crate::applet_view::{self, ViewEvent};
 use gpui::AnyElement;
 use jcode_applet_types::Placement;
 use std::rc::Rc;
@@ -86,42 +86,8 @@ impl Panel {
         let Some(instance) = self.applet.as_ref().map(|applet| applet.instance.clone()) else {
             return;
         };
-        let runtime = crate::applet_runtime::get(cx);
-        let effect = match event {
-            ViewEvent::Action { action, source_key } => {
-                runtime.dispatch(&instance, &action, source_key)
-            }
-            ViewEvent::SetState { key, value, then } => {
-                runtime.set_state(&instance, &key, value);
-                then.and_then(|action| runtime.dispatch(&instance, &action, None))
-            }
-        };
-        match effect {
-            Some(Effect::OpenUrl(url)) => cx.open_url(&url),
-            Some(Effect::Copy(text)) => {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
-            }
-            Some(Effect::StartChat { prompt }) => {
-                self.bridge.send(Command::CreateSession {
-                    working_dir: None,
-                    request_id: None,
-                });
-                if !prompt.is_empty() {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(prompt));
-                }
-            }
-            Some(Effect::SendPrompt { session_id, prompt }) if !session_id.is_empty() => {
-                self.bridge.send(Command::Send {
-                    session_id,
-                    content: prompt,
-                    images: Vec::new(),
-                });
-            }
-            Some(Effect::OpenFile(path)) => {
-                cx.open_with_system(std::path::Path::new(&path));
-            }
-            Some(Effect::Closed) => cx.emit(AppletPanelClosed),
-            _ => {}
+        if let Some(Effect::Closed) = crate::applet_surface::handle(&instance, event, cx) {
+            cx.emit(AppletPanelClosed);
         }
         cx.notify();
     }
@@ -161,31 +127,24 @@ impl Panel {
         if self.title.as_ref() != title {
             self.title = title.clone().into();
         }
-        let body: AnyElement = match &mounted {
-            Some(mounted) => {
-                let runtime = cx.global::<crate::applet_runtime::Runtime>();
-                let assets = std::mem::take(&mut *runtime.assets.borrow_mut());
-                let assets = std::cell::RefCell::new(assets);
-                let render_cx = RenderCx {
-                    scope: &instance_id,
-                    document: &mounted.instance.document,
-                    assets: &assets,
-                    selection: &selection,
-                    emit,
-                    compact: !matches!(mounted.instance.placement, Placement::Panel { .. }),
-                };
-                // The cache is moved out while rendering so the global is not
-                // borrowed across element construction, then moved back.
-                let element = applet_view::render(&render_cx, window, cx);
-                *crate::applet_runtime::get(cx).assets.borrow_mut() = assets.into_inner();
-                element
-            }
-            None => div()
+        let compact = mounted
+            .as_ref()
+            .is_some_and(|mounted| !matches!(mounted.instance.placement, Placement::Panel { .. }));
+        let body: AnyElement = crate::applet_surface::render_document(
+            &instance_id,
+            compact,
+            &selection,
+            emit,
+            window,
+            cx,
+        )
+        .unwrap_or_else(|| {
+            div()
                 .p_6()
                 .text_color(theme.TEXT_DIM)
                 .child("This applet is no longer running.")
-                .into_any_element(),
-        };
+                .into_any_element()
+        });
         let error = mounted
             .as_ref()
             .and_then(|mounted| mounted.last_error.clone());

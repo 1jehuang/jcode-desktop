@@ -44,6 +44,9 @@ pub(crate) struct RenderCx<'a> {
     pub emit: Emit,
     /// Compact placements (sidebar, overlay, inline) tighten spacing.
     pub compact: bool,
+    /// Capabilities the applet declared AND the user granted. Nodes that
+    /// need an ungranted capability render a placeholder instead.
+    pub granted: &'a [jcode_applet_types::Capability],
 }
 
 fn space(value: Space, compact: bool) -> Pixels {
@@ -748,6 +751,17 @@ fn node(
             }
             row.into_any_element()
         }
+        NodeKind::Html { .. } if !cx.granted.contains(&jcode_applet_types::Capability::Html) => {
+            div()
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .bg(theme.INLINE_CODE_BG)
+                .text_size(px(12.))
+                .text_color(theme.TEXT_DIM)
+                .child("Web content is blocked until you allow it for this applet.")
+                .into_any_element()
+        }
         NodeKind::Html { source, .. } => {
             crate::html_preview::HtmlPreview::new(source.clone(), stable_row(&key), 0)
                 .into_any_element()
@@ -907,8 +921,21 @@ fn image(
             .borrow_mut()
             .data_uri(uri)
             .map(crate::image_cache::source),
-        ImageSource::Path(path) => Some(gpui::ImageSource::from(std::path::PathBuf::from(path))),
-        ImageSource::Url(url) => Some(gpui::ImageSource::from(url.clone())),
+        ImageSource::Path(path)
+            if cx
+                .granted
+                .contains(&jcode_applet_types::Capability::ReadFiles) =>
+        {
+            Some(gpui::ImageSource::from(std::path::PathBuf::from(path)))
+        }
+        ImageSource::Url(url)
+            if cx
+                .granted
+                .contains(&jcode_applet_types::Capability::RemoteImages) =>
+        {
+            Some(gpui::ImageSource::from(url.clone()))
+        }
+        ImageSource::Path(_) | ImageSource::Url(_) => None,
     };
     let mut frame = div()
         .id(id(cx, path, node_ref))

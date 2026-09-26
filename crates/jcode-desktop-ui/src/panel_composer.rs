@@ -132,15 +132,55 @@ impl Panel {
             )
             .children(self.render_publish_button(cx))
             .child(self.render_voice_tab(cx));
+        let strips = self.render_composer_applets(window, cx);
         div()
             .debug_selector(|| "composer".into())
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
+            .children(strips)
             .child(pills)
             .child(self.render_voice_input_slot(cx))
             .into_any_element()
+    }
+
+    /// Composer-placed applet instances for this session, as a compact strip
+    /// directly above the pills (suggestions, pickers).
+    fn render_composer_applets(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let instances: Vec<String> = crate::applet_runtime::get(cx)
+            .host
+            .borrow()
+            .composer_for(&self.session_id)
+            .map(|mounted| mounted.instance.id.clone())
+            .collect();
+        if instances.is_empty() {
+            return None;
+        }
+        let selection = self.applet_selection.clone();
+        let cards: Vec<gpui::AnyElement> = instances
+            .iter()
+            .filter_map(|instance| {
+                crate::applet_surface::card(instance, false, &selection, window, cx)
+            })
+            .collect();
+        Some(
+            div()
+                .debug_selector(|| "composer-applets".into())
+                .w_full()
+                .min_w_0()
+                .px_1()
+                .mb(px(PILL_GAP))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(cards)
+                .into_any_element(),
+        )
     }
 }
 

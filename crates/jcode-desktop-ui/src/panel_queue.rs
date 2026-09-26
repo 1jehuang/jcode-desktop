@@ -28,7 +28,7 @@ impl Panel {
         self.prompt_queue.auto_poke = Default::default();
     }
 
-    pub(super) fn submit_or_queue(
+    pub(crate) fn submit_or_queue(
         &mut self,
         content: String,
         images: Vec<(String, String)>,

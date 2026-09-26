@@ -164,6 +164,7 @@ impl Workspace {
     /// Start autostart providers from `~/.jcode/applets`. Safe to call on
     /// every activation: running providers are left alone.
     pub(crate) fn start_local_applets(&mut self, cx: &mut Context<Self>) {
+        crate::applet_runtime::get(cx).restore_persistent();
         if crate::harness::screenshot_mode() || cfg!(test) {
             return;
         }
@@ -182,6 +183,158 @@ impl Workspace {
 }
 
 pub(crate) const SHOWCASE_ID: &str = "jcode.showcase";
+
+impl Workspace {
+    /// Tell providers whose manifests claim a tool call that it started or
+    /// finished, so they can mount a card anchored to it.
+    pub(super) fn forward_tool_call(
+        &mut self,
+        session_id: &str,
+        event: &jcode_sdk::ApiEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use jcode_sdk::ApiEvent;
+        let (call_id, tool, output, error, done) = match event {
+            ApiEvent::ToolExec { call_id, name, .. } => (call_id, name, None, None, false),
+            ApiEvent::ToolDone {
+                call_id,
+                name,
+                output,
+                error,
+                ..
+            } => (call_id, name, Some(output.clone()), error.clone(), true),
+            _ => return,
+        };
+        let claimed = crate::applet_runtime::get(cx)
+            .host
+            .borrow()
+            .manifests()
+            .any(|manifest| manifest.tool_cards.iter().any(|claim| &claim.tool == tool));
+        if !claimed {
+            return;
+        }
+        let input = self
+            .slots
+            .iter()
+            .map(|slot| slot.panel.read(cx))
+            .find(|panel| panel.session_id == session_id)
+            .and_then(|panel| panel.tool_input(call_id))
+            .and_then(|input| serde_json::from_str(input).ok())
+            .unwrap_or(serde_json::Value::Null);
+        crate::applet_runtime::get(cx).notify_tool_call(
+            jcode_applet_types::HostMessage::ToolCall {
+                session_id: session_id.to_owned(),
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                input,
+                output,
+                error,
+                done,
+            },
+        );
+    }
+
+    /// Deliver queued applet work that needs the workspace: agent intents
+    /// to the SDK, new chats and prompts, and toasts.
+    pub(crate) fn drain_applet_work(&mut self, cx: &mut Context<Self>) {
+        let runtime = crate::applet_runtime::get(cx);
+        let outbound = std::mem::take(&mut *runtime.agent_outbox.borrow_mut());
+        let effects = std::mem::take(&mut *runtime.effects.borrow_mut());
+        let toasts = std::mem::take(&mut *runtime.toasts.borrow_mut());
+        for message in outbound {
+            let (session_id, operation) = match message {
+                crate::applet_runtime::AgentOutbound::Action {
+                    session_id,
+                    instance,
+                    action,
+                    state,
+                    source_key,
+                } => (
+                    session_id,
+                    harness::SessionOperation::AppletAction {
+                        instance,
+                        action,
+                        state,
+                        source_key,
+                    },
+                ),
+                crate::applet_runtime::AgentOutbound::Close {
+                    session_id,
+                    instance,
+                } => (session_id, harness::SessionOperation::CloseApplet(instance)),
+            };
+            self.bridge.send(Command::SessionOperation {
+                session_id,
+                operation,
+            });
+        }
+        for effect in effects {
+            match effect {
+                crate::applet_host::Effect::StartChat { prompt } => {
+                    self.open_new_session(cx);
+                    if !prompt.trim().is_empty()
+                        && let Some(slot) = self.slots.get(self.active)
+                    {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.submit_or_queue(prompt, Vec::new(), true, cx)
+                        });
+                    }
+                }
+                crate::applet_host::Effect::SendPrompt { session_id, prompt }
+                    if !prompt.trim().is_empty() =>
+                {
+                    let target = if session_id.is_empty() {
+                        self.slots
+                            .get(self.active)
+                            .filter(|slot| slot.panel.read(cx).supports_voice())
+                    } else {
+                        self.slots
+                            .iter()
+                            .find(|slot| slot.panel.read(cx).session_id == session_id)
+                    };
+                    match target {
+                        Some(slot) => slot.panel.update(cx, |panel, cx| {
+                            panel.submit_or_queue(prompt, Vec::new(), true, cx)
+                        }),
+                        None if !session_id.is_empty() => self.bridge.send(Command::Send {
+                            session_id,
+                            content: prompt,
+                            images: Vec::new(),
+                        }),
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (text, _) in toasts {
+            self.applet_toast = Some((text, Instant::now()));
+        }
+        cx.notify();
+    }
+
+    /// Fire a manifest launcher. A running singleton is focused instead.
+    pub(crate) fn fire_applet_launcher(
+        &mut self,
+        applet: &str,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = crate::applet_runtime::get(cx).launch(applet, index);
+        if let Some(instance) = focus {
+            let placement = crate::applet_runtime::get(cx)
+                .host
+                .borrow()
+                .instance(&instance)
+                .map(|mounted| mounted.instance.placement.clone());
+            if matches!(placement, Some(Placement::Panel { .. })) {
+                self.open_applet_instance(&instance, window, cx);
+            }
+        }
+        cx.notify();
+    }
+}
 
 /// Called on every UI activation (including Ctrl+R). Starts autostart local
 /// providers and keeps panel-placed instances visible as providers mount them.
@@ -206,10 +359,23 @@ pub(crate) fn install(workspace: &Entity<Workspace>, window: &mut Window, app: &
                     let runtime = crate::applet_runtime::get(app);
                     runtime.pump();
                     let generation = runtime.generation.get();
+                    let pending = !runtime.agent_outbox.borrow().is_empty()
+                        || !runtime.effects.borrow().is_empty()
+                        || !runtime.toasts.borrow().is_empty();
+                    if pending {
+                        workspace.update(app, |workspace, cx| workspace.drain_applet_work(cx));
+                    }
                     if generation != seen {
                         seen = generation;
+                        crate::applet_runtime::get(app).persist();
                         workspace.update(app, |workspace, cx| {
-                            workspace.sync_applet_panels(window, cx)
+                            workspace.sync_applet_panels(window, cx);
+                            // Transcript, sidebar and overlay placements
+                            // render from the runtime, so repaint them.
+                            for slot in &workspace.slots {
+                                slot.panel.update(cx, |_, cx| cx.notify());
+                            }
+                            cx.notify();
                         });
                     }
                 });

@@ -184,6 +184,9 @@ fn actions_route_to_provider_with_state_and_host_actions_need_capabilities() {
         action: "host.open_url".into(),
         args: json!({"url": "https://x.dev"}),
     };
+    // Declaring a capability is not enough: the user must grant it.
+    assert_eq!(host.dispatch("x", &open, None), None);
+    host.decide("demo", [Capability::OpenUrl].into_iter().collect());
     assert_eq!(
         host.dispatch("x", &open, None),
         Some(Effect::OpenUrl("https://x.dev".into()))
@@ -278,4 +281,121 @@ fn asset_cache_sniffs_bytes_and_rejects_mislabeled_images() {
     let svg = base64::engine::general_purpose::STANDARD
         .encode("<svg xmlns='http://www.w3.org/2000/svg'/>");
     assert!(fresh.image("image/svg+xml", &svg).is_some());
+}
+
+#[test]
+fn consent_is_asked_once_and_revocation_is_immediate() {
+    let mut host = AppletHost::new();
+    register(&mut host, &[Capability::OpenUrl, Capability::Clipboard]);
+    mount(&mut host, "x", json!({"kind": "sidebar"}), "session").unwrap();
+    let pending = host.pending_consent();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1.len(), 2);
+    host.decide("demo", [Capability::OpenUrl].into_iter().collect());
+    assert!(
+        host.pending_consent().is_empty(),
+        "a decision is not re-asked"
+    );
+    assert!(host.allowed("demo", Capability::OpenUrl));
+    assert!(!host.allowed("demo", Capability::Clipboard));
+    assert_eq!(host.effective("demo"), vec![Capability::OpenUrl]);
+    host.revoke("demo");
+    assert!(!host.allowed("demo", Capability::OpenUrl));
+    assert_eq!(host.pending_consent().len(), 1);
+    host.trust("demo");
+    assert!(host.allowed("demo", Capability::Clipboard));
+    assert!(host.pending_consent().is_empty());
+}
+
+#[test]
+fn launchers_mount_through_the_provider_and_singletons_focus() {
+    let mut host = AppletHost::new();
+    host.apply(
+        "demo",
+        ProviderMessage::Register {
+            manifest: serde_json::from_value(json!({
+                "schema": jcode_applet_types::SCHEMA,
+                "id": "demo",
+                "title": "Demo",
+                "launchers": [
+                    {"trigger": "sidebar", "placement": {"kind": "panel"}},
+                    {"trigger": "startup", "placement": {"kind": "overlay"}}
+                ],
+                "tool_cards": [{"tool": "weather", "actions": ["forecast"]}]
+            }))
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    assert_eq!(host.launchers().len(), 2);
+    assert_eq!(host.startup_launchers("demo"), vec![1]);
+    assert_eq!(host.launch("demo", 0), None);
+    let outbox = host.drain_outbox();
+    let Some((_, HostMessage::Launch { instance, .. })) = outbox.first() else {
+        panic!("expected launch");
+    };
+    assert_eq!(instance, "demo#launch0");
+    mount(
+        &mut host,
+        "demo#launch0",
+        json!({"kind": "panel"}),
+        "session",
+    )
+    .unwrap();
+    assert_eq!(host.launch("demo", 0).as_deref(), Some("demo#launch0"));
+
+    assert_eq!(
+        host.tool_card_claims("weather", Some("forecast")),
+        vec!["demo"]
+    );
+    assert!(host.tool_card_claims("weather", Some("radar")).is_empty());
+    host.drain_outbox();
+    let sent = host.notify_tool_call(HostMessage::ToolCall {
+        session_id: "s".into(),
+        call_id: "c1".into(),
+        tool: "weather".into(),
+        input: json!({"action": "forecast"}),
+        output: None,
+        error: None,
+        done: false,
+    });
+    assert_eq!(sent, 1);
+    assert_eq!(host.drain_outbox().len(), 1);
+}
+
+#[test]
+fn session_placements_and_silent_removal() {
+    let mut host = AppletHost::new();
+    register(&mut host, &[]);
+    mount(
+        &mut host,
+        "card",
+        json!({"kind": "inline", "session_id": "s1", "anchor": {"kind": "tool_call", "call_id": "c9"}}),
+        "session",
+    )
+    .unwrap();
+    mount(
+        &mut host,
+        "end",
+        json!({"kind": "inline", "session_id": "s1", "anchor": {"kind": "end"}}),
+        "session",
+    )
+    .unwrap();
+    mount(
+        &mut host,
+        "strip",
+        json!({"kind": "composer", "session_id": "s1"}),
+        "session",
+    )
+    .unwrap();
+    assert_eq!(host.tool_card("s1", "c9").unwrap().instance.id, "card");
+    assert!(host.tool_card("s2", "c9").is_none());
+    assert_eq!(host.inline_for("s1").count(), 2);
+    assert_eq!(host.composer_for("s1").count(), 1);
+    host.drain_outbox();
+    assert!(host.remove_silently("end"));
+    assert!(
+        host.drain_outbox().is_empty(),
+        "no Closed echo to the provider"
+    );
 }

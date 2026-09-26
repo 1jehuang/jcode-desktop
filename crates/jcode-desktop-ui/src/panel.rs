@@ -161,6 +161,10 @@ pub enum Item {
     Todos(TodoCardPayload),
     Error(String),
     Stopped(stop_reason::StopNotice),
+    /// An applet instance placed in this transcript that is not anchored to
+    /// a tool call. Only ever a derived render row, never stored in `items`.
+    #[serde(skip)]
+    Applet(String),
 }
 
 #[derive(Clone)]
@@ -376,6 +380,15 @@ pub struct Panel {
     accepted_users: HashMap<usize, Instant>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
     arriving_tools: HashMap<String, Instant>,
+    /// Item count when each unanchored inline applet first appeared, so an
+    /// `end` card stays where it was mounted as the conversation continues.
+    applet_positions: HashMap<String, usize>,
+    /// Selection scope for transcript applet cards.
+    applet_selection: Entity<TextSelection>,
+    /// Applet runtime generation last reflected in transcript measurements.
+    applet_generation: (u64, usize),
+    /// Unanchored transcript applets as `(item position, instance)`, in order.
+    applet_rows: Vec<(usize, String)>,
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
@@ -964,6 +977,10 @@ impl Panel {
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
+            applet_positions: HashMap::new(),
+            applet_selection: cx.new(TextSelection::new),
+            applet_generation: (u64::MAX, 0),
+            applet_rows: Vec::new(),
             tool_started: HashMap::new(),
             tool_durations: HashMap::new(),
             terminal: None,
@@ -3310,6 +3327,16 @@ impl Panel {
         }
     }
 
+    /// Raw streamed input of a tool call in this transcript.
+    pub(crate) fn tool_input(&self, call_id: &str) -> Option<&str> {
+        self.items.iter().rev().find_map(|item| match item {
+            Item::Tool {
+                call_id: id, input, ..
+            } if id == call_id => Some(input.as_str()),
+            _ => None,
+        })
+    }
+
     fn find_tool(&mut self, call_id: &str) -> Option<&mut Item> {
         // The legacy harness protocol streams `tool_input` without an id. The
         // bridge preserves that fact as an empty call_id, so associate those
@@ -3527,11 +3554,70 @@ impl Panel {
             .into_any_element()
     }
 
+    /// Refresh transcript applet placement from the shared runtime. Cards
+    /// anchored to a tool call render in that call's row. Everything else
+    /// (`end`, `after_message`, and tool anchors whose call is not in this
+    /// transcript, such as batch subcalls) is pinned at the position where
+    /// it first appeared so it scrolls with the conversation.
+    fn sync_applet_rows(&mut self, cx: &mut Context<Self>) {
+        use jcode_applet_types::{Placement, placement::Anchor};
+        let runtime = crate::applet_runtime::get(cx);
+        let generation = runtime.generation.get();
+        let key = (generation, self.items.len());
+        if key == self.applet_generation {
+            return;
+        }
+        self.applet_generation = key;
+        let host = runtime.host.borrow();
+        let mut rows = Vec::new();
+        let mut seen = HashSet::new();
+        for mounted in host.inline_for(&self.session_id) {
+            let id = mounted.instance.id.clone();
+            if let Placement::Inline {
+                anchor: Anchor::ToolCall { call_id },
+                ..
+            } = &mounted.instance.placement
+                && self
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::Tool { call_id: c, .. } if c == call_id))
+            {
+                continue;
+            }
+            let position = *self
+                .applet_positions
+                .entry(id.clone())
+                .or_insert(self.items.len());
+            seen.insert(id.clone());
+            rows.push((position, id));
+        }
+        drop(host);
+        self.applet_positions.retain(|id, _| seen.contains(id));
+        rows.sort_by_key(|(position, _)| *position);
+        // Any card change (mount, patch, close) can change row heights.
+        self.transcript_measurements.dirty = true;
+        self.applet_rows = rows;
+    }
+
     fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
+        let mut applets = self.applet_rows.iter().enumerate().peekable();
+        let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
+            // Derived rows need indices that never collide with items or the
+            // live streaming sentinels at the top of the range.
+            index: usize::MAX / 2 + ordinal,
+            source: TranscriptRowSource::Owned(Box::new(Item::Applet(instance.clone()))),
+            role: None,
+            show_label: false,
+        };
 
         for (index, item) in self.items.iter().enumerate() {
+            while let Some((ordinal, (_, instance))) =
+                applets.next_if(|(_, (position, _))| *position <= index)
+            {
+                rows.push(applet_row(ordinal, instance));
+            }
             if matches!(item, Item::Todos(_))
                 || matches!(item, Item::Tool { name, .. } if name == "todo")
             {
@@ -3568,6 +3654,10 @@ impl Panel {
                 show_label: role.is_some() && role != previous_role,
             });
             previous_role = role.or(previous_role);
+        }
+
+        for (ordinal, (_, instance)) in applets {
+            rows.push(applet_row(ordinal, instance));
         }
 
         for (index, item) in [
@@ -3645,10 +3735,15 @@ impl Panel {
         index: usize,
         item: &Item,
         _show_avatar: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match item {
+            Item::Applet(instance) => {
+                let selection = self.applet_selection.clone();
+                crate::applet_surface::card(instance, true, &selection, window, cx)
+                    .unwrap_or_else(|| div().into_any_element())
+            }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
@@ -3812,6 +3907,26 @@ impl Panel {
                     .unwrap_or((0.0, 1.0, false));
                 if animating {
                     window.request_animation_frame();
+                }
+                let tool_card = crate::applet_runtime::get(cx)
+                    .host
+                    .borrow()
+                    .tool_card(&self.session_id, call_id)
+                    .map(|mounted| mounted.instance.id.clone());
+                if let Some(instance) = tool_card {
+                    let selection = self.applet_selection.clone();
+                    if let Some(card) =
+                        crate::applet_surface::card(&instance, true, &selection, window, cx)
+                    {
+                        return div()
+                            .id(("tool", index))
+                            .debug_selector(|| "tool-applet".into())
+                            .flex_none()
+                            .ml(px(offset))
+                            .opacity(opacity)
+                            .child(card)
+                            .into_any_element();
+                    }
                 }
                 if name == "todo"
                     && *done
@@ -4492,6 +4607,7 @@ impl Render for Panel {
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         self.tick_stream_reveal(window, cx);
+        self.sync_applet_rows(cx);
         let rows = Arc::new(self.transcript_render_rows());
         if let Some(document) = self.transcript_text_document.sync(
             &self.items,
@@ -5276,6 +5392,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::Applet(_)
         | Item::Error(_) => None,
     }
 }
