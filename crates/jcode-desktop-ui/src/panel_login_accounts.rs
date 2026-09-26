@@ -585,6 +585,34 @@ impl Panel {
                     .child(format!("{}", position + 1)),
             );
         }
+        if let Some(pooled) = pooled {
+            let toggle_id = format!("login-move-{key}");
+            let selector = toggle_id.clone();
+            let move_key = key.clone();
+            let visible = visible.clone();
+            element = element.child(
+                div()
+                    .id(SharedString::from(toggle_id))
+                    .debug_selector(move || selector.clone())
+                    .flex_none()
+                    .px_2p5()
+                    .py(px(3.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.PANEL_BORDER)
+                    .text_size(px(11.))
+                    .text_color(theme.TEXT_DIM)
+                    .whitespace_nowrap()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                    .child(if pooled { "Make manual" } else { "Auto-switch" })
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.place_account(&move_key, !pooled, None, &visible, cx)
+                    })),
+            );
+        }
         let label = row.label.clone();
         element = element.on_click(cx.listener(move |this, _, _, cx| {
             this.select_login_provider_for(provider, label.clone(), cx)
@@ -642,15 +670,23 @@ impl Panel {
             .child(
                 div()
                     .flex()
-                    .items_baseline()
-                    .gap_2()
+                    .flex_col()
+                    .gap(px(2.))
                     .px_2()
+                    .pb_1()
                     .child(
                         div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.TEXT)
-                            .child(title),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.TEXT)
+                                    .child(title),
+                            )
+                            .child(chip(rows.len().to_string(), theme.TEXT_DIM)),
                     )
                     .child(
                         div()
@@ -711,7 +747,7 @@ impl Panel {
             out.push(self.render_account_group(
                 "login-group-auto",
                 "Auto-switch",
-                "When an account runs out, Jcode moves to the next one from the same provider, in this order",
+                "Used automatically when another account runs out or fails, in this order. Drag to reorder.",
                 &groups.pooled,
                 true,
                 &visible,
@@ -720,7 +756,7 @@ impl Panel {
             out.push(self.render_account_group(
                 "login-group-manual",
                 "Manual",
-                "Used only when you pick them",
+                "Never switched to automatically. Used only when you pick it.",
                 &groups.manual,
                 false,
                 &visible,
@@ -925,6 +961,27 @@ mod tests {
             "login-provider-openai-openai-fox",
             "login-group-manual",
         );
+        assert!(!pooled(vcx).contains(&"openai:openai-fox".to_string()));
+        // The row pill moves an account back without dragging.
+        let pill = vcx
+            .debug_bounds("login-move-openai:openai-fox")
+            .unwrap()
+            .center();
+        vcx.simulate_click(pill, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(pooled(vcx).last().unwrap(), "openai:openai-fox");
+        assert!(panel.read_with(vcx, |panel, _| panel
+            .login
+            .as_ref()
+            .unwrap()
+            .provider
+            .is_none()));
+        let pill = vcx
+            .debug_bounds("login-move-openai:openai-fox")
+            .unwrap()
+            .center();
+        vcx.simulate_click(pill, gpui::Modifiers::default());
+        vcx.run_until_parked();
         assert!(!pooled(vcx).contains(&"openai:openai-fox".to_string()));
     }
 
