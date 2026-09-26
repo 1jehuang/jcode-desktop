@@ -22,6 +22,8 @@ from screenshot import isolated_env
 
 SESSION = "resume-fixture-alpha"
 TITLE = "Resume acceptance alpha"
+# Prefix only: the 800px single-panel row ellipsizes the beta title.
+BETA = "Resume acceptance b"
 
 
 def navigation(path):
@@ -192,7 +194,10 @@ def run_mode(binary, output, evidence, driver, single, report, plugin=None):
             time.sleep(1)
             if single:
                 state_check("resume-launch-opens-standalone-picker", picker)
-                capture(evidence / "single-panel-startup.png", ("Resume session", TITLE, "Resume acceptance beta"))
+                # Narrow rows ellipsize the beta title, so assert the rendered preview instead.
+                capture(evidence / "single-panel-startup.png",
+                        ("Resume session", TITLE, "Please recover the standalone conversation",
+                         "conversation preview"), ("Loading conversation",))
             key("Escape")
             time.sleep(.3)
             # The shortcut must open the same picker without consuming a draft.
@@ -223,7 +228,7 @@ def run_mode(binary, output, evidence, driver, single, report, plugin=None):
                 wait_generation(2)
                 state_check("reload-preserves-picker", picker)
             picker_png = output.with_name(output.stem + "-single-picker.png") if single else output
-            capture(picker_png, ("Resume session", TITLE, "Resume acceptance beta"))
+            capture(picker_png, ("Resume session", TITLE, BETA))
             type_text("Resume acceptance")
             capture(evidence / f"{name}-preview-alpha.png", ("Alpha conversation preview", "rendered with the chat panel"))
             key("Down")
@@ -238,13 +243,13 @@ def run_mode(binary, output, evidence, driver, single, report, plugin=None):
             key("Up")
             capture(evidence / f"{name}-preview-return.png", ("Alpha conversation preview", "rendered with the chat panel"), ("Beta conversation preview",))
             key("ctrl+3")
-            capture(evidence / f"{name}-saved.png", (TITLE,), ("Resume acceptance beta",))
+            capture(evidence / f"{name}-saved.png", (TITLE,), (BETA,))
             key("ctrl+1")
-            capture(evidence / f"{name}-all.png", (TITLE, "Resume acceptance beta"))
+            capture(evidence / f"{name}-all.png", (TITLE, BETA))
             key("ctrl+a")
             type_text(TITLE)
             # Assert filtering is visible, not just a hidden retained query.
-            capture(evidence / f"{name}-filtered.png", (TITLE,), ("Resume acceptance beta",))
+            capture(evidence / f"{name}-filtered.png", (TITLE,), (BETA,))
             key("Return")
             state_check("resumed-chat", resumed)
             resumed_png = output.with_name(output.stem + ("-single-panel.png" if single else "-resumed.png"))
