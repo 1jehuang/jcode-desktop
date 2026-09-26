@@ -129,6 +129,39 @@ impl Workspace {
                 .apply(SHOWCASE_ID, message)
                 .expect("showcase is valid");
         }
+        // Agent placements in the fixture chat: an end-of-transcript card, a
+        // composer strip, and a corner overlay.
+        let agent: jcode_applet_types::AgentApplets = serde_json::from_value(serde_json::json!({
+            "instances": [
+                {"id": "deploy", "applet": "jcode.agent",
+                 "placement": {"kind": "inline", "session_id": "screenshot-fixture", "anchor": {"kind": "end"}},
+                 "document": {"revision": 1, "title": "Choose a deploy target", "state": {"env": "staging"},
+                  "view": {"type": "stack", "gap": "sm", "children": [
+                    {"type": "text", "text": "Where should this build go?"},
+                    {"type": "select", "bind": "env", "options": [
+                        {"value": "staging", "label": "Staging"}, {"value": "prod", "label": "Production"}]},
+                    {"type": "stack", "direction": "horizontal", "gap": "sm", "children": [
+                        {"type": "button", "label": "Deploy", "variant": "primary", "on_press": {"action": "deploy"}},
+                        {"type": "button", "label": "Cancel", "variant": "secondary", "on_press": {"action": "host.close"}}]}
+                  ]}}},
+                {"id": "next", "applet": "jcode.agent",
+                 "placement": {"kind": "composer", "session_id": "screenshot-fixture"},
+                 "document": {"revision": 1, "title": "Suggestions",
+                  "view": {"type": "stack", "direction": "horizontal", "gap": "xs", "children": [
+                    {"type": "chip", "label": "Run the tests", "on_press": {"action": "host.send_prompt", "args": {"prompt": "Run the tests"}}},
+                    {"type": "chip", "label": "Open a PR", "on_press": {"action": "host.send_prompt", "args": {"prompt": "Open a PR"}}}]}}},
+                {"id": "timer", "applet": "jcode.agent",
+                 "placement": {"kind": "overlay", "corner": "bottom_right"},
+                 "document": {"revision": 1, "title": "Build",
+                  "view": {"type": "progress", "value": 0.62, "label": "Compiling 62%"}}}
+            ]
+        }))
+        .expect("agent fixture");
+        runtime.sync_agent("screenshot-fixture", &agent);
+        if std::env::var("JCODE_DESKTOP_SCREENSHOT_APPLET_TAB").as_deref() == Ok("agent") {
+            // Agent placements only: keep the fixture chat alone and focused.
+            return;
+        }
         let panel =
             cx.new(|cx| Panel::new_applet(SHOWCASE_INSTANCE.into(), self.bridge.clone(), cx));
         let width_fraction = spawned_panel_width(self.slots.len());

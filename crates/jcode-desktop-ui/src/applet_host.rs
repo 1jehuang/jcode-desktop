@@ -578,7 +578,10 @@ impl AppletHost {
             },
             host_action::SEND_PROMPT if allowed(C::SendPrompt) => Effect::SendPrompt {
                 session_id: arg("session_id"),
-                prompt: arg("prompt"),
+                // `text` was taught by an early tool description.
+                prompt: Some(arg("prompt"))
+                    .filter(|prompt| !prompt.is_empty())
+                    .unwrap_or_else(|| arg("text")),
             },
             host_action::OPEN_FILE if allowed(C::ReadFiles) => Effect::OpenFile(arg("path")),
             host_action::CLOSE => {

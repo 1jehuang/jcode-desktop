@@ -13,6 +13,8 @@ use jcode_applet_types::{
 /// How long an applet toast stays up.
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const OVERLAY_WIDTH: f32 = 320.0;
+/// Bottom corners sit above the composer so overlays never cover the input.
+const OVERLAY_BOTTOM: f32 = 120.0;
 
 impl Workspace {
     fn applet_scope(&self, cx: &App) -> (Option<String>, Option<String>) {
@@ -181,8 +183,8 @@ impl Workspace {
             let mut stack = div().absolute().flex().flex_col().gap_2();
             stack = match corner {
                 Corner::TopRight => stack.top(px(48.0)).right(px(16.0)),
-                Corner::BottomRight => stack.bottom(px(16.0)).right(px(16.0)),
-                Corner::BottomLeft => stack.bottom(px(16.0)).left(px(16.0)),
+                Corner::BottomRight => stack.bottom(px(OVERLAY_BOTTOM)).right(px(16.0)),
+                Corner::BottomLeft => stack.bottom(px(OVERLAY_BOTTOM)).left(px(16.0)),
                 Corner::TopLeft => stack.top(px(48.0)).left(px(16.0)),
             };
             layer = layer.child(stack.children(cards));

@@ -114,7 +114,7 @@ def main():
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
     parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "publish", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
-    parser.add_argument("--applet-tab", choices=("components", "media", "data"),
+    parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
     parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")
