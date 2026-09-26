@@ -173,7 +173,7 @@ impl Panel {
                                 .into()
                         })
                         .on_click(cx.listener(|panel, _, _, cx| {
-                            panel.stop_voice(cx);
+                            panel.stop_voice("stop button", cx);
                             cx.stop_propagation();
                         }))
                         .child(div().size(px(8.)).rounded(px(2.)).bg(theme.ACCENT)),
@@ -198,7 +198,7 @@ impl Panel {
                                 .into()
                         })
                         .on_click(cx.listener(|panel, _, _, cx| {
-                            panel.cancel_voice(cx);
+                            panel.cancel_voice(true, "cancel button", cx);
                             cx.stop_propagation();
                         }))
                         .child("×"),
@@ -434,7 +434,7 @@ impl Panel {
                             .cursor_pointer()
                             .hover(|el| el.bg(theme.ACCENT_DIM))
                             .on_click(cx.listener(|panel, _, _, cx| {
-                                panel.cancel_voice(cx);
+                                panel.cancel_voice(true, "cancel button", cx);
                                 cx.stop_propagation();
                             }))
                             .child("×"),
@@ -598,7 +598,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [240., 480., 1440.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
-            panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+            panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
             for state in [
@@ -653,7 +653,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         for (width, height) in [(240., 320.), (480., 600.), (1440., 1000.)] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
-            panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+            panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
             for state in [
@@ -750,7 +750,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         for (width, height) in [(240., 320.), (480., 600.), (1440., 1000.)] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
-            panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+            panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
             vcx.run_until_parked();
             let footer = vcx.debug_bounds("panel-meta").unwrap();
             let original_input = vcx.debug_bounds("prompt-input").unwrap();

@@ -173,7 +173,11 @@ impl State {
         self.host_held_since = None;
         if let Some(panel) = self.owner.as_ref().and_then(|owner| owner.panel.upgrade()) {
             panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&self.owner.as_ref().unwrap().attempt, cx)
+                panel.cancel_global_voice(
+                    &self.owner.as_ref().unwrap().attempt,
+                    "global voice listener shut down (window closed or Desktop reload)",
+                    cx,
+                )
             });
         }
         self.close_overlay(cx);
@@ -306,7 +310,7 @@ impl Workspace {
                     Edge::Release => self.global_voice_release(cx),
                     Edge::Cancel => {
                         eprintln!("global voice: canceled by input listener");
-                        self.cancel_global_voice_capture(cx)
+                        self.cancel_global_voice_capture("input listener canceled the hold", cx)
                     }
                 }
             }
@@ -317,7 +321,7 @@ impl Workspace {
             .is_some_and(|since| since.elapsed() >= HOST_HOLD_DEADLINE)
         {
             eprintln!("global voice: host shortcut hold exceeded its deadline");
-            self.cancel_global_voice_capture(cx);
+            self.cancel_global_voice_capture("host shortcut hold exceeded its deadline", cx);
         }
         #[cfg(target_os = "linux")]
         let cli_recording = self.global_voice.cli.as_ref().is_some_and(|c| c.recording());
@@ -412,7 +416,7 @@ impl Workspace {
         }
     }
 
-    fn cancel_global_voice_capture(&mut self, cx: &mut Context<Self>) {
+    fn cancel_global_voice_capture(&mut self, reason: &'static str, cx: &mut Context<Self>) {
         self.global_voice.held = false;
         #[cfg(target_os = "linux")]
         {
@@ -426,7 +430,7 @@ impl Workspace {
         if let Some(owner) = self.global_voice.owner.as_ref() {
             if let Some(panel) = owner.panel.upgrade() {
                 panel.update(cx, |panel, cx| {
-                    panel.cancel_global_voice(&owner.attempt, cx)
+                    panel.cancel_global_voice(&owner.attempt, reason, cx)
                 });
             }
         }
@@ -453,7 +457,7 @@ impl Workspace {
                 this.global_voice.permission_task = None;
                 if !allowed {
                     eprintln!("global voice: denied by session check");
-                    this.cancel_global_voice_capture(cx);
+                    this.cancel_global_voice_capture("session check denied voice", cx);
                 } else if start && this.global_voice.held {
                     this.begin_global_voice(window, cx);
                 }
@@ -545,7 +549,11 @@ impl Workspace {
             .any(|slot| !slot.closing && slot.panel == panel)
         {
             panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                panel.cancel_global_voice(
+                    &self.global_voice.owner.as_ref().unwrap().attempt,
+                    "owning chat panel is closing",
+                    cx,
+                )
             });
             self.global_voice.close_overlay(cx);
             return;
@@ -567,7 +575,11 @@ impl Workspace {
                 // window later never reveals a stale "Sent to agent".
                 panel.update(cx, |panel, cx| {
                     panel
-                        .cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                        .cancel_global_voice(
+                            &self.global_voice.owner.as_ref().unwrap().attempt,
+                            "result pill expired",
+                            cx,
+                        )
                 });
                 self.global_voice.close_overlay(cx);
                 return;
@@ -597,7 +609,11 @@ impl Workspace {
         } else if !shown {
             // Never keep recording without a visible indicator.
             panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                panel.cancel_global_voice(
+                    &self.global_voice.owner.as_ref().unwrap().attempt,
+                    "OS voice pill could not be shown",
+                    cx,
+                )
             });
             self.global_voice.close_overlay(cx);
         }

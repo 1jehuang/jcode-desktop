@@ -399,7 +399,7 @@ impl Panel {
                             .text_color(theme.TEXT_DIM)
                             .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                             .on_click(cx.listener(|panel, _, _, cx| {
-                                panel.cancel_voice(cx);
+                                panel.cancel_voice(true, "cancel button", cx);
                                 cx.stop_propagation();
                             }))
                             .child("×"),
@@ -597,7 +597,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         for (width, height) in [(240., 320.), (480., 600.), (1440., 1000.)] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
-            panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+            panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
             for state in [

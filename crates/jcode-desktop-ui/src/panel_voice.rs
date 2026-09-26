@@ -94,6 +94,18 @@ enum Phase {
     Routing,
 }
 
+impl Phase {
+    fn label(self) -> &'static str {
+        match self {
+            Phase::Idle => "idle",
+            Phase::Checking => "connecting",
+            Phase::Recording => "recording",
+            Phase::Transcribing => "transcribing",
+            Phase::Routing => "routing",
+        }
+    }
+}
+
 /// Ephemeral routing evidence. Never included in persisted panel snapshots.
 #[derive(Clone)]
 pub(crate) struct VoiceTrace {
@@ -132,6 +144,48 @@ pub(super) struct VoiceState {
     trace: Option<VoiceTrace>,
     trace_expanded: bool,
     trace_preview: bool,
+    /// Why stop was requested, for the end-of-recording log. `None` at the
+    /// end means the recording ended on its own (duration cap or provider).
+    stop_reason: Option<&'static str>,
+    /// Loudest sampled microphone level, logged to tell silence from speech.
+    peak: f32,
+    /// The end of this attempt was already logged.
+    end_logged: bool,
+}
+
+/// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
+fn voice_log(message: std::fmt::Arguments) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    eprintln!(
+        "[unix {}.{:03}] voice: {message}",
+        now.as_secs(),
+        now.subsec_millis()
+    );
+}
+
+impl VoiceState {
+    /// Every recording end is logged exactly once, as normal or ABNORMAL.
+    fn log_end(&mut self, normal: bool, outcome: &str, chars: Option<usize>) {
+        if std::mem::replace(&mut self.end_logged, true) {
+            return;
+        }
+        let audio = self
+            .audio
+            .or_else(|| self.started.map(|started| started.elapsed()))
+            .map_or("-".into(), |audio| format!("{:.1}s", audio.as_secs_f32()));
+        voice_log(format_args!(
+            "ended {}: {outcome} (phase={}, stop={}, audio={audio}, peak={:.3}, chars={}, {}{})",
+            if normal { "normal" } else { "ABNORMAL" },
+            self.phase.label(),
+            self.stop_reason.unwrap_or("none"),
+            self.peak,
+            chars.map_or("-".into(), |chars| chars.to_string()),
+            if self.hold_capture { "hold" } else { "toggle" },
+            if self.global_capture { ", global" } else { "" },
+        ));
+    }
 }
 
 pub(crate) struct VoiceSessionRequested(pub jcode_sdk::SessionInfo, pub String);
@@ -142,6 +196,9 @@ impl gpui::EventEmitter<VoiceActionRequested> for Panel {}
 
 impl Drop for VoiceState {
     fn drop(&mut self) {
+        if self.phase != Phase::Idle {
+            self.log_end(false, "panel dropped (chat closed or Desktop reload)", None);
+        }
         self.canceled.store(true, Ordering::SeqCst);
         if let Some(recording) = self.recording.take() {
             // NariRecording signals cancellation without joining the native worker.
@@ -316,10 +373,11 @@ impl Panel {
     pub(crate) fn cancel_global_voice(
         &mut self,
         attempt: &Arc<AtomicBool>,
+        reason: &'static str,
         cx: &mut Context<Self>,
     ) {
         if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.global_capture {
-            self.cancel_voice(cx);
+            self.cancel_voice(false, reason, cx);
         }
     }
 
@@ -356,8 +414,10 @@ impl Panel {
             return;
         }
         match self.voice.phase {
-            Phase::Checking => self.cancel_voice(cx),
-            Phase::Recording => self.stop_voice(cx),
+            Phase::Checking => {
+                self.cancel_voice(false, "key released before the microphone was ready", cx)
+            }
+            Phase::Recording => self.stop_voice("key released", cx),
             Phase::Idle | Phase::Transcribing | Phase::Routing => {}
         }
     }
@@ -368,17 +428,31 @@ impl Panel {
         }
         match self.voice.phase {
             Phase::Idle => self.start_voice(cx),
-            Phase::Recording => self.stop_voice(cx),
-            Phase::Checking | Phase::Transcribing | Phase::Routing => self.cancel_voice(cx),
+            Phase::Recording => self.stop_voice("voice toggled off", cx),
+            Phase::Checking => {
+                self.cancel_voice(false, "voice toggled again while connecting", cx)
+            }
+            Phase::Transcribing | Phase::Routing => self.cancel_voice(
+                false,
+                "voice toggled again while transcribing (text discarded)",
+                cx,
+            ),
         }
     }
 
-    fn cancel_voice(&mut self, cx: &mut Context<Self>) {
+    /// `normal` marks an intentional user cancel. Everything else is logged
+    /// as ABNORMAL so unexpected stops can be found and fixed.
+    fn cancel_voice(&mut self, normal: bool, reason: &'static str, cx: &mut Context<Self>) {
+        if self.voice.phase != Phase::Idle {
+            self.voice.log_end(normal, &format!("canceled: {reason}"), None);
+        }
         self.reset_voice_attempt();
         cx.notify();
     }
 
     fn reset_voice_attempt(&mut self) {
+        // Ending paths log explicitly. Only an unlogged drop reports itself.
+        self.voice.phase = Phase::Idle;
         // Session configuration belongs to the panel, not an individual capture.
         let sessions = self.voice.sessions.take();
         let navigation = self.voice.navigation.take();
@@ -435,6 +509,11 @@ impl Panel {
         }
         match result {
             Ok(recording) => {
+                voice_log(format_args!(
+                    "recording started ({}{})",
+                    if self.voice.hold_capture { "hold" } else { "toggle" },
+                    if self.voice.global_capture { ", global" } else { "" },
+                ));
                 jcode_base::voice::timing::mark("ui shows recording");
                 if self.voice.global_capture {
                     eprintln!("global voice: recording started");
@@ -445,6 +524,8 @@ impl Panel {
                 self.tick_voice(cx);
             }
             Err(error) => {
+                self.voice
+                    .log_end(false, &format!("failed to start: {error:?}"), None);
                 if self.voice.global_capture {
                     eprintln!("global voice: recording failed to start: {error}");
                 }
@@ -497,6 +578,7 @@ impl Panel {
                                 .map_or(0., NariRecording::audio_level);
                             panel.voice.levels.rotate_left(1);
                             panel.voice.levels[23] = level;
+                            panel.voice.peak = panel.voice.peak.max(level);
                         }
                         // Drain a bounded batch so a fast provider cannot monopolize the UI.
                         for _ in 0..64 {
@@ -530,6 +612,7 @@ impl Panel {
                                     return false;
                                 }
                             }
+                            voice_log(format_args!("worker exited without a result"));
                             panel.finish_voice(Err(VoiceError::CaptureFailed), cx);
                             return false;
                         }
@@ -557,19 +640,43 @@ impl Panel {
         }
     }
 
-    fn stop_voice(&mut self, cx: &mut Context<Self>) {
+    fn stop_voice(&mut self, reason: &'static str, cx: &mut Context<Self>) {
         let Some(recording) = self.voice.recording.as_ref() else {
             return;
         };
         jcode_base::voice::timing::release();
         recording.stop();
+        self.voice.stop_reason = Some(reason);
         self.voice.audio = self.voice.started.map(|started| started.elapsed());
+        voice_log(format_args!(
+            "stop requested: {reason} after {:.1}s",
+            self.voice.audio.unwrap_or_default().as_secs_f32()
+        ));
         self.voice.phase = Phase::Transcribing;
         cx.notify();
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
         jcode_base::voice::timing::mark("ui received final transcript");
+        match &result {
+            Ok(text) if text.trim().is_empty() => self.voice.log_end(
+                self.voice.stop_reason.is_some(),
+                "no speech in transcript (silence or filtered prompt echo)",
+                Some(0),
+            ),
+            Ok(text) if self.voice.stop_reason.is_some() => {
+                self.voice
+                    .log_end(true, "transcribed", Some(text.chars().count()))
+            }
+            Ok(text) => self.voice.log_end(
+                false,
+                "recording ended without a stop request (5 minute cap or provider)",
+                Some(text.chars().count()),
+            ),
+            Err(error) => self
+                .voice
+                .log_end(false, &format!("error: {error:?}"), None),
+        }
         self.voice.hold_capture = false;
         self.voice.phase = Phase::Idle;
         let audio = self
@@ -650,7 +757,7 @@ impl Panel {
             self.voice.error = None;
             cx.notify();
         } else {
-            self.cancel_global_voice(attempt, cx);
+            self.cancel_global_voice(attempt, "session check denied the transcript", cx);
         }
     }
 
@@ -1012,7 +1119,7 @@ mod tests {
                 panel.voice.trace.as_ref().unwrap().answers[0].probability,
                 0.91
             );
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             assert!(panel.voice.trace.is_none());
             panel.finish_voice_report(
                 &attempt,
@@ -1332,7 +1439,7 @@ mod tests {
             panel.voice.phase = Phase::Routing;
             panel.voice.live_transcript = "discard".into();
             let attempt = panel.voice.canceled.clone();
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
             assert!(panel.input.read(cx).content.is_empty());
             assert!(panel.items.is_empty());
@@ -1411,7 +1518,7 @@ mod tests {
                 .update(cx, |input, cx| input.set_content("keep".into(), cx));
             panel.apply_voice_event(NariEvent::Transcript("discard me".into()), cx);
             let token = panel.voice.canceled.clone();
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             assert!(token.load(Ordering::SeqCst));
             assert!(panel.voice.live_transcript.is_empty());
             assert_eq!(panel.input.read(cx).content.as_ref(), "keep");
@@ -1591,7 +1698,7 @@ mod tests {
             if phase == Phase::Recording {
                 assert!(vcx.debug_bounds("voice-cancel").is_none());
                 assert!(vcx.debug_bounds("voice-stop").is_some());
-                panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+                panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
                 continue;
             }
             let cancel = vcx
@@ -1679,7 +1786,7 @@ mod tests {
             panel
                 .input
                 .update(cx, |input, cx| input.set_content("keep me".into(), cx));
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             assert!(token.load(Ordering::SeqCst));
             assert!(!Arc::ptr_eq(&token, &panel.voice.canceled));
             assert_eq!(panel.input.read(cx).snapshot().content, "keep me");

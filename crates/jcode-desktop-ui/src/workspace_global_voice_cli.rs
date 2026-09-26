@@ -34,6 +34,9 @@ pub(super) struct CliCapture {
 
 impl Drop for CliCapture {
     fn drop(&mut self) {
+        if matches!(self.phase, Phase::Recording | Phase::Transcribing) {
+            eprintln!("global voice: CLI capture ended ABNORMAL: dropped while active");
+        }
         self.attempt.store(true, Ordering::SeqCst);
     }
 }
@@ -248,7 +251,10 @@ impl Workspace {
                     });
                 }));
             }
-            Some(Ok(_)) => capture.finish("No speech detected"),
+            Some(Ok(_)) => {
+                eprintln!("global voice: CLI capture finished with no speech");
+                capture.finish("No speech detected")
+            }
             Some(Err(error)) => {
                 eprintln!("global voice: finished without text: {error}");
                 capture.finish(failure_label(&error));
