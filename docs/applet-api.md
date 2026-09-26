@@ -184,6 +184,10 @@ for line in sys.stdin:
 A provider that crashes only marks its own instances with an error. A malformed line gets
 a `rejected` reply and is otherwise ignored.
 
+To share an applet, publish it to the catalog at <https://jcode.sh/applets>. The
+package format, capability risk labels and anti-abuse rules are in
+[applet-catalog.md](applet-catalog.md).
+
 ## Code map
 
 | Piece | Location |
