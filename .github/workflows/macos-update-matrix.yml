@@ -14,8 +14,6 @@ on:
         description: Optional space-separated desktop-v tags. Empty tests every published macOS build.
         required: false
         default: ""
-  push:
-    branches: [ci/macos-update-matrix]
   schedule:
     - cron: "41 9 * * *"
 

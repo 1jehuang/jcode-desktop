@@ -104,13 +104,19 @@ static NSString *JcodeVersionOf(id item)
     JcodeReport(JcodeUpdateStateAvailable, JcodeVersionOf(item));
 }
 
-- (void)updater:(id)updater
+// Sparkle declares this as returning BOOL. Earlier builds returned void, so
+// Sparkle read whatever was left in the return register: garbage YES stalls
+// every later update cycle, garbage NO invalidates the stored install block.
+// Returning YES explicitly keeps the block valid for the "Restart" chip and
+// `/update`. Sparkle still installs on quit either way.
+- (BOOL)updater:(id)updater
       willInstallUpdateOnQuit:(id)item
     immediateInstallationBlock:(void (^)(void))immediateInstallHandler
 {
     (void)updater;
     immediateInstall = [immediateInstallHandler copy];
     JcodeReport(JcodeUpdateStateReady, JcodeVersionOf(item));
+    return YES;
 }
 
 - (void)updater:(id)updater didAbortWithError:(NSError *)error

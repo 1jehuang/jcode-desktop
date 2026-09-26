@@ -86,6 +86,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run macos-public-release-verify.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$RELEASE_TAG"
+      - name: Trigger legacy macOS auto-update matrix against the new appcast
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run macos-update-matrix.yml --repo "$GITHUB_REPOSITORY" --ref main
       - name: Dispatch verified public Desktop Discord announcement
         id: discord_dispatch
         if: ${{ !cancelled() && steps.website_verification.outcome == 'success' }}
