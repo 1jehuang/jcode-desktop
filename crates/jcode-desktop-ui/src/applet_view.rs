@@ -871,6 +871,10 @@ fn icon_glyph(name: &str) -> &'static str {
         "arrow-right" => "→",
         "arrow-left" => "←",
         "sparkles" => "✦",
+        "pull-request" => "⇄",
+        "issue" => "◉",
+        "comment" => "✎",
+        "branch" => "⑂",
         _ => "",
     }
 }
