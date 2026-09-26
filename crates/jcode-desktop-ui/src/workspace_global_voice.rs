@@ -24,6 +24,8 @@ struct Capture {
 
 /// Host-delivered holds have no kernel-side deadline, so bound them here too.
 const HOST_HOLD_DEADLINE: Duration = Duration::from_secs(120);
+const IDLE_POLL: Duration = Duration::from_millis(40);
+const HELD_POLL: Duration = Duration::from_millis(8);
 
 #[derive(Default)]
 pub(super) struct State {
@@ -218,12 +220,20 @@ impl Workspace {
         cx.on_release(|this, cx| this.global_voice.shutdown(cx))
             .detach();
         self.global_voice.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut interval = IDLE_POLL;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(40))
-                    .await;
+                cx.background_executor().timer(interval).await;
                 let result = cx.update(|window, cx| {
-                    this.update(cx, |this, cx| this.poll_global_voice(window, cx))
+                    this.update(cx, |this, cx| {
+                        this.poll_global_voice(window, cx);
+                        // A held key is about to be released: poll faster so
+                        // key-up reaches the recorder without a visible lag.
+                        interval = if this.global_voice.held {
+                            HELD_POLL
+                        } else {
+                            IDLE_POLL
+                        };
+                    })
                 });
                 if !matches!(result, Ok(Ok(()))) {
                     let _ = this.update(cx, |this, cx| this.global_voice.shutdown(cx));

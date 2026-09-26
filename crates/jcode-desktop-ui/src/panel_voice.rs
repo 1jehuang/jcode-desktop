@@ -1,5 +1,6 @@
 //! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
+use gpui::FutureExt as _;
 use jcode_base::voice::{self, NariEvent, NariRecording, VoiceError};
 use jcode_base::voice_intent::{self, SessionCandidate, VoiceIntent};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -456,18 +457,39 @@ impl Panel {
     }
 
     fn tick_voice(&mut self, cx: &mut Context<Self>) {
+        const METER: Duration = Duration::from_millis(50);
         let attempt = self.voice.canceled.clone();
         self.voice.timer = Some(cx.spawn(async move |this, cx| {
+            let mut last_level = Instant::now();
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(50))
-                    .await;
+                // Wake as soon as the recording publishes an event (the final
+                // transcript above all), not on the next meter tick.
+                let ready = this
+                    .read_with(cx, |panel, _| {
+                        panel
+                            .voice
+                            .recording
+                            .as_ref()
+                            .map(NariRecording::event_ready)
+                    })
+                    .ok()
+                    .flatten();
+                match ready {
+                    Some(ready) => {
+                        let _ = ready.with_timeout(METER, cx.background_executor()).await;
+                    }
+                    None => cx.background_executor().timer(METER).await,
+                }
+                let sample_level = last_level.elapsed() >= METER;
+                if sample_level {
+                    last_level = Instant::now();
+                }
                 let keep_ticking = this
                     .update(cx, |panel, cx| {
                         if !Arc::ptr_eq(&attempt, &panel.voice.canceled) || !panel.voice_active() {
                             return false;
                         }
-                        if panel.voice.phase == Phase::Recording {
+                        if sample_level && panel.voice.phase == Phase::Recording {
                             let level = panel
                                 .voice
                                 .recording
@@ -539,6 +561,7 @@ impl Panel {
         let Some(recording) = self.voice.recording.as_ref() else {
             return;
         };
+        jcode_base::voice::timing::release();
         recording.stop();
         self.voice.audio = self.voice.started.map(|started| started.elapsed());
         self.voice.phase = Phase::Transcribing;
@@ -546,6 +569,7 @@ impl Panel {
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
+        jcode_base::voice::timing::mark("ui received final transcript");
         self.voice.hold_capture = false;
         self.voice.phase = Phase::Idle;
         let audio = self
@@ -641,6 +665,7 @@ impl Panel {
         // unfocused OS pill needs a confirmation label.
         self.voice.decision = self.voice.global_capture.then(|| "Sent to agent".into());
         self.submit_or_queue(text.trim().to_string(), Vec::new(), false, cx);
+        jcode_base::voice::timing::mark("ui sent transcript");
         cx.notify();
     }
 
