@@ -866,6 +866,34 @@ mod tests {
     }
 
     #[test]
+    fn jcode_subscription_usage_attaches_daily_limits_and_upgrade_hint() {
+        let mut accounts = parse(
+            r#"{"any_available": true, "providers": [
+                {"id": "jcode", "display_name": "Jcode", "status": "available",
+                 "method": "API key", "auth_kind": "API key"}
+            ]}"#,
+        )
+        .unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"Jcode subscription","limits":[
+                {"name":"Memory recall (daily)","usage_percent":100.0,"reset_in":"20h 21m"},
+                {"name":"Browser automation (daily)","usage_percent":0.05,"reset_in":"20h 21m"}
+              ],"extra_info":[["Plan","Plus"],["Upgrade","Pro raises daily limits: https://jcode.sh/pricing"]]}]}"#,
+        );
+        let jcode = &accounts[0];
+        assert_eq!(jcode.limits.len(), 2);
+        assert_eq!(jcode.limits[0].usage_percent, 100.0);
+        let report = &jcode.usage_reports[0];
+        assert!(
+            report
+                .extra_info
+                .iter()
+                .any(|(key, value)| key == "Upgrade" && value.contains("https://jcode.sh/pricing"))
+        );
+    }
+
+    #[test]
     fn usage_merge_handles_duplicate_reports_empty_limits_and_bad_entries() {
         let mut accounts = parse(SAMPLE).unwrap();
         merge_usage(
