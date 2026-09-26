@@ -195,8 +195,28 @@ fn node(
                 // text wraps. Explicit alignment opts out.
                 el = el.items_stretch();
             }
-            el.children(children(cx, kids, path, window, app))
+            let rendered = children(cx, kids, path, window, app);
+            if matches!(direction, Axis::Horizontal) {
+                // Inputs have no intrinsic width, so in a row they collapse to
+                // a sliver and wrap their placeholder. Let them take the
+                // remaining space instead, wrapping below a readable minimum.
+                el.children(kids.iter().zip(rendered).map(|(kid, child)| {
+                    if matches!(kid.kind, NodeKind::Input { .. }) {
+                        div()
+                            .flex_grow(1.)
+                            .flex_shrink(1.)
+                            .flex_basis(px(220.))
+                            .min_w(px(160.))
+                            .child(child)
+                            .into_any_element()
+                    } else {
+                        child
+                    }
+                }))
                 .into_any_element()
+            } else {
+                el.children(rendered).into_any_element()
+            }
         }
         NodeKind::Grid {
             min_column_width,
@@ -1082,7 +1102,8 @@ fn text_input(
     }
     div()
         .px_3()
-        .py(px(if multiline { 6. } else { 3. }))
+        // The inner editor already carries its own vertical padding.
+        .py(px(if multiline { 6. } else { 0. }))
         .rounded(px(if multiline { 12. } else { 999. }))
         .bg(theme.INPUT_BG)
         .border_1()

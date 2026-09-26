@@ -48,7 +48,37 @@ def log(text: str) -> None:
     sys.stderr.flush()
 
 
-def gh(*args: str, timeout: float = 30) -> str:
+TRANSIENT_MARKERS = (
+    "tls handshake timeout",
+    "i/o timeout",
+    "connection reset",
+    "connection refused",
+    "no such host",
+    "temporary failure in name resolution",
+    "eof",
+    "did not respond in time",
+    "502",
+    "503",
+    "504",
+)
+
+
+def gh(*args: str, timeout: float = 30, attempts: int = 3) -> str:
+    """Run gh, retrying transient network failures with a short backoff."""
+    for attempt in range(attempts):
+        try:
+            return _gh_once(*args, timeout=timeout)
+        except RuntimeError as error:
+            message = str(error).lower()
+            if attempt + 1 >= attempts or not any(m in message for m in TRANSIENT_MARKERS):
+                if any(m in message for m in TRANSIENT_MARKERS):
+                    raise RuntimeError("Couldn't reach GitHub (network timeout). Check your connection and retry.") from None
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
+def _gh_once(*args: str, timeout: float = 30) -> str:
     """Run gh and return stdout. Raises RuntimeError with gh's message."""
     if shutil.which("gh") is None:
         raise RuntimeError("The GitHub CLI (gh) is not installed. Install it, then run `gh auth login`.")
@@ -496,7 +526,7 @@ class App:
 
         def run() -> None:
             try:
-                gh(*args)
+                gh(*args, attempts=1)
                 send({"type": "toast", "instance": instance, "text": done, "tone": "success"})
                 with self.lock:
                     self.state["comment"] = "" if label == "comment" else self.state.get("comment", "")

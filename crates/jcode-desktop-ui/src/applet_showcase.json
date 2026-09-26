@@ -106,12 +106,28 @@
                 ]
               },
               {
-                "type": "input",
-                "bind": "query",
-                "placeholder": "Search anything…",
-                "on_submit": {
-                  "action": "search"
-                }
+                "type": "stack",
+                "direction": "horizontal",
+                "gap": "xs",
+                "align": "center",
+                "children": [
+                  {
+                    "type": "input",
+                    "bind": "query",
+                    "placeholder": "Search anything…",
+                    "on_submit": {
+                      "action": "search"
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "label": "Search",
+                    "variant": "compact",
+                    "on_press": {
+                      "action": "search"
+                    }
+                  }
+                ]
               },
               {
                 "type": "toggle",
