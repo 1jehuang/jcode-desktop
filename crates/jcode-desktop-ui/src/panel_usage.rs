@@ -233,21 +233,27 @@ fn metered_source_key(provider: Option<&str>, auth: Option<&str>) -> Option<Stri
 }
 
 /// Never substitute another credential's limits (e.g. ChatGPT for an API key).
-fn active_limits<'a>(
+fn active_account<'a>(
     accounts: &'a [Account],
     provider: Option<&str>,
     auth: Option<&str>,
-) -> Option<&'a [UsageLimit]> {
+) -> Option<&'a Account> {
     let provider = provider?;
     // Runtime identity arrives asynchronously. Ambiguous auth is not OAuth.
     if auth.is_none() && matches!(provider, "openai" | "anthropic" | "gemini") {
         return None;
     }
     let id = crate::accounts::credential_id(provider, auth);
-    accounts
-        .iter()
-        .find(|account| account.id == id)
-        .and_then(Account::active_limits)
+    accounts.iter().find(|account| account.id == id)
+}
+
+#[cfg(test)]
+fn active_limits<'a>(
+    accounts: &'a [Account],
+    provider: Option<&str>,
+    auth: Option<&str>,
+) -> Option<&'a [UsageLimit]> {
+    active_account(accounts, provider, auth).and_then(Account::active_limits)
 }
 
 impl Panel {
@@ -342,9 +348,9 @@ impl Panel {
             return Some(row);
         }
         // Local account snapshots cannot describe credentials on a remote host.
-        let limits = if crate::harness::remote_host(&self.session_id).is_none() {
+        let account = if crate::harness::remote_host(&self.session_id).is_none() {
             cx.try_global::<StatusAccounts>().and_then(|snapshot| {
-                active_limits(
+                active_account(
                     &snapshot.0,
                     self.provider.as_deref(),
                     self.auth_method.as_deref(),
@@ -353,6 +359,26 @@ impl Panel {
         } else {
             None
         };
+        let limits = account.and_then(Account::active_limits);
+        // A subscription login whose quota fetch failed says so rather than
+        // silently omitting its meters.
+        if limits.is_none_or(<[UsageLimit]>::is_empty)
+            && let Some(reason) = account
+                .and_then(Account::active_report)
+                .and_then(crate::accounts::UsageReport::usage_error)
+        {
+            let detail = format!(
+                "{}: usage limits unavailable because {reason}.",
+                account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
+            );
+            row = row.child(meter(
+                "panel-limits-unavailable".into(),
+                "Limits unavailable".into(),
+                None,
+                detail,
+            ));
+            return Some(row);
+        }
         if let Some(limits) = limits.filter(|limits| !limits.is_empty()) {
             for (index, limit) in limits.iter().enumerate() {
                 let percent = limit
@@ -566,6 +592,35 @@ mod tests {
         assert!(vcx.debug_bounds("panel-api-cost").is_some());
         assert!(vcx.debug_bounds("panel-limits-unavailable").is_none());
         assert!(vcx.debug_bounds("panel-context-ring").is_some());
+    }
+
+    #[gpui::test]
+    fn throttled_claude_oauth_quota_says_limits_are_unavailable(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"claude","status":"available","auth_kind":"OAuth"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude) (j***5@gmail.com)","limits":[],"error":"Usage API error (429 Too Many Requests): {}"}]}"#,
+            );
+            cx.set_global(StatusAccounts(accounts));
+        });
+        let (_, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("claude-session", cx);
+            workspace.test_panel(0).unwrap().update(cx, |panel, _| {
+                panel.provider = Some("anthropic".into());
+                panel.auth_method = Some("oauth".into());
+                panel.model = Some("claude-opus-4-5".into());
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-limits-unavailable").is_some());
+        assert!(vcx.debug_bounds("panel-limit-0").is_none());
     }
 
     #[test]

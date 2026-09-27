@@ -121,12 +121,37 @@ impl BankedReset {
 
 pub const USAGE_ESTIMATE_NOTE: &str = "Recorded by Jcode. API-equivalent estimates, not your ChatGPT bill. Today starts at local midnight. Lifetime covers recorded history only.";
 
+/// `extra_info` key carrying the CLI's quota fetch error for a login.
+pub const USAGE_ERROR_KEY: &str = "Usage error";
+
 impl UsageReport {
     pub fn title(&self) -> String {
         match &self.account_label {
             Some(label) => format!("{} · {label}", self.provider_name),
             None => self.provider_name.clone(),
         }
+    }
+
+    /// Short, human reason quota could not be fetched, if it failed.
+    pub fn usage_error(&self) -> Option<String> {
+        let (_, error) = self
+            .extra_info
+            .iter()
+            .find(|(key, _)| key == USAGE_ERROR_KEY)?;
+        let lower = error.to_ascii_lowercase();
+        Some(if lower.contains("429") || lower.contains("rate limit") {
+            "the provider's usage endpoint is rate limiting requests. Jcode will retry automatically".into()
+        } else if lower.contains("expired") || lower.contains("401") {
+            "the login needs to be refreshed. Sign in again from Accounts".into()
+        } else {
+            error
+                .lines()
+                .next()
+                .unwrap_or(error)
+                .chars()
+                .take(160)
+                .collect()
+        })
     }
 }
 
@@ -141,16 +166,26 @@ pub struct UsageLimit {
 impl Account {
     /// The CLI marks its active OAuth login with ✦. Never blend unrelated logins.
     pub fn active_limits(&self) -> Option<&[UsageLimit]> {
+        self.active_report()
+            .map(|report| report.limits.as_slice())
+            .or_else(|| {
+                self.usage_reports
+                    .is_empty()
+                    .then_some(self.limits.as_slice())
+            })
+    }
+
+    /// The active login's quota report, never a blend of unrelated logins.
+    pub fn active_report(&self) -> Option<&UsageReport> {
         let active: Vec<_> = self
             .usage_reports
             .iter()
             .filter(|report| report.provider_name.trim_end().ends_with('✦'))
             .collect();
         match active.as_slice() {
-            [report] => Some(&report.limits),
+            [report] => Some(report),
             [] => match self.usage_reports.as_slice() {
-                [report] => Some(&report.limits),
-                [] => Some(&self.limits),
+                [report] => Some(report),
                 _ => None,
             },
             _ => None,
@@ -483,15 +518,20 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
             .iter()
             .find(|(key, _)| key == "Account label")
             .map(|(_, value)| value.clone());
+        let mut extra_info: Vec<_> = extra_info
+            .into_iter()
+            .filter(|(key, _)| key != "Account label")
+            .collect();
+        // Keep why quota is missing so the footer can say so honestly.
+        if let Some(error) = provider.get("error").and_then(|value| value.as_str()) {
+            extra_info.push((USAGE_ERROR_KEY.into(), error.trim().to_owned()));
+        }
         account.usage_reports.push(UsageReport {
             provider_name: provider_name.to_owned(),
             account_label,
             banked_reset: provider.get("banked_reset").and_then(BankedReset::parse),
             limits: Vec::new(),
-            extra_info: extra_info
-                .into_iter()
-                .filter(|(key, _)| key != "Account label")
-                .collect(),
+            extra_info,
         });
         let limits: Vec<_> = provider
             .get("limits")
