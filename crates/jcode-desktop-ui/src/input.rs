@@ -719,6 +719,31 @@ impl PromptInput {
         &self.command_models
     }
 
+    /// An available catalog spec for a signed-in provider, preferring the current model.
+    pub(crate) fn provider_route_spec(&self, provider: &str, current: Option<&str>) -> Option<String> {
+        let wanted = provider_route_methods(provider);
+        let mut matches: Vec<_> = self
+            .model_details
+            .iter()
+            .filter(|(_, detail)| {
+                let method = detail.api_method.to_ascii_lowercase();
+                let owner = detail.provider.to_ascii_lowercase();
+                wanted.iter().any(|wanted| {
+                    method == *wanted || method.starts_with(&format!("{wanted}-")) || owner == *wanted
+                })
+            })
+            .collect();
+        matches.sort_by(|(a, left), (b, right)| {
+            let current_left = current.is_some_and(|model| left.model == model);
+            let current_right = current.is_some_and(|model| right.model == model);
+            current_right
+                .cmp(&current_left)
+                .then_with(|| right.recommended.cmp(&left.recommended))
+                .then_with(|| a.cmp(b))
+        });
+        matches.first().map(|(spec, _)| (*spec).clone())
+    }
+
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
         if !self.command_completion {
             return Vec::new();
@@ -3184,3 +3209,13 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+fn provider_route_methods(provider: &str) -> Vec<String> {
+    match provider {
+        "openai" => vec!["openai-oauth".into()],
+        "openai-api" => vec!["openai-api-key".into(), "openai-api".into()],
+        "claude" => vec!["claude-oauth".into()],
+        "anthropic-api" => vec!["anthropic-api-key".into(), "anthropic-api".into(), "claude-api".into()],
+        other => vec![other.into()],
+    }
+}

@@ -75,7 +75,7 @@ pub(super) struct AccountRow {
 }
 
 impl AccountRow {
-    fn connected(&self) -> bool {
+    pub(super) fn connected(&self) -> bool {
         self.label.is_some()
             || self.configured
             || matches!(
@@ -716,7 +716,7 @@ impl Panel {
         cx.notify();
     }
 
-    fn render_account_row(
+    pub(super) fn render_account_row(
         &self,
         row: &AccountRow,
         pooled: Option<bool>,
@@ -761,10 +761,11 @@ impl Panel {
                     .child(title.clone()),
             )
             .child(div().flex_none().child(login_method_icon(provider.method)));
-        if row.active {
+        let selecting = self.login.as_ref().is_some_and(|state| state.selection_only);
+        if row.active && !selecting {
             name_line = name_line.child(chip("In use", theme.ACCENT));
         }
-        if self.is_default_account(&row.key, position) {
+        if !selecting && self.is_default_account(&row.key, position) {
             name_line = name_line.child(
                 chip("Default", theme.ACCENT).debug_selector(|| "login-default-account".into()),
             );
@@ -1060,8 +1061,15 @@ impl Panel {
             );
         }
         let label = row.label.clone();
-        element = element.on_click(cx.listener(move |this, _, _, cx| {
-            this.select_login_provider_for(provider, label.clone(), cx)
+        if selecting {
+            element = element.child(chip("Select provider", theme.ACCENT));
+        }
+        element = element.on_click(cx.listener(move |this, _, window, cx| {
+            if selecting {
+                this.select_existing_provider(provider, label.clone(), window, cx);
+            } else {
+                this.select_login_provider_for(provider, label.clone(), cx);
+            }
         }));
         if let Some(pooled) = pooled {
             let before = key.clone();

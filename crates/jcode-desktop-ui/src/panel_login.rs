@@ -12,8 +12,15 @@ use connection::{ConnectionStatus, ConnectionStatuses};
 mod accounts;
 #[path = "panel_login_catalog.rs"]
 mod catalog;
+#[path = "panel_provider_picker.rs"]
+mod provider_picker;
+#[cfg(test)]
+#[path = "panel_provider_picker_tests.rs"]
+mod provider_picker_tests;
 
 pub(super) struct LoginState {
+    /// Composer account selection never starts a sign-in flow.
+    selection_only: bool,
     client: AuthClient,
     providers: Vec<LoginProvider>,
     provider: Option<LoginProvider>,
@@ -147,6 +154,7 @@ impl Panel {
             search
         });
         self.login = Some(LoginState {
+            selection_only: false,
             client,
             providers,
             provider: None,
@@ -712,6 +720,9 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        if self.login.as_ref().is_some_and(|state| state.selection_only) {
+            return None;
+        }
         if let Some(state) = self.login.as_mut()
             && state.focus_pending
         {

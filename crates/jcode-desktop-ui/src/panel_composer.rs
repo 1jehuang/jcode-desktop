@@ -102,14 +102,8 @@ impl Panel {
                             .min_w(px(48.))
                             .text_color(theme.TEXT_FAINT)
                             .child(div().min_w_0().truncate().child(account_label))
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.dispatch_action(
-                                    Box::new(crate::workspace::OpenAccounts {
-                                        source: cx.entity_id(),
-                                        login_command: None,
-                                    }),
-                                    cx,
-                                );
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_provider_picker(window, cx);
                                 cx.stop_propagation();
                             })),
                     )
@@ -173,6 +167,7 @@ impl Panel {
             .flex()
             .flex_col()
             .children(strips)
+            .children(self.render_provider_picker(window, cx))
             .child(pills)
             .child(self.render_voice_input_slot(cx))
             .into_any_element()
