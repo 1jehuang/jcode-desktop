@@ -14,11 +14,11 @@ use crate::global_voice_overlay::{self as overlay, Snapshot, VoiceOverlay};
 use gpui::{Task, WeakEntity, WindowHandle};
 use std::sync::{Arc, atomic::AtomicBool};
 
-#[path = "workspace_global_voice_fixture.rs"]
-mod fixture;
 #[cfg(target_os = "linux")]
 #[path = "workspace_global_voice_cli.rs"]
 mod cli;
+#[path = "workspace_global_voice_fixture.rs"]
+mod fixture;
 
 struct Capture {
     panel: WeakEntity<Panel>,
@@ -299,6 +299,18 @@ impl Workspace {
                         self.global_press_unfocused(window, cx)
                     }
                     Edge::Press => self.global_voice_press(window, cx),
+                    Edge::Spawn if !self.single_panel => {
+                        // Workspace mode: add a fresh panel here and record
+                        // into it, rather than opening a separate window.
+                        let dir = crate::config::get()
+                            .voice
+                            .spawn_working_dir
+                            .as_ref()
+                            .map(|dir| dir.to_string_lossy().into_owned())
+                            .or_else(|| self.default_working_dir());
+                        self.open_default_draft(dir, cx);
+                        self.global_voice_press(window, cx)
+                    }
                     Edge::Spawn => {
                         if !spawn_voice_window() {
                             self.global_voice_press(window, cx)
@@ -310,7 +322,11 @@ impl Workspace {
                     }
                     Edge::Release
                         if self.global_voice.cli_resolve.is_some()
-                            || self.global_voice.cli.as_ref().is_some_and(|c| c.recording()) =>
+                            || self
+                                .global_voice
+                                .cli
+                                .as_ref()
+                                .is_some_and(|c| c.recording()) =>
                     {
                         self.global_voice.cli_resolve = None;
                         self.cli_release()
@@ -332,7 +348,11 @@ impl Workspace {
             self.cancel_global_voice_capture("host shortcut hold exceeded its deadline", cx);
         }
         #[cfg(target_os = "linux")]
-        let cli_recording = self.global_voice.cli.as_ref().is_some_and(|c| c.recording());
+        let cli_recording = self
+            .global_voice
+            .cli
+            .as_ref()
+            .is_some_and(|c| c.recording());
         #[cfg(not(target_os = "linux"))]
         let cli_recording = false;
         if (self.global_voice.owner.is_some() || cli_recording)
@@ -582,12 +602,11 @@ impl Workspace {
                 // The result pill expires in both places, so focusing this
                 // window later never reveals a stale "Sent to agent".
                 panel.update(cx, |panel, cx| {
-                    panel
-                        .cancel_global_voice(
-                            &self.global_voice.owner.as_ref().unwrap().attempt,
-                            "result pill expired",
-                            cx,
-                        )
+                    panel.cancel_global_voice(
+                        &self.global_voice.owner.as_ref().unwrap().attempt,
+                        "result pill expired",
+                        cx,
+                    )
                 });
                 self.global_voice.close_overlay(cx);
                 return;
