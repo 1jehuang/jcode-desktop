@@ -87,6 +87,8 @@ pub(crate) mod shortcuts;
 mod startup;
 #[path = "panel_stop_reason.rs"]
 mod stop_reason;
+#[path = "panel_cache_miss.rs"]
+mod cache_miss;
 #[path = "panel_stream_reveal.rs"]
 mod stream_reveal;
 #[cfg(test)]
@@ -168,6 +170,8 @@ pub enum Item {
     Todos(TodoCardPayload),
     Error(String),
     Stopped(stop_reason::StopNotice),
+    /// Daemon-reported KV (prompt) cache miss for a provider request.
+    CacheMiss(cache_miss::CacheMissNotice),
     /// An applet instance placed in this transcript that is not anchored to
     /// a tool call. Only ever a derived render row, never stored in `items`.
     #[serde(skip)]
@@ -2645,6 +2649,14 @@ impl Panel {
                         *input,
                         *cache_read_input,
                         *cache_creation_input,
+            ApiEvent::KvCacheMiss { .. } => {
+                if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
+                    // Keep the notice in order: settle text streamed so far.
+                    self.flush_reasoning();
+                    self.flush_streaming();
+                    self.items.push(Item::CacheMiss(notice));
+                }
+            }
                     ));
             }
             ApiEvent::SessionRenamed { display_title, .. } => {
@@ -3130,6 +3142,7 @@ impl Panel {
                 crate::applet_surface::card(instance, true, &selection, window, cx)
                     .unwrap_or_else(|| div().into_any_element())
             }
+            Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
@@ -4790,6 +4803,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Error(_) => None,
     }
 }
+        | Item::CacheMiss(_)
 
 /// The credential route serving `model`, phrased for humans. The route
 /// catalog's `api_method` values are stable ids like `openai-oauth` or

@@ -86,6 +86,7 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
             notice.detail.hash(&mut state);
             notice.failure.hash(&mut state);
         }
+        Item::CacheMiss(notice) => notice.text().hash(&mut state),
         Item::Image(_) | Item::ResponseStats(_) | Item::Todos(_) => {}
     }
     state.finish()
@@ -175,6 +176,7 @@ fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: boo
         }
         // Pinned todos and non-text chrome are outside the transcript document.
         Item::Todos(_) | Item::Image(_) | Item::ResponseStats(_) => {}
+        Item::CacheMiss(notice) => push(format!("{index}-kv-cache-miss"), notice.text()),
     }
     result
 }
