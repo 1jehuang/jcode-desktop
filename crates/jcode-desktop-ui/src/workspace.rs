@@ -14836,8 +14836,12 @@ mod accounts_panel_tests {
         });
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
         vcx.run_until_parked();
-        let footer = vcx.debug_bounds("panel-login").expect("preview footer");
-        vcx.simulate_click(footer.center(), gpui::Modifiers::default());
+        // The method pill selects a provider inline. Accounts opens explicitly.
+        let request = OpenAccounts {
+            source: source.entity_id(),
+            login_command: None,
+        };
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
         vcx.run_until_parked();
         let accounts = workspace.read_with(vcx, |w, cx| {
             let accounts = w.slots[w.active].panel.clone();
@@ -14918,10 +14922,12 @@ mod accounts_panel_tests {
         });
         vcx.run_until_parked();
         let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
-        let footer = vcx
-            .debug_bounds("panel-login")
-            .expect("Account method control paints");
-        vcx.simulate_click(footer.center(), gpui::Modifiers::default());
+        // The method pill selects a provider inline. Accounts opens explicitly.
+        let request = OpenAccounts {
+            source: source.entity_id(),
+            login_command: None,
+        };
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
         vcx.run_until_parked();
         let accounts = workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 2);
