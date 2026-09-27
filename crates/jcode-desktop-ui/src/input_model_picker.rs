@@ -76,36 +76,78 @@ impl PromptInput {
             Theme::global().TEXT_DIM
         };
         let model = suggestion.value.strip_prefix("/model ");
-        let logo = model.map(|model| {
-            let provider = self
-                .model_logo_providers
-                .get(model)
-                .map(String::as_str)
-                .or_else(|| {
-                    self.model_details.get(model).and_then(|detail| {
-                        self.model_logo_providers
-                            .get(&detail.model)
-                            .map(String::as_str)
-                    })
-                })
-                .unwrap_or("");
-            let logo: gpui::AnyElement = match crate::accounts::logo(provider) {
+        let logo_svg = |provider: &str, fallback: &str, size: f32, color: gpui::Rgba| {
+            match crate::accounts::logo(provider) {
                 Some(bytes) => gpui::svg()
                     .data(bytes)
-                    .size(px(18.0))
+                    .size(px(size))
                     .flex_none()
-                    .text_color(ink)
+                    .text_color(color)
                     .into_any_element(),
                 None => div()
-                    .size(px(18.0))
+                    .size(px(size))
                     .flex_none()
-                    .text_size(px(10.0))
-                    .child(crate::accounts::lettermark(model))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(size * 0.6))
+                    .text_color(color)
+                    .child(crate::accounts::lettermark(fallback))
                     .into_any_element(),
-            };
+            }
+        };
+        // The row logo names the model's maker (OpenAI, Anthropic), never the
+        // service it is routed through. The group header names that service.
+        let logo = model.map(|model| {
+            let title = model_menu::pretty_title(model, &self.model_details);
             div()
                 .debug_selector(move || format!("model-picker-logo-{index}"))
-                .child(logo)
+                .child(logo_svg(
+                    model_menu::model_logo(model, &self.model_details),
+                    &title,
+                    18.0,
+                    ink,
+                ))
+        });
+        let header = suggestion.header.clone().map(|header| {
+            let faint = Theme::global().TEXT_FAINT;
+            let base = div()
+                .debug_selector(move || format!("model-picker-group-{index}"))
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .pt_3()
+                .pb_1()
+                .text_size(px(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(faint);
+            let Some(model) = model else {
+                return base.child(header);
+            };
+            let parts = model_menu::header_parts(model, &self.model_details);
+            base.child(logo_svg(parts.logo, &parts.provider, 13.0, faint))
+                .child(div().text_color(Theme::global().TEXT_DIM).child(parts.provider))
+                .child(
+                    div()
+                        .debug_selector(move || format!("model-picker-auth-{index}"))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .py(px(1.0))
+                        .rounded_full()
+                        .bg(Theme::global().INPUT_BG)
+                        .font_weight(gpui::FontWeight::NORMAL)
+                        .child(
+                            gpui::svg()
+                                .data(parts.auth.icon())
+                                .size(px(11.0))
+                                .flex_none()
+                                .text_color(faint),
+                        )
+                        .child(parts.auth.label()),
+                )
         });
         let label = model
             .map(|model| model_menu::pretty_title(model, &self.model_details))
@@ -115,17 +157,7 @@ impl PromptInput {
             .flex_none()
             .flex()
             .flex_col()
-            .children(suggestion.header.clone().map(|header| {
-                div()
-                    .debug_selector(move || format!("model-picker-group-{index}"))
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .text_size(px(11.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(header)
-            }))
+            .children(header)
             .child(
                 div()
                     .id(("slash-command", index))

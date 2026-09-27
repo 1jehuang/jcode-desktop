@@ -197,16 +197,196 @@ pub(super) fn usage_label(usage: Option<&ModelUsage>, now: u64) -> String {
 }
 
 impl ModelDetails {
-    /// Secondary line under the pretty title: the exact id that will run plus
-    /// usage. Provider and auth method are already named by the group header.
+    /// Secondary line under the pretty title. The title already names the
+    /// model and the group header names provider and auth, so only usage is
+    /// new information. Search still matches the exact id.
     pub(super) fn label(&self, now: u64) -> String {
-        let usage = usage_label(self.usage.as_ref(), now);
-        if self.model.is_empty() {
-            usage
-        } else {
-            format!("{} · {usage}", self.model)
+        usage_label(self.usage.as_ref(), now)
+    }
+}
+
+/// How a route authenticates, phrased and iconed for the group header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AuthKind {
+    /// Signed in with a provider account (ChatGPT, Claude, GitHub, Google).
+    Account,
+    ApiKey,
+    Subscription,
+    CloudCredentials,
+    Other,
+}
+
+impl AuthKind {
+    pub(super) fn of(api_method: &str) -> Self {
+        use jcode_provider_core::ModelRouteApiMethod as M;
+        match M::parse(api_method) {
+            M::ClaudeOAuth
+            | M::OpenAIOAuth
+            | M::CodeAssistOAuth
+            | M::Copilot
+            | M::Cursor
+            | M::AntigravityHttps
+            | M::GrokBuild => Self::Account,
+            M::AnthropicApiKey | M::OpenAIApiKey | M::OpenRouter | M::OpenAiCompatible { .. } => {
+                Self::ApiKey
+            }
+            M::JcodeSubscription => Self::Subscription,
+            M::Bedrock => Self::CloudCredentials,
+            M::Other(method) => {
+                let method = method.to_ascii_lowercase();
+                if method.contains("oauth") {
+                    Self::Account
+                } else if method.contains("key") || method.ends_with("-api") {
+                    Self::ApiKey
+                } else {
+                    Self::Other
+                }
+            }
+            M::RemoteCatalog | M::Current => Self::Other,
         }
     }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Account => "Signed in",
+            Self::ApiKey => "API key",
+            Self::Subscription => "Subscription",
+            Self::CloudCredentials => "Cloud credentials",
+            Self::Other => "Connected",
+        }
+    }
+
+    pub(super) fn icon(self) -> &'static [u8] {
+        match self {
+            Self::Account => include_bytes!("../../../assets/icons/account.svg"),
+            Self::ApiKey | Self::CloudCredentials => {
+                include_bytes!("../../../assets/icons/key.svg")
+            }
+            Self::Subscription => include_bytes!("../../../assets/icons/subscription.svg"),
+            Self::Other => include_bytes!("../../../assets/icons/plug.svg"),
+        }
+    }
+}
+
+/// Group header parts: provider brand, its logo id, and the auth method.
+pub(super) struct HeaderParts {
+    pub provider: String,
+    pub logo: &'static str,
+    pub auth: AuthKind,
+}
+
+pub(super) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>) -> HeaderParts {
+    let Some(detail) = details.get(model) else {
+        return HeaderParts {
+            provider: "Other models".into(),
+            logo: "",
+            auth: AuthKind::Other,
+        };
+    };
+    let provider = if detail.provider.is_empty() {
+        crate::panel::pretty_provider_name(&detail.api_method)
+    } else {
+        crate::panel::pretty_provider_name(&detail.provider)
+    };
+    HeaderParts {
+        logo: provider_logo(&detail.provider, &detail.api_method),
+        provider,
+        auth: AuthKind::of(&detail.api_method),
+    }
+}
+
+/// Logo id (see `accounts::logo`) for the service a route goes through.
+fn provider_logo(provider: &str, api_method: &str) -> &'static str {
+    let haystack = format!("{provider} {api_method}").to_ascii_lowercase();
+    for (needle, logo) in [
+        ("openrouter", "openrouter"),
+        ("copilot", "copilot"),
+        ("cursor", "cursor"),
+        ("bedrock", "bedrock"),
+        ("azure", "azure"),
+        ("antigravity", "antigravity"),
+        ("jcode", "jcode"),
+        ("anthropic", "anthropic-api"),
+        ("claude", "anthropic-api"),
+        ("openai", "openai"),
+        ("chatgpt", "openai"),
+        ("gemini", "gemini"),
+        ("code-assist", "gemini"),
+        ("google", "gemini"),
+        ("grok", "xai"),
+        ("xai", "xai"),
+        ("mistral", "mistral"),
+        ("deepseek", "deepseek"),
+        ("groq", "groq"),
+        ("ollama", "ollama"),
+        ("lmstudio", "lmstudio"),
+    ] {
+        if haystack.contains(needle) {
+            return logo;
+        }
+    }
+    ""
+}
+
+/// Logo id for the model's own family, so an OpenAI model reads as OpenAI
+/// whether it is served directly or through OpenRouter. Unknown families
+/// fall back to the serving provider's logo.
+pub(super) fn model_logo(model: &str, details: &HashMap<String, ModelDetails>) -> &'static str {
+    let detail = details.get(model);
+    let raw = detail.map_or(model, |detail| detail.model.as_str());
+    let raw = jcode_provider_core::explicit_model_provider_prefix(raw)
+        .map_or(raw, |(_, _, bare)| bare)
+        .to_ascii_lowercase();
+    let (vendor, name) = raw.rsplit_once('/').unwrap_or(("", raw.as_str()));
+    let vendor = vendor.rsplit('/').next().unwrap_or(vendor);
+    let by_vendor = match vendor {
+        "anthropic" => "anthropic-api",
+        "openai" => "openai",
+        "google" => "gemini",
+        "x-ai" | "xai" => "xai",
+        "mistralai" | "mistral" => "mistral",
+        "deepseek" | "deepseek-ai" => "deepseek",
+        "moonshotai" => "kimi",
+        "qwen" => "alibaba-coding-plan",
+        "z-ai" | "zai" | "zhipuai" => "zai",
+        "minimax" => "minimax",
+        _ => "",
+    };
+    if !by_vendor.is_empty() {
+        return by_vendor;
+    }
+    // Bedrock-style `anthropic.claude-...` ids name the family after a dot.
+    let name = name.split_once('.').map_or(name, |(head, rest)| {
+        if head.chars().all(|c| c.is_ascii_alphabetic()) {
+            rest
+        } else {
+            name
+        }
+    });
+    for (prefix, logo) in [
+        ("claude", "anthropic-api"),
+        ("gpt", "openai"),
+        ("codex", "openai"),
+        ("o1", "openai"),
+        ("o3", "openai"),
+        ("o4", "openai"),
+        ("gemini", "gemini"),
+        ("gemma", "gemini"),
+        ("grok", "xai"),
+        ("mistral", "mistral"),
+        ("codestral", "mistral"),
+        ("devstral", "mistral"),
+        ("deepseek", "deepseek"),
+        ("kimi", "kimi"),
+        ("qwen", "alibaba-coding-plan"),
+        ("glm", "zai"),
+        ("minimax", "minimax"),
+    ] {
+        if name.starts_with(prefix) {
+            return logo;
+        }
+    }
+    detail.map_or("", |detail| provider_logo(&detail.provider, &detail.api_method))
 }
 
 #[cfg(test)]
@@ -338,6 +518,49 @@ mod tests {
     }
 
     #[test]
+    fn row_logo_names_the_model_maker_and_headers_name_route_and_auth() {
+        let mut routed = route("openai/gpt-6-astra", "openrouter", 0);
+        routed.provider = "OpenRouter".into();
+        let details = from_routes(&[
+            route("gpt-6-astra", "openai-api-key", 3),
+            route("gpt-6-astra", "openai-oauth", 1),
+            routed,
+        ]);
+        assert_eq!(details.len(), 3);
+        for (spec, detail) in &details {
+            assert_eq!(model_logo(spec, &details), "openai", "{spec}");
+            let parts = header_parts(spec, &details);
+            let expected = match detail.api_method.as_str() {
+                "openrouter" => ("OpenRouter", "openrouter", AuthKind::ApiKey),
+                "openai-oauth" => ("OpenAI", "openai", AuthKind::Account),
+                _ => ("OpenAI", "openai", AuthKind::ApiKey),
+            };
+            assert_eq!((parts.provider.as_str(), parts.logo, parts.auth), expected);
+        }
+        assert_eq!(AuthKind::of("jcode-subscription"), AuthKind::Subscription);
+        assert_eq!(AuthKind::of("bedrock"), AuthKind::CloudCredentials);
+        assert_eq!(AuthKind::of("claude-oauth"), AuthKind::Account);
+        let mut bedrock = route("anthropic.claude-v1:0", "bedrock", 0);
+        bedrock.provider = "Bedrock".into();
+        let details = from_routes(&[bedrock]);
+        let spec = details.keys().next().unwrap();
+        assert_eq!(model_logo(spec, &details), "anthropic-api");
+        // Unknown families fall back to the serving provider.
+        let mut private = route("house-model", "openrouter", 0);
+        private.provider = "OpenRouter".into();
+        let details = from_routes(&[private]);
+        let spec = details.keys().next().unwrap();
+        assert_eq!(model_logo(spec, &details), "openrouter");
+    }
+
+    #[test]
+    fn detail_line_is_usage_only() {
+        let detail = &from_routes(&[route("gpt-6-astra", "openai-api-key", 0)])
+            ["openai-api:gpt-6-astra"];
+        assert_eq!(detail.label(100), "No recorded usage yet");
+    }
+
+    #[test]
     fn rank_uses_usage_then_stable_names_and_retains_every_model() {
         let mut models = vec![
             "unknown-z".into(),
@@ -389,27 +612,11 @@ pub(super) fn group_key(model: &str, details: &HashMap<String, ModelDetails>) ->
 }
 
 fn group_label(model: &str, details: &HashMap<String, ModelDetails>) -> String {
-    let Some(detail) = details.get(model) else {
-        return "Other models".into();
-    };
-    let method =
-        jcode_provider_core::ModelRouteApiMethod::parse(&detail.api_method).display_label();
-    let method = match method.as_str() {
-        "oauth" => "OAuth".to_string(),
-        "api key" => "API key".to_string(),
-        _ => method.replace(['_', '-'], " "),
-    };
-    if detail.provider.is_empty() {
-        method
-    } else {
-        let provider = crate::panel::pretty_provider_name(&detail.provider);
-        // `OpenRouter · openrouter` says the same thing twice.
-        if provider.eq_ignore_ascii_case(&method) {
-            provider
-        } else {
-            format!("{provider} · {method}")
-        }
+    let parts = header_parts(model, details);
+    if details.get(model).is_none() {
+        return parts.provider;
     }
+    format!("{} · {}", parts.provider, parts.auth.label())
 }
 
 /// Friendly picker title for a route spec (`claude-oauth:claude-opus-4-8`

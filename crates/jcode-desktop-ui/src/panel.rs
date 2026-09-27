@@ -439,7 +439,6 @@ pub struct Panel {
     pub(crate) transcript_only: bool,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
-    model_logo_providers: HashMap<String, String>,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -878,7 +877,6 @@ impl Panel {
             transcript_only: false,
             login: None,
             available_models: Vec::new(),
-            model_logo_providers: HashMap::new(),
         }
     }
 
@@ -2644,11 +2642,9 @@ impl Panel {
                     .map(human_auth_method)
                     .or_else(|| auth_method_for_model(self.model.as_deref(), routes));
                 let models = available_model_names(routes);
-                self.model_logo_providers = available_model_logo_providers(routes);
                 self.available_models = models.clone();
                 self.input.update(cx, |input, cx| {
                     input.set_model_routes(models, routes, self.model.clone(), cx);
-                    input.set_model_logo_providers(self.model_logo_providers.clone(), cx);
                 });
                 self.sync_effort_menu(cx);
             }
@@ -4879,70 +4875,6 @@ fn available_model_names(routes: &[jcode_sdk::ModelRouteInfo]) -> Vec<String> {
     models.sort();
     models.dedup();
     models
-}
-
-fn available_model_logo_providers(routes: &[jcode_sdk::ModelRouteInfo]) -> HashMap<String, String> {
-    routes
-        .iter()
-        .filter(|route| route.available)
-        .map(|route| {
-            (
-                route.model.clone(),
-                model_logo_provider(&route.model, &route.api_method).to_string(),
-            )
-        })
-        .collect()
-}
-
-fn model_logo_provider<'a>(model: &str, api_method: &'a str) -> &'a str {
-    let method = api_method.to_ascii_lowercase();
-    for provider in [
-        "anthropic",
-        "openai",
-        "gemini",
-        "google",
-        "copilot",
-        "openrouter",
-        "bedrock",
-        "azure",
-        "cursor",
-        "antigravity",
-        "xai",
-        "mistral",
-        "deepseek",
-        "kimi",
-        "zai",
-        "groq",
-        "perplexity",
-        "cerebras",
-        "minimax",
-        "ollama",
-    ] {
-        if method.contains(provider) {
-            return match provider {
-                "anthropic" => "anthropic-api",
-                "openai" => "openai",
-                other => other,
-            };
-        }
-    }
-
-    let model = model.to_ascii_lowercase();
-    if model.starts_with("claude") {
-        "anthropic-api"
-    } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
-        "openai"
-    } else if model.starts_with("gemini") {
-        "gemini"
-    } else if model.starts_with("grok") {
-        "xai"
-    } else if model.starts_with("mistral") || model.starts_with("codestral") {
-        "mistral"
-    } else if model.starts_with("deepseek") {
-        "deepseek"
-    } else {
-        api_method
-    }
 }
 
 /// Label the account control with the current provider and credential method.
@@ -8481,17 +8413,6 @@ mod tests {
                 "composer focus retained"
             )
         });
-    }
-
-    #[test]
-    fn model_logos_follow_routes_then_fall_back_to_model_families() {
-        assert_eq!(
-            model_logo_provider("custom-model", "openai-oauth"),
-            "openai"
-        );
-        assert_eq!(model_logo_provider("claude-fable-5", ""), "anthropic-api");
-        assert_eq!(model_logo_provider("gemini-3-pro", ""), "gemini");
-        assert_eq!(model_logo_provider("private-model", "private"), "private");
     }
 
     #[test]

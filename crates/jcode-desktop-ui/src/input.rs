@@ -180,7 +180,6 @@ pub struct PromptInput {
     command_models: Vec<String>,
     command_completion: bool,
     command_selection: usize,
-    model_logo_providers: HashMap<String, String>,
     model_details: HashMap<String, model_menu::ModelDetails>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
     /// rebroadcast on every usage tick with an unchanged catalog, and
@@ -522,7 +521,6 @@ impl PromptInput {
             command_models: Vec::new(),
             command_completion: true,
             command_selection: 0,
-            model_logo_providers: HashMap::new(),
             model_details: HashMap::new(),
             applied_model_routes: None,
             expanded_model_groups: HashSet::new(),
@@ -694,17 +692,6 @@ impl PromptInput {
         if self.current_model != model {
             self.current_model = model;
             self.suggestions_revision += 1;
-            cx.notify();
-        }
-    }
-
-    pub fn set_model_logo_providers(
-        &mut self,
-        providers: HashMap<String, String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.model_logo_providers != providers {
-            self.model_logo_providers = providers;
             cx.notify();
         }
     }
