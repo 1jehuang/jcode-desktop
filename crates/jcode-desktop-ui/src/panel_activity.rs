@@ -248,12 +248,72 @@ fn dot_path(
     r_min: f32,
     origin: gpui::Point<gpui::Pixels>,
 ) -> gpui::Path<gpui::Pixels> {
+    let r = dot.r.max(r_min);
+    if !(r > 0.0 && r <= MAX_CACHED_RADIUS) {
+        return tessellated_circle(r, gpui::point(dot.x, dot.y), origin);
+    }
+    // Every visible orb repaints ~39 dots per frame. Running lyon for each one
+    // was a steady ~5% of UI-thread time, so scale a cached tessellation.
+    // Each is built at the top of its quarter-octave radius bucket, so dots
+    // are only ever finer than the 0.005 px tolerance, never coarser, and
+    // carry at most ~19% more vertices than an exact tessellation.
+    let bucket = (r.log2() * 4.0).ceil() as i32;
+    let bucket_radius = 2f32.powf(bucket as f32 / 4.0);
+    CIRCLES.with(|circles| {
+        let mut circles = circles.borrow_mut();
+        let unit = circles
+            .entry(bucket)
+            .or_insert_with(|| circle_triangles(bucket_radius));
+        let scale = r / bucket_radius;
+        let at = |p: gpui::Point<f32>| {
+            origin + gpui::point(px(dot.x + p.x * scale), px(dot.y + p.y * scale))
+        };
+        let Some(first) = unit.first() else {
+            return tessellated_circle(r, gpui::point(dot.x, dot.y), origin);
+        };
+        let mut path = gpui::Path::new(at(first[0]));
+        let st = (gpui::point(0., 1.), gpui::point(0., 1.), gpui::point(0., 1.));
+        for [a, b, c] in unit.iter() {
+            path.push_triangle((at(*a), at(*b), at(*c)), st);
+        }
+        path
+    })
+}
+
+/// Largest dot radius served by cached tessellations.
+const MAX_CACHED_RADIUS: f32 = 16.0;
+
+thread_local! {
+    static CIRCLES: std::cell::RefCell<std::collections::HashMap<i32, Vec<[gpui::Point<f32>; 3]>>> =
+        Default::default();
+}
+
+fn circle_triangles(r: f32) -> Vec<[gpui::Point<f32>; 3]> {
+    tessellated_circle(r, gpui::point(0.0, 0.0), gpui::point(px(0.0), px(0.0)))
+        .vertices
+        .chunks_exact(3)
+        .map(|tri| {
+            let p = |i: usize| {
+                gpui::point(
+                    f32::from(tri[i].xy_position.x),
+                    f32::from(tri[i].xy_position.y),
+                )
+            };
+            [p(0), p(1), p(2)]
+        })
+        .collect()
+}
+
+fn tessellated_circle(
+    r: f32,
+    center: gpui::Point<f32>,
+    origin: gpui::Point<gpui::Pixels>,
+) -> gpui::Path<gpui::Pixels> {
     let mut builder = gpui::PathBuilder::fill().with_style(gpui::PathStyle::Fill(
         gpui::FillOptions::default().with_tolerance(0.005),
     ));
-    let r = dot.r.max(r_min);
     let k = r * 0.552_284_8;
-    let p = |x: f32, y: f32| origin + gpui::point(px(dot.x + x), px(dot.y + y));
+    let p = |x: f32, y: f32| origin + gpui::point(px(center.x + x), px(center.y + y));
     builder.move_to(p(r, 0.0));
     builder.cubic_bezier_to(p(0.0, r), p(r, k), p(k, r));
     builder.cubic_bezier_to(p(-r, 0.0), p(-k, r), p(-r, k));
@@ -562,6 +622,32 @@ mod tests {
             start.elapsed().as_secs_f64() * 1_000_000.0 / 3_000.0,
             frame.dots.capacity() * std::mem::size_of::<gpui_thinking_orbs::Dot>()
         );
+    }
+
+    #[test]
+    fn cached_circles_match_exact_geometry_within_tolerance() {
+        let origin = gpui::point(px(40.25), px(10.125));
+        for r in [0.3_f32, 0.5, 0.77, 1.0, 1.9, 2.4, 3.3, 6.0, 15.9] {
+            let dot = gpui_thinking_orbs::Dot::new(7.5, 8.25, 0.0, r, 0.4);
+            let cached = dot_path(&dot, 0.3, origin);
+            let exact = tessellated_circle(r, gpui::point(7.5, 8.25), origin);
+            assert!(!cached.vertices.is_empty());
+            assert!(cached.vertices.len() <= exact.vertices.len() * 2 + 12, "r={r}");
+            for (a, b) in [
+                (cached.bounds.origin.x, exact.bounds.origin.x),
+                (cached.bounds.origin.y, exact.bounds.origin.y),
+                (cached.bounds.size.width, exact.bounds.size.width),
+                (cached.bounds.size.height, exact.bounds.size.height),
+            ] {
+                assert!((f32::from(a) - f32::from(b)).abs() < 0.01, "r={r}");
+            }
+            for vertex in &cached.vertices {
+                let dx = f32::from(vertex.xy_position.x - origin.x) - 7.5;
+                let dy = f32::from(vertex.xy_position.y - origin.y) - 8.25;
+                // Four-cubic circles overshoot the true radius by ~0.027%.
+                assert!((dx * dx + dy * dy).sqrt() <= r * 1.0003 + 0.001, "r={r}");
+            }
+        }
     }
 
     #[test]

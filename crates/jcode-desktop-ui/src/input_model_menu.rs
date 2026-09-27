@@ -14,19 +14,57 @@ pub(super) struct ModelDetails {
     pub usage: Option<ModelUsage>,
 }
 
-pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDetails> {
-    let mut details = HashMap::<String, ModelDetails>::new();
-    for route in routes.iter().filter(|route| route.available) {
-        let spec = route_spec(route);
-        let candidate = ModelDetails {
-            model: route.model.clone(),
-            recommended: jcode_provider_core::model_route_metadata_is_recommended(
+/// Route identity: everything that decides its spec and recommendation.
+/// Usage is deliberately absent, since usage ticks are what rebroadcast.
+type RouteKey = (String, String, String, String);
+
+thread_local! {
+    static ROUTE_SPECS: std::cell::RefCell<HashMap<RouteKey, (String, bool)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Spec and recommendation, memoized. Every model usage tick resends the
+/// full catalog, and re-deriving routing policy for each route was a steady
+/// share of UI-thread time in live profiles. Bounded so catalog churn cannot
+/// grow it without limit.
+fn route_identity(route: &ModelRouteInfo) -> (String, bool) {
+    const MAX_ENTRIES: usize = 8192;
+    let key = (
+        route.model.clone(),
+        route.provider.clone(),
+        route.api_method.clone(),
+        route.detail.clone(),
+    );
+    ROUTE_SPECS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(hit) = cache.get(&key) {
+            return hit.clone();
+        }
+        let value = (
+            route_spec(route),
+            jcode_provider_core::model_route_metadata_is_recommended(
                 jcode_provider_core::explicit_model_provider_prefix(&route.model)
                     .map_or(route.model.as_str(), |(_, _, bare)| bare),
                 &route.provider,
                 &route.api_method,
-                route.available,
+                true,
             ),
+        );
+        if cache.len() >= MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, value.clone());
+        value
+    })
+}
+
+pub(super) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDetails> {
+    let mut details = HashMap::<String, ModelDetails>::with_capacity(routes.len());
+    for route in routes.iter().filter(|route| route.available) {
+        let (spec, recommended) = route_identity(route);
+        let candidate = ModelDetails {
+            model: route.model.clone(),
+            recommended,
             provider: route.provider.clone(),
             api_method: route.api_method.clone(),
             usage: route.usage.clone(),
@@ -84,20 +122,28 @@ pub(super) fn current_spec<'a>(
         .map(String::as_str)
 }
 
-pub(super) fn rank(models: &mut [String], details: &HashMap<String, ModelDetails>) {
-    models.sort_by(|a, b| {
-        compare_model_usage(
-            details.get(a).and_then(|detail| detail.usage.as_ref()),
-            details.get(b).and_then(|detail| detail.usage.as_ref()),
-        )
-        .then_with(|| {
-            details
-                .get(b)
-                .is_some_and(|d| d.recommended)
-                .cmp(&details.get(a).is_some_and(|d| d.recommended))
+/// Order routes by usage, then recommendation, then spec.
+///
+/// Every usage tick rebroadcasts the whole catalog to every panel, so this
+/// runs often on the UI thread. Looking each route up once, instead of four
+/// SipHash lookups per comparison, took it from the top live-profile hotspot
+/// to noise.
+pub(super) fn rank(models: &mut Vec<String>, details: &HashMap<String, ModelDetails>) {
+    let mut keyed: Vec<_> = std::mem::take(models)
+        .into_iter()
+        .map(|model| {
+            let detail = details.get(&model);
+            let usage = detail.and_then(|detail| detail.usage.as_ref());
+            let recommended = detail.is_some_and(|detail| detail.recommended);
+            (usage, recommended, model)
         })
-        .then_with(|| a.cmp(b))
+        .collect();
+    keyed.sort_by(|(a_usage, a_rec, a), (b_usage, b_rec, b)| {
+        compare_model_usage(*a_usage, *b_usage)
+            .then_with(|| b_rec.cmp(a_rec))
+            .then_with(|| a.cmp(b))
     });
+    models.extend(keyed.into_iter().map(|(_, _, model)| model));
 }
 
 pub(super) fn now_unix_secs() -> u64 {
