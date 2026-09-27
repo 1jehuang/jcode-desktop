@@ -3183,7 +3183,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/1jehuang/zed?rev=ff1a26d02a7326d679583e63fdd4d509fc571291#ff1a26d02a7326d679583e63fdd4d509fc571291"
+source = "git+https://github.com/1jehuang/zed?rev=b1c1a162e53d90492c0b1663440c93c5c15fc42c#b1c1a162e53d90492c0b1663440c93c5c15fc42c"
 dependencies = [
  "accesskit",
  "anyhow",
