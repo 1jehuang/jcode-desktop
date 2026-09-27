@@ -36,6 +36,7 @@ impl Workspace {
                         "transcribing" => Some(Snapshot { title: "Transcribing…".into(), levels: None, decided: false }),
                         "routing" => Some(Snapshot { title: "Jev is choosing…".into(), levels: None, decided: false }),
                         "decided" => Some(Snapshot { title: "Jev → Coding agent".into(), levels: None, decided: true }),
+                        "no-speech" => Some(Snapshot { title: "No speech detected".into(), levels: None, decided: true }),
                         "complete" => None,
                         _ => anyhow::bail!("unknown fixture state"),
                     };
