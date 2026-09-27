@@ -4342,6 +4342,15 @@ impl Render for Panel {
                 }
             }))
             .children(crate::harness::remote_host(&self.session_id).map(|host| {
+                let machine = if host == crate::managed_cloud::HOST {
+                    "Jcode Cloud".to_string()
+                } else {
+                    format!("SSH · {host}")
+                };
+                let label = match self.working_dir.as_deref().filter(|d| !d.is_empty()) {
+                    Some(dir) => format!("Running on {machine} · {dir}"),
+                    None => format!("Running on {machine}"),
+                };
                 div()
                     .debug_selector(|| "panel-remote-host".into())
                     .flex_none()
@@ -4350,7 +4359,8 @@ impl Render for Panel {
                     .text_size(px(11.0))
                     .text_color(theme.ACCENT)
                     .bg(theme.ACCENT_DIM)
-                    .child(format!("SSH · {host}"))
+                    .truncate()
+                    .child(label)
             }))
             .children(publish_tracker)
             .children(pinned_todo.map(|payload| {

@@ -33,6 +33,7 @@ mod learning;
 mod live_profile;
 pub mod login_input;
 mod managed_cloud;
+mod managed_cloud_parity;
 mod markdown;
 mod markdown_inline_code;
 pub mod memory;

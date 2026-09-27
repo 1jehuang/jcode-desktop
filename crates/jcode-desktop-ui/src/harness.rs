@@ -793,9 +793,34 @@ fn create_remote_session(
             request_id: request_id.clone(),
             failed: false,
         });
+        let working_dir = working_dir.or_else(|| {
+            // The managed bootstrap creates this persistent workspace. Naming
+            // it explicitly also lets older cloud bridges report the directory.
+            managed.then(|| crate::managed_cloud::DEFAULT_WORKSPACE.to_owned())
+        });
         let mut session = client
-            .create_session(working_dir)
+            .create_session(working_dir.clone())
             .map_err(|error| error.to_string())?;
+        if session.working_dir.as_deref().is_none_or(str::is_empty) {
+            session.working_dir = working_dir;
+        }
+        if managed && !screenshot_mode() && !cfg!(test) {
+            // Start on this computer's default model and effort, not the
+            // cloud daemon's. A failure keeps the session on its current model.
+            let defaults = crate::managed_cloud_parity::Snapshot::session_defaults();
+            if let Err(message) = crate::managed_cloud_parity::apply_to_session(
+                &client,
+                &session.session_id,
+                &defaults,
+            ) {
+                let _ = updates.send(Update::RemoteStatus {
+                    host: host.clone(),
+                    message,
+                    request_id: request_id.clone(),
+                    failed: false,
+                });
+            }
+        }
         session.session_id = remote::namespace(&host, &session.session_id);
         Ok((session, client))
     });

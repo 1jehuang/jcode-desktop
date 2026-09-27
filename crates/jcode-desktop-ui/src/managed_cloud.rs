@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 /// Reserved destination name. Never resolved through SSH config or DNS.
 pub const HOST: &str = "jcode-cloud";
+/// Persistent project directory created by the managed host bootstrap.
+pub const DEFAULT_WORKSPACE: &str = "/home/ec2-user/workspaces";
 const DEFAULT_API_BASE: &str = "https://api.jcode.sh/v1";
 /// First boot installs Jcode. Allow generous time before giving up.
 const PROVISION_DEADLINE: Duration = Duration::from_secs(8 * 60);
@@ -235,7 +237,7 @@ pub fn connect(
         &known_hosts_contents(&address, port, &host_keys),
     )?;
     progress("Connecting to your Jcode Cloud machine…");
-    open(SshConnectOptions {
+    let options = SshConnectOptions {
         port: Some(port),
         user: Some(user),
         identity_file: Some(key.private_key()),
@@ -245,10 +247,30 @@ pub fn connect(
         connect_timeout: Duration::from_secs(45),
         request_timeout: Some(Duration::from_secs(30)),
         ..SshConnectOptions::new(address)
-    })
-    .map_err(|e| e.to_string())
+    };
+    // Mirror this computer's default model and logins before the daemon
+    // serves the new session. A failure is shown but never blocks the session.
+    let snapshot = crate::managed_cloud_parity::Snapshot::collect();
+    if !snapshot.is_empty() {
+        progress("Syncing your models and logins…");
+        if let Err(message) = sync(&options, &snapshot) {
+            progress(&message);
+        }
+    }
+    open(options).map_err(|e| e.to_string())
     // `key` drops here. The authorized key expires server-side within 60s and
     // the established connection does not need the file again.
+}
+
+/// Model/login sync hook. Replaced in tests, which must never reach a host.
+fn sync(
+    options: &SshConnectOptions,
+    snapshot: &crate::managed_cloud_parity::Snapshot,
+) -> Result<(), String> {
+    if cfg!(test) || crate::harness::screenshot_mode() {
+        return Ok(());
+    }
+    crate::managed_cloud_parity::apply(options, snapshot)
 }
 
 fn write_private(path: &Path, contents: &str) -> Result<(), String> {

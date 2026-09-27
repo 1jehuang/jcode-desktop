@@ -328,9 +328,12 @@ impl Panel {
     }
 
     pub(crate) fn supports_voice(&self) -> bool {
+        // Transcription runs on this computer and only the text is sent, so
+        // SSH-hosted chats (including Jcode Cloud) take voice like local ones.
         (!self.session_id.contains("://")
             || self.is_pending_session()
-            || self.session_id.starts_with("preview://"))
+            || self.session_id.starts_with("preview://")
+            || crate::harness::remote_host(&self.session_id).is_some())
             && self.terminal.is_none()
             && self.code_file.is_none()
             && !self.is_side_document()
@@ -1528,7 +1531,13 @@ mod tests {
     fn voice_only_targets_chat_composers(cx: &mut gpui::TestAppContext) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(cx, |panel, cx| {
-            for id in ["session_chat", "startup://draft", "startup://draft/next"] {
+            for id in [
+                "session_chat",
+                "startup://draft",
+                "startup://draft/next",
+                "ssh://jcode-cloud/session_remote",
+                "ssh://devbox/session_remote",
+            ] {
                 panel.session_id = id.into();
                 assert!(panel.supports_voice(), "{id}");
             }

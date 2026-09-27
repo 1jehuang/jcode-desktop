@@ -33,11 +33,24 @@ impl Panel {
             .map(str::trim)
             .filter(|effort| !effort.is_empty() && self.model.is_some())
             .map(str::to_string);
+        let remote_machine = crate::harness::remote_host(&self.session_id).map(|host| {
+            if host == crate::managed_cloud::HOST {
+                "Jcode Cloud".to_string()
+            } else {
+                host
+            }
+        });
         let location = self
             .working_dir
             .as_deref()
             .filter(|dir| !dir.is_empty())
-            .map(location_label);
+            .map(|dir| {
+                if remote_machine.is_some() {
+                    remote_location_label(dir)
+                } else {
+                    location_label(dir)
+                }
+            });
         let pills = div()
             .debug_selector(|| "composer-tabs".into())
             .w_full()
@@ -100,6 +113,26 @@ impl Panel {
                                 cx.stop_propagation();
                             })),
                     )
+                    .children(remote_machine.map(|machine| {
+                        // Remote sessions name their machine first, so a cloud
+                        // chat never reads like a local one.
+                        div()
+                            .id("composer-machine")
+                            .debug_selector(|| "composer-machine".into())
+                            .flex_none()
+                            .h(px(TAB_HEIGHT))
+                            .px_2p5()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .rounded_full()
+                            .bg(theme.ACCENT_DIM)
+                            .text_color(theme.ACCENT)
+                            .text_size(px(10.5))
+                            .font_family(theme.FONT_MONO)
+                            .whitespace_nowrap()
+                            .child(machine)
+                    }))
                     .children(location.map(|(name, detail)| {
                         div()
                             .debug_selector(|| "composer-location".into())
@@ -256,6 +289,30 @@ pub(super) fn location_label(path: &str) -> (String, Option<String>) {
     (name.to_string(), Some(parent))
 }
 
+/// Repo name plus its full parent path on another machine. The local `$HOME`
+/// says nothing about the remote user's home, so nothing is abbreviated
+/// except the managed cloud's own home directory.
+pub(super) fn remote_location_label(path: &str) -> (String, Option<String>) {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return ("/".into(), None);
+    }
+    let cloud_home = "/home/ec2-user";
+    if trimmed == cloud_home {
+        return ("~".into(), None);
+    }
+    let Some((parent, name)) = trimmed.rsplit_once('/') else {
+        return (trimmed.into(), None);
+    };
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let parent = match parent.strip_prefix(cloud_home) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => parent.to_string(),
+    };
+    (name.to_string(), Some(parent))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +330,27 @@ mod tests {
         assert_eq!(
             model_tab_label(Some("gpt-5.1-codex-max"), Some("")),
             "GPT-5.1 Codex Max"
+        );
+    }
+
+    #[test]
+    fn remote_location_keeps_the_remote_path() {
+        assert_eq!(
+            remote_location_label("/home/ec2-user/workspaces"),
+            ("workspaces".into(), Some("~".into()))
+        );
+        assert_eq!(
+            remote_location_label("/home/ec2-user/workspaces/app/"),
+            ("app".into(), Some("~/workspaces".into()))
+        );
+        assert_eq!(
+            remote_location_label("/srv/app"),
+            ("app".into(), Some("/srv".into()))
+        );
+        assert_eq!(remote_location_label("/home/ec2-user"), ("~".into(), None));
+        assert_eq!(
+            remote_location_label("/home/ec2-userx/a"),
+            ("a".into(), Some("/home/ec2-userx".into()))
         );
     }
 
