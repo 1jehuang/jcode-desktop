@@ -1419,7 +1419,12 @@ mod tests {
             vcx.simulate_mouse_move(to, left, gpui::Modifiers::default());
             vcx.run_until_parked();
             let final_preview = vcx.debug_bounds("login-account-drag-preview").unwrap();
-            assert_eq!(final_preview.origin - midway_preview.origin, to - midway);
+            let actual = final_preview.origin - midway_preview.origin;
+            let expected = to - midway;
+            // Layout snaps painted bounds to device pixels, while pointer
+            // coordinates can land between pixels on fractional row centers.
+            assert!(f32::from(actual.x - expected.x).abs() <= 1.0);
+            assert!(f32::from(actual.y - expected.y).abs() <= 1.0);
             vcx.simulate_mouse_up(to, left, gpui::Modifiers::default());
             vcx.run_until_parked();
         };
