@@ -105,8 +105,9 @@ pub(crate) mod orchestration;
 mod response_stats;
 #[path = "panel_side_document.rs"]
 mod side_document;
-#[path = "panel_tab_emoji.rs"]
-mod tab_emoji;
+#[path = "panel_tab_outline.rs"]
+mod tab_outline;
+pub(crate) use tab_outline::TabRing;
 #[path = "panel_task_label.rs"]
 mod task_label;
 #[path = "panel_tool_streaming.rs"]
@@ -328,7 +329,7 @@ pub struct Panel {
     sound_events: crate::sound_events::SoundEvents,
     activity_spinner: Entity<activity::Spinner>,
     latest_activity_spinner: Entity<activity::Spinner>,
-    tab_emoji: Entity<tab_emoji::TabEmoji>,
+    tab_outline: Entity<tab_outline::TabOutline>,
     sidebar_spinner: Entity<activity::Spinner>,
     /// Selected workspace surface, independent of temporary keyboard focus.
     surface_focused: bool,
@@ -558,9 +559,27 @@ impl Panel {
         self.session_id == Self::CHANGELOG_SESSION_ID
     }
 
-    pub(crate) fn tab_activity(&self) -> Option<gpui::AnyView> {
-        self.activity_active()
-            .then(|| self.tab_emoji.clone().into())
+    /// State ring painted over the tab outline. The session emoji stays still.
+    pub(crate) fn tab_ring(&self) -> Option<TabRing> {
+        // Only a live turn animates. `minimap_state` treats any non-idle
+        // status as work, which would ring merely connected sessions.
+        let state = match self.minimap_state() {
+            MinimapSessionState::Error => MinimapSessionState::Error,
+            _ if self.activity_active() => MinimapSessionState::Working,
+            MinimapSessionState::Complete => MinimapSessionState::Complete,
+            _ if self
+                .latest_todo_progress()
+                .is_some_and(|(done, total)| total > 0 && done == total) =>
+            {
+                MinimapSessionState::Complete
+            }
+            _ => MinimapSessionState::Idle,
+        };
+        TabRing::resolve(state, self.latest_todo_progress())
+    }
+
+    pub(crate) fn tab_outline(&self) -> gpui::AnyView {
+        self.tab_outline.clone().into()
     }
 
     /// Sidebar spinner for a session running in the shared daemon without an
@@ -641,10 +660,6 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.session_id = session.session_id;
-        let emoji = jcode_core::id::extract_session_name(&self.session_id)
-            .map(jcode_core::id::session_icon)
-            .unwrap_or("💫");
-        self.tab_emoji = cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx));
         self.title = session
             .title
             .filter(|title| !title.is_empty())
@@ -730,9 +745,6 @@ impl Panel {
             );
         let usage_fixture = crate::harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tokens");
-        let emoji = jcode_core::id::extract_session_name(&session_id)
-            .map(jcode_core::id::session_icon)
-            .unwrap_or("💫");
         let activity_status =
             if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
                 match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
@@ -774,7 +786,7 @@ impl Panel {
             show_build_footer: true,
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
-            tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
+            tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
             sidebar_spinner: cx
                 .new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
             surface_focused: true,

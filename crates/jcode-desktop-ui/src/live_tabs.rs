@@ -526,7 +526,7 @@ impl Workspace {
                 self.live_tabs.hit_targets.push((index, x));
             }
             let padding = (visible / 12.0).min(6.0);
-            let (title, emoji, activity) = match index {
+            let (title, emoji, ring, outline) = match index {
                 Some(index) => {
                     let panel = self.slots[index].panel.read(cx);
                     (
@@ -534,10 +534,11 @@ impl Workspace {
                         jcode_core::id::extract_session_name(&panel.session_id)
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
-                        panel.tab_activity(),
+                        panel.tab_ring(),
+                        Some(panel.tab_outline()),
                     )
                 }
-                None => ("Empty workspace".into(), "📁", None),
+                None => ("Empty workspace".into(), "📁", None, None),
             };
             let text = div()
                 .absolute()
@@ -563,16 +564,7 @@ impl Workspace {
                         .items_center()
                         .justify_center()
                         .text_size(px((visible - 2.0 - 2.0 * padding).clamp(1.0, 14.0)))
-                        .child(match activity {
-                            Some(activity) => div()
-                                .debug_selector(move || {
-                                    format!("live-session-tab-{}-working-emoji", index.unwrap())
-                                })
-                                .size_full()
-                                .child(activity)
-                                .into_any_element(),
-                            None => div().child(emoji).into_any_element(),
-                        }),
+                        .child(emoji),
                 )
                 .when(!compact && (focused || visible >= 52.0), |el| {
                     el.child(
@@ -693,12 +685,17 @@ impl Workspace {
                     // Use this single outline on every edge. An extra accent
                     // stripe makes the top heavier and squares off the corners.
                     .border(px((current.width / 2.0).min(1.0)))
-                    .border_color(if focused {
-                        accent
-                    } else {
-                        accent.opacity(0.35)
+                    .border_color(match ring {
+                        // The ring paints the outline itself. Hide the static
+                        // border so progress reads as filling, not overlaying.
+                        Some(_) => accent.opacity(0.0),
+                        None if focused => accent,
+                        None => accent.opacity(0.35),
                     })
-                    .bg(background)
+                    .bg(match ring {
+                        Some(ring) => background.blend(ring.tint()),
+                        None => background,
+                    })
                     .text_size(px(11.0))
                     .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
                     .text_color(if focused {
@@ -723,6 +720,16 @@ impl Workspace {
                         }))
                     })
                     .child(text)
+                    .when_some(outline.filter(|_| ring.is_some()), |el, outline| {
+                        let index = index.unwrap();
+                        el.child(
+                            div()
+                                .debug_selector(move || format!("live-session-tab-{index}-ring"))
+                                .absolute()
+                                .inset_0()
+                                .child(outline),
+                        )
+                    })
                     .when_some(index, |el, index| {
                         el.on_mouse_down(
                             gpui::MouseButton::Left,
@@ -1352,7 +1359,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_tabs_animate_the_working_emoji_without_shifting_the_title(
+    fn live_tabs_ring_the_outline_while_working_and_keep_the_emoji_still(
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -1392,12 +1399,16 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert_eq!(
-                vcx.debug_bounds("live-session-tab-0-working-emoji")
-                    .is_some(),
-                active,
-                "status {status}",
-            );
+            // Live turns paint the outline ring. Quiet states never animate,
+            // and the emoji itself never animates in any state.
+            let quiet = matches!(status, "idle" | "attached" | "connected");
+            if active || quiet {
+                assert_eq!(
+                    vcx.debug_bounds("live-session-tab-0-ring").is_some(),
+                    active,
+                    "status {status}",
+                );
+            }
             assert!(vcx.debug_bounds("live-session-tab-1-spinner").is_none());
             assert!(vcx.debug_bounds("panel-session-title").is_none());
             // Active sessions also show an inline transcript status.
@@ -1408,10 +1419,7 @@ mod tests {
             );
             let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
             assert!(vcx.debug_bounds("live-session-tab-0-spinner").is_none());
-            assert!(
-                vcx.debug_bounds("live-session-tab-1-working-emoji")
-                    .is_none()
-            );
+            assert!(vcx.debug_bounds("live-session-tab-1-ring").is_none());
             let emoji = vcx.debug_bounds("live-session-tab-0-emoji").unwrap();
             assert!(emoji.right() <= title.left());
             assert_eq!(

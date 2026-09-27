@@ -9774,8 +9774,8 @@ mod tests {
                 let panel = workspace.slots[0].panel.read(cx);
                 assert!(panel.sidebar_activity().is_none());
                 assert!(
-                    panel.tab_activity().is_none(),
-                    "idle tabs keep their normal emoji"
+                    panel.tab_ring().is_none(),
+                    "idle tabs keep their normal outline"
                 );
                 assert_eq!(panel.sidebar_mark().unwrap().entity_id(), mark_id);
                 cx.notify();
