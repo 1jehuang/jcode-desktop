@@ -18,6 +18,39 @@ pub(super) struct AccountsData {
     pub accounts: Option<Vec<Account>>,
     pub logins: Vec<OAuthLogin>,
     pub pool: AccountPool,
+    /// Saved `default_provider`, the source of truth for the Default chip.
+    pub default_route: Option<String>,
+    /// The account that route resolves to, computed with the rows.
+    pub default_key: Option<String>,
+}
+
+impl AccountsData {
+    /// Resolve which connected account the saved default route selects.
+    pub(super) fn resolve_default(&mut self, providers: &[LoginProvider]) {
+        let Some(route) = self.default_route.clone() else {
+            self.default_key = None;
+            return;
+        };
+        let keys: Vec<String> = build_rows(providers, None, false, &|_| false, self)
+            .into_iter()
+            .filter(AccountRow::connected)
+            .map(|row| row.key)
+            .collect();
+        let logins = &self.logins;
+        let active = |provider: &str| {
+            logins
+                .iter()
+                .find(|login| login.provider == provider && login.active)
+                .or_else(|| logins.iter().find(|login| login.provider == provider))
+                .map(|login| login.label.clone())
+        };
+        self.default_key = jcode_base::auth::account_pool::account_for_route(
+            &route,
+            keys.iter().map(String::as_str),
+            active,
+        )
+        .map(str::to_owned);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -53,9 +86,13 @@ impl AccountRow {
             )
     }
 
-    /// Subscriptions rotate by default. Metered API keys never do silently.
+    /// Subscriptions (and the Jcode subscription) rotate by default. Metered
+    /// API keys never do silently. The policy lives in the SDK.
     fn default_pooled(&self) -> bool {
-        self.provider.method != LoginMethod::ApiKey
+        jcode_base::auth::account_pool::default_member(
+            &self.key,
+            self.provider.method == LoginMethod::ApiKey,
+        )
     }
 
     fn subtitle(&self) -> Option<String> {
@@ -397,6 +434,8 @@ pub(super) fn offline_data() -> AccountsData {
             login("claude", "claude-otter", "jeremy@personal.dev", true),
         ],
         pool: AccountPool::default(),
+        default_route: None,
+        default_key: None,
     }
 }
 
@@ -544,6 +583,18 @@ impl super::LoginState {
 }
 
 impl Panel {
+    /// The Default chip follows the saved default route, so it stays right
+    /// whichever path set it. With nothing saved, #1 in Auto-switch leads.
+    fn is_default_account(&self, key: &str, position: Option<usize>) -> bool {
+        let Some(state) = self.login.as_ref() else {
+            return false;
+        };
+        match &state.accounts.default_key {
+            Some(default) => default == key,
+            None => state.accounts.default_route.is_none() && position == Some(0),
+        }
+    }
+
     /// Banked resets on a login. Clicking only opens the workspace review,
     /// which prepares against the provider and needs an explicit confirm.
     fn render_banked_reset(
@@ -615,6 +666,12 @@ impl Panel {
             .first()
             .filter(|first| visible.first() != Some(&first.as_str()))
             .cloned();
+        if let Some(first) = &first
+            && let Some(route) = jcode_base::auth::account_pool::default_route_for_key(first)
+        {
+            state.accounts.default_route = Some(route.to_owned());
+            state.accounts.default_key = Some(first.clone());
+        }
         if !offline {
             let pool = state.accounts.pool.clone();
             cx.background_executor()
@@ -682,7 +739,7 @@ impl Panel {
         if row.active {
             name_line = name_line.child(chip("In use", theme.ACCENT));
         }
-        if position == Some(0) {
+        if self.is_default_account(&row.key, position) {
             name_line = name_line.child(
                 chip("Default", theme.ACCENT).debug_selector(|| "login-default-account".into()),
             );

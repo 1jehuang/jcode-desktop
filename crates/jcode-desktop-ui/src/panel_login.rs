@@ -199,10 +199,21 @@ impl Panel {
             if offline {
                 accounts::offline_data()
             } else {
+                // A default chosen elsewhere (model picker, /account, CLI
+                // login) before this sync existed still reorders the list.
+                let default_route = jcode_base::config::Config::load().provider.default_provider;
+                if let Some(route) = default_route.as_deref()
+                    && let Err(error) =
+                        jcode_base::auth::account_pool::sync_order_with_default_route(route)
+                {
+                    eprintln!("[accounts] could not sync order with default: {error}");
+                }
                 accounts::AccountsData {
                     accounts: crate::accounts::fetch(),
                     logins: jcode_base::auth::account_pool::oauth_logins(),
                     pool: jcode_base::auth::account_pool::AccountPool::load(),
+                    default_route,
+                    default_key: None,
                 }
             }
         });
@@ -210,6 +221,8 @@ impl Panel {
             let data = accounts_task.await;
             let _ = this.update(cx, |panel, cx| {
                 if let Some(state) = panel.login.as_mut() {
+                    let mut data = data;
+                    data.resolve_default(&state.providers);
                     state.accounts = data;
                     cx.notify();
                 }
