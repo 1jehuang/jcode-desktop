@@ -46,6 +46,7 @@ impl AccountRow {
             || matches!(
                 self.status,
                 ConnectionStatus::Connected
+                    | ConnectionStatus::Testing
                     | ConnectionStatus::Unverified
                     | ConnectionStatus::Expired
                     | ConnectionStatus::Failed
@@ -159,6 +160,7 @@ pub(super) fn build_rows(
     providers: &[LoginProvider],
     statuses: Option<&ConnectionStatuses>,
     loading: bool,
+    testing: &dyn Fn(&str) -> bool,
     data: &AccountsData,
 ) -> Vec<AccountRow> {
     let mut rows = Vec::new();
@@ -173,6 +175,9 @@ pub(super) fn build_rows(
             && account.is_some_and(|a| a.status == "available")
         {
             status = ConnectionStatus::Unverified;
+        }
+        if status != ConnectionStatus::NotConnected && testing(provider.id) {
+            status = ConnectionStatus::Testing;
         }
         let logins: Vec<&OAuthLogin> = if MULTI_ACCOUNT.contains(&provider.id) {
             data.logins
@@ -278,7 +283,8 @@ pub(super) fn offline_data() -> AccountsData {
         // "soon" means about 3h from now, so screenshots read realistically.
         let next = next.map(|next| match next {
             "soon" => {
-                let at = std::time::SystemTime::now() + std::time::Duration::from_secs(3 * 3600 + 120);
+                let at =
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(3 * 3600 + 120);
                 httpdate_rfc3339(at)
             }
             other => other.to_owned(),
@@ -477,6 +483,10 @@ fn limit_meter(limit: &UsageLimit) -> gpui::AnyElement {
         .into_any_element()
 }
 
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or(text).trim().to_owned()
+}
+
 fn chip(label: impl Into<SharedString>, color: gpui::Rgba) -> gpui::Div {
     chip_base(color).child(label.into())
 }
@@ -517,6 +527,20 @@ fn chip_base(color: gpui::Rgba) -> gpui::Div {
         .text_size(px(11.))
         .text_color(color)
         .whitespace_nowrap()
+}
+
+impl super::LoginState {
+    /// Rows for `providers`, with any in-flight live test shown as Testing.
+    pub(super) fn account_rows(&self, providers: &[LoginProvider]) -> Vec<AccountRow> {
+        let testing = |id: &str| self.live_test_all || self.live_testing.contains(id);
+        build_rows(
+            providers,
+            self.statuses.as_ref(),
+            self.status_loading,
+            &testing,
+            &self.accounts,
+        )
+    }
 }
 
 impl Panel {
@@ -583,12 +607,26 @@ impl Panel {
             .unwrap_or(remaining.len());
         let visible: Vec<&str> = visible.iter().map(String::as_str).collect();
         state.accounts.pool.place(key, pooled, index, &visible);
+        // The first auto-switch account is the default for new sessions.
+        let first = state
+            .accounts
+            .pool
+            .members
+            .first()
+            .filter(|first| visible.first() != Some(&first.as_str()))
+            .cloned();
         if !offline {
             let pool = state.accounts.pool.clone();
             cx.background_executor()
                 .spawn(async move {
                     if let Err(error) = pool.save() {
                         eprintln!("[accounts] could not save auto-switch order: {error}");
+                    }
+                    if let Some(first) = first
+                        && let Err(error) =
+                            jcode_base::auth::account_pool::apply_default_account(&first)
+                    {
+                        eprintln!("[accounts] could not make {first} the default: {error}");
                     }
                 })
                 .detach();
@@ -627,21 +665,27 @@ impl Panel {
         let title = provider.display_name.to_owned();
         let mut name_line = div()
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap_2()
+            .gap_x_2()
+            .gap_y_1()
             .min_w_0()
-            .overflow_hidden()
             .child(
                 div()
-                    .min_w(px(40.))
+                    .flex_none()
                     .text_size(px(14.))
                     .text_color(theme.TEXT)
-                    .truncate()
+                    .whitespace_nowrap()
                     .child(title.clone()),
             )
             .child(div().flex_none().child(login_method_icon(provider.method)));
         if row.active {
             name_line = name_line.child(chip("In use", theme.ACCENT));
+        }
+        if position == Some(0) {
+            name_line = name_line.child(
+                chip("Default", theme.ACCENT).debug_selector(|| "login-default-account".into()),
+            );
         }
         if let Some(plan) = &row.plan {
             name_line = name_line.child(chip(plan.clone(), theme.TEXT_DIM));
@@ -673,6 +717,24 @@ impl Panel {
             );
         }
         let connected = pooled.is_some();
+        let live_error = self
+            .login
+            .as_ref()
+            .and_then(|state| state.live_errors.get(provider.id))
+            .filter(|_| {
+                status == ConnectionStatus::Failed || status == ConnectionStatus::Unverified
+            });
+        if let Some(error) = live_error {
+            text = text.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme.ERROR)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(first_line(error)),
+            );
+        }
         // Meters sit on their own line inside the text column. Beside the
         // name they overlapped the plan and reset chips on narrow panels.
         if !row.limits.is_empty() {
@@ -734,14 +796,59 @@ impl Panel {
             )
             .child(text);
         if connected || status != ConnectionStatus::NotConnected {
+            let tip = status.detail();
             element = element.child(
-                status_chip(status.label(), color).debug_selector(move || status_selector.clone()),
+                status_chip(status.label(), color)
+                    .id(SharedString::from(format!("login-status-chip-{key}")))
+                    .debug_selector(move || status_selector.clone())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::usage::MeterTooltip(tip.into())).into()
+                    }),
             );
         } else {
             element = element.child(
                 chip_base(theme.ACCENT)
                     .debug_selector(move || status_selector.clone())
                     .child("Connect"),
+            );
+        }
+        if connected {
+            let test_id = format!("login-test-{key}");
+            let selector = test_id.clone();
+            let provider_id = provider.id.to_owned();
+            let busy = status == ConnectionStatus::Testing;
+            element = element.child(
+                div()
+                    .id(SharedString::from(test_id))
+                    .debug_selector(move || selector.clone())
+                    .flex_none()
+                    .px_2p5()
+                    .py(px(3.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.PANEL_BORDER)
+                    .text_size(px(11.))
+                    .text_color(theme.TEXT_DIM)
+                    .whitespace_nowrap()
+                    .when(!busy, |el| {
+                        el.cursor_pointer()
+                            .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                    })
+                    .when(busy, |el| el.opacity(0.5))
+                    .child("Test")
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            super::usage::MeterTooltip(
+                                "Send one small live request through this account to confirm it works. Uses a little quota or credit.".into(),
+                            )
+                        })
+                        .into()
+                    })
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.live_test_providers(Some(provider_id.clone()), cx)
+                    })),
             );
         }
         if let Some(pooled) = pooled {
@@ -889,12 +996,7 @@ impl Panel {
             return Vec::new();
         };
         let theme = Theme::global();
-        let rows = build_rows(
-            providers,
-            state.statuses.as_ref(),
-            state.status_loading,
-            &state.accounts,
-        );
+        let rows = state.account_rows(providers);
         let groups = group_rows(rows, &state.accounts.pool);
         let visible = Rc::new(
             groups
@@ -908,7 +1010,7 @@ impl Panel {
             out.push(self.render_account_group(
                 "login-group-auto",
                 "Auto-switch",
-                "Used automatically when another account runs out or fails, in this order. Drag to reorder.",
+                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag to reorder.",
                 &groups.pooled,
                 true,
                 &visible,
@@ -1005,7 +1107,7 @@ mod tests {
             ("claude".into(), ConnectionStatus::Expired),
         ]);
         let data = offline_data();
-        let rows = build_rows(&providers, Some(&statuses), false, &data);
+        let rows = build_rows(&providers, Some(&statuses), false, &|_| false, &data);
         let keys: Vec<_> = rows.iter().map(|row| row.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -1073,12 +1175,7 @@ mod tests {
                     state.status_loading,
                     state.usage.as_ref(),
                 );
-                let rows = build_rows(
-                    &providers,
-                    state.statuses.as_ref(),
-                    state.status_loading,
-                    &state.accounts,
-                );
+                let rows = state.account_rows(&providers);
                 group_rows(rows, &state.accounts.pool)
                     .pooled
                     .into_iter()
@@ -1141,6 +1238,39 @@ mod tests {
         vcx.simulate_click(pill, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(!pooled(vcx).contains(&"openai:openai-fox".to_string()));
+    }
+
+    #[gpui::test]
+    fn live_test_controls_mark_rows_testing_without_opening_sign_in(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts("live-test", None, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("login-test-all").is_some());
+        assert!(vcx.debug_bounds("login-default-account").is_some());
+        let test = vcx
+            .debug_bounds("login-test-openai:openai-otter")
+            .expect("connected rows offer a Test pill")
+            .center();
+        // Clicking Test marks the provider testing and never opens sign-in.
+        panel.update(vcx, |panel, cx| {
+            panel.live_test_providers(Some("openai".into()), cx);
+            let state = panel.login.as_ref().unwrap();
+            let rows = state.account_rows(&state.providers);
+            assert!(
+                rows.iter()
+                    .filter(|row| row.provider.id == "openai")
+                    .all(|row| row.status == ConnectionStatus::Testing)
+            );
+        });
+        vcx.run_until_parked();
+        vcx.simulate_click(test, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            let state = panel.login.as_ref().unwrap();
+            assert!(state.provider.is_none());
+            assert!(state.live_testing.is_empty());
+        });
     }
 
     #[gpui::test]

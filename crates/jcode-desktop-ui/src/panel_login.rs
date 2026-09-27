@@ -36,6 +36,13 @@ pub(super) struct LoginState {
     usage: Option<catalog::MethodUsage>,
     accounts: accounts::AccountsData,
     accounts_task: Option<Task<()>>,
+    /// Provider ids with a live smoke test in flight.
+    live_testing: std::collections::HashSet<String>,
+    /// A "Test all" run is in flight.
+    live_test_all: bool,
+    /// Failure reasons from the most recent live test, by provider id.
+    live_errors: HashMap<String, String>,
+    live_tasks: Vec<Task<()>>,
 }
 
 impl Drop for LoginState {
@@ -162,6 +169,10 @@ impl Panel {
             usage: None,
             accounts: accounts::AccountsData::default(),
             accounts_task: None,
+            live_testing: Default::default(),
+            live_test_all: false,
+            live_errors: HashMap::new(),
+            live_tasks: Vec::new(),
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
@@ -238,6 +249,79 @@ impl Panel {
                     state.status_loading = false;
                     cx.notify();
                 }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Send one real request through `provider` (or every configured
+    /// provider) and fold the results into the row statuses.
+    pub(super) fn live_test_providers(&mut self, provider: Option<String>, cx: &mut Context<Self>) {
+        let offline =
+            self.preview_state.is_some() || cfg!(test) || crate::harness::screenshot_mode();
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        if state.live_test_all
+            || provider
+                .as_ref()
+                .is_some_and(|id| state.live_testing.contains(id))
+        {
+            return;
+        }
+        match &provider {
+            Some(id) => {
+                state.live_testing.insert(id.clone());
+                state.live_errors.remove(id);
+            }
+            None => {
+                state.live_test_all = true;
+                state.live_errors.clear();
+            }
+        }
+        let arg = provider.clone();
+        let task = cx.background_executor().spawn(async move {
+            if offline {
+                None
+            } else {
+                connection::run_live_test(arg.as_deref())
+            }
+        });
+        state.live_tasks.push(cx.spawn(async move |this, cx| {
+            let results = task.await;
+            let _ = this.update(cx, |panel, cx| {
+                let Some(state) = panel.login.as_mut() else {
+                    return;
+                };
+                match &provider {
+                    Some(id) => {
+                        state.live_testing.remove(id);
+                    }
+                    None => state.live_test_all = false,
+                }
+                match results {
+                    Some(results) => {
+                        let statuses = state.statuses.get_or_insert_with(Default::default);
+                        for (id, result) in results {
+                            // A single-provider run only reports that provider.
+                            if provider.as_ref().is_some_and(|p| *p != id) {
+                                continue;
+                            }
+                            if let Some(error) = result.error {
+                                state.live_errors.insert(id.clone(), error);
+                            }
+                            statuses.insert(id, result.status);
+                        }
+                    }
+                    None if !offline => {
+                        state.error = Some(
+                            "The live test did not finish. Check your network and try again."
+                                .into(),
+                        );
+                    }
+                    None => {}
+                }
+                cx.notify();
             });
         }));
         cx.notify();
@@ -892,6 +976,30 @@ impl Panel {
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child("Accounts"),
+                        )
+                        .when(
+                            state.provider.is_none() && !state.complete && !remote,
+                            |el| {
+                                let running = state.live_test_all;
+                                el.child(
+                                    login_button(
+                                        "login-test-all",
+                                        if running { "Testing all…" } else { "Test all" },
+                                    )
+                                    .when(running, |el| el.opacity(0.6))
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| {
+                                            super::usage::MeterTooltip(
+                                                "Send one small live request through every connected account to confirm each one works. Uses a little quota or credit.".into(),
+                                            )
+                                        })
+                                        .into()
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.live_test_providers(None, cx)
+                                    })),
+                                )
+                            },
                         )
                         .child(
                             login_button(
