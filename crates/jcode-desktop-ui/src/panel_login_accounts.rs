@@ -66,6 +66,8 @@ pub(super) struct AccountRow {
     pub plan: Option<String>,
     /// Banked usage resets this login holds (OpenAI) or a Claude session reset.
     pub banked: Option<BankedReset>,
+    /// Explicit provider eligibility, or an unavailable lookup. Never a count.
+    pub reset_status: Option<String>,
     /// The auth report says a credential is stored, whatever its health.
     pub configured: bool,
     /// First row of its provider keeps the stable `login-provider-{id}` selector.
@@ -232,9 +234,20 @@ pub(super) fn build_rows(
                 _ => Vec::new(),
             };
             let (usage, plan) = report.map(usage_summary).unwrap_or_default();
-            let banked = report
-                .and_then(|r| r.banked_reset.clone())
-                .filter(|reset| reset.available_count > 0 || reset.next_available_at.is_some());
+            // A confirmed zero is useful information. Only missing provider
+            // data is unknown, not an empty reset bank.
+            let banked = report.and_then(|r| r.banked_reset.clone());
+            let reset_status = (provider.id == "claude" && banked.is_none()
+                && (label.is_some() || account.is_some_and(|a| a.status != "not_configured")))
+                .then(|| {
+                    if report.is_some_and(|r| r.extra_info.iter().any(|(key, value)| {
+                        key == "Session resets" && value == "Not eligible"
+                    })) {
+                        "Resets not eligible".to_owned()
+                    } else {
+                        "Reset availability unavailable".to_owned()
+                    }
+                });
             AccountRow {
                 key: account_key(provider.id, label),
                 provider: *provider,
@@ -246,6 +259,7 @@ pub(super) fn build_rows(
                 usage,
                 plan,
                 banked,
+                reset_status,
                 configured: account.is_some_and(|a| a.status != "not_configured"),
                 first_of_provider: first,
             }
@@ -541,16 +555,14 @@ pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
         (ResetProvider::OpenAi, n) if n > 1 => format!("{n} resets banked"),
         (ResetProvider::Claude, n) if n > 0 => "Session reset ready".into(),
         _ => match reset.next_available_at.as_deref() {
-            Some(at) => format!("Next reset in {}", jcode_base::usage::format_reset_time(at)),
-            None => "No resets".into(),
+            Some(at) => format!("0 banked resets · next in {}", jcode_base::usage::format_reset_time(at)),
+            None => "0 banked resets".into(),
         },
     }
 }
 
 fn status_chip(label: &'static str, color: gpui::Rgba) -> gpui::Div {
-    chip_base(color)
-        .child(div().size(px(6.)).rounded_full().bg(color))
-        .child(label)
+    chip_base(color).child(label)
 }
 
 fn chip_base(color: gpui::Rgba) -> gpui::Div {
@@ -749,6 +761,15 @@ impl Panel {
         }
         if let Some(reset) = &row.banked {
             name_line = name_line.child(self.render_banked_reset(&row.key, reset, cx));
+        } else if let Some(status) = &row.reset_status {
+            let selector = format!("login-reset-status-{}", row.key);
+            name_line = name_line.child(
+                chip(status.clone(), theme.TEXT_DIM)
+                    .id(SharedString::from(selector.clone()))
+                    .debug_selector(move || selector.clone())
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(|_, _, cx| cx.stop_propagation()),
+            );
         }
         let detail: Vec<String> = [row.subtitle(), row.usage.clone()]
             .into_iter()
@@ -821,6 +842,53 @@ impl Panel {
             .hover(|el| el.bg(theme.ACCENT_DIM));
         // Auto-switch order reads left to right, before the provider.
         if let Some(position) = position {
+            let mut controls = div().flex().flex_col().flex_none().gap(px(2.));
+            for (direction, label, enabled, target) in [
+                ("up", "↑", position > 0, position.saturating_sub(1)),
+                ("down", "↓", position + 1 < visible.len(), position + 2),
+            ] {
+                let id = format!("login-order-{direction}-{key}");
+                let selector = id.clone();
+                let move_key = key.clone();
+                let visible = visible.clone();
+                let before = visible.get(target).cloned();
+                controls = controls.child(
+                    div()
+                        .id(SharedString::from(id))
+                        .debug_selector(move || selector.clone())
+                        .w(px(28.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(theme.PANEL_BG)
+                        .text_size(px(14.))
+                        .text_color(theme.TEXT_DIM)
+                        .when(enabled, |el| {
+                            el.cursor_pointer()
+                                .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.ACCENT))
+                        })
+                        .when(!enabled, |el| el.opacity(0.3))
+                        .child(label)
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| {
+                                super::usage::MeterTooltip(format!(
+                                    "Move {direction} in auto-switch order"
+                                ))
+                            })
+                            .into()
+                        })
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if enabled {
+                                this.place_account(&move_key, true, before.as_deref(), &visible, cx);
+                            }
+                        })),
+                );
+            }
+            element = element.child(controls);
             element = element.child(
                 div()
                     .flex_none()
@@ -1067,7 +1135,7 @@ impl Panel {
             out.push(self.render_account_group(
                 "login-group-auto",
                 "Auto-switch",
-                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag to reorder.",
+                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Use ↑ ↓ or drag to reorder.",
                 &groups.pooled,
                 true,
                 &visible,
@@ -1214,7 +1282,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn dragging_rows_moves_accounts_between_groups_and_reorders(cx: &mut gpui::TestAppContext) {
+    fn reorder_controls_and_dragging_move_accounts_without_opening_sign_in(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new_accounts("pool-test", None, crate::harness::spawn_inert(), cx)
         });
@@ -1243,6 +1311,32 @@ mod tests {
         let before = pooled(vcx);
         assert!(before.contains(&"openai:openai-otter".to_string()));
         assert!(!before.contains(&"openai-api".to_string()));
+
+        let click_order = |vcx: &mut gpui::VisualTestContext, direction: &str, key: &str| {
+            let selector = Box::leak(format!("login-order-{direction}-{key}").into_boxed_str());
+            let bounds = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        // Boundary controls do nothing, and clicking never opens sign-in.
+        click_order(vcx, "up", &before[0]);
+        click_order(vcx, "down", before.last().unwrap());
+        assert_eq!(pooled(vcx), before);
+        // Move down through the middle to the end, then back to the top.
+        for index in 1..before.len() {
+            click_order(vcx, "down", &before[0]);
+            assert_eq!(pooled(vcx)[index], before[0]);
+        }
+        for index in (0..before.len() - 1).rev() {
+            click_order(vcx, "up", &before[0]);
+            assert_eq!(pooled(vcx)[index], before[0]);
+        }
+        assert_eq!(pooled(vcx), before);
+        assert!(panel.read_with(vcx, |panel, _| {
+            let state = panel.login.as_ref().unwrap();
+            state.provider.is_none() && state.accounts.default_key.as_ref() == Some(&before[0])
+        }));
+        assert!(vcx.debug_bounds("login-order-up-openai-api").is_none());
 
         let drag = |vcx: &mut gpui::VisualTestContext, from: &'static str, to: &'static str| {
             let from = vcx.debug_bounds(from).unwrap().center();
@@ -1373,6 +1467,36 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_zero_resets_are_retained_but_missing_counts_are_not_invented() {
+        let providers = [provider("claude", LoginMethod::OAuth)];
+        let mut data = offline_data();
+        let report = data.accounts.as_mut().unwrap().iter_mut()
+            .find(|account| account.id == "claude").unwrap()
+            .usage_reports.first_mut().unwrap();
+        report.banked_reset = Some(BankedReset {
+            provider: ResetProvider::Claude,
+            account_label: Some("claude-otter".into()),
+            available_count: 0,
+            limit_reached: false,
+            next_available_at: None,
+        });
+        let rows = build_rows(&providers, None, false, &|_| false, &data);
+        assert_eq!(rows[0].banked.as_ref().unwrap().available_count, 0);
+        data.accounts.as_mut().unwrap().iter_mut()
+            .find(|account| account.id == "claude").unwrap()
+            .usage_reports.first_mut().unwrap().banked_reset = None;
+        let rows = build_rows(&providers, None, false, &|_| false, &data);
+        assert!(rows[0].banked.is_none());
+        assert_eq!(rows[0].reset_status.as_deref(), Some("Reset availability unavailable"));
+        data.accounts.as_mut().unwrap().iter_mut()
+            .find(|account| account.id == "claude").unwrap()
+            .usage_reports[0].extra_info.push(("Session resets".into(), "Not eligible".into()));
+        let rows = build_rows(&providers, None, false, &|_| false, &data);
+        assert!(rows[0].banked.is_none());
+        assert_eq!(rows[0].reset_status.as_deref(), Some("Resets not eligible"));
+    }
+
+    #[test]
     fn banked_reset_labels() {
         let reset = |provider, count, next: Option<&str>| BankedReset {
             provider,
@@ -1399,8 +1523,11 @@ mod tests {
                 0,
                 Some("2099-01-01T00:00:00Z")
             ))
-            .starts_with("Next reset in ")
+            .starts_with("0 banked resets · next in ")
         );
+        for provider in [ResetProvider::OpenAi, ResetProvider::Claude] {
+            assert_eq!(banked_reset_label(&reset(provider, 0, None)), "0 banked resets");
+        }
     }
 
     #[test]
