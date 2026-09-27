@@ -118,12 +118,20 @@ impl Render for AccountDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
         div()
+            .debug_selector(|| "login-account-drag-preview".into())
+            .flex()
+            .items_center()
+            .gap_2()
             .px_3()
             .py_1p5()
             .rounded_full()
             .bg(theme.ACCENT_DIM)
+            .border_1()
+            .border_color(theme.ACCENT)
+            .cursor(gpui::CursorStyle::ClosedHand)
             .text_size(px(13.))
             .text_color(theme.TEXT)
+            .child("≡")
             .child(self.0.clone())
     }
 }
@@ -655,6 +663,11 @@ impl Panel {
         visible: &[String],
         cx: &mut Context<Self>,
     ) {
+        // Picking up and releasing the same account is a no-op, not an
+        // implicit move to the end after filtering it out of `remaining`.
+        if before == Some(key) {
+            return;
+        }
         let offline =
             self.preview_state.is_some() || cfg!(test) || crate::harness::screenshot_mode();
         let Some(state) = self.login.as_mut() else {
@@ -840,6 +853,46 @@ impl Panel {
             })
             .cursor_pointer()
             .hover(|el| el.bg(theme.ACCENT_DIM));
+        if connected {
+            let handle_id = format!("login-drag-handle-{key}");
+            let selector = handle_id.clone();
+            let dragged = DraggedAccount {
+                key: key.clone(),
+                title: match &row.label {
+                    Some(label) => format!("{title} · {label}"),
+                    None => title.clone(),
+                },
+            };
+            element = element.child(
+                div()
+                    .id(SharedString::from(handle_id))
+                    .debug_selector(move || selector.clone())
+                    .flex_none()
+                    .w(px(28.))
+                    .h(px(40.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(3.))
+                    .rounded_full()
+                    .cursor(gpui::CursorStyle::OpenHand)
+                    .hover(|el| el.bg(theme.ACCENT_DIM))
+                    .children((0..3).map(|_| {
+                        div().w(px(14.)).h(px(2.)).rounded_full().bg(theme.TEXT_DIM)
+                    }))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::usage::MeterTooltip(
+                            "Drag to reorder or move between Auto-switch and Manual".into(),
+                        )).into()
+                    })
+                    .on_drag(dragged, |dragged, _, _, cx| {
+                        cx.new(|_| AccountDragPreview(dragged.title.clone()))
+                    })
+                    // A grip is not a sign-in button, even without movement.
+                    .on_click(|_, _, cx| cx.stop_propagation()),
+            );
+        }
         // Auto-switch order reads left to right, before the provider.
         if let Some(position) = position {
             let mut controls = div().flex().flex_col().flex_none().gap(px(2.));
@@ -1135,7 +1188,7 @@ impl Panel {
             out.push(self.render_account_group(
                 "login-group-auto",
                 "Auto-switch",
-                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Use ↑ ↓ or drag to reorder.",
+                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag the ≡ handle or use ↑ ↓ to reorder.",
                 &groups.pooled,
                 true,
                 &visible,
@@ -1312,6 +1365,15 @@ mod tests {
         assert!(before.contains(&"openai:openai-otter".to_string()));
         assert!(!before.contains(&"openai-api".to_string()));
 
+        let handle = vcx.debug_bounds("login-drag-handle-openai:openai-otter")
+            .expect("connected accounts expose a visible grip");
+        vcx.simulate_click(handle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(pooled(vcx), before);
+        assert!(panel.read_with(vcx, |panel, _| {
+            panel.login.as_ref().unwrap().provider.is_none()
+        }));
+
         let click_order = |vcx: &mut gpui::VisualTestContext, direction: &str, key: &str| {
             let selector = Box::leak(format!("login-order-{direction}-{key}").into_boxed_str());
             let bounds = vcx.debug_bounds(selector).unwrap();
@@ -1348,19 +1410,30 @@ mod tests {
                 left,
                 gpui::Modifiers::default(),
             );
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("login-account-drag-preview").is_some());
+            let midway = from + (to - from) * 0.5;
+            vcx.simulate_mouse_move(midway, left, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            let midway_preview = vcx.debug_bounds("login-account-drag-preview").unwrap();
             vcx.simulate_mouse_move(to, left, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            let final_preview = vcx.debug_bounds("login-account-drag-preview").unwrap();
+            assert_eq!(final_preview.origin - midway_preview.origin, to - midway);
             vcx.simulate_mouse_up(to, left, gpui::Modifiers::default());
             vcx.run_until_parked();
         };
+        drag(vcx, "login-drag-handle-openai:openai-otter", "login-provider-openai");
+        assert_eq!(pooled(vcx), before);
         // API key (manual) dropped onto the first auto-switch row goes first.
-        drag(vcx, "login-provider-openai-api", "login-provider-openai");
+        drag(vcx, "login-drag-handle-openai-api", "login-provider-openai");
         let after = pooled(vcx);
         assert_eq!(after[0], "openai-api");
         assert_eq!(after[1..], before[..]);
         // Reorder: the second OpenAI login moves ahead of the first.
         drag(
             vcx,
-            "login-provider-openai-openai-fox",
+            "login-drag-handle-openai:openai-fox",
             "login-provider-openai-api",
         );
         assert_eq!(pooled(vcx)[0], "openai:openai-fox");
