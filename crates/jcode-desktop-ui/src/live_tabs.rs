@@ -10,6 +10,8 @@ pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
 /// Compact windows swap the FPS readout for a sidebar menu button.
 const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
+/// Pointer route to the next workspace, beside the new-session plus.
+const TAB_NEXT_WORKSPACE_WIDTH: f32 = 40.0;
 const TAB_CLOSE_WIDTH: f32 = 40.0;
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
@@ -23,6 +25,7 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
             + 8.0
             + TAB_STATUS_WIDTH
             + TAB_NEW_WIDTH
+            + TAB_NEXT_WORKSPACE_WIDTH
             + TAB_CLOSE_WIDTH
             + 64.0
 }
@@ -334,6 +337,78 @@ impl Render for TabTooltip {
 }
 
 impl Workspace {
+    /// Workspace a pointer "next" click lands on: the next occupied workspace
+    /// below (wrapping), or a fresh adjacent one when nothing else is open.
+    pub(super) fn next_workspace_row(&self) -> usize {
+        let occupied = |row: usize| {
+            self.row_indices(row)
+                .any(|index| !self.slots[index].closing)
+        };
+        (1..STRIP_COUNT)
+            .map(|step| (self.active_row + step) % STRIP_COUNT)
+            .find(|&row| occupied(row))
+            .unwrap_or((self.active_row + 1) % STRIP_COUNT)
+    }
+
+    fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let target = self.next_workspace_row();
+        let accent = Theme::global().workspace_accent(target);
+        let shortcut = if cfg!(target_os = "macos") {
+            "⌘J / ⌘K"
+        } else {
+            "Super+J / Super+K"
+        };
+        let tooltip: gpui::SharedString =
+            format!("Go to workspace {} ({shortcut})", target + 1).into();
+        div()
+            .debug_selector(|| "tab-next-workspace-slot".into())
+            .absolute()
+            .right(px(TAB_CLOSE_WIDTH + TAB_NEW_WIDTH))
+            .top_0()
+            .w(px(TAB_NEXT_WORKSPACE_WIDTH))
+            .h(px(TAB_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("tab-next-workspace")
+                    .debug_selector(|| "tab-next-workspace".into())
+                    .h(px(22.0))
+                    .px(px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .rounded_full()
+                    .bg(accent.opacity(0.12))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(accent)
+                    .cursor_pointer()
+                    .occlude()
+                    .hover(move |el| el.bg(accent.opacity(0.26)))
+                    .tooltip(move |_, cx| cx.new(|_| TabTooltip(tooltip.clone())).into())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                            // Pointer route: coach the Super+J/K shortcut.
+                            this.missed("focus_up_down", cx);
+                            let row = this.next_workspace_row();
+                            this.overview = false;
+                            this.overview_progress.set(0.0, Instant::now());
+                            this.switch_row_animated(row, window, cx);
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().text_size(px(10.0)).child("↓"))
+                    .child((target + 1).to_string()),
+            )
+    }
+}
+
+impl Workspace {
     pub(super) fn render_workspace_bar(
         &mut self,
         canvas_width: f32,
@@ -358,7 +433,7 @@ impl Workspace {
         } else {
             TAB_STATUS_WIDTH
         };
-        let tab_budget = canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH;
+        let tab_budget = canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_NEXT_WORKSPACE_WIDTH - TAB_CLOSE_WIDTH;
         let version_width = version_header_width(tab_budget);
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
@@ -384,7 +459,7 @@ impl Workspace {
             })
             .unwrap_or(0);
         let available =
-            (canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH - version_width)
+            (canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_NEXT_WORKSPACE_WIDTH - TAB_CLOSE_WIDTH - version_width)
                 .max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
@@ -431,7 +506,7 @@ impl Workspace {
             .absolute()
             .top_0()
             .left(px(version_width + status_width))
-            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH))
+            .right(px(TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
         self.live_tabs.header_offset = version_width + status_width;
         self.live_tabs.version_width = version_width;
@@ -762,6 +837,7 @@ impl Workspace {
                 el.child(self.render_version_header(version_width, cx))
             })
             .children(coach_chip)
+            .child(self.render_next_workspace_button(cx))
             .child(
                 div()
                     .id("tab-new-session")
@@ -853,6 +929,38 @@ mod tests {
     use super::*;
 
     gpui::actions!(jcode_desktop_host, [CloseWindow]);
+
+    #[gpui::test]
+    fn next_workspace_pill_reaches_the_next_occupied_workspace_by_mouse(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("first", cx);
+            w.active_row = 2;
+            w.push_test_panel("third", cx);
+            w.active_row = 0;
+            w.active = 0;
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [1440., 800., 480.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
+            vcx.run_until_parked();
+            let next = vcx.debug_bounds("tab-next-workspace").unwrap();
+            let plus = vcx.debug_bounds("tab-new-session").unwrap();
+            let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
+            assert!(tabs.right() <= next.left(), "width={width}");
+            assert!(next.right() <= plus.left(), "width={width}");
+        }
+        // Skips empty workspace 2 and lands on workspace 3, then wraps back.
+        for expected in [2, 0] {
+            let next = vcx.debug_bounds("tab-next-workspace").unwrap();
+            vcx.simulate_click(next.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), expected);
+        }
+    }
 
     #[gpui::test]
     fn tab_close_window_is_separate_from_new_session_and_dispatches_host_action(
