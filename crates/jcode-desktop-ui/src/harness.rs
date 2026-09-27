@@ -1691,6 +1691,7 @@ fn session_worker_with_connector(
                                     model: info.model,
                                     routes: info.routes,
                                     reasoning_effort: info.reasoning_effort,
+                    auth_method: info.auth_method,
                                 },
                             });
                         }
@@ -1716,6 +1717,7 @@ fn session_worker_with_connector(
                         let steering = turn_active || !unaccepted_sends.is_empty();
                         let result = if steering {
                             client.soft_interrupt_with_images(real_id, &content, images, true)
+                                    auth_method: info.auth_method,
                         } else {
                             client.send_message(real_id, &content, images, None)
                         };
@@ -2365,6 +2367,7 @@ mod tests {
             _ => panic!("unexpected update"),
         };
         let seen: Vec<_> = rest.iter().map(describe).collect();
+                auth_method: None,
         let runtime_count = seen.iter().filter(|s| s.starts_with("runtime")).count();
         // At most one catalog per session per MAX_SCAN window, never thousands.
         assert!(runtime_count <= 6, "{runtime_count} catalogs applied: {seen:?}");

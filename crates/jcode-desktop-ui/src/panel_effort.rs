@@ -192,6 +192,7 @@ mod tests {
                     provider: Some(provider.into()),
                     model: Some(model.into()),
                     reasoning_effort: effort.map(str::to_string),
+                    auth_method: None,
                 },
                 cx,
             );
@@ -301,6 +302,7 @@ mod tests {
                     provider: Some("openai".into()),
                     model: Some("gpt-5.6-sol".into()),
                     reasoning_effort: Some("high".into()),
+                    auth_method: None,
                 },
                 cx,
             );
@@ -316,6 +318,7 @@ mod tests {
                     provider: Some("openai".into()),
                     model: Some("gpt-5.6-sol".into()),
                     reasoning_effort: None,
+                    auth_method: None,
                 },
                 cx,
             );

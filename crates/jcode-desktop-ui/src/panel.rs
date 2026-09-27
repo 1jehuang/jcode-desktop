@@ -1788,6 +1788,7 @@ impl Panel {
                         model: Some("openai:atlas-01".into()),
                         reasoning_effort: None,
                         routes,
+                        auth_method: None,
                     },
                     cx,
                 );
@@ -2594,6 +2595,7 @@ impl Panel {
                 model,
                 reasoning_effort,
                 ..
+                auth_method,
             } => {
                 if provider.is_some() {
                     self.provider = provider.clone();
@@ -2612,12 +2614,18 @@ impl Panel {
                     });
                 }
                 self.sync_effort_menu(cx);
+                // The daemon's resolved credential is authoritative, including
+                // an OAuth<->API key switch that keeps the same model id.
+                if let Some(method) = auth_method.as_deref() {
+                    self.auth_method = Some(human_auth_method(method));
+                }
             }
             ApiEvent::RuntimeInfo {
                 provider,
                 model,
                 reasoning_effort,
                 routes,
+                auth_method,
                 ..
             } => {
                 if provider.is_some() {
@@ -2627,7 +2635,10 @@ impl Panel {
                 if model.is_some() {
                     self.model = model.clone();
                 }
-                self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
+                self.auth_method = auth_method
+                    .as_deref()
+                    .map(human_auth_method)
+                    .or_else(|| auth_method_for_model(self.model.as_deref(), routes));
                 let models = available_model_names(routes);
                 self.model_logo_providers = available_model_logo_providers(routes);
                 self.available_models = models.clone();
@@ -4805,23 +4816,42 @@ fn role_of(item: &Item) -> Option<&'static str> {
 }
         | Item::CacheMiss(_)
 
-/// The credential route serving `model`, phrased for humans. The route
-/// catalog's `api_method` values are stable ids like `openai-oauth` or
-/// `anthropic-api-key`; the footer says "oauth" or "api key".
+/// The credential route serving `model`, phrased for humans.
+/// Fallback for daemons that do not report the resolved credential. A model
+/// can have both an API key and an OAuth route, so the first match is not the
+/// serving one: prefer an available route, and OAuth over API key, matching
+/// the daemon's own auto rule.
 fn auth_method_for_model(
     model: Option<&str>,
     routes: &[jcode_sdk::ModelRouteInfo],
 ) -> Option<String> {
     let model = model?;
-    let route = routes.iter().find(|route| route.model == model)?;
-    let method = route.api_method.to_lowercase();
-    Some(if method.contains("oauth") {
+    let route = routes
+        .iter()
+        .filter(|route| route.model == model)
+        .max_by_key(|route| {
+            (
+                route.available,
+                route.api_method.to_ascii_lowercase().contains("oauth"),
+            )
+        })?;
+    Some(human_auth_method(&route.api_method))
+}
+
+/// `oauth`, `api_key`, or a route id such as `claude-oauth`, phrased for the
+/// account label.
+fn human_auth_method(method: &str) -> String {
+    let method = method.to_lowercase();
+    if method.contains("oauth") {
         "oauth".to_string()
-    } else if method.contains("api-key") || method.contains("api_key") {
+    } else if method.contains("api-key")
+        || method.contains("api_key")
+        || method.ends_with("-api")
+    {
         "api key".to_string()
     } else {
         method
-    })
+    }
 }
 
 fn available_model_names(routes: &[jcode_sdk::ModelRouteInfo]) -> Vec<String> {
@@ -6675,6 +6705,7 @@ mod tests {
         });
     }
 
+                        auth_method: None,
     #[test]
     fn compact_directory_marks_home_but_not_its_children() {
         let home = std::env::var("HOME").expect("test home");
@@ -6688,6 +6719,74 @@ mod tests {
 
     #[test]
     fn footer_labels_keep_model_account_and_context_separate() {
+    #[test]
+    fn account_label_follows_the_serving_credential_not_the_first_route() {
+        // A Claude model lists its API key route before its OAuth route.
+        let routes = vec![
+            route("claude-opus-5-5", "claude-api"),
+            route("claude-opus-5-5", "claude-oauth"),
+        ];
+        // Without a daemon report, OAuth wins like the daemon's auto rule.
+        assert_eq!(
+            auth_method_for_model(Some("claude-opus-5-5"), &routes).as_deref(),
+            Some("oauth")
+        );
+        // An unavailable OAuth route does not serve the session.
+        let mut no_login = routes.clone();
+        no_login[1].available = false;
+        assert_eq!(
+            auth_method_for_model(Some("claude-opus-5-5"), &no_login).as_deref(),
+            Some("api key")
+        );
+        assert_eq!(human_auth_method("oauth"), "oauth");
+        assert_eq!(human_auth_method("api_key"), "api key");
+        assert_eq!(human_auth_method("claude-api"), "api key");
+    }
+
+    #[gpui::test]
+    fn runtime_info_auth_method_overrides_route_guessing(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+
+        workspace.update(vcx, |workspace, cx| {
+            let panel = workspace.test_panel(0).expect("panel exists");
+            panel.update(cx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::RuntimeInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("Claude".into()),
+                        model: Some("claude-opus-5-5".into()),
+                        reasoning_effort: None,
+                        auth_method: Some("api_key".into()),
+                        routes: vec![
+                            route("claude-opus-5-5", "claude-api"),
+                            route("claude-opus-5-5", "claude-oauth"),
+                        ],
+                    },
+                    cx,
+                );
+                assert_eq!(panel.auth_method.as_deref(), Some("api key"));
+                // A same-model credential switch reported by the daemon.
+                panel.apply(
+                    &ApiEvent::ModelInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("Claude".into()),
+                        model: Some("claude-opus-5-5".into()),
+                        reasoning_effort: None,
+                        auth_method: Some("oauth".into()),
+                    },
+                    cx,
+                );
+                assert_eq!(panel.auth_method.as_deref(), Some("oauth"));
+            });
+        });
+    }
+
         assert_eq!(
             account_method_label(Some("openai"), Some("oauth")),
             "OpenAI · OAuth"
@@ -7728,6 +7827,7 @@ mod tests {
                     cx,
                 );
                 panel.apply(
+                        auth_method: None,
                     &ApiEvent::TokenUsage {
                         session_id: "session-a".into(),
                         input: 100_000,
@@ -7762,6 +7862,7 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("anthropic".into()),
                         model: Some("claude-fable-5".into()),
+                        auth_method: None,
                         reasoning_effort: None,
                     },
                     cx,
@@ -7776,6 +7877,7 @@ mod tests {
 
         let bounds = vcx
             .debug_bounds("panel-meta")
+                        auth_method: None,
             .expect("the identity footer should have painted");
         assert!(
             bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
@@ -8255,6 +8357,7 @@ mod tests {
         vcx.update(|window, cx| {
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
+                        auth_method: None,
         });
 
         vcx.simulate_input("/mod");

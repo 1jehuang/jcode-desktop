@@ -73,6 +73,7 @@ impl Server {
                         model: None,
                         routes: vec![],
                         reasoning_effort: None,
+                        auth_method: None,
                     },
                     ApiRequest::ForkSession { .. } => ApiEvent::SessionForked {
                         session: info("fork-id"),
