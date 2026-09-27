@@ -212,12 +212,42 @@ impl TabLayout {
             .chain(std::iter::once(selected))
     }
 
+    /// A hovered tab rises above every other tab, including the focused one,
+    /// so it can be inspected without changing focus.
+    fn hover_paint_order(count: usize, selected: usize, hovered: Option<usize>) -> Vec<usize> {
+        let mut order: Vec<_> = Self::paint_order(count, selected).collect();
+        if let Some(hovered) = hovered.filter(|&hovered| hovered < count) {
+            order.retain(|&i| i != hovered);
+            order.push(hovered);
+        }
+        order
+    }
+
+    /// Pop a hovered tab out: full height and at least the focused tab's width.
+    /// It grows only rightward (shifting left at the track's end), so the
+    /// pointer that hovered it always stays inside and hover cannot flicker.
+    fn pop_out(tab: TabGeometry, focused_width: f32, available: f32) -> TabGeometry {
+        let width = tab.width.max(focused_width).max(160.0).min(available);
+        TabGeometry {
+            left: tab.left.min(available - width).max(0.0),
+            width,
+            height: TAB_HEIGHT,
+        }
+    }
+
     /// Keep labels, status dots, and click targets out of the overlapping lip.
     fn exposed(tabs: &[TabGeometry], position: usize, selected: usize) -> (f32, f32) {
+        let order: Vec<_> = Self::paint_order(tabs.len(), selected).collect();
+        Self::exposed_in(tabs, position, &order)
+    }
+
+    fn exposed_in(tabs: &[TabGeometry], position: usize, order: &[usize]) -> (f32, f32) {
         let tab = tabs[position];
         let mut left = tab.left;
         let mut right = tab.left + tab.width;
-        for other in Self::paint_order(tabs.len(), selected)
+        for other in order
+            .iter()
+            .copied()
             .skip_while(|&i| i != position)
             .skip(1)
             .map(|i| tabs[i])
@@ -268,6 +298,8 @@ pub(super) struct TabMotion {
     pub(super) hit_targets: Vec<(usize, f32)>,
     pub(super) header_offset: f32,
     pub(super) version_width: f32,
+    /// Motion key of the tab under the pointer, popped out for inspection.
+    hovered: Option<u64>,
 }
 
 impl TabMotion {
@@ -539,14 +571,33 @@ impl Workspace {
                 .max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
-        let targets: Vec<_> = entries
+        let keys: Vec<u64> = entries
+            .iter()
+            .map(|(index, row, _)| {
+                index
+                    .map(|index| self.slots[index].panel.entity_id().as_u64())
+                    .unwrap_or(u64::MAX - *row as u64)
+            })
+            .collect();
+        // The hovered tab pops out over its neighbours. Layout (hit targets,
+        // coach space) still uses the resting geometry.
+        let hovered = self
+            .live_tabs
+            .hovered
+            .and_then(|key| keys.iter().position(|k| *k == key))
+            .filter(|&position| position != selected && entries[position].0.is_some());
+        let focused_width = layout.get(selected).map_or(0.0, |tab| tab.width);
+        let targets: Vec<_> = keys
             .iter()
             .enumerate()
-            .map(|(position, (index, row, _))| {
-                let key = index
-                    .map(|index| self.slots[index].panel.entity_id().as_u64())
-                    .unwrap_or(u64::MAX - *row as u64);
-                (key, layout[position])
+            .map(|(position, key)| {
+                let tab = layout[position];
+                let tab = if Some(position) == hovered {
+                    TabLayout::pop_out(tab, focused_width, available)
+                } else {
+                    tab
+                };
+                (*key, tab)
             })
             .collect();
         // Never chase camera coordinates or clipped-panel widths. Focus only
@@ -587,16 +638,19 @@ impl Workspace {
         self.live_tabs.header_offset = version_width + status_width;
         self.live_tabs.version_width = version_width;
         self.live_tabs.hit_targets.clear();
-        for position in TabLayout::paint_order(entries.len(), selected) {
+        let paint_order = TabLayout::hover_paint_order(entries.len(), selected, hovered);
+        for &position in &paint_order {
             let (index, row, _) = entries[position];
             let focused = position == selected;
-            let compact = row != self.active_row;
+            let popped = Some(position) == hovered;
+            let compact = row != self.active_row && !popped;
+            let key = keys[position];
             let accent = Theme::global().workspace_accent(row);
             let background = Theme::global()
                 .panel_background(focused)
                 .blend(accent.opacity(if focused { 0.16 } else { 0.05 }));
             let current = geometry[position];
-            let (exposed_left, visible) = TabLayout::exposed(&geometry, position, selected);
+            let (exposed_left, visible) = TabLayout::exposed_in(&geometry, position, &paint_order);
             if let Some(index) = index {
                 let x = exposed_left + visible / 2.0;
                 self.live_tabs.hit_targets.push((index, x));
@@ -751,6 +805,7 @@ impl Workspace {
                     .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
                     .text_color(if focused {
                         Theme::global().TEXT
+                    .when(popped, |el| el.shadow_md())
                     } else {
                         Theme::global().TEXT_DIM
                     })
@@ -758,6 +813,21 @@ impl Workspace {
                     .cursor_pointer()
                     .tooltip({
                         let title: gpui::SharedString =
+                    .when(index.is_some(), |el| {
+                        el.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            let next = if *hovered {
+                                Some(key)
+                            } else if this.live_tabs.hovered == Some(key) {
+                                None
+                            } else {
+                                return;
+                            };
+                            if this.live_tabs.hovered != next {
+                                this.live_tabs.hovered = next;
+                                cx.notify();
+                            }
+                        }))
+                    })
                             format!("Workspace {} · {title}", row + 1).into();
                         move |_, cx| cx.new(|_| TabTooltip(title.clone())).into()
                     })
@@ -1257,6 +1327,8 @@ mod tests {
                 workspace.update(vcx, |w, cx| {
                     w.live_tabs.settle();
                     cx.notify();
+                    // Measure resting layout, not a tab popped out under the pointer.
+                    w.live_tabs.hovered = None;
                 });
                 vcx.run_until_parked();
                 let track = vcx.debug_bounds("live-session-tabs").unwrap();
@@ -1306,6 +1378,13 @@ mod tests {
                 vcx.run_until_parked();
                 workspace.update_in(vcx, |w, window, cx| {
                     assert_eq!(w.active, selected, "width={width}");
+                // Leave the tab row so the next pass measures resting geometry.
+                vcx.simulate_mouse_move(
+                    gpui::point(px(5.0), px(600.0)),
+                    None,
+                    gpui::Modifiers::default(),
+                );
+                vcx.run_until_parked();
                     assert_eq!(w.active_row, selected / 3);
                     assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], selected);
                     assert!(!w.overview);
@@ -1499,6 +1578,26 @@ mod tests {
 
     #[test]
     fn live_tabs_overlap_preserves_folder_width_and_centers_the_stack() {
+    #[test]
+    fn hovered_tab_pops_out_on_top_without_leaving_the_pointer() {
+        let order = TabLayout::hover_paint_order(4, 1, Some(3));
+        assert_eq!(order.last(), Some(&3), "hovered tab paints above focus");
+        assert_eq!(order.len(), 4);
+        assert_eq!(TabLayout::hover_paint_order(4, 1, None).last(), Some(&1));
+        for available in [100.0, 400.0, 1200.0] {
+            for left in [0.0, 50.0, available - 40.0] {
+                let rest = TabGeometry { left, width: 40.0, height: TAB_HEIGHT - 4.0 };
+                let pop = TabLayout::pop_out(rest, 208.0, available);
+                assert_eq!(pop.height, TAB_HEIGHT);
+                assert!(pop.width >= rest.width);
+                assert!(pop.left >= 0.0 && pop.left + pop.width <= available + 0.001);
+                // Every point of the resting tab stays covered by the popped tab.
+                assert!(pop.left <= rest.left + 0.001);
+                assert!(pop.left + pop.width >= rest.left + rest.width - 0.001);
+            }
+        }
+    }
+
         for available in [0.0, 40.0, 180.0, 352.0, 800.0, 2400.0] {
             for count in 1..=200 {
                 let layout = TabLayout::new(available, count);

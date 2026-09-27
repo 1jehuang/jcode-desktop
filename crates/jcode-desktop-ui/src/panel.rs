@@ -598,6 +598,7 @@ impl Panel {
         cx.new(activity::Spinner::for_daemon_session).into()
     }
 
+    #[cfg(test)]
     pub(crate) fn sidebar_mark(&self) -> Option<gpui::AnyView> {
         self.supports_voice()
             .then(|| self.sidebar_spinner.clone().into())

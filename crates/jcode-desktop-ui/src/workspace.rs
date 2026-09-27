@@ -5176,7 +5176,7 @@ impl Workspace {
             .iter()
             .map(|slot| {
                 let panel = slot.panel.read(cx);
-                (panel.session_id.clone(), panel.sidebar_mark())
+                (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
         let open_titles = self
@@ -5702,7 +5702,7 @@ impl Workspace {
                                             .when(is_open, |row| row.child(
                                                 div().id(("sidebar-close", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
-                                                    .px_1().cursor_pointer().child("×")
+                                                    .flex_none().px_1().cursor_pointer().child("×")
                                                     .opacity(0.0)
                                                     .group_hover("sidebar-session-row", |style| style.opacity(1.0))
                                                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
@@ -5711,17 +5711,7 @@ impl Workspace {
                                                         this.sidebar_gesture = None;
                                                         this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
                                                     }))
-                                            ))
-                                            .when_some(activity, |row, spinner| {
-                                                row.child(
-                                                    div()
-                                                        .debug_selector(move || {
-                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
-                                                        })
-                                                        .flex_none()
-                                                        .child(spinner),
-                                                )
-                                            }),
+                                            )),
                                     )
                                     .when(!compact && (details.is_some() || edits.is_some()), |row| {
                                         row.child(
@@ -5794,6 +5784,17 @@ impl Workspace {
                             Theme::global().PANEL_BG
                         })
                         .child(
+                                            .when_some(activity, |row, spinner| {
+                                                row.child(
+                                                    div()
+                                                        .debug_selector(move || {
+                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
+                                                        })
+                                                        .flex_none()
+                                                        .child(spinner),
+                                                )
+                                            })
+                                            // Last child: the hover close sits at the row's far right.
                             div()
                                 .absolute()
                                 .left_0()
@@ -9642,7 +9643,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_mark_persists_for_open_sessions_through_idle_and_activity(
+    fn sidebar_mark_shows_only_while_open_session_is_active(
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -9657,8 +9658,9 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
-        assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_some());
+        // Idle open sessions show no orb: a frozen mark reads as "running".
+        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_none());
         assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
         let mark_id = workspace.read_with(vcx, |workspace, cx| {
             workspace.slots[0]
@@ -9668,67 +9670,6 @@ mod tests {
                 .unwrap()
                 .entity_id()
         });
-        let idle_title_width = vcx
-            .debug_bounds("sidebar-session-title-0")
-            .unwrap()
-            .size
-            .width;
-
-        for status in [
-            "generating",
-            "thinking",
-            "running",
-            "streaming",
-            "running_tools",
-            "busy",
-            "idle",
-            "connected",
-            "lost: disconnected",
-            "crashed",
-            "error",
-        ] {
-            workspace.update(vcx, |workspace, cx| {
-                workspace.apply(
-                    Update::Event {
-                        session_id: "sidebar-activity".into(),
-                        event: jcode_sdk::ApiEvent::SessionStatus {
-                            session_id: "sidebar-activity".into(),
-                            status: status.into(),
-                        },
-                    },
-                    cx,
-                );
-                cx.notify();
-            });
-            vcx.run_until_parked();
-            assert!(
-                vcx.debug_bounds("sidebar-session-spinner-0").is_some(),
-                "status {status}",
-            );
-            workspace.read_with(vcx, |workspace, cx| {
-                assert_eq!(
-                    workspace.slots[0]
-                        .panel
-                        .read(cx)
-                        .sidebar_mark()
-                        .unwrap()
-                        .entity_id(),
-                    mark_id,
-                    "status {status} must retain the same morphing mark",
-                );
-            });
-            assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_some());
-            assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
-            let title_width = vcx
-                .debug_bounds("sidebar-session-title-0")
-                .unwrap()
-                .size
-                .width;
-            assert_eq!(
-                title_width, idle_title_width,
-                "open rows keep stable mark space during activity changes"
-            );
-        }
 
         for event in [
             jcode_sdk::ApiEvent::ReasoningDelta {
@@ -9781,7 +9722,7 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
+            assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
             assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
         }
     }
