@@ -30,7 +30,6 @@ const PILL_WIDTH: f32 = 160.;
 const PILL_MAX_WIDTH: f32 = SURFACE_WIDTH - 16.;
 const PILL_HEIGHT: f32 = 32.;
 const PILL_PAD_X: f32 = 14.;
-const DOT_SIZE: f32 = 6.;
 const BAR_WIDTH: f32 = 2.;
 const BAR_GAP: f32 = 1.;
 
@@ -268,18 +267,6 @@ impl Render for VoiceOverlay {
                     .shadow_md()
                     .text_color(theme.TEXT)
                     .text_size(px(12.))
-                    // A leading dot marks the result so it reads as a status
-                    // pill rather than a bare label in a bar.
-                    .when(decided, |el| {
-                        el.child(
-                            div()
-                                .debug_selector(|| "global-voice-dot".into())
-                                .flex_shrink_0()
-                                .size(px(DOT_SIZE))
-                                .rounded_full()
-                                .bg(theme.ACCENT),
-                        )
-                    })
                     // Retain the status even while the waveform is visible.
                     .child(
                         div()
@@ -430,9 +417,12 @@ mod tests {
             ("Jev is choosing…", None),
             ("Jev → Previous session", None),
             ("No speech detected", None),
+            ("Transcription timed out", None),
             ("Voice error: microphone unavailable", None),
         ] {
-            let decided = title.starts_with("Jev →") || title.starts_with("No speech");
+            let decided = title.starts_with("Jev →")
+                || title.starts_with("No speech")
+                || title.ends_with("timed out");
             overlay.update(vcx, |overlay, cx| {
                 overlay.set_snapshot(
                     Snapshot {
@@ -449,14 +439,11 @@ mod tests {
             assert!(pill.size.width <= px(PILL_MAX_WIDTH));
             if decided {
                 // Results hug their text: no dead space beyond the padding.
-                let dot = vcx.debug_bounds("global-voice-dot").unwrap();
                 let status = vcx.debug_bounds("global-voice-status").unwrap();
-                assert!(dot.right() <= status.left());
                 assert!(pill.right() - status.right() <= px(PILL_PAD_X + 1.));
-                assert!(dot.left() - pill.left() <= px(PILL_PAD_X + 1.));
+                assert!(status.left() - pill.left() <= px(PILL_PAD_X + 1.));
             } else {
                 assert!(pill.size.width >= px(PILL_WIDTH));
-                assert!(vcx.debug_bounds("global-voice-dot").is_none());
             }
             assert_eq!(
                 pill.center(),

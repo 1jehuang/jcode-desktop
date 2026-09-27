@@ -116,7 +116,7 @@ def main():
                         help="choose the isolated transcript fixture")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
-    parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
+    parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "voice-timeout", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")
     parser.add_argument("--preview-interact", action="store_true",
                         help="verify the self-dev control API and native recovery actions offline")

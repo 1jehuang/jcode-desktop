@@ -243,7 +243,23 @@ fn global_pill_error(error: &str) -> String {
     } else if error.contains("Navigation unavailable") {
         "Jev → Quick action · Kept in draft".into()
     } else {
-        error.to_string()
+        short_voice_status(error)
+    }
+}
+
+/// Short, pill-sized wording for a voice failure. Full errors stay in logs.
+pub(crate) fn short_voice_status(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "Transcription timed out".into()
+    } else if lower.starts_with("no speech") {
+        "No speech detected".into()
+    } else if lower.contains("not configured") {
+        "Voice not configured".into()
+    } else if error.chars().count() > 40 {
+        "Voice failed".into()
+    } else {
+        error.trim_end_matches('.').to_string()
     }
 }
 

@@ -72,14 +72,8 @@ impl CliCapture {
 fn failure_label(error: &VoiceError) -> String {
     match error {
         VoiceError::NariNotConfigured => "Voice not configured".into(),
-        other => {
-            let text = other.to_string();
-            if text.chars().count() > 28 {
-                "Voice failed".into()
-            } else {
-                text
-            }
-        }
+        VoiceError::Timeout => "Transcription timed out".into(),
+        other => crate::panel::voice::short_voice_status(&other.to_string()),
     }
 }
 
@@ -333,5 +327,6 @@ mod tests {
             "Voice not configured"
         );
         assert!(failure_label(&VoiceError::CaptureFailed).chars().count() <= 28);
+        assert_eq!(failure_label(&VoiceError::Timeout), "Transcription timed out");
     }
 }

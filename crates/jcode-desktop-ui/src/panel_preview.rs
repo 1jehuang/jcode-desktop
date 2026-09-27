@@ -103,7 +103,8 @@ impl Panel {
             | PreviewState::VoiceListening
             | PreviewState::VoiceRouting
             | PreviewState::VoiceCodingAgent
-            | PreviewState::VoiceQuickAction => {
+            | PreviewState::VoiceQuickAction
+            | PreviewState::VoiceTimeout => {
                 self.seed_voice_preview(state);
             }
             PreviewState::Streaming => {

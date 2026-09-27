@@ -56,34 +56,32 @@ impl Panel {
             Phase::Routing => "Jev is choosing…",
         };
         let viewport = window.viewport_size();
+        // Every state is one pill that hugs its content: status or waveform
+        // plus a round control. Results and errors use short wording, with
+        // the full message kept in the tooltip.
+        let full_status = self.voice.error.clone();
         let card = div()
             .id("voice-overlay")
             .debug_selector(|| "voice-overlay".into())
-            .when(phase == Phase::Idle, |el| {
-                el.w((viewport.width - px(32.)).min(px(360.)))
-                    .min_h(px(44.))
-                    .px_3()
-                    .py_2()
-            })
-            // Active capture hugs its content: waveform or status plus controls.
-            .when(phase != Phase::Idle, |el| {
-                el.max_w(viewport.width - px(32.))
-                    .h(px(30.))
-                    .pl(px(12.))
-                    .pr(px(4.))
-            })
+            .max_w((viewport.width - px(32.)).max(px(1.)))
+            .h(px(30.))
+            .pl(px(12.))
+            .pr(px(4.))
             .flex()
             .items_center()
             .justify_center()
             .gap(px(6.))
             .rounded_full()
-            .when(phase == Phase::Idle, |el| el.rounded_xl())
             .border_1()
             .border_color(theme.ACCENT.opacity(0.25))
             .bg(theme.PANEL_BG)
+            .shadow_md()
             .text_color(theme.TEXT)
             .text_size(px(11.))
             .occlude()
+            .when_some(full_status, |el, full| {
+                el.tooltip(move |_, cx| cx.new(|_| VoiceTooltip(full.clone().into())).into())
+            })
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .when(phase == Phase::Recording, |el| {
@@ -113,18 +111,26 @@ impl Panel {
                     el.child(
                         div()
                             .debug_selector(|| "voice-decision".into())
-                            .flex_1()
                             .min_w_0()
                             .flex()
-                            .flex_col()
-                            .gap_1()
+                            .items_center()
+                            .gap(px(6.))
+                            .whitespace_nowrap()
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .flex_shrink_0()
                                     .text_color(theme.TEXT)
                                     .child(route.to_string()),
                             )
-                            .child(div().text_color(theme.TEXT_DIM).child(detail.to_string())),
+                            .when(!detail.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(detail.to_string()),
+                                )
+                            }),
                     )
                 },
             )
@@ -137,15 +143,19 @@ impl Panel {
                     el.child(
                         div()
                             .debug_selector(|| "voice-status".into())
-                            .when(phase == Phase::Idle, |el| el.flex_1())
                             .min_w_0()
                             .whitespace_nowrap()
                             .truncate()
-                            .text_color(theme.TEXT_DIM)
+                            .text_color(if self.voice.error.is_some() {
+                                theme.TEXT
+                            } else {
+                                theme.TEXT_DIM
+                            })
                             .child(
                                 self.voice
                                     .error
-                                    .clone()
+                                    .as_deref()
+                                    .map(global_pill_error)
                                     .or_else(|| self.voice.decision.clone())
                                     .unwrap_or_else(|| title.into()),
                             ),
@@ -312,7 +322,8 @@ impl Panel {
                 .flex_col()
                 .gap_1()
                 .p_2()
-                .rounded_md()
+                .px_3()
+                .rounded_xl()
                 .bg(theme.ACCENT_DIM.opacity(0.35))
                 .child(
                     div()
@@ -445,6 +456,14 @@ impl Panel {
                     .id("voice-trace-expand")
                     .debug_selector(|| "voice-trace-expand".into())
                     .flex_shrink_0()
+                    .self_start()
+                    .px(px(10.))
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .bg(theme.ACCENT_DIM.opacity(0.5))
+                    .hover(|el| el.bg(theme.ACCENT_DIM))
                     .cursor_pointer()
                     .text_color(theme.ACCENT)
                     .on_click(cx.listener(|panel, _, _, cx| {
@@ -501,6 +520,10 @@ impl Panel {
 
     pub(in crate::panel) fn seed_voice_preview(&mut self, state: PreviewState) {
         self.voice = VoiceState::default();
+        if state == PreviewState::VoiceTimeout {
+            self.voice.error = Some("Voice transcription request timed out".into());
+            return;
+        }
         if matches!(
             state,
             PreviewState::VoiceRouting
@@ -734,6 +757,29 @@ mod tests {
             assert!(!trace.questions.is_empty());
             assert!(trace.answers.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn voice_errors_render_as_short_single_line_pills(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1000.), px(700.)));
+        for (error, label) in [
+            ("Voice transcription request timed out", "Transcription timed out"),
+            ("No speech was detected. Try recording again.", "No speech detected"),
+        ] {
+            panel.update(vcx, |panel, cx| {
+                panel.seed_voice_preview(PreviewState::Empty);
+                panel.voice.error = Some(error.into());
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let card = vcx.debug_bounds("voice-overlay").unwrap();
+            // One pill-height row that hugs its text, never a wide box.
+            assert_eq!(card.size.height, px(30.), "{error}");
+            assert!(card.size.width < px(240.), "{error}: {card:?}");
+            assert_eq!(super::global_pill_error(error), label);
+        }
     }
 
     #[test]
