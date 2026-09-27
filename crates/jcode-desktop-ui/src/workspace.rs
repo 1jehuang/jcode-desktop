@@ -219,15 +219,15 @@ const TOUCH_PAN_DURATION: Duration = Duration::from_millis(42);
 const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
 const STRUT: f32 = 0.58;
-/// Leave the canvas visible around the joined folder surfaces.
-const STRIP_PADDING_Y: f32 = 16.0;
+/// Folder surfaces sit flush against the window's bottom edge.
+const STRIP_PADDING_Y: f32 = 0.0;
 /// A tighter header keeps floating tabs close to the top without crowding the footer.
 const STRIP_PADDING_TOP: f32 = 6.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 32.0;
-/// Keep the sidebar separate from the session sheet with a canvas gutter.
-const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
-const FOLDER_RIGHT_MARGIN: f32 = 12.0;
+/// The session sheet sits flush against the sidebar and the window's right edge.
+const FOLDER_CONNECTOR_WIDTH: f32 = 0.0;
+const FOLDER_RIGHT_MARGIN: f32 = 0.0;
 
 #[path = "folder_surface.rs"]
 mod folder_surface;
@@ -318,9 +318,8 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 224.0;
-// Center the 4px thumb in the gap between the session tabs and main sheet.
-// The normal layout has no connector gap, so its gutter stays inside the sidebar.
-const SIDEBAR_SCROLLBAR_OUTSET: f32 = 8.0;
+// With no connector gap the gutter stays inside the sidebar in every layout.
+const SIDEBAR_SCROLLBAR_OUTSET: f32 = 0.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
@@ -10294,8 +10293,10 @@ mod tests {
                     let scrollbar = vcx.debug_bounds("sidebar-scrollbar").unwrap();
                     let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
                     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-                    assert_eq!(scrollbar.left() - tab.right(), px(8.0));
-                    assert_eq!(canvas.left() - scrollbar.right(), px(8.0));
+                    // The sheet is flush with the sidebar, so the thumb stays
+                    // inside the sidebar between the tabs and the canvas.
+                    assert!(scrollbar.left() >= tab.right());
+                    assert!(scrollbar.right() <= canvas.left());
                 }
                 let tabs_before =
                     workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
