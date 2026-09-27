@@ -103,10 +103,10 @@ impl BankedReset {
         })
     }
 
-    /// Worth offering: redeemable now. OpenAI resets are banked, so they are
-    /// only suggested once the limit actually binds, never spent early.
+    /// Worth offering: redeemable now. Availability can be inspected before
+    /// limits bind, but neither provider's reset should be offered early.
     pub fn offerable(&self) -> bool {
-        self.available_count > 0 && (self.limit_reached || self.provider == ResetProvider::Claude)
+        self.available_count > 0 && self.limit_reached
     }
 
     /// Compact pill caption.
@@ -843,6 +843,22 @@ mod tests {
         assert!(openai.usage_reports[1].extra_info.is_empty());
         assert!(USAGE_ESTIMATE_NOTE.contains("not your ChatGPT bill"));
         assert!(USAGE_ESTIMATE_NOTE.contains("local midnight"));
+    }
+
+    #[test]
+    fn claude_banked_reset_below_wall_is_informational_only() {
+        let mut reset = BankedReset {
+            provider: ResetProvider::Claude,
+            account_label: Some("work".into()),
+            available_count: 1,
+            limit_reached: false,
+            next_available_at: None,
+        };
+        assert!(!reset.offerable());
+        reset.limit_reached = true;
+        assert!(reset.offerable());
+        reset.available_count = 0;
+        assert!(!reset.offerable());
     }
 
     #[test]
