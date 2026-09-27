@@ -811,6 +811,55 @@ mod agent_tests {
         .unwrap()
     }
 
+    /// Exact document a real `jcode run` mounted when the memory plan limit
+    /// was hit (captured from ~/.jcode/agent_applets on 2026-09-26).
+    const PLAN_LIMIT_CARD: &str = r#"{"instances": [{"id": "jcode-plan-limit", "applet": "jcode.agent", "placement": {"kind": "inline", "session_id": "session_rooster_1790468182730_c30c6ec88cad7445", "anchor": {"kind": "end"}}, "scope": {"kind": "session", "session_id": "session_rooster_1790468182730_c30c6ec88cad7445"}, "lifetime": "session", "document": {"revision": 1, "title": "Jcode plan limit", "view": {"children": [{"align": "start", "children": [{"selectable": true, "style": "heading", "text": "Daily memory recall limit reached on your Plus plan", "tone": "default", "type": "text"}, {"selectable": true, "style": "body", "text": "Upgrade to Pro for a higher daily limit, or wait for it to reset within 24 hours.", "tone": "dim", "type": "text"}, {"align": "start", "children": [{"disabled": false, "label": "Upgrade to Pro", "on_press": {"action": "host.open_url", "args": {"url": "https://jcode.sh/pricing"}}, "type": "button", "variant": "primary"}, {"disabled": false, "label": "Dismiss", "on_press": {"action": "host.close"}, "type": "button", "variant": "secondary"}], "direction": "horizontal", "gap": "sm", "padding": "none", "type": "stack"}], "direction": "vertical", "gap": "sm", "padding": "none", "type": "stack"}], "title": "Jcode subscription", "type": "card"}, "state": {}}}]}"#;
+
+    #[test]
+    fn plan_limit_card_renders_inline_and_upgrade_opens_pricing_without_consent() {
+        let runtime = Runtime::default();
+        let snapshot: jcode_applet_types::AgentApplets =
+            serde_json::from_str(PLAN_LIMIT_CARD).unwrap();
+        assert!(runtime.sync_agent("sess", &snapshot));
+        let id = agent_instance_id("sess", "jcode-plan-limit");
+        {
+            let host = runtime.host.borrow();
+            let mounted = host.instance(&id).expect("card mounted");
+            assert!(
+                mounted.last_error.is_none(),
+                "card must validate: {:?}",
+                mounted.last_error
+            );
+            assert_eq!(
+                host.inline_for("sess").count(),
+                1,
+                "shown inline in the chat"
+            );
+        }
+        let upgrade = jcode_applet_types::view::Action {
+            action: "host.open_url".into(),
+            args: json!({"url": "https://jcode.sh/pricing"}),
+        };
+        assert_eq!(
+            runtime.dispatch(&id, &upgrade, None),
+            Some(Effect::OpenUrl("https://jcode.sh/pricing".into())),
+            "built-in agent applets open links without a consent prompt"
+        );
+        assert_eq!(
+            runtime.dispatch(
+                &id,
+                &jcode_applet_types::view::Action::new("host.close"),
+                None
+            ),
+            Some(Effect::Closed)
+        );
+        assert_eq!(
+            runtime.host.borrow().inline_for("sess").count(),
+            0,
+            "Dismiss removes it"
+        );
+    }
+
     #[test]
     fn agent_snapshots_sync_namespaced_and_actions_route_to_the_sdk() {
         let runtime = Runtime::default();
