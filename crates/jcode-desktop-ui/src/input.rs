@@ -180,6 +180,11 @@ pub struct PromptInput {
     command_selection: usize,
     model_logo_providers: HashMap<String, String>,
     model_details: HashMap<String, model_menu::ModelDetails>,
+    /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
+    /// rebroadcast on every usage tick with an unchanged catalog, and
+    /// rebuilding plus re-ranking hundreds of routes each time showed up as a
+    /// steady share of main-thread time in live profiles.
+    applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>)>,
     expanded_model_groups: HashSet<String>,
     current_model: Option<String>,
     /// Levels the serving model accepts, for the `/effort` menu.
@@ -517,6 +522,7 @@ impl PromptInput {
             command_selection: 0,
             model_logo_providers: HashMap::new(),
             model_details: HashMap::new(),
+            applied_model_routes: None,
             expanded_model_groups: HashSet::new(),
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
@@ -610,6 +616,7 @@ impl PromptInput {
     pub fn set_command_models(&mut self, models: Vec<String>, cx: &mut Context<Self>) {
         if self.command_models != models {
             self.command_models = models;
+            self.applied_model_routes = None;
             self.suggestions_revision += 1;
             self.command_selection = 0;
             cx.notify();
@@ -623,6 +630,17 @@ impl PromptInput {
         current_model: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .applied_model_routes
+            .as_ref()
+            .is_some_and(|(applied_models, applied_routes)| {
+                *applied_models == models && applied_routes.as_slice() == routes
+            })
+        {
+            self.set_current_model(current_model, cx);
+            return;
+        }
+        let applied = (models.clone(), routes.to_vec());
         let selected = self
             .command_suggestions()
             .get(self.command_selection)
@@ -635,6 +653,7 @@ impl PromptInput {
         }
         model_menu::rank(&mut models, &self.model_details);
         self.set_command_models(models, cx);
+        self.applied_model_routes = Some(applied);
         if let Some(model) = selected
             .as_ref()
             .and_then(|row| row.value.strip_prefix("/model "))
@@ -1961,7 +1980,7 @@ impl Element for TextElement {
                 // breathing. It exits as soon as motion settles.
                 input.motion.ticker = Some(_cx.spawn(async move |this, cx| {
                     loop {
-                        cx.background_executor().timer(motion::TICK).await;
+                        crate::animation_clock::next_tick(cx.background_executor(), motion::TICK).await;
                         let keep = this
                             .update(cx, |input, cx| {
                                 if !input.motion.live {

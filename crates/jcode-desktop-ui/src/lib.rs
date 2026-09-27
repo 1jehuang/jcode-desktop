@@ -2,6 +2,7 @@
 
 mod accounts;
 mod ack;
+mod animation_clock;
 mod applet_host;
 mod applet_runtime;
 mod applet_surface;

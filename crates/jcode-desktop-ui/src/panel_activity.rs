@@ -189,7 +189,7 @@ impl Spinner {
         }
         self.lease_started = Some(Instant::now());
         self.tick = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(TICK).await;
+            crate::animation_clock::next_tick(cx.background_executor(), TICK).await;
             let _ = this.update(cx, |spinner, cx| {
                 spinner.finish_lease(Instant::now());
                 spinner.tick = None;

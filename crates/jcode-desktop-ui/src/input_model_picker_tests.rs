@@ -77,6 +77,38 @@ fn model_suggestions_cache_invalidates_for_query_routes_current_and_groups(
 }
 
 #[gpui::test]
+fn unchanged_runtime_routes_skip_rebuilding_the_catalog(cx: &mut gpui::TestAppContext) {
+    let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+    input.update(cx, |input, cx| {
+        let mut routes = routes(8);
+        input.set_model_routes(Vec::new(), &routes, None, cx);
+        input.set_content("/model ".into(), cx);
+        let first = input.command_suggestions();
+        let revision = input.suggestions_revision;
+
+        // A usage-tick rebroadcast with an identical catalog is a no-op.
+        input.set_model_routes(Vec::new(), &routes, None, cx);
+        assert_eq!(input.suggestions_revision, revision);
+        assert!(Arc::ptr_eq(&first, &input.command_suggestions()));
+
+        // The current model still applies without rebuilding routes.
+        input.set_model_routes(Vec::new(), &routes, Some("atlas-0006".into()), cx);
+        assert_eq!(input.command_suggestions()[0].help, "Current");
+
+        // A real catalog change is still applied.
+        routes[7].available = false;
+        input.set_model_routes(Vec::new(), &routes, Some("atlas-0006".into()), cx);
+        assert!(!input.command_models.iter().any(|m| m.ends_with("atlas-0007")));
+
+        // Offline fallback models replace the catalog, so the next identical
+        // RuntimeInfo must restore routes rather than hit a stale cache.
+        input.set_command_models(vec!["fallback".into()], cx);
+        input.set_model_routes(Vec::new(), &routes, Some("atlas-0006".into()), cx);
+        assert_eq!(input.command_models.len(), 7);
+    });
+}
+
+#[gpui::test]
 fn model_suggestions_cache_survives_real_hover_selection(cx: &mut gpui::TestAppContext) {
     let (fixture, vcx) = cx.add_window_view(|_, cx| {
         Fixture(cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {})))

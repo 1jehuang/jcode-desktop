@@ -50,6 +50,20 @@ fn rebuild_ui(force: bool) -> anyhow::Result<()> {
     // can give shared GPUI event types different Rust TypeIds, so native mouse
     // events silently fail their downcast across the plugin boundary.
     command.args(["build", "-p", "jcode-desktop", "-p", "jcode-desktop-ui"]);
+    // A release UI build saturates every core. At equal priority it starved
+    // this very process's UI thread, so the app visibly lagged while its own
+    // reload compiled. Children inherit the lowered priority.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setpriority is async-signal-safe and touches only the child.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                Ok(())
+            });
+        }
+    }
     // GPUI crosses the plugin ABI as concrete Rust types. A release host must
     // therefore load a release plugin, since debug-only fields and assertions
     // can change their in-memory layout and behavior. Loading a debug cdylib
