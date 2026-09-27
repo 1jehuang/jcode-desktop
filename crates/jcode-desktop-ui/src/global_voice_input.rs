@@ -613,9 +613,13 @@ impl Listener {
             edges.push(Edge::Release);
         }
     }
-    fn cancel(&mut self, edges: &mut Vec<Edge>) {
+    fn cancel(&mut self, reason: &str, edges: &mut Vec<Edge>) {
         self.pending = None;
-        if self.capture.take().is_some() {
+        if let Some((_, start, _)) = self.capture.take() {
+            eprintln!(
+                "global voice: listener cancel after {:.1}s: {reason}",
+                start.elapsed().as_secs_f32()
+            );
             edges.push(Edge::Cancel);
         }
     }
@@ -672,12 +676,31 @@ impl Listener {
                 self.eligible && self.healthy && !self.devices.is_empty(),
             )
             .is_ok();
-        if !self.ready()
-            || self.capture.as_ref().is_some_and(|(p, start, _)| {
-                !self.devices.contains_key(p) || start.elapsed() >= DEADLINE
-            })
-        {
-            self.cancel(&mut edges);
+        if self.capture.is_some() {
+            let reason = if !self.eligible {
+                Some("no eligible chat (voice target lost or sign-in modal)")
+            } else if !self.healthy {
+                Some("keyboard rescan failed")
+            } else if self.devices.is_empty() {
+                Some("no keyboard devices")
+            } else if !self.registration_ok {
+                Some("routing registration failed")
+            } else if let Some((p, start, _)) = self.capture.as_ref() {
+                if !self.devices.contains_key(p) {
+                    Some("capturing keyboard disappeared")
+                } else if start.elapsed() >= DEADLINE {
+                    Some("hold exceeded the 120s deadline")
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                self.cancel(reason, &mut edges);
+            }
+        } else if !self.ready() {
+            self.cancel("not ready", &mut edges);
         }
         let paths: Vec<_> = self.devices.keys().cloned().collect();
         for path in paths {
@@ -690,7 +713,7 @@ impl Listener {
                     _ => {
                         self.devices.remove(&path);
                         self.healthy = false;
-                        self.cancel(&mut edges);
+                        self.cancel("keyboard read failed", &mut edges);
                         break;
                     }
                 };
