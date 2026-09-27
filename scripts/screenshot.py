@@ -38,6 +38,8 @@ def main():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--accounts", action="store_true",
                         help="open the Accounts panel with offline multi-account fixtures")
+    parser.add_argument("--sign-in-steps", action="store_true",
+                        help="open Accounts mid OAuth sign-in to review the numbered checklist offline")
     parser.add_argument("--release-status", choices=("current", "newer", "checking", "error", "source"),
                         help="render an offline Desktop release status in the workspace top bar")
     parser.add_argument("--account-sign-in", action="store_true",
@@ -452,6 +454,9 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_CHANGELOG"] = "1"
         if args.accounts:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNTS"] = "1"
+        if args.sign_in_steps:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNTS"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_SIGN_IN_STEPS"] = "1"
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
@@ -541,7 +546,7 @@ def main():
                 # while it is still visible. Other fixtures can fully settle.
                 time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
-                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts):
+                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)

@@ -17,6 +17,9 @@ mod provider_picker;
 #[cfg(test)]
 #[path = "panel_provider_picker_tests.rs"]
 mod provider_picker_tests;
+#[path = "panel_login_steps.rs"]
+mod steps;
+use steps::manual_input_visible;
 
 pub(super) struct LoginState {
     /// Composer account selection never starts a sign-in flow.
@@ -36,6 +39,11 @@ pub(super) struct LoginState {
     task: Option<Task<()>>,
     callback_task: Option<Task<()>>,
     callback_waiting: bool,
+    /// The browser returned an authorization to the local callback. This is
+    /// the only signal that confirms the approve step without guessing.
+    authorized: bool,
+    /// The user chose to paste a callback URL while automatic return waits.
+    manual_entry: bool,
     statuses: Option<ConnectionStatuses>,
     status_loading: bool,
     status_task: Option<Task<()>>,
@@ -78,10 +86,7 @@ impl Panel {
             .provider
             .as_ref()
             .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
-            || state
-                .prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode))
+            || manual_input_visible(state))
         .then(|| state.input.read(cx).focus_handle.clone())
     }
 
@@ -170,6 +175,8 @@ impl Panel {
             task: None,
             callback_task: None,
             callback_waiting: false,
+            authorized: false,
+            manual_entry: false,
             statuses: None,
             status_loading: false,
             status_task: None,
@@ -188,6 +195,26 @@ impl Panel {
                 "This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.".into());
         } else {
             self.refresh_login_status(cx);
+        }
+        // Offline screenshot fixture: an OAuth sign-in waiting for the
+        // browser, so the checklist can be reviewed without a network.
+        if crate::harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_SIGN_IN_STEPS").as_deref() == Ok("1")
+            && let Some(state) = self.login.as_mut()
+        {
+            state.provider = state
+                .providers
+                .iter()
+                .find(|provider| provider.method == LoginMethod::OAuth)
+                .copied();
+            state.prompt = Some(AuthPrompt {
+                auth_url: "https://example.invalid/authorize".into(),
+                input_kind: AuthInputKind::AuthCodeOrCallbackUrl,
+                user_code: None,
+                expires_at_ms: i64::MAX,
+            });
+            state.browser_opened = true;
+            state.callback_waiting = true;
         }
         cx.notify();
     }
@@ -414,6 +441,8 @@ impl Panel {
         state.task = None;
         state.callback_task = None;
         state.callback_waiting = false;
+        state.authorized = false;
+        state.manual_entry = false;
         let previous_flow = state.flow.take();
         state.provider = Some(provider);
         state.prompt = None;
@@ -607,6 +636,7 @@ impl Panel {
                         match update {
                             None => {
                                 exchanging = true;
+                                state.authorized = true;
                                 state.callback_waiting = false;
                                 state.busy = true;
                             }
@@ -652,6 +682,16 @@ impl Panel {
         let Some(provider) = state.provider.clone() else {
             return;
         };
+        // Enter while the browser is expected to return must not fail the step.
+        if provider.method != LoginMethod::ApiKey
+            && state
+                .prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
+            && !manual_input_visible(state)
+        {
+            return;
+        }
         let secret = state.input.update(cx, |input, cx| input.take(cx));
         if provider.method == LoginMethod::ApiKey {
             if secret.trim().is_empty() {
@@ -736,11 +776,7 @@ impl Panel {
             {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
-            } else if state
-                .prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
-            {
+            } else if manual_input_visible(state) {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
             } else {
@@ -760,7 +796,12 @@ impl Panel {
         let theme = Theme::global();
         let remote = self.login_is_remote();
         let mut body = div().flex().flex_col().gap_3();
-        if let Some(error) = &state.error {
+        // An in-progress sign-in shows its error inside the failed step.
+        if let Some(error) = state
+            .error
+            .as_ref()
+            .filter(|_| state.provider.is_none() || state.complete)
+        {
             body = body.child(
                 div()
                     .debug_selector(|| "login-error".into())
@@ -769,6 +810,9 @@ impl Panel {
             );
         }
         if state.complete {
+            if let Some(provider) = state.provider {
+                body = body.child(self.render_login_steps(state, provider, cx));
+            }
             body = body
                 .child(
                     div()
@@ -812,17 +856,17 @@ impl Panel {
                             ),
                         ),
                 );
-        } else if let Some(provider) = &state.provider {
+        } else if let Some(provider) = state.provider {
             body = body.child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(login_logo(provider))
+                    .child(login_logo(&provider))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(provider.display_name),
+                            .child(format!("Sign in to {}", provider.display_name)),
                     ),
             );
             let status =
@@ -835,135 +879,7 @@ impl Panel {
                         .child(status.detail()),
                 );
             }
-            if state.busy && state.prompt.is_none() {
-                body = body.child(div().debug_selector(|| "login-busy".into()).child(
-                    if provider.method == LoginMethod::ApiKey {
-                        "Saving your API key securely…"
-                    } else {
-                        "Preparing a secure sign-in link…"
-                    },
-                ));
-            } else if provider.method == LoginMethod::ApiKey {
-                body = body
-                    .child(div().text_color(theme.TEXT_DIM).child(
-                        "Your key is saved in Jcode's private credential store, never in chat.",
-                    ))
-                    .child(state.input.clone())
-                    .child(
-                        login_button("login-paste", "Paste from clipboard").on_click(
-                            cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
-                        ),
-                    )
-                    .child(
-                        login_button("login-submit", "Connect account")
-                            .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                    );
-            } else if let Some(prompt) = &state.prompt {
-                // One status line. Buttons and the field below carry the rest.
-                let device = prompt.input_kind == AuthInputKind::DeviceCode;
-                let status = if state.error.is_some() {
-                    "Sign-in paused. Review the error above."
-                } else if state.busy && !device {
-                    "Connecting your account…"
-                } else if device || state.callback_waiting {
-                    "Approve access in your browser. This window connects automatically."
-                } else {
-                    "Approve access in your browser, then paste the code it shows."
-                };
-                let step = div()
-                    .debug_selector(|| "login-current-step".into())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(status);
-                body = body.child(if state.busy {
-                    div().debug_selector(|| "login-busy".into()).child(step)
-                } else {
-                    step
-                });
-                let url = prompt.auth_url.clone();
-                let preview = self.preview_state.is_some() || crate::harness::screenshot_mode();
-                let copy_url = url.clone();
-                body = body
-                    .child(
-                        div().flex().gap_2().flex_wrap()
-                            .child(login_button("login-open-browser", "Open sign-in page").on_click(
-                                move |_, _, cx| { if !preview { cx.open_url(&url); } },
-                            ))
-                            .child(login_button("login-copy-link", "Copy link").on_click(
-                                move |_, _, cx| { cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_url.clone())); },
-                            )),
-                    );
-                if let Some(code) = &prompt.user_code {
-                    let code = code.clone();
-                    body = body.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_family(theme.FONT_MONO)
-                                    .child(format!("Device code: {code}")),
-                            )
-                            .child(login_button("login-copy-code", "Copy code").on_click(
-                                move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        code.clone(),
-                                    ));
-                                },
-                            )),
-                    );
-                }
-                // Manual entry is the fallback when the browser cannot return
-                // on its own. It stays available while waiting, but secondary.
-                if !device && !state.busy {
-                    body = body
-                        .child(div().text_size(px(12.)).text_color(theme.TEXT_DIM).child(
-                            if state.callback_waiting {
-                                "Browser did not come back? Paste the full callback URL here."
-                            } else if prompt.input_kind == AuthInputKind::CallbackUrl {
-                                "Automatic return is unavailable here. After approving, paste the full localhost address from your browser. It stays private."
-                            } else {
-                                "The code stays private and is never sent to chat."
-                            },
-                        ))
-                        .child(state.input.clone())
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap_2()
-                                .child(login_button("login-paste", "Paste from clipboard").on_click(
-                                    cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
-                                ))
-                                .child(
-                                    login_button("login-submit", "Finish sign-in").on_click(
-                                        cx.listener(|this, _, _, cx| this.submit_login(cx)),
-                                    ),
-                                ),
-                        );
-                }
-                if state.error.is_some() {
-                    let provider = *provider;
-                    body = body.child(login_button("login-retry", "Start a new sign-in").on_click(
-                        cx.listener(move |this, _, _, cx| this.select_login_provider(provider, cx)),
-                    ));
-                }
-            } else {
-                let provider = provider.clone();
-                body = body.child(
-                    login_button("login-retry", "Try again").on_click(cx.listener(
-                        move |this, _, _, cx| this.select_login_provider(provider.clone(), cx),
-                    )),
-                );
-            }
-            body = body.child(
-                login_button("login-back", "Choose another provider").on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.close_login_picker(cx);
-                        this.open_login_picker(cx);
-                    },
-                )),
-            );
+            body = body.child(self.render_login_steps(state, provider, cx));
         } else if !remote {
             let providers = catalog::filtered_providers(
                 &state.providers,
@@ -1342,9 +1258,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn accounts_login_switches_the_source_session_not_a_throwaway(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn accounts_login_switches_the_source_session_not_a_throwaway(cx: &mut gpui::TestAppContext) {
         let (bridge, commands) = crate::harness::spawn_recording();
         let (panel, vcx) =
             cx.add_window_view(|_, cx| Panel::new_accounts("chat-session", None, bridge, cx));

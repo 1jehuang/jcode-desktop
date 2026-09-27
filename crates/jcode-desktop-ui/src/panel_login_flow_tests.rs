@@ -327,11 +327,7 @@ fn callback_failure_preserves_real_safe_error_and_offers_restart(cx: &mut gpui::
     });
     vcx.run_until_parked();
     browser.join().unwrap();
-    for selector in [
-        "login-error",
-        "login-retry",
-        "login-current-step",
-    ] {
+    for selector in ["login-error", "login-retry", "login-current-step"] {
         assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
     }
     assert!(vcx.debug_bounds("login-complete").is_none());
@@ -348,4 +344,54 @@ fn callback_failure_preserves_real_safe_error_and_offers_restart(cx: &mut gpui::
                 .contains("test-private-code")
         );
     });
+}
+
+#[gpui::test]
+fn sign_in_checklist_expands_only_the_current_step(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        Panel::new_accounts("checklist-test", None, crate::harness::spawn_inert(), cx)
+    });
+    panel.update(vcx, |panel, cx| {
+        let state = panel.login.as_mut().unwrap();
+        state.provider = state.client.resolve_provider("openai");
+        state.prompt = Some(AuthPrompt {
+            auth_url: "https://example.invalid/authorize".into(),
+            input_kind: AuthInputKind::AuthCodeOrCallbackUrl,
+            user_code: None,
+            expires_at_ms: i64::MAX,
+        });
+        // The browser is expected to return on its own.
+        state.callback_waiting = true;
+        cx.notify();
+    });
+    for selector in ["login-step-1", "login-step-2", "login-step-3", "login-step-4"] {
+        assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
+    }
+    let current = vcx.debug_bounds("login-current-step").unwrap();
+    assert_eq!(current, vcx.debug_bounds("login-step-3").unwrap());
+    assert!(vcx.debug_bounds("login-open-browser").is_some());
+    // Manual fallback stays collapsed behind a pill until requested.
+    assert!(vcx.debug_bounds("login-submit").is_none());
+    vcx.simulate_keystrokes("enter");
+    panel.read_with(vcx, |panel, _| {
+        assert!(panel.login.as_ref().unwrap().error.is_none())
+    });
+    let manual = vcx.debug_bounds("login-manual-entry").unwrap();
+    vcx.simulate_click(manual.center(), gpui::Modifiers::default());
+    assert!(vcx.debug_bounds("login-submit").is_some());
+    // Callback progress confirms approval: step 3 collapses, step 4 expands.
+    panel.update(vcx, |panel, cx| {
+        let state = panel.login.as_mut().unwrap();
+        state.authorized = true;
+        state.callback_waiting = false;
+        state.busy = true;
+        cx.notify();
+    });
+    assert_eq!(
+        vcx.debug_bounds("login-current-step").unwrap(),
+        vcx.debug_bounds("login-step-4").unwrap()
+    );
+    assert!(vcx.debug_bounds("login-open-browser").is_none());
+    assert!(vcx.debug_bounds("login-submit").is_none());
+    assert!(vcx.debug_bounds("login-busy").is_some());
 }
