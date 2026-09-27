@@ -4380,6 +4380,7 @@ dependencies = [
  "jcode-core",
  "jcode-desktop-api",
  "jcode-desktop-motion",
+ "jcode-fuzzy",
  "jcode-provider-core",
  "jcode-render-core",
  "jcode-sdk",
@@ -4404,6 +4405,10 @@ dependencies = [
  "unicode-segmentation",
  "zbus",
 ]
+
+[[package]]
+name = "jcode-fuzzy"
+version = "0.1.0"
 
 [[package]]
 name = "jcode-gateway-types"

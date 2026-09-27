@@ -4979,7 +4979,7 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
 /// report a canonical id (`anthropic`, `claude-api`) or a display name that
 /// already names the method (`Anthropic API`). The method pill says how you
 /// are signed in, so the provider half stays a plain brand name.
-fn pretty_provider_name(provider: &str) -> String {
+pub(crate) fn pretty_provider_name(provider: &str) -> String {
     let lower = provider.to_ascii_lowercase();
     let base = lower
         .trim_end_matches(" api key")

@@ -21,10 +21,16 @@ from PIL import Image
 
 # These routes are supplied by the explicitly enabled screenshot model fixture.
 # Three provider groups include twelve OpenAI models, initially capped at three.
-TENTH_ROUTE = "openai:atlas-10"
-LAST_ROUTE = "openai:atlas-12"
-FILTER_ROUTE = "anthropic:sonnet-review"
+# Rows show readable titles (`Atlas 12`) with the exact id in small detail
+# text. OCR checks the titles people read; queries still type raw ids.
+TENTH_ROUTE = "Atlas 10"
+LAST_ROUTE = "Atlas 12"
+LAST_QUERY = "atlas-12"
+FILTER_ROUTE = "Sonnet Review"
 FILTER = "sonnet-review"
+# A misspelled query must still find the model.
+TYPO_FILTER = "sonet-reveiw"
+GEMINI_ROUTE = "Gemini Review"
 NO_MATCH = "zzzz-no-model-937"
 FILTER_SPEC = "claude-api:sonnet-review"
 LAST_SPEC = "openai-api:atlas-12"
@@ -36,7 +42,9 @@ def normalized(text):
 
 def focused_edges(image):
     edges = []
-    for y in range(100, image.height):
+    # A tall expanded menu above an empty-transcript composer can reach the
+    # window top, so scan every row. Border runs must still span 300px.
+    for y in range(0, image.height):
         xs = [x for x in range(image.width - 12)
               # Foreground popup shadows slightly darken the composer border.
               if all(expected - 14 <= actual <= expected
@@ -63,8 +71,10 @@ def picker_regions(image):
     assert len(edges) == 4, f"Expected suggestion and composer borders, found {edges}"
     first_top, first_bottom, second_top, second_bottom = edges
     assert 0 < second_top[0] - first_bottom[0] <= 8, ("Popup must adjoin input", edges)
-    assert abs(first_top[1] - second_top[1]) <= 2, ("Suggestions must align with input", edges)
-    assert abs(first_top[2] - second_top[2]) <= 2, ("Suggestions must match input width", edges)
+    # Straight border runs stop where corners begin, and the composer's radius
+    # is larger than the popup's, so allow that inset on each end.
+    assert abs(first_top[1] - second_top[1]) <= 12, ("Suggestions must align with input", edges)
+    assert abs(first_top[2] - second_top[2]) <= 12, ("Suggestions must match input width", edges)
     # The popup has HEADER_BG just inside its top border, before the first row.
     # This remains distinct from INPUT_BG even for a filtered single-row menu.
     sample = ((second_top[1] + second_top[2]) // 2, second_top[0] + 3)
@@ -231,11 +241,11 @@ def verify(output, env, root):
         report["checks"][stage] = True
 
         stage = "pointer-selection-and-keyboard-handoff"
-        google = phrase_bounds(words, "google:gemini-review")
+        google = phrase_bounds(words, GEMINI_ROUTE)
         native("mousemove", round((google[0] + google[2]) / 2), round((google[1] + google[3]) / 2))
         def pointer_selected(image):
-            bounds, current_words = picker(image, stage, "google:gemini-review")
-            selected_row(image, bounds, current_words, "google:gemini-review")
+            bounds, current_words = picker(image, stage, GEMINI_ROUTE)
+            selected_row(image, bounds, current_words, GEMINI_ROUTE)
         wait_frame("model-pointer-selected", pointer_selected)
         native("mousemove", bounds[0] + 32, bounds[1] + 24)
         native("key", "Up")
@@ -247,9 +257,9 @@ def verify(output, env, root):
 
         stage = "provider-groups-and-three-model-preview"
         phrase_bounds(words, "Show 9 more models")
-        for route in ["openai:atlas-01", "openai:atlas-02", "openai:atlas-03"]:
+        for route in ["Atlas 01", "Atlas 02", "Atlas 03"]:
             phrase_bounds(words, route)
-        assert normalized("openai:atlas-04") not in normalized(" ".join(word["text"] for word in words)), "Collapsed group shows a fourth model"
+        assert normalized("Atlas 04") not in normalized(" ".join(word["text"] for word in words)), "Collapsed group shows a fourth model"
         report["checks"][stage] = True
 
         stage = "mouse-expand-provider-without-submitting"
@@ -274,7 +284,7 @@ def verify(output, env, root):
         native("key", "Return")
         native("mousemove", dialog[2] - 45, dialog[1] + 30,
                "click", "--repeat", "18", "--delay", "60", "4")
-        _, _, (dialog, words) = wait_frame("model-provider-reexpanded", lambda image: picker(image, stage, "openai:atlas-01"))
+        _, _, (dialog, words) = wait_frame("model-provider-reexpanded", lambda image: picker(image, stage, "Atlas 01"))
         report["checks"][stage] = True
 
         stage = "keyboard-beyond-eight"
@@ -295,11 +305,11 @@ def verify(output, env, root):
 
         stage = "focused-filter-and-scroll-reset"
         type_text(" " + FILTER + " ")
-        def filtered(image):
+        def filtered(image, query=FILTER):
             bounds, words = picker(image, stage, FILTER_ROUTE)
             # The query remains in the real composer below the suggestions.
             query_words = ocr(image, picker_regions(image)[1], stage + "-query")
-            phrase_bounds(query_words, FILTER)
+            phrase_bounds(query_words, query)
             assert normalized(LAST_ROUTE) not in normalized(" ".join(word["text"] for word in words)), "Filtering kept unrelated routes"
             return bounds, words
         wait_frame("model-filtered", filtered)
@@ -327,8 +337,9 @@ def verify(output, env, root):
         report["checks"][stage] = True
 
         stage = "keyboard-selection"
-        type_text(" " + FILTER + " ")
-        wait_frame("model-keyboard-filter", filtered)
+        # Misspelled on purpose: typo-tolerant search must still select it.
+        type_text(" " + TYPO_FILTER + " ")
+        wait_frame("model-keyboard-filter", lambda image: filtered(image, TYPO_FILTER))
         native("key", "Return")
         def selected(image, route):
             closed(image)
@@ -341,7 +352,7 @@ def verify(output, env, root):
 
         stage = "mouse-selection"
         open_picker("/model", "model-mouse-open")
-        type_text(" " + LAST_ROUTE.split(":")[-1])
+        type_text(" " + LAST_QUERY)
         _, _, (_, words) = wait_frame("model-mouse-filter", lambda image: picker(image, stage, LAST_ROUTE))
         x1, y1, x2, y2 = phrase_bounds(words, LAST_ROUTE)
         native("mousemove", round((x1 + x2) / 2), round((y1 + y2) / 2), "click", "1")
@@ -351,7 +362,7 @@ def verify(output, env, root):
         stage = "search-finds-collapsed-model"
         _, _, (_, words) = open_picker("/model", "model-search-collapsed-open")
         # Search must reveal a model outside the initial three choices.
-        type_text(" " + LAST_ROUTE.split(":")[-1])
+        type_text(" " + LAST_QUERY)
         wait_frame("model-search-collapsed-result", lambda image: picker(image, stage, LAST_ROUTE))
         native("key", "Escape")
         wait_frame("model-search-collapsed-closed", closed)

@@ -32,6 +32,8 @@ use layout::PromptLayout;
 mod model_menu;
 #[path = "input_model_picker.rs"]
 mod model_picker;
+#[path = "input_model_search.rs"]
+mod model_search;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
 

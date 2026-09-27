@@ -17,6 +17,7 @@ jcode-desktop-motion.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode-applet-types = { path = "../../../jcode/crates/jcode-applet-types" }
 jcode-provider-core = { path = "../../../jcode/crates/jcode-provider-core" }
+jcode-fuzzy = { path = "../../../jcode/crates/jcode-fuzzy" }
 jcode_core = { package = "jcode-core", path = "../../../jcode/crates/jcode-core" }
 jcode-render-core = { path = "../../../jcode/crates/jcode-render-core" }
 jcode-selfdev-types = { path = "../../../jcode/crates/jcode-selfdev-types" }

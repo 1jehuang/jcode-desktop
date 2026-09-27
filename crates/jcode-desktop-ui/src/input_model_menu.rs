@@ -197,22 +197,14 @@ pub(super) fn usage_label(usage: Option<&ModelUsage>, now: u64) -> String {
 }
 
 impl ModelDetails {
+    /// Secondary line under the pretty title: the exact id that will run plus
+    /// usage. Provider and auth method are already named by the group header.
     pub(super) fn label(&self, now: u64) -> String {
-        let route = match (self.provider.is_empty(), self.api_method.is_empty()) {
-            (false, false) => format!(
-                "{} · {}",
-                self.provider,
-                self.api_method.replace('_', " ").replace('-', " ")
-            ),
-            (false, true) => self.provider.clone(),
-            (true, false) => self.api_method.clone(),
-            _ => String::new(),
-        };
         let usage = usage_label(self.usage.as_ref(), now);
-        if route.is_empty() {
+        if self.model.is_empty() {
             usage
         } else {
-            format!("{usage} · {route}")
+            format!("{} · {usage}", self.model)
         }
     }
 }
@@ -410,7 +402,27 @@ fn group_label(model: &str, details: &HashMap<String, ModelDetails>) -> String {
     if detail.provider.is_empty() {
         method
     } else {
-        format!("{} · {method}", detail.provider)
+        let provider = crate::panel::pretty_provider_name(&detail.provider);
+        // `OpenRouter · openrouter` says the same thing twice.
+        if provider.eq_ignore_ascii_case(&method) {
+            provider
+        } else {
+            format!("{provider} · {method}")
+        }
+    }
+}
+
+/// Friendly picker title for a route spec (`claude-oauth:claude-opus-4-8`
+/// reads `Claude Opus 4.8`). The exact id stays visible in the detail line.
+pub(super) fn pretty_title(model: &str, details: &HashMap<String, ModelDetails>) -> String {
+    let raw = details
+        .get(model)
+        .map_or(model, |detail| detail.model.as_str());
+    let pretty = jcode_provider_core::model_names::pretty_picker_model_name(raw);
+    if pretty.is_empty() {
+        raw.to_string()
+    } else {
+        pretty
     }
 }
 
@@ -441,29 +453,60 @@ pub(super) fn grouped_rows(
         });
         groups[index].1.push(model);
     }
-    let query = query.trim().to_ascii_lowercase();
-    let mut rows = Vec::new();
-    for (key, members) in groups {
-        let searching = !query.is_empty();
-        let matching: Vec<_> = members
-            .into_iter()
-            .filter(|model| {
-                !searching
-                    || model.to_ascii_lowercase().contains(&query)
-                    || details
-                        .get(model)
-                        .is_some_and(|detail| detail.model.to_ascii_lowercase().contains(&query))
-                    || group_label(model, details)
-                        .to_ascii_lowercase()
-                        .contains(&query)
-                    || key.to_ascii_lowercase().contains(&query)
+    let query = super::model_search::ModelQuery::new(query);
+    let searching = !query.is_empty();
+    if searching {
+        // Rank every route, then keep provider grouping but order groups by
+        // their best hit so Enter always selects the strongest match.
+        let ranked = super::model_search::rank_matches(
+            groups.iter().flat_map(|(_, members)| members.iter()),
+            details,
+            |model| {
+                format!(
+                    "{} {}",
+                    group_label(model, details),
+                    group_key(model, details)
+                )
+            },
+            &query,
+        );
+        let scores: HashMap<&String, (usize, i32)> = ranked
+            .iter()
+            .enumerate()
+            .map(|(order, (model, score))| (*model, (order, *score)))
+            .collect();
+        let mut matched: Vec<(usize, Vec<String>)> = groups
+            .iter()
+            .filter_map(|(_, members)| {
+                let mut hits: Vec<_> = members
+                    .iter()
+                    .filter_map(|model| scores.get(model).map(|(order, _)| (*order, model.clone())))
+                    .collect();
+                hits.sort_by_key(|(order, _)| *order);
+                let best = hits.first()?.0;
+                Some((best, hits.into_iter().map(|(_, model)| model).collect()))
             })
             .collect();
+        matched.sort_by_key(|(best, _)| *best);
+        let mut rows = Vec::new();
+        for (_, members) in matched {
+            for (index, model) in members.into_iter().enumerate() {
+                rows.push(GroupRow {
+                    header: (index == 0).then(|| group_label(&model, details)),
+                    value: format!("/model {model}"),
+                    toggle: None,
+                });
+            }
+        }
+        return rows;
+    }
+    let mut rows = Vec::new();
+    for (key, matching) in groups {
         let count = matching.len();
         let open = expanded.contains(&key);
         for (index, model) in matching
             .into_iter()
-            .take(if searching || open { usize::MAX } else { 3 })
+            .take(if open { usize::MAX } else { 3 })
             .enumerate()
         {
             rows.push(GroupRow {
@@ -472,7 +515,7 @@ pub(super) fn grouped_rows(
                 toggle: None,
             });
         }
-        if !searching && count > 3 {
+        if count > 3 {
             rows.push(GroupRow {
                 value: if open {
                     "Show fewer models".into()
@@ -525,7 +568,9 @@ mod grouping_performance_tests {
             models.extend(["unknown-model".into(), "unknown-model".into()]);
             let expanded: HashSet<_> = models.iter().map(|m| group_key(m, &details)).collect();
             for expansion in [&HashSet::new(), &expanded] {
-                for query in ["", "MODEL-001", "Provider", "oauth", "missing"] {
+                // Search is ranked by `model_search` and intentionally differs
+                // from the legacy substring filter; browsing must not.
+                for query in [""] {
                     for current in [None, Some("provider:model-0199"), Some("model-0005")] {
                         assert_eq!(
                             grouped_rows(&models, &details, current, expansion, query),
@@ -563,10 +608,12 @@ mod grouping_performance_tests {
                     ("no-match", &closed, "missing"),
                 ] {
                     let current = Some(models[count - 1].as_str());
-                    assert_eq!(
-                        grouped_rows(&models, &details, current, expansion, query),
-                        legacy_grouped_rows(&models, &details, current, expansion, query)
-                    );
+                    if query.is_empty() {
+                        assert_eq!(
+                            grouped_rows(&models, &details, current, expansion, query),
+                            legacy_grouped_rows(&models, &details, current, expansion, query)
+                        );
+                    }
                     for (implementation, group) in [
                         ("legacy", legacy_grouped_rows as Grouping),
                         ("indexed", grouped_rows as Grouping),

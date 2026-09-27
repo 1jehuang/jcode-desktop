@@ -108,14 +108,8 @@ impl PromptInput {
                 .child(logo)
         });
         let label = model
-            .and_then(|model| {
-                self.model_details
-                    .get(model)
-                    .map(|detail| detail.model.as_str())
-            })
-            .or(model)
-            .unwrap_or(&suggestion.value)
-            .to_string();
+            .map(|model| model_menu::pretty_title(model, &self.model_details))
+            .unwrap_or_else(|| suggestion.value.clone());
         div()
             .w_full()
             .flex_none()
@@ -176,7 +170,11 @@ impl PromptInput {
                             .items_center()
                             .gap_3()
                             .children(logo)
-                            .font_family(Theme::global().FONT_MONO)
+                            .font_family(if model.is_some() {
+                                Theme::global().FONT_UI
+                            } else {
+                                Theme::global().FONT_MONO
+                            })
                             .text_color(ink)
                             .when(selected, |label| {
                                 label.font_weight(gpui::FontWeight::SEMIBOLD)

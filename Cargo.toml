@@ -110,6 +110,9 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.slotmap]
 opt-level = 2
+# The model picker runs the fuzzy DP over every route on each keystroke.
+[profile.dev.package.jcode-fuzzy]
+opt-level = 3
 [profile.dev.package.smallvec]
 opt-level = 2
 [profile.dev.package.cosmic-text]
