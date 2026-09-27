@@ -6594,63 +6594,76 @@ impl Workspace {
             }
 
             if account.shows_oauth_history() {
+                // One short line per login. The full token counts, pricing
+                // caveats and estimate note live in the hover tooltip.
                 let mut history = div()
                     .debug_selector(|| format!("account-{}-history", account.id))
-                    .mt_2()
+                    .mt(px(3.0))
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .text_size(px(10.0))
-                    .line_height(px(15.0))
+                    .gap(px(1.0))
+                    .text_size(px(9.0))
+                    .line_height(px(13.0))
                     .text_color(Theme::global().TEXT_DIM);
                 if account.usage_reports.is_empty() {
                     history = history.child(
                         div()
                             .debug_selector(|| "account-openai-history-unavailable".into())
-                            .child("Today / Lifetime: usage history unavailable. No recorded usage has been received."),
+                            .child("No usage recorded yet"),
                     );
                 }
+                let many = account.usage_reports.len() > 1;
                 for (report_index, report) in account.usage_reports.iter().enumerate() {
-                    let mut report_view = div()
-                        .debug_selector(move || {
-                            format!("account-openai-history-report-{report_index}")
-                        })
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_color(ink).child(report.title()));
+                    let mut tooltip = report.title();
                     for period in ["Today", "Lifetime"] {
-                        let value = report
-                            .extra_info
-                            .iter()
-                            .find(|(key, _)| key == period)
-                            .map(|(_, value)| value.as_str())
-                            .unwrap_or("Usage history unavailable");
-                        report_view = report_view.child(
-                            div()
-                                .debug_selector(move || {
-                                    format!("account-openai-history-{report_index}-{period}")
-                                })
-                                .child(format!("{period}: {value}")),
-                        );
+                        let value = report.period_detail(period).unwrap_or("unavailable");
+                        tooltip.push_str(&format!("\n{period}: {value}"));
                     }
                     // Retain backend coverage, estimate and pricing caveats verbatim.
                     for (key, value) in &report.extra_info {
                         if !matches!(key.as_str(), "Today" | "Lifetime") {
-                            report_view = report_view.child(div().child(format!("{key}: {value}")));
+                            tooltip.push_str(&format!("\n{key}: {value}"));
                         }
                     }
-                    history = history.child(report_view);
+                    tooltip.push_str(&format!("\n\n{}", accounts::USAGE_ESTIMATE_NOTE));
+                    let amount = |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
+                    // Estimates: the tooltip carries the caveat, not the row.
+                    let summary = format!(
+                        "today {} · total {}",
+                        amount("Today"),
+                        amount("Lifetime")
+                    );
+                    let label = report
+                        .account_label
+                        .clone()
+                        .filter(|_| many);
+                    history = history.child(
+                        div()
+                            .id(("account-history", index * 100 + report_index))
+                            .debug_selector(move || {
+                                format!("account-openai-history-report-{report_index}")
+                            })
+                            .flex()
+                            .gap_1()
+                            .min_w_0()
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
+                                    .into()
+                            })
+                            .when_some(label, |el, label| {
+                                el.child(
+                                    div()
+                                        .flex_shrink(1.0)
+                                        .min_w(px(24.0))
+                                        .truncate()
+                                        .text_color(ink)
+                                        .child(label),
+                                )
+                            })
+                            .child(div().flex_1().min_w_0().truncate().child(summary)),
+                    );
                 }
-                details = details.child(history).child(
-                    div()
-                        .debug_selector(|| "account-openai-estimate-note".into())
-                        .mt_2()
-                        .text_size(px(9.0))
-                        .line_height(px(13.0))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(accounts::USAGE_ESTIMATE_NOTE),
-                );
+                details = details.child(history);
             }
 
             // Rows with history or a reset pill need more than the compact height.
@@ -10972,23 +10985,22 @@ mod tests {
         let row = vcx.debug_bounds("account-openai").unwrap();
         let first = vcx.debug_bounds("account-openai-history-report-0").unwrap();
         let second = vcx.debug_bounds("account-openai-history-report-1").unwrap();
-        let today = vcx.debug_bounds("account-openai-history-0-Today").unwrap();
-        let lifetime = vcx
-            .debug_bounds("account-openai-history-0-Lifetime")
-            .unwrap();
-        let note = vcx.debug_bounds("account-openai-estimate-note").unwrap();
-        assert!(row.size.height > px(ACCOUNT_ROW_HEIGHT));
-        assert!(today.top() < lifetime.top());
+        // Each login is one short line. Verbose token counts and caveats moved
+        // to the tooltip, so the sidebar row stays compact.
+        assert!(vcx.debug_bounds("account-openai-estimate-note").is_none());
+        assert!(first.size.height <= px(14.0), "{first:?}");
         assert!(first.bottom() <= second.top());
-        assert!(second.bottom() <= note.top());
         assert!(
-            note.bottom() <= row.bottom(),
+            second.bottom() <= row.bottom(),
             "history must not be clipped by compact row height"
         );
         assert!(
-            today.right() <= row.right(),
-            "long token details must wrap inside the sidebar"
+            first.right() <= row.right(),
+            "summary must fit inside the sidebar"
         );
+        let report = workspace.read_with(vcx, |w, _| w.accounts[0].usage_reports[0].clone());
+        assert_eq!(report.period_amount("Today").as_deref(), Some("$0.02"));
+        assert_eq!(report.period_amount("Lifetime").as_deref(), Some("$0.00"));
     }
 
     #[gpui::test]
@@ -14583,14 +14595,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing sidebar choice {expanded}"));
             let trigger = cx.debug_bounds("sidebar-section-trigger").unwrap();
             assert!(
-                choice.top() >= trigger.bottom(),
-                "menu opens below the title"
+                choice.left() >= trigger.right(),
+                "menu opens beside the sidebar"
             );
+            let popout = cx.debug_bounds("sidebar-roller-popout").unwrap();
             cx.simulate_click(choice.center(), gpui::Modifiers::default());
             cx.run_until_parked();
             // Leave the header and its menu before using the page.
             cx.update(|window, cx| {
-                window.simulate_mouse_move(gpui::point(px(130.0), px(400.0)), cx);
+                window.simulate_mouse_move(
+                    gpui::point(px(130.0), popout.bottom() + px(40.0)),
+                    cx,
+                );
             });
             cx.run_until_parked();
             assert!(cx.debug_bounds(expanded).is_none());

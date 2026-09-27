@@ -41,9 +41,13 @@ def verify(output, env, root):
         report["observations"].append({"stage": label, "navigation": state})
         assert identity(state) == baseline, ("Roller changed panels or keyboard focus", label, state)
 
+    # The section menu opens beside the 224px sidebar, over the canvas.
+    MENU = (228, 0, 448, 300)
+
     def words(image, label, header=False):
-        return ui.words(image, (0, 52 if header else 0, min(264, image.width),
-                                min(340, image.height) if header else image.height),
+        if header:
+            return ui.words(image, MENU, label, psm=11)
+        return ui.words(image, (0, 0, min(264, image.width), image.height),
                         label, psm=11)
 
     def visible(image, phrase, label, header=False):
@@ -52,7 +56,7 @@ def verify(output, env, root):
     def popup(image):
         # Read the title/hint separately so two-column page OCR ordering cannot
         # merge the hint into an adjacent row. Click targets use actual OCR boxes.
-        header = ui.words(image, (0, 52, 264, 96), stage + "-header", psm=6)
+        header = ui.words(image, (228, 12, 448, 46), stage + "-header", psm=6)
         phrase_bounds(header, "Sidebar")
         phrase_bounds(header, "Scroll to switch")
         page_words = words(image, stage + "-pages", header=True)
@@ -62,7 +66,7 @@ def verify(output, env, root):
         return page_words
 
     def collapsed(image):
-        header = ui.words(image, (0, 52, 264, 96), stage + "-closed-header", psm=6)
+        header = ui.words(image, (228, 12, 448, 46), stage + "-closed-header", psm=6)
         try:
             phrase_bounds(header, "Scroll to switch")
         except AssertionError:

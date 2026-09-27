@@ -132,6 +132,31 @@ impl UsageReport {
         }
     }
 
+    /// One short dollar figure for a usage period, e.g. `$0.02` or `$0.00`.
+    /// The full token and caveat text stays in [`Self::period_detail`].
+    pub fn period_amount(&self, period: &str) -> Option<String> {
+        let text = self.period_detail(period)?;
+        if text.starts_with("No recorded usage") {
+            return Some("$0.00".into());
+        }
+        let start = text.find('$')?;
+        let amount: String = text[start + 1..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        amount
+            .parse::<f64>()
+            .ok()
+            .map(|value| format!("${value:.2}"))
+    }
+
+    pub fn period_detail(&self, period: &str) -> Option<&str> {
+        self.extra_info
+            .iter()
+            .find(|(key, _)| key == period)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// Short, human reason quota could not be fetched, if it failed.
     pub fn usage_error(&self) -> Option<String> {
         let (_, error) = self

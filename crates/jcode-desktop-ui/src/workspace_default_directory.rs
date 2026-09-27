@@ -250,11 +250,13 @@ impl Workspace {
                     .debug_selector(|| "default-directory-path".into())
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(11.0))
+                    // Small enough to fit typical full paths. Anything longer
+                    // drops its start, since the leaf folder is what matters.
+                    .text_size(px(9.0))
                     .text_color(Theme::global().ACCENT)
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_ellipsis()
+                    .text_ellipsis_start()
                     .child(display),
             )
             .into_any_element()
