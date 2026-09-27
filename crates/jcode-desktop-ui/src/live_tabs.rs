@@ -350,6 +350,82 @@ impl Workspace {
             .unwrap_or((self.active_row + 1) % STRIP_COUNT)
     }
 
+    /// Rename and close pills for a hovered tab. They float over the title's
+    /// faded end, so they never take width away from the title.
+    fn render_tab_actions(
+        &self,
+        index: usize,
+        can_rename: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let pill = |el: gpui::Stateful<gpui::Div>| {
+            el.flex_none()
+                .size(px(20.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .text_color(Theme::global().TEXT_DIM)
+                .cursor_pointer()
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                    cx.stop_propagation();
+                    window.prevent_default();
+                })
+        };
+        let mut actions = Vec::new();
+        if can_rename {
+            actions.push(
+                pill(div().id("rename-session-button"))
+                    .debug_selector(|| "rename-session-button".into())
+                    .hover(|style| {
+                        style
+                            .bg(Theme::global().PANEL_BG)
+                            .text_color(Theme::global().TEXT)
+                    })
+                    .tooltip(|_, cx| cx.new(|_| TabTooltip("Rename session (F2)".into())).into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.rename_session(&RenameSession, window, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .data(include_bytes!("../../../assets/icons/pencil.svg"))
+                            .size(px(12.0))
+                            .text_color(Theme::global().TEXT_DIM),
+                    )
+                    .into_any_element(),
+            );
+        }
+        actions.push(
+            pill(div().id(("close-session-button", index)))
+                .debug_selector(move || format!("close-session-button-{index}"))
+                .text_size(px(16.0))
+                .hover(|style| {
+                    style
+                        .bg(Theme::global().ERROR_BG)
+                        .text_color(Theme::global().ERROR)
+                })
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        TabTooltip(if cfg!(target_os = "macos") {
+                            "Close tab (⌘Q)".into()
+                        } else {
+                            "Close tab (Super+Q)".into()
+                        })
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.set_active(index, cx);
+                    this.close_panel(&ClosePanel, window, cx);
+                }))
+                .child("×")
+                .into_any_element(),
+        );
+        actions
+    }
+
     fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
         let target = self.next_workspace_row();
         let accent = Theme::global().workspace_accent(target);
@@ -540,6 +616,21 @@ impl Workspace {
                 }
                 None => ("Empty workspace".into(), "📁", None, None),
             };
+            let tab_bg = match ring {
+                Some(ring) => background.blend(ring.tint()),
+                None => background,
+            };
+            let hover_bg = Theme::global().PANEL_BG.blend(accent.opacity(0.20));
+            // Fade toward the tab fill instead of an ellipsis, so long titles
+            // use the whole tab and trail off softly at the right edge.
+            let fade = |bg: gpui::Rgba| {
+                gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(gpui::Rgba { a: 0., ..bg }, 0.),
+                    gpui::linear_color_stop(bg, 1.),
+                )
+            };
+            let show_actions = index.is_some() && visible >= 88.0;
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
@@ -573,94 +664,57 @@ impl Workspace {
                                 Some(index) => format!("live-session-tab-{index}-title"),
                                 None => "live-session-empty-tab-title".into(),
                             })
+                            .relative()
+                            .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(title.clone()),
-                    )
-                    .when(focused && can_rename && visible >= 88.0, |el| {
-                        el.child(
-                            div()
-                                .id("rename-session-button")
-                                .debug_selector(|| "rename-session-button".into())
-                                .flex_none()
-                                .size(px(20.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .text_size(px(14.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .opacity(0.0)
-                                .group_hover("live-session-tab", |style| style.opacity(1.0))
-                                .hover(|style| {
-                                    style
-                                        .bg(Theme::global().PANEL_BG)
-                                        .text_color(Theme::global().TEXT)
-                                })
-                                .cursor_pointer()
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| TabTooltip("Rename session (F2)".into())).into()
-                                })
-                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.rename_session(&RenameSession, window, cx);
-                                }))
-                                .child(
-                                    gpui::svg()
-                                        .data(include_bytes!("../../../assets/icons/pencil.svg"))
-                                        .size(px(12.0))
-                                        .text_color(Theme::global().TEXT_DIM),
-                                ),
-                        )
-                    })
-                    .when(index.is_some() && visible >= 88.0, |el| {
-                        let index = index.unwrap();
-                        el.child(
-                            div()
-                                .id(("close-session-button", index))
-                                .debug_selector(move || format!("close-session-button-{index}"))
-                                .flex_none()
-                                .size(px(20.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .text_size(px(16.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .opacity(0.0)
-                                .group_hover("live-session-tab", |style| style.opacity(1.0))
-                                .hover(|style| {
-                                    style
-                                        .bg(Theme::global().ERROR_BG)
-                                        .text_color(Theme::global().ERROR)
-                                })
-                                .cursor_pointer()
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| {
-                                        TabTooltip(if cfg!(target_os = "macos") {
-                                            "Close tab (⌘Q)".into()
-                                        } else {
-                                            "Close tab (Super+Q)".into()
-                                        })
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(title.clone())
+                            .child(
+                                div()
+                                    .debug_selector(move || match index {
+                                        Some(index) => format!("live-session-tab-{index}-fade"),
+                                        None => "live-session-empty-tab-fade".into(),
                                     })
-                                    .into()
-                                })
-                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.set_active(index, cx);
-                                    this.close_panel(&ClosePanel, window, cx);
-                                }))
-                                .child("×"),
-                        )
-                    })
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right_0()
+                                    .w(px(20.0))
+                                    .bg(fade(tab_bg))
+                                    .group_hover("live-session-tab", move |style| {
+                                        style.bg(fade(hover_bg))
+                                    }),
+                            ),
+                    )
+                })
+                // Actions float over the faded end of the title on hover, so
+                // they never reserve width the title could be using.
+                .when(!compact && show_actions, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(padding))
+                            .flex()
+                            .items_center()
+                            .opacity(0.0)
+                            .group_hover("live-session-tab", |style| style.opacity(1.0))
+                            .child(div().h_full().w(px(16.0)).bg(fade(hover_bg)))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .bg(hover_bg)
+                                    .children(self.render_tab_actions(
+                                        index.unwrap(),
+                                        focused && can_rename,
+                                        cx,
+                                    )),
+                            ),
+                    )
                 });
             tabs = tabs.child(
                 div()
@@ -692,10 +746,7 @@ impl Workspace {
                         None if focused => accent,
                         None => accent.opacity(0.35),
                     })
-                    .bg(match ring {
-                        Some(ring) => background.blend(ring.tint()),
-                        None => background,
-                    })
+                    .bg(tab_bg)
                     .text_size(px(11.0))
                     .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
                     .text_color(if focused {

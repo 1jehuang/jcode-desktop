@@ -13,12 +13,36 @@ use crate::theme::Theme;
 
 use super::MinimapSessionState;
 
-const TICK: Duration = Duration::from_nanos(33_333_334);
+/// 60 Hz on the shared animation grid, so every ringed tab wakes in the
+/// same frame instead of each re-rendering the header on its own.
+const TICK: Duration = Duration::from_nanos(16_666_667);
 /// Matches `rounded_md` on the tab so the ring hugs the real outline.
 const RADIUS: f32 = 6.0;
 const STROKE: f32 = 1.5;
-const ORBIT_SECONDS: f32 = 2.2;
-const COMET_FRACTION: f32 = 0.22;
+const ORBIT_SECONDS: f32 = 2.4;
+const COMET_FRACTION: f32 = 0.30;
+/// Segments along the comet tail. Enough that the alpha taper reads as a
+/// continuous gradient rather than visible steps.
+const COMET_SEGMENTS: usize = 28;
+/// Time constant for progress changes. A completed todo sweeps forward
+/// instead of snapping the fill to its new length.
+const PROGRESS_EASE: f32 = 0.18;
+
+/// Orbit phase from one process-wide clock. Every working tab circles in
+/// lockstep, and phase never depends on how many ticks were delivered.
+fn orbit_phase() -> f32 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    (epoch.elapsed().as_secs_f32() / ORBIT_SECONDS).fract()
+}
+
+/// Smooth ease-in-out so the comet glides through corners instead of moving
+/// at a mechanical constant rate.
+fn ease_orbit(t: f32) -> f32 {
+    // Mostly linear with a gentle sine modulation: continuous speed at the
+    // wrap point, never stopping, but visibly softer than constant motion.
+    t - 0.035 * (t * std::f32::consts::TAU).sin()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TabRing {
@@ -66,6 +90,9 @@ pub(super) struct TabOutline {
     elapsed: Duration,
     lease_started: Option<Instant>,
     tick: Option<Task<()>>,
+    /// Displayed fill, eased toward the todo progress target.
+    shown_progress: Option<f32>,
+    eased_at: Option<Instant>,
 }
 
 impl TabOutline {
@@ -76,6 +103,32 @@ impl TabOutline {
             elapsed: Duration::ZERO,
             lease_started: None,
             tick: None,
+            shown_progress: None,
+            eased_at: None,
+        }
+    }
+
+    /// Advance the displayed fill toward `target`. Returns whether it is
+    /// still moving and therefore needs another frame.
+    fn ease_progress(&mut self, target: Option<f32>, reduce_motion: bool) -> bool {
+        let now = Instant::now();
+        let dt = self
+            .eased_at
+            .replace(now)
+            .map_or(0.0, |at| now.saturating_duration_since(at).as_secs_f32())
+            .min(0.1);
+        match (target, self.shown_progress) {
+            (Some(target), Some(shown)) if !reduce_motion => {
+                let k = 1.0 - (-dt / PROGRESS_EASE).exp();
+                let next = shown + (target - shown) * k;
+                let settled = (target - next).abs() < 0.002;
+                self.shown_progress = Some(if settled { target } else { next });
+                !settled
+            }
+            (target, _) => {
+                self.shown_progress = target;
+                false
+            }
         }
     }
 
@@ -193,8 +246,17 @@ impl Perimeter {
         if span <= 0.05 {
             return;
         }
-        let steps = ((span / 2.0).ceil() as usize).clamp(2, 400);
-        let mut path = gpui::PathBuilder::stroke(px(STROKE));
+        self.stroke_width(from, to, STROKE, window, color);
+    }
+
+    fn stroke_width(&self, from: f32, to: f32, width: f32, window: &mut Window, color: Rgba) {
+        let span = to - from;
+        if span <= 0.05 {
+            return;
+        }
+        // About one vertex per pixel keeps the rounded corners smooth.
+        let steps = (span.ceil() as usize).clamp(2, 800);
+        let mut path = gpui::PathBuilder::stroke(px(width));
         for step in 0..=steps {
             let p = self.at(from + span * step as f32 / steps as f32);
             if step == 0 {
@@ -206,6 +268,43 @@ impl Perimeter {
         if let Ok(path) = path.build() {
             window.paint_path(path, color);
         }
+    }
+}
+
+/// A tapered streak ending at `head`: alpha and width fall off smoothly along
+/// the tail, with a faint wider glow under the bright end.
+fn comet(
+    perimeter: &Perimeter,
+    head: f32,
+    tail: f32,
+    color: Rgba,
+    strength: f32,
+    window: &mut Window,
+) {
+    let seg = tail / COMET_SEGMENTS as f32;
+    for i in 0..COMET_SEGMENTS {
+        // t runs 0 at the tail tip to 1 at the head.
+        let t = (i + 1) as f32 / COMET_SEGMENTS as f32;
+        let ease = t * t * (3.0 - 2.0 * t);
+        let from = head - tail + seg * i as f32;
+        // Overlap a hair so the joins between segments never show seams.
+        let to = from + seg + 0.35;
+        if t > 0.55 {
+            perimeter.stroke_width(
+                from,
+                to,
+                STROKE + 2.5 * ease,
+                window,
+                color.opacity(0.10 * ease * strength),
+            );
+        }
+        perimeter.stroke_width(
+            from,
+            to,
+            STROKE * (0.6 + 0.4 * ease) + 0.5 * ease,
+            window,
+            color.opacity(ease * strength),
+        );
     }
 }
 
@@ -223,10 +322,11 @@ impl Render for TabOutline {
                         }
                         let reduce_motion = cx.reduce_motion()
                             || crate::config::get().appearance.reduce_motion;
-                        let Some(elapsed) = outline
+                        let Some(progress) = outline
                             .update(cx, |outline, cx| {
-                                outline.arm(ring.working && !reduce_motion, cx);
-                                outline.elapsed
+                                let easing = outline.ease_progress(ring.progress, reduce_motion);
+                                outline.arm((ring.working || easing) && !reduce_motion, cx);
+                                outline.shown_progress
                             })
                             .ok()
                         else {
@@ -241,44 +341,41 @@ impl Render for TabOutline {
                             return;
                         };
                         let len = perimeter.len();
-                        let phase = if reduce_motion {
-                            0.0
-                        } else {
-                            (elapsed.as_secs_f32() / ORBIT_SECONDS).fract()
-                        };
+                        let phase = if reduce_motion { 0.0 } else { orbit_phase() };
+                        let tau = std::f32::consts::TAU;
                         window.paint_layer(bounds, |window| {
-                            perimeter.stroke(0.0, len, window, ring.color.opacity(0.28));
-                            match ring.progress {
+                            // Quiet track, so the ring reads as one outline.
+                            perimeter.stroke(0.0, len, window, ring.color.opacity(0.22));
+                            match progress {
                                 Some(progress) => {
                                     let end = len * progress;
                                     perimeter.stroke(0.0, end, window, ring.color);
                                     if ring.working && progress < 1.0 {
-                                        // Breathe a short leading edge so an
-                                        // unchanged count still reads as alive.
-                                        let pulse = 0.5 - 0.5 * (phase * std::f32::consts::TAU).cos();
-                                        let head = (len * 0.08).min(len - end);
-                                        perimeter.stroke(
-                                            end,
+                                        // A soft glow breathes at the leading
+                                        // edge so an unchanged count still
+                                        // reads as alive, without moving.
+                                        let pulse = 0.5 - 0.5 * (phase * tau).cos();
+                                        let head = (len * 0.10).min(len - end);
+                                        comet(
+                                            &perimeter,
                                             end + head,
+                                            head,
+                                            ring.color,
+                                            0.30 + 0.50 * pulse,
                                             window,
-                                            ring.color.opacity(0.25 + 0.55 * pulse),
                                         );
                                     }
                                 }
                                 None if ring.working => {
-                                    let head = len * phase;
-                                    let tail = len * COMET_FRACTION;
-                                    let segments = 6;
-                                    for i in 0..segments {
-                                        let a = i as f32 / segments as f32;
-                                        let b = (i + 1) as f32 / segments as f32;
-                                        perimeter.stroke(
-                                            head - tail * (1.0 - a),
-                                            head - tail * (1.0 - b),
-                                            window,
-                                            ring.color.opacity(0.15 + 0.85 * b),
-                                        );
-                                    }
+                                    let head = len * ease_orbit(phase);
+                                    comet(
+                                        &perimeter,
+                                        head,
+                                        len * COMET_FRACTION,
+                                        ring.color,
+                                        1.0,
+                                        window,
+                                    );
                                 }
                                 None => perimeter.stroke(0.0, len, window, ring.color),
                             }
