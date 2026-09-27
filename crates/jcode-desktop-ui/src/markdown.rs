@@ -62,6 +62,9 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
     let mut blocks = Vec::new();
     let mut lines = source.lines().peekable();
     let mut paragraph = String::new();
+    // CommonMark hard line break: the previous paragraph line ended with two
+    // or more spaces or a backslash.
+    let mut hard_break = false;
 
     let flush = |paragraph: &mut String, blocks: &mut Vec<Block>| {
         if !paragraph.trim().is_empty() {
@@ -227,9 +230,20 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
             flush(&mut paragraph, &mut blocks);
         } else {
             if !paragraph.is_empty() {
-                paragraph.push(if preserve_line_breaks { '\n' } else { ' ' });
+                if hard_break && !preserve_line_breaks && paragraph.ends_with('\\') {
+                    paragraph.pop();
+                }
+                let text_end = paragraph.trim_end_matches(' ').len();
+                paragraph.truncate(text_end);
+                paragraph.push(if preserve_line_breaks || hard_break {
+                    '\n'
+                } else {
+                    ' '
+                });
             }
             paragraph.push_str(trimmed);
+            let trailing_backslashes = trimmed.len() - trimmed.trim_end_matches('\\').len();
+            hard_break = trimmed.ends_with("  ") || trailing_backslashes % 2 == 1;
         }
     }
     flush(&mut paragraph, &mut blocks);
@@ -2377,6 +2391,16 @@ mod tests {
                 assert_eq!(copied.as_deref(), Some(text.as_ref()), "leaf {key}");
             }
         }
+    }
+
+    #[test]
+    fn commonmark_hard_line_breaks_are_rendered() {
+        assert_eq!(
+            parse("Two spaces  \nBackslash\\\nsoft\nwrap\\\\\nend"),
+            vec![Block::Paragraph(
+                "Two spaces\nBackslash\nsoft wrap\\\\ end".into()
+            )]
+        );
     }
 
     #[test]
