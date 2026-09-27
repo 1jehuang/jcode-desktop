@@ -2052,6 +2052,19 @@ fn render_document_with_prompt_background(
         };
         // Code, tables, and diagrams do not consume the fade. Never leak it.
         LEAF_FADE.set(0);
+        // Blank-line block breaks need visibly more room than a wrapped line,
+        // while consecutive list items stay tight. A uniform flex gap made
+        // paragraphs read as one run of text.
+        if block_index > 0 {
+            let space = if tight {
+                px(2.0)
+            } else if reasoning {
+                px(7.0)
+            } else {
+                px(11.0)
+            };
+            children.push(div().flex_none().h(space).into_any_element());
+        }
         // Structured blocks retain their native rectangular geometry. Prose
         // instead gets a contour from the actual shaped visual line widths.
         children.push(match prompt_background {
@@ -2065,7 +2078,6 @@ fn render_document_with_prompt_background(
     div()
         .flex()
         .flex_col()
-        .gap_1p5()
         .children(children)
         .into_any_element()
 }
@@ -2079,7 +2091,7 @@ fn list_row(
     key: SharedString,
     window: &gpui::Window,
     cx: &gpui::App,
-    tight: bool,
+    _tight: bool,
     task: Option<bool>,
     avatar: bool,
 ) -> gpui::AnyElement {
@@ -2087,7 +2099,6 @@ fn list_row(
         .flex()
         .flex_row()
         .gap_2()
-        .when(tight, |el| el.mt_0())
         .pl(px(depth as f32 * 14.0))
         .child(
             div()
