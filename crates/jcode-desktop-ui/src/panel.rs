@@ -4281,6 +4281,11 @@ impl Render for Panel {
             .on_action(cx.listener(|panel, _: &shortcuts::JumpToLatest, _, cx| {
                 panel.jump_to_latest(cx);
             }))
+            .on_action(
+                cx.listener(|panel, _: &shortcuts::JumpToLatestIfEmpty, _, cx| {
+                    panel.jump_to_latest_if_empty(cx);
+                }),
+            )
             .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
                 panel.toggle_voice(cx);
             }))
