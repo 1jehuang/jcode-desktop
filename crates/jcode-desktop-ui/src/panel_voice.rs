@@ -334,8 +334,6 @@ impl Panel {
             && self.terminal.is_none()
             && self.code_file.is_none()
             && !self.is_side_document()
-            && self.gmail_inbox.is_none()
-            && self.gmail_message.is_none()
             && self.todoist.is_none()
             && self.orchestration.is_none()
     }

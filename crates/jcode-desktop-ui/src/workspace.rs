@@ -209,6 +209,8 @@ actions!(
 /// Spatial transitions settle in 150 ms. Cubic easing keeps motion visible
 /// across the available frames instead of concentrating it at the start.
 const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
+/// The bundled applet behind Super+Shift+G and the sidebar inbox entry.
+const GMAIL_APPLET: &str = "gmail";
 /// A tiny amount of presentation smoothing removes the one-frame stepping
 /// caused by touchpad events arriving between compositor frames without making
 /// the canvas feel detached from the fingers.
@@ -1607,6 +1609,8 @@ impl Workspace {
             if panel_state.session_id.starts_with("preview://")
                 || panel_state.session_id.starts_with("accounts://")
                 || panel_state.session_id == Panel::CHANGELOG_SESSION_ID
+                // The retired native inbox. Gmail is now an applet panel.
+                || panel_state.session_id == "gmail://inbox"
             {
                 continue;
             }
@@ -1691,8 +1695,6 @@ impl Workspace {
                 .strip_prefix(crate::panel::applet_panel::APPLET_PREFIX)
             {
                 cx.new(|cx| Panel::new_applet(instance.to_owned(), self.bridge.clone(), cx))
-            } else if panel_state.session_id == "gmail://inbox" {
-                cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx))
             } else if panel_state.session_id == "todoist://tasks" {
                 cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx))
             } else if panel_state.session_id == crate::panel::orchestration::SESSION_ID {
@@ -3266,56 +3268,34 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Super+Shift+G and the sidebar inbox entry open the bundled Gmail
+    /// applet. An open Gmail panel is focused instead of duplicated.
     fn open_gmail(&mut self, _: &OpenGmail, window: &mut Window, cx: &mut Context<Self>) {
+        let prefix = format!(
+            "{}{GMAIL_APPLET}#",
+            crate::panel::applet_panel::APPLET_PREFIX
+        );
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == "gmail://inbox")
+            .position(|slot| !slot.closing && slot.panel.read(cx).session_id.starts_with(&prefix))
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
         }
-        let width_fraction = spawned_panel_width(self.slots.len());
-        let panel = cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx));
-        if self.single_panel {
-            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
-                eprintln!("Could not open panel window: {error:#}");
+        let launched = crate::applet_runtime::get(cx)
+            .launch_trigger(GMAIL_APPLET, jcode_applet_types::manifest::Trigger::Sidebar);
+        match launched {
+            Ok(Some(instance)) => self.open_applet_instance(&instance, window, cx),
+            // The provider mounts shortly and the applet loop opens its panel.
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("jcode desktop: {error}");
+                self.applet_toast =
+                    Some((format!("Could not open Gmail: {error}"), Instant::now()));
             }
-            return;
         }
-        let insert_at = if self.slots.is_empty() {
-            0
-        } else {
-            self.active + 1
-        };
-        self.slots.insert(
-            insert_at,
-            Slot {
-                panel,
-                row: self.active_row,
-                width_fraction,
-                animated_width: AnimatedValue::new(
-                    width_fraction,
-                    transition::policy(Transition::PanelOpen).duration,
-                ),
-                order_offset: AnimatedValue::new(
-                    0.0,
-                    transition::policy(Transition::PanelOrder).duration,
-                ),
-                order_distance_fraction: width_fraction,
-                close_progress: AnimatedValue::new(
-                    1.0,
-                    transition::policy(Transition::PanelClose).duration,
-                ),
-                closing: false,
-                restore_fraction: None,
-            },
-        );
-        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
-        self.set_active(insert_at, cx);
-        self.retarget_camera();
-        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -12832,6 +12812,52 @@ mod tests {
         );
     }
 
+    /// Stand in for the bundled Gmail provider: register it, then answer the
+    /// launch Desktop queued by mounting a panel, like provider.py does.
+    fn fake_gmail_provider(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, app| {
+            let runtime = crate::applet_runtime::get(app);
+            runtime
+                .apply(
+                    GMAIL_APPLET,
+                    serde_json::from_value(serde_json::json!({
+                        "type": "register",
+                        "manifest": {
+                            "schema": jcode_applet_types::SCHEMA,
+                            "id": GMAIL_APPLET,
+                            "title": "Gmail",
+                            "launchers": [{"trigger": "sidebar", "placement": {"kind": "panel"}}]
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            runtime
+                .apply(
+                    GMAIL_APPLET,
+                    serde_json::from_value(serde_json::json!({
+                        "type": "mount",
+                        "instance": "gmail#launch0",
+                        "placement": {"kind": "panel"},
+                        "document": {"revision": 1, "title": "Gmail",
+                            "view": {"type": "text", "text": "Inbox"}}
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            let _ = window;
+        });
+    }
+
+    fn sync_applets(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, app| {
+            workspace.update(app, |workspace, cx| {
+                workspace.sync_applet_panels(window, cx)
+            });
+        });
+        cx.run_until_parked();
+    }
+
     #[gpui::test]
     fn inbox_button_lives_in_the_sidebar_and_opens_gmail(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -12844,11 +12870,13 @@ mod tests {
 
         assert!(vcx.debug_bounds("sidebar-section-trigger").unwrap().right() <= px(SIDEBAR_WIDTH));
         click_sidebar_navigation(&workspace, vcx, "open-gmail");
+        fake_gmail_provider(vcx);
+        sync_applets(&workspace, vcx);
 
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(
                 workspace.slots[workspace.active].panel.read(cx).session_id,
-                "gmail://inbox"
+                "applet://gmail#launch0"
             );
         });
     }
@@ -14487,7 +14515,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn super_shift_g_opens_and_paints_the_gmail_inbox_panel(cx: &mut gpui::TestAppContext) {
+    fn super_shift_g_opens_and_paints_the_gmail_applet_panel(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -14500,12 +14528,20 @@ mod tests {
         });
 
         cx.simulate_keystrokes("super-shift-g");
+        workspace.update(cx, |workspace, _| {
+            assert!(
+                workspace.slots.is_empty(),
+                "the panel waits for the provider"
+            );
+        });
+        fake_gmail_provider(cx);
+        sync_applets(&workspace, cx);
 
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 1);
             assert_eq!(
                 workspace.slots[0].panel.read(cx).session_id,
-                "gmail://inbox"
+                "applet://gmail#launch0"
             );
         });
         cx.draw(
@@ -14514,8 +14550,8 @@ mod tests {
             |_, _| gpui::div(),
         );
         assert!(
-            cx.debug_bounds("gmail-inbox").is_some(),
-            "the Gmail inbox surface should paint in the newly created panel"
+            cx.debug_bounds("applet-body").is_some(),
+            "the Gmail applet should paint in the newly created panel"
         );
         // Opening the public shortcut again focuses the existing inbox instead
         // of creating duplicate panels.

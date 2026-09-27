@@ -9,9 +9,10 @@ and the MCP-UI bridge live in `jcode-app-core`, persisted per session by
 
 ## Why
 
-Before this, every custom surface was hand-wired into `Panel`. For example, Gmail needed
-`gmail_inbox`, `new_gmail`, `render_gmail`, focus special cases, a workspace action and a
-sidebar button. Only in-tree Rust could add one. Applets make custom UI **data**:
+Before this, every custom surface was hand-wired into `Panel`. For example, the native Gmail
+inbox needed `gmail_inbox`, `new_gmail`, `render_gmail`, focus special cases, a workspace
+action and a sidebar button. It is now the bundled Gmail applet, and that code is gone. Only
+in-tree Rust could add a surface. Applets make custom UI **data**:
 anyone can describe it, and Desktop renders it natively, safely and on-theme.
 
 ## Core ideas
@@ -237,6 +238,14 @@ instead.
 ## Remaining work
 
 1. Command palette and shortcut launcher triggers (types exist, no host UI yet).
-2. Migrate the Gmail inbox and Todoist panels to applets, and delete their
-   bespoke `Panel` fields. Bundled Gmail and GitHub applets already exist under
-   `applets/`.
+2. Migrate the Todoist panel to an applet and delete its bespoke `Panel` fields, as was
+   done for Gmail.
+
+## Bundled applets
+
+Applets under `applets/` are public: anyone can install them with
+`scripts/install-applet.sh <id>`. Gmail also ships inside Desktop
+(`bundled_applets.rs` embeds its files). Super+Shift+G and the sidebar inbox entry install it
+into `~/.jcode/applets/gmail` on first use, start the provider, and queue the launch until the
+provider registers. A `.bundled` hash marker lets later builds refresh an unmodified copy while
+leaving local edits alone. Private applets are any other folder in `~/.jcode/applets`.

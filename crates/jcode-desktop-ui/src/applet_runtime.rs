@@ -71,6 +71,9 @@ pub(crate) struct Runtime {
     restored: std::cell::Cell<bool>,
     /// Last persisted bytes, so unchanged state is not rewritten.
     persisted: RefCell<Vec<u8>>,
+    /// Launches requested before their provider registered, such as a
+    /// shortcut pressed while a local applet is still starting.
+    pending_launches: RefCell<Vec<(String, jcode_applet_types::manifest::Trigger)>>,
 }
 
 /// A user intent on an agent-mounted instance, bound for the SDK.
@@ -134,6 +137,7 @@ impl Default for Runtime {
             effects: RefCell::new(Vec::new()),
             restored: std::cell::Cell::new(false),
             persisted: RefCell::new(Vec::new()),
+            pending_launches: RefCell::new(Vec::new()),
         }
     }
 }
@@ -169,6 +173,17 @@ impl Runtime {
             let startup = self.host.borrow().startup_launchers(applet);
             for index in startup {
                 let _ = self.host.borrow_mut().launch(applet, index);
+            }
+            let pending: Vec<_> = {
+                let mut queue = self.pending_launches.borrow_mut();
+                let (mine, rest) = queue.drain(..).partition(|(id, _)| id == applet);
+                *queue = rest;
+                mine
+            };
+            for (_, trigger) in pending {
+                if let Some(index) = self.launcher_index(applet, &trigger) {
+                    let _ = self.host.borrow_mut().launch(applet, index);
+                }
             }
         }
         self.bump();
@@ -326,6 +341,50 @@ impl Runtime {
         let focus = self.host.borrow_mut().launch(applet, index);
         self.flush();
         focus
+    }
+
+    /// Index of the applet's first launcher with this trigger.
+    fn launcher_index(
+        &self,
+        applet: &str,
+        trigger: &jcode_applet_types::manifest::Trigger,
+    ) -> Option<usize> {
+        self.host
+            .borrow()
+            .manifest(applet)?
+            .launchers
+            .iter()
+            .position(|launcher| &launcher.trigger == trigger)
+    }
+
+    /// Launch by trigger for a built-in entry point (sidebar button,
+    /// shortcut). Installs a bundled applet if needed. When the provider has
+    /// not registered yet, the launch is queued until it does.
+    pub fn launch_trigger(
+        &self,
+        applet: &str,
+        trigger: jcode_applet_types::manifest::Trigger,
+    ) -> Result<Option<String>, String> {
+        if let Some(index) = self.launcher_index(applet, &trigger) {
+            return Ok(self.launch(applet, index));
+        }
+        // Unit tests and offline fixtures never touch ~/.jcode or spawn
+        // providers. They only queue, so a registering fake can satisfy it.
+        if !cfg!(test) && !crate::harness::screenshot_mode() {
+            let dir = applets_dir().ok_or("no Jcode home directory")?;
+            crate::bundled_applets::ensure(&dir, applet)
+                .map_err(|error| format!("could not install applet {applet}: {error}"))?;
+            let local = discover(&dir)
+                .into_iter()
+                .find(|a| a.id == applet)
+                .ok_or_else(|| format!("applet {applet} is not installed"))?;
+            self.start(&local)?;
+        }
+        let mut queue = self.pending_launches.borrow_mut();
+        if !queue.iter().any(|(id, t)| id == applet && t == &trigger) {
+            queue.push((applet.to_owned(), trigger));
+        }
+        Ok(None)
     }
 
     /// Forward a transcript tool call to providers whose manifest claims it.

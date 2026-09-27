@@ -56,7 +56,6 @@ fn assert_preview(state: PreviewState, cx: &mut gpui::TestAppContext) {
         panel.run_session_operation(SessionOperation::Clear, "not sent");
         panel.submit_command_prompt("not sent", cx);
         assert!(panel.terminal.is_none());
-        assert!(panel.gmail_inbox.is_none());
         assert!(panel.todoist.is_none());
         assert!(panel.code_file.is_none());
         panel.close_login_picker(cx);

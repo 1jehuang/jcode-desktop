@@ -7,6 +7,7 @@ mod applet_runtime;
 mod applet_surface;
 mod applet_view;
 mod build_info;
+mod bundled_applets;
 mod changelog;
 mod clipboard_image;
 mod commands;

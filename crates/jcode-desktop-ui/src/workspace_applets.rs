@@ -204,6 +204,7 @@ impl Workspace {
         let Some(dir) = crate::applet_runtime::applets_dir() else {
             return;
         };
+        crate::bundled_applets::refresh_installed(&dir);
         let runtime = crate::applet_runtime::get(cx);
         for applet in crate::applet_runtime::discover(&dir) {
             if applet.autostart
