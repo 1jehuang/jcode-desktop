@@ -4,7 +4,7 @@
 //! Only labels, masked emails and usage figures are shown, never credentials.
 use super::connection::{ConnectionStatus, ConnectionStatuses, status_for};
 use super::*;
-use crate::accounts::{Account, UsageLimit, UsageReport};
+use crate::accounts::{Account, BankedReset, ResetProvider, UsageLimit, UsageReport};
 use jcode_base::auth::account_pool::{AccountPool, OAuthLogin, account_key};
 use std::rc::Rc;
 
@@ -31,6 +31,8 @@ pub(super) struct AccountRow {
     pub limits: Vec<UsageLimit>,
     pub usage: Option<String>,
     pub plan: Option<String>,
+    /// Banked usage resets this login holds (OpenAI) or a Claude session reset.
+    pub banked: Option<BankedReset>,
     /// The auth report says a credential is stored, whatever its health.
     pub configured: bool,
     /// First row of its provider keeps the stable `login-provider-{id}` selector.
@@ -188,6 +190,9 @@ pub(super) fn build_rows(
                 _ => Vec::new(),
             };
             let (usage, plan) = report.map(usage_summary).unwrap_or_default();
+            let banked = report
+                .and_then(|r| r.banked_reset.clone())
+                .filter(|reset| reset.available_count > 0 || reset.next_available_at.is_some());
             AccountRow {
                 key: account_key(provider.id, label),
                 provider: *provider,
@@ -198,6 +203,7 @@ pub(super) fn build_rows(
                 limits,
                 usage,
                 plan,
+                banked,
                 configured: account.is_some_and(|a| a.status != "not_configured"),
                 first_of_provider: first,
             }
@@ -268,12 +274,32 @@ pub(super) fn offline_data() -> AccountsData {
         usage_percent: used,
         reset_in: Some(reset.into()),
     };
+    let banked = |provider, label: &str, count, limit_reached, next: Option<&str>| {
+        // "soon" means about 3h from now, so screenshots read realistically.
+        let next = next.map(|next| match next {
+            "soon" => {
+                let at = std::time::SystemTime::now() + std::time::Duration::from_secs(3 * 3600 + 120);
+                httpdate_rfc3339(at)
+            }
+            other => other.to_owned(),
+        });
+        Some(BankedReset {
+            provider,
+            account_label: Some(label.into()),
+            available_count: count,
+            limit_reached,
+            next_available_at: next,
+        })
+    };
     let report = |label: &str, limits: Vec<UsageLimit>, today: &str| {
         UsageReport {
         provider_name: format!("OpenAI (ChatGPT) ({label})"),
         account_label: Some(label.into()),
         limits,
-        banked_reset: None,
+        banked_reset: match label {
+            "openai-otter" => banked(ResetProvider::OpenAi, label, 2, true, None),
+            _ => banked(ResetProvider::OpenAi, label, 1, false, None),
+        },
         extra_info: vec![
             ("Plan".into(), "plus".into()),
             ("Today".into(), format!("{today} API-equivalent estimate, not a bill")),
@@ -330,7 +356,13 @@ pub(super) fn offline_data() -> AccountsData {
                         limit("5-hour window", 35., "2h"),
                         limit("7-day window", 48., "4d"),
                     ],
-                    banked_reset: None,
+                    banked_reset: banked(
+                        ResetProvider::Claude,
+                        "claude-otter",
+                        0,
+                        false,
+                        Some("soon"),
+                    ),
                     extra_info: vec![("Plan".into(), "max".into())],
                 }],
             ),
@@ -362,6 +394,31 @@ pub(super) fn offline_data() -> AccountsData {
     }
 }
 
+/// UTC RFC3339 for a wall-clock time (offline fixtures only).
+fn httpdate_rfc3339(at: std::time::SystemTime) -> String {
+    let secs = at
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Civil-from-days (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
 fn short_limit_name(name: &str) -> String {
     let lower = name.to_lowercase();
     if lower.starts_with("5-hour") || lower.starts_with("5 hour") {
@@ -391,8 +448,9 @@ fn limit_meter(limit: &UsageLimit) -> gpui::AnyElement {
         .flex()
         .flex_col()
         .gap(px(3.))
-        .w(px(118.))
-        .flex_none()
+        .flex_1()
+        .min_w(px(72.))
+        .max_w(px(160.))
         .child(
             div()
                 .text_size(px(10.))
@@ -423,6 +481,23 @@ fn chip(label: impl Into<SharedString>, color: gpui::Rgba) -> gpui::Div {
     chip_base(color).child(label.into())
 }
 
+fn icon_reset(color: gpui::Rgba) -> gpui::Div {
+    div().text_size(px(11.)).text_color(color).child("↻")
+}
+
+/// Caption for a login's banked resets, e.g. "2 resets banked".
+pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
+    match (reset.provider, reset.available_count) {
+        (ResetProvider::OpenAi, 1) => "1 reset banked".into(),
+        (ResetProvider::OpenAi, n) if n > 1 => format!("{n} resets banked"),
+        (ResetProvider::Claude, n) if n > 0 => "Session reset ready".into(),
+        _ => match reset.next_available_at.as_deref() {
+            Some(at) => format!("Next reset in {}", jcode_base::usage::format_reset_time(at)),
+            None => "No resets".into(),
+        },
+    }
+}
+
 fn status_chip(label: &'static str, color: gpui::Rgba) -> gpui::Div {
     chip_base(color)
         .child(div().size(px(6.)).rounded_full().bg(color))
@@ -445,6 +520,46 @@ fn chip_base(color: gpui::Rgba) -> gpui::Div {
 }
 
 impl Panel {
+    /// Banked resets on a login. Clicking only opens the workspace review,
+    /// which prepares against the provider and needs an explicit confirm.
+    fn render_banked_reset(
+        &self,
+        key: &str,
+        reset: &BankedReset,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let id = format!("login-reset-{key}");
+        let selector = id.clone();
+        let label = banked_reset_label(reset);
+        let offerable = reset.offerable();
+        let color = if offerable {
+            theme.ACCENT
+        } else {
+            theme.TEXT_DIM
+        };
+        let mut pill = chip_base(color)
+            .id(SharedString::from(id))
+            .debug_selector(move || selector.clone())
+            .child(icon_reset(color))
+            .child(label)
+            // Informational pills must not fall through to the row's sign-in.
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        if offerable {
+            let reset = reset.clone();
+            pill = pill
+                .cursor_pointer()
+                .hover(move |el| el.bg(color.opacity(0.24)))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(AccountsPanelRedeemReset(reset.clone()));
+                }));
+        } else {
+            pill = pill.on_click(|_, _, cx| cx.stop_propagation());
+        }
+        pill.into_any_element()
+    }
+
     fn place_account(
         &mut self,
         key: &str,
@@ -515,19 +630,24 @@ impl Panel {
             .items_center()
             .gap_2()
             .min_w_0()
+            .overflow_hidden()
             .child(
                 div()
+                    .min_w(px(40.))
                     .text_size(px(14.))
                     .text_color(theme.TEXT)
-                    .whitespace_nowrap()
+                    .truncate()
                     .child(title.clone()),
             )
-            .child(login_method_icon(provider.method));
+            .child(div().flex_none().child(login_method_icon(provider.method)));
         if row.active {
             name_line = name_line.child(chip("In use", theme.ACCENT));
         }
         if let Some(plan) = &row.plan {
             name_line = name_line.child(chip(plan.clone(), theme.TEXT_DIM));
+        }
+        if let Some(reset) = &row.banked {
+            name_line = name_line.child(self.render_banked_reset(&row.key, reset, cx));
         }
         let detail: Vec<String> = [row.subtitle(), row.usage.clone()]
             .into_iter()
@@ -535,7 +655,8 @@ impl Panel {
             .collect();
         let mut text = div()
             .flex_1()
-            .min_w(px(140.))
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -551,9 +672,15 @@ impl Panel {
                     .child(detail.join(" · ")),
             );
         }
-        let mut meters = div().flex().items_center().gap_3().flex_none();
-        for limit in row.limits.iter().take(2) {
-            meters = meters.child(limit_meter(limit));
+        let connected = pooled.is_some();
+        // Meters sit on their own line inside the text column. Beside the
+        // name they overlapped the plan and reset chips on narrow panels.
+        if !row.limits.is_empty() {
+            let mut meters = div().flex().items_center().gap_4().w_full().pt(px(2.));
+            for limit in row.limits.iter().take(2) {
+                meters = meters.child(limit_meter(limit));
+            }
+            text = text.child(meters);
         }
         let mut element = div()
             .id(SharedString::from(row_id.clone()))
@@ -561,28 +688,60 @@ impl Panel {
             .flex()
             .items_center()
             .gap_3()
-            .pl_2()
-            .pr_2()
+            .pl(px(10.))
+            .pr(px(10.))
             .py_1p5()
-            .min_h(px(52.))
+            .min_h(px(if connected { 56. } else { 44. }))
             .rounded_full()
-            .bg(theme.HEADER_BG)
+            .bg(if connected {
+                theme.HEADER_BG
+            } else {
+                theme.HEADER_BG.opacity(0.55)
+            })
             .cursor_pointer()
-            .hover(|el| el.bg(theme.ACCENT_DIM))
-            .child(login_logo(&provider))
-            .child(text)
-            .child(meters)
-            .child(
-                status_chip(status.label(), color).debug_selector(move || status_selector.clone()),
-            );
+            .hover(|el| el.bg(theme.ACCENT_DIM));
+        // Auto-switch order reads left to right, before the provider.
         if let Some(position) = position {
             element = element.child(
                 div()
                     .flex_none()
-                    .w(px(22.))
-                    .text_size(px(11.))
-                    .text_color(theme.TEXT_DIM)
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(theme.ACCENT.opacity(0.16))
+                    .text_size(px(10.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.ACCENT)
                     .child(format!("{}", position + 1)),
+            );
+        } else if connected {
+            // Manual rows keep the same logo column as ordered rows.
+            element = element.child(div().flex_none().size(px(20.)));
+        }
+        element = element
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(if connected { 34. } else { 28. }))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(theme.PANEL_BG)
+                    .child(login_logo(&provider)),
+            )
+            .child(text);
+        if connected || status != ConnectionStatus::NotConnected {
+            element = element.child(
+                status_chip(status.label(), color).debug_selector(move || status_selector.clone()),
+            );
+        } else {
+            element = element.child(
+                chip_base(theme.ACCENT)
+                    .debug_selector(move || status_selector.clone())
+                    .child("Connect"),
             );
         }
         if let Some(pooled) = pooled {
@@ -595,7 +754,9 @@ impl Panel {
                     .id(SharedString::from(toggle_id))
                     .debug_selector(move || selector.clone())
                     .flex_none()
-                    .px_2p5()
+                    .w(px(96.))
+                    .flex()
+                    .justify_center()
                     .py(px(3.))
                     .rounded_full()
                     .border_1()
@@ -970,12 +1131,9 @@ mod tests {
         vcx.simulate_click(pill, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert_eq!(pooled(vcx).last().unwrap(), "openai:openai-fox");
-        assert!(panel.read_with(vcx, |panel, _| panel
-            .login
-            .as_ref()
-            .unwrap()
-            .provider
-            .is_none()));
+        assert!(panel.read_with(vcx, |panel, _| {
+            panel.login.as_ref().unwrap().provider.is_none()
+        }));
         let pill = vcx
             .debug_bounds("login-move-openai:openai-fox")
             .unwrap()
@@ -985,6 +1143,79 @@ mod tests {
         assert!(!pooled(vcx).contains(&"openai:openai-fox".to_string()));
     }
 
+    #[gpui::test]
+    fn banked_resets_show_per_login_and_click_only_requests_review(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts("reset-test", None, crate::harness::spawn_inert(), cx)
+        });
+        vcx.run_until_parked();
+        let requested = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        vcx.update(|_, cx| {
+            let requested = requested.clone();
+            cx.subscribe(&panel, move |_, event: &AccountsPanelRedeemReset, _| {
+                requested.borrow_mut().push(event.0.clone());
+            })
+            .detach();
+        });
+        assert!(vcx.debug_bounds("login-reset-openai:openai-fox").is_some());
+        assert!(
+            vcx.debug_bounds("login-reset-claude:claude-otter")
+                .is_some()
+        );
+        // Not offerable yet (limit not binding): showing it must not redeem.
+        let fox = vcx
+            .debug_bounds("login-reset-openai:openai-fox")
+            .unwrap()
+            .center();
+        vcx.simulate_click(fox, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(requested.borrow().is_empty());
+        let otter = vcx
+            .debug_bounds("login-reset-openai:openai-otter")
+            .unwrap()
+            .center();
+        vcx.simulate_click(otter, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let requested = requested.borrow();
+        assert_eq!(requested.len(), 1);
+        assert_eq!(requested[0].account_label.as_deref(), Some("openai-otter"));
+        // The pill does not also open the provider's sign-in flow.
+        assert!(panel.read_with(vcx, |panel, _| {
+            panel.login.as_ref().unwrap().provider.is_none()
+        }));
+    }
+
+    #[test]
+    fn banked_reset_labels() {
+        let reset = |provider, count, next: Option<&str>| BankedReset {
+            provider,
+            account_label: None,
+            available_count: count,
+            limit_reached: false,
+            next_available_at: next.map(str::to_owned),
+        };
+        assert_eq!(
+            banked_reset_label(&reset(ResetProvider::OpenAi, 1, None)),
+            "1 reset banked"
+        );
+        assert_eq!(
+            banked_reset_label(&reset(ResetProvider::OpenAi, 3, None)),
+            "3 resets banked"
+        );
+        assert_eq!(
+            banked_reset_label(&reset(ResetProvider::Claude, 1, None)),
+            "Session reset ready"
+        );
+        assert!(
+            banked_reset_label(&reset(
+                ResetProvider::Claude,
+                0,
+                Some("2099-01-01T00:00:00Z")
+            ))
+            .starts_with("Next reset in ")
+        );
+    }
+
     #[test]
     fn usage_figures_are_trimmed_to_cents() {
         assert_eq!(dollars("x, $2693.5357 known"), Some("$2693.54".into()));
@@ -992,5 +1223,7 @@ mod tests {
         assert_eq!(short_limit_name("5-hour window"), "5h");
         assert_eq!(short_limit_name("7-day window"), "7d");
         assert_eq!(mask_email("a@b.c"), "a***@b.c");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_468_836);
+        assert_eq!(httpdate_rfc3339(at), "2026-09-27T00:27:16Z");
     }
 }

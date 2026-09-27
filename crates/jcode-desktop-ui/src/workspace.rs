@@ -3198,6 +3198,14 @@ impl Workspace {
         cx.subscribe_in(
             &panel,
             window,
+            move |this, _, event: &crate::panel::AccountsPanelRedeemReset, _, cx| {
+                this.open_usage_reset(&event.0, cx);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &panel,
+            window,
             move |this, panel, _: &crate::panel::AccountsPanelClosed, window, cx| {
                 this.close_accounts(panel, &source_for_close, false, window, cx);
             },

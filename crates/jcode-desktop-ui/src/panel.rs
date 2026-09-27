@@ -285,6 +285,10 @@ pub struct PanelSnapshot {
 
 pub(crate) struct AccountsPanelClosed;
 pub(crate) struct AccountsPanelChooseModel;
+/// A banked reset on the Accounts page was clicked. Opens the review only.
+pub(crate) struct AccountsPanelRedeemReset(pub crate::accounts::BankedReset);
+
+impl gpui::EventEmitter<AccountsPanelRedeemReset> for Panel {}
 
 impl gpui::EventEmitter<AccountsPanelChooseModel> for Panel {}
 
