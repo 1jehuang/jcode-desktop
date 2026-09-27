@@ -529,13 +529,34 @@ impl Panel {
         state.flow = None;
         state.prompt = None;
         state.input.update(cx, |input, cx| input.clear(cx));
-        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. Choose an available model below. You do not need to reuse the sign-in code.".into());
-        if !self.is_accounts_panel() {
-            self.bridge.send(Command::RefreshRuntime {
-                session_id: self.session_id.clone(),
+        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. If this session does not switch, choose another model. You do not need to reuse the sign-in code.".into());
+        let provider = state.provider.map(|provider| provider.id.to_string());
+        // The CLI and API-key paths notify the daemon on a throwaway
+        // connection. That refreshes credentials everywhere, but the automatic
+        // post-login model switch only applies to the notifying session, so
+        // the session this login is for must notify on its own connection.
+        if let Some(session_id) = self.login_target_session() {
+            self.bridge.send(match provider {
+                Some(provider) => Command::AuthChanged {
+                    session_id,
+                    provider,
+                },
+                None => Command::RefreshRuntime { session_id },
             });
         }
         crate::accounts::request_refresh();
+        cx.notify();
+    }
+
+    /// The live session whose model should follow this login, if any. An
+    /// Accounts panel signs in on behalf of the chat it was opened from.
+    fn login_target_session(&self) -> Option<String> {
+        if let Some(source) = self.session_id.strip_prefix("accounts://") {
+            // Drafts, settings pages and remote sessions have no local runtime.
+            return (!source.is_empty() && !source.contains("://")).then(|| source.to_string());
+        }
+        self.can_refresh_account_runtime()
+            .then(|| self.session_id.clone())
     }
 
     fn wait_for_login_callback(&mut self, cx: &mut Context<Self>) {
@@ -746,19 +767,39 @@ impl Panel {
                         } else {
                             theme.OK
                         })
-                        .child("Sign-in complete. Account connected. Choose a model to continue."),
+                        .child(if self.login_target_session().is_some() {
+                            "Account connected. This session now uses it."
+                        } else {
+                            "Account connected."
+                        }),
                 )
                 .child(
-                    login_button("login-choose-model", "Choose a model").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.close_login_picker(cx);
-                            if this.is_accounts_panel() {
-                                cx.emit(AccountsPanelChooseModel);
-                            } else {
-                                this.open_recovery_models(cx);
-                            }
-                        },
-                    )),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(login_button("login-done", "Done").on_click(cx.listener(
+                            |this, _, window, cx| {
+                                this.close_login_picker(cx);
+                                if this.is_accounts_panel() {
+                                    cx.emit(AccountsPanelClosed);
+                                } else {
+                                    this.focus_input(window, cx);
+                                }
+                            },
+                        )))
+                        .child(
+                            login_button("login-choose-model", "Pick a different model").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.close_login_picker(cx);
+                                    if this.is_accounts_panel() {
+                                        cx.emit(AccountsPanelChooseModel);
+                                    } else {
+                                        this.open_recovery_models(cx);
+                                    }
+                                }),
+                            ),
+                        ),
                 );
         } else if let Some(provider) = &state.provider {
             body = body.child(
@@ -788,7 +829,7 @@ impl Panel {
                     if provider.method == LoginMethod::ApiKey {
                         "Saving your API key securely…"
                     } else {
-                        "Step 1 of 3: Preparing a secure sign-in link…"
+                        "Preparing a secure sign-in link…"
                     },
                 ));
             } else if provider.method == LoginMethod::ApiKey {
@@ -807,38 +848,30 @@ impl Panel {
                             .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
                     );
             } else if let Some(prompt) = &state.prompt {
-                body = body.child(
-                    div().debug_selector(|| "login-progress".into())
-                        .text_size(px(12.)).text_color(theme.TEXT_DIM)
-                        .child("1. Prepare sign-in link  →  2. Approve in browser  →  3. Connect account"),
-                ).child(
-                    div().debug_selector(|| "login-current-step".into())
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(if state.error.is_some() {
-                            "Sign-in paused. Review the error above."
-                        } else if state.busy && prompt.input_kind != AuthInputKind::DeviceCode {
-                            "Step 3 of 3: Authorization received. Connecting your account…"
-                        } else if state.callback_waiting {
-                            "Step 2 of 3: Waiting for browser authorization and callback…"
-                        } else if prompt.input_kind == AuthInputKind::DeviceCode {
-                            "Step 2 of 3: Waiting for browser approval…"
-                        } else {
-                            "Step 2 of 3: Finish in your browser, then paste the result below."
-                        }),
-                );
+                // One status line. Buttons and the field below carry the rest.
+                let device = prompt.input_kind == AuthInputKind::DeviceCode;
+                let status = if state.error.is_some() {
+                    "Sign-in paused. Review the error above."
+                } else if state.busy && !device {
+                    "Connecting your account…"
+                } else if device || state.callback_waiting {
+                    "Approve access in your browser. This window connects automatically."
+                } else {
+                    "Approve access in your browser, then paste the code it shows."
+                };
+                let step = div()
+                    .debug_selector(|| "login-current-step".into())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(status);
+                body = body.child(if state.busy {
+                    div().debug_selector(|| "login-busy".into()).child(step)
+                } else {
+                    step
+                });
                 let url = prompt.auth_url.clone();
                 let preview = self.preview_state.is_some() || crate::harness::screenshot_mode();
                 let copy_url = url.clone();
                 body = body
-                    .child(
-                        div().child(
-                            if prompt.input_kind == AuthInputKind::DeviceCode || state.callback_waiting {
-                                "Approve access in your browser. This window will connect automatically."
-                            } else {
-                                "Continue in your browser, then paste the returned code or callback URL."
-                            },
-                        ),
-                    )
                     .child(
                         div().flex().gap_2().flex_wrap()
                             .child(login_button("login-open-browser", "Open sign-in page").on_click(
@@ -869,40 +902,34 @@ impl Panel {
                             )),
                     );
                 }
-                if prompt.input_kind != AuthInputKind::DeviceCode {
+                // Manual entry is the fallback when the browser cannot return
+                // on its own. It stays available while waiting, but secondary.
+                if !device && !state.busy {
                     body = body
-                        .child(div().text_color(theme.TEXT_DIM).child(
+                        .child(div().text_size(px(12.)).text_color(theme.TEXT_DIM).child(
                             if state.callback_waiting {
-                                "Waiting for your browser. If it does not return, paste the full callback URL here and press Enter."
+                                "Browser did not come back? Paste the full callback URL here."
                             } else if prompt.input_kind == AuthInputKind::CallbackUrl {
-                                "Automatic callback is unavailable (the local port may be in use). After approving, copy the full localhost address from your browser and paste it here. It stays private."
+                                "Automatic return is unavailable here. After approving, paste the full localhost address from your browser. It stays private."
                             } else {
-                                "Paste the returned code or full callback URL below. It stays private."
+                                "The code stays private and is never sent to chat."
                             },
                         ))
                         .child(state.input.clone())
                         .child(
-                            login_button("login-paste", "Paste from clipboard").on_click(
-                                cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
-                            ),
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap_2()
+                                .child(login_button("login-paste", "Paste from clipboard").on_click(
+                                    cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
+                                ))
+                                .child(
+                                    login_button("login-submit", "Finish sign-in").on_click(
+                                        cx.listener(|this, _, _, cx| this.submit_login(cx)),
+                                    ),
+                                ),
                         );
-                }
-                if state.busy {
-                    body = body.child(
-                        div()
-                            .debug_selector(|| "login-busy".into())
-                            .text_color(theme.TEXT_DIM)
-                            .child(if prompt.input_kind == AuthInputKind::DeviceCode {
-                                "Waiting for browser approval…"
-                            } else {
-                                "Exchanging authorization and saving credentials…"
-                            }),
-                    );
-                } else {
-                    body = body.child(
-                        login_button("login-submit", "Finish sign-in")
-                            .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                    );
                 }
                 if state.error.is_some() {
                     let provider = *provider;
@@ -1301,6 +1328,35 @@ mod tests {
             commands.try_recv().is_err(),
             "login must not replay user prompts"
         );
+    }
+
+    #[gpui::test]
+    fn accounts_login_switches_the_source_session_not_a_throwaway(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new_accounts("chat-session", None, bridge, cx));
+        panel.update(vcx, |panel, cx| {
+            let state = panel.login.as_mut().unwrap();
+            state.provider = state.client.resolve_provider("claude");
+            panel.complete_login(false, cx);
+        });
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::AuthChanged { session_id, provider })
+                if session_id == "chat-session" && provider == "claude"
+        ));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("login-done").is_some());
+        assert!(vcx.debug_bounds("login-choose-model").is_some());
+        // Nothing live behind a draft, settings page or remote host.
+        for source in ["startup://draft", "ssh://host/session", ""] {
+            panel.update(vcx, |panel, _| {
+                panel.session_id = format!("accounts://{source}");
+                assert_eq!(panel.login_target_session(), None, "{source}");
+            });
+        }
     }
 
     #[gpui::test]

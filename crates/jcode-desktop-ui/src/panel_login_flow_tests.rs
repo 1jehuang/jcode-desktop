@@ -95,9 +95,11 @@ fn saved_oauth_with_failed_validation_offers_models_not_code_retry(cx: &mut gpui
         assert!(state.input.read(cx).content_empty());
         assert!(state.prompt.is_none());
     });
+    // The session's own connection must notify, or its model never follows.
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::RefreshRuntime { .. })
+        Ok(Command::AuthChanged { session_id, provider })
+            if session_id == "login-warning-test" && provider == "claude"
     ));
 }
 
@@ -141,8 +143,10 @@ fn code_login_enter_completes_real_sdk_transport_and_preserves_chat(cx: &mut gpu
     });
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::RefreshRuntime { .. })
+        Ok(Command::AuthChanged { session_id, provider })
+            if session_id == "login-test" && provider == "claude"
     ));
+    assert!(vcx.debug_bounds("login-done").is_some());
     vcx.simulate_keystrokes("enter");
     assert!(commands.try_recv().is_err(), "completion must not resubmit");
 }
@@ -326,7 +330,6 @@ fn callback_failure_preserves_real_safe_error_and_offers_restart(cx: &mut gpui::
     for selector in [
         "login-error",
         "login-retry",
-        "login-progress",
         "login-current-step",
     ] {
         assert!(vcx.debug_bounds(selector).is_some(), "{selector}");

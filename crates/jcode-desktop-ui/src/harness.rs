@@ -161,6 +161,13 @@ pub enum Command {
     RefreshRuntime {
         session_id: String,
     },
+    /// Credentials for `provider` changed. Tell the daemon on this session's
+    /// own connection: the post-login model switch is session-local, so a
+    /// notification from any other connection never moves this session.
+    AuthChanged {
+        session_id: String,
+        provider: String,
+    },
     CreateSession {
         working_dir: Option<String>,
         request_id: Option<String>,
@@ -230,6 +237,7 @@ pub enum SessionOperation {
 
 enum SessionCommand {
     RefreshRuntime,
+    AuthChanged(String),
     Send {
         content: String,
         images: Vec<(String, String)>,
@@ -710,6 +718,17 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::RefreshRuntime,
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::AuthChanged {
+                session_id,
+                provider,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::AuthChanged(provider),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -1673,6 +1692,18 @@ fn session_worker_with_connector(
                                     routes: info.routes,
                                     reasoning_effort: info.reasoning_effort,
                                 },
+                            });
+                        }
+                    }
+                    SessionCommand::AuthChanged(provider) => {
+                        // The daemon re-resolves this session's route and
+                        // pushes the new catalog and model as ordinary events.
+                        if let Err(error) = client.notify_auth_changed(&provider) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!(
+                                    "Signed in, but this session could not switch to the new account: {error}"
+                                ),
                             });
                         }
                     }
