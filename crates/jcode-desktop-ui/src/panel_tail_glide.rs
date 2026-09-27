@@ -6,12 +6,19 @@
 //! frame while the text itself flows in smoothly. Instead, while text streams,
 //! the scroll position is held for the layout pass that measures the growth,
 //! then eased toward the new end so each new line glides into view.
+//!
+//! The glide is a critically damped spring that carries velocity across
+//! frames. A plain exponential moves fastest on its very first frame, which
+//! reads as a small lurch on every wrapped line. The spring starts gently,
+//! never overshoots, and when another line arrives mid-glide it keeps its
+//! momentum instead of restarting, so continuous streaming scrolls steadily.
 
 use super::*;
 
-/// Time constant of the glide. Short enough that a line settles well before
-/// the next one usually arrives, long enough to read as motion.
-const GLIDE: f64 = 0.07;
+/// Approximate time for the spring to cover a new line. Short enough that a
+/// line settles before the next one usually arrives, long enough to read as
+/// continuous motion rather than a step.
+const GLIDE: f32 = 0.13;
 /// Larger gaps (tool cards, pasted blocks, restores) snap as before.
 const MAX_GLIDE_PX: f32 = 160.0;
 /// Ignore pathological frame gaps so a stale timestamp does not leap.
@@ -39,6 +46,7 @@ impl Panel {
             || !(-0.5..=MAX_GLIDE_PX).contains(&gap)
         {
             self.tail_glide_at = None;
+            self.tail_glide_velocity = 0.0;
             self.transcript_list.scroll_to_end();
             return;
         }
@@ -50,9 +58,11 @@ impl Panel {
                 self.transcript_list
                     .set_offset_from_scrollbar(point(px(0.), px(-max)));
                 self.tail_glide_at = None;
+                self.tail_glide_velocity = 0.0;
                 window.request_animation_frame();
             } else {
                 self.tail_glide_at = None;
+                self.tail_glide_velocity = 0.0;
                 self.transcript_list.scroll_to_end();
             }
             return;
@@ -62,19 +72,64 @@ impl Panel {
             .tail_glide_at
             .map(|last| now.saturating_duration_since(last).min(MAX_STEP))
             .unwrap_or(Duration::from_millis(16))
-            .as_secs_f64();
+            .as_secs_f32();
         self.tail_glide_at = Some(now);
-        let step = gap * (1.0 - (-dt / GLIDE).exp()) as f32;
-        let next = if gap - step <= 0.5 { max } else { current + step };
+        let (next, velocity) = spring_step(current, max, self.tail_glide_velocity, dt);
+        let (next, velocity) = if max - next <= 0.25 {
+            (max, 0.0)
+        } else {
+            (next, velocity)
+        };
+        self.tail_glide_velocity = velocity;
         self.transcript_list
             .set_offset_from_scrollbar(point(px(0.), px(-next)));
         window.request_animation_frame();
     }
 }
 
+/// One step of a critically damped spring from `current` toward `target`.
+/// Returns the new position and velocity. Never passes the target.
+fn spring_step(current: f32, target: f32, velocity: f32, dt: f32) -> (f32, f32) {
+    let omega = 2.0 / GLIDE;
+    let x = omega * dt;
+    let decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+    let change = current - target;
+    let temp = (velocity + omega * change) * dt;
+    let mut velocity = (velocity - omega * temp) * decay;
+    let mut next = target + (change + temp) * decay;
+    if (target - current > 0.0) == (next > target) {
+        next = target;
+        velocity = 0.0;
+    }
+    (next, velocity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spring_eases_in_and_out_without_overshoot() {
+        let mut position = 0.0;
+        let mut velocity = 0.0;
+        let mut steps = Vec::new();
+        for _ in 0..40 {
+            let (next, v) = spring_step(position, 22.0, velocity, 1.0 / 60.0);
+            assert!(next <= 22.0 && next >= position);
+            steps.push(next - position);
+            position = next;
+            velocity = v;
+        }
+        let peak = steps
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap()
+            .0;
+        assert!(peak > 0, "first frame is not the fastest: {steps:?}");
+        assert!(steps[0] < 3.0, "gentle start: {}", steps[0]);
+        assert!(22.0 - position < 0.5, "settles: {position}");
+    }
 
     fn gap(panel: &Panel) -> f32 {
         f32::from(
@@ -117,7 +172,11 @@ mod tests {
         }
         panel.read_with(vcx, |panel, _| {
             assert!(panel.stick_to_bottom);
-            assert!(gap(panel).abs() <= 0.5, "settled at the tail: {}", gap(panel));
+            assert!(
+                gap(panel).abs() <= 0.5,
+                "settled at the tail: {}",
+                gap(panel)
+            );
         });
 
         // New paragraphs add whole lines to the live row.
@@ -138,14 +197,21 @@ mod tests {
             let now = panel.read_with(vcx, |panel, _| gap(panel));
             max_gap = max_gap.max(now);
             if let Some(previous) = previous {
-                assert!(now <= previous + 40.0, "glide reversed: {previous} -> {now}");
+                assert!(
+                    now <= previous + 40.0,
+                    "glide reversed: {previous} -> {now}"
+                );
             }
             previous = Some(now);
         }
         assert!(max_gap > 1.0, "growth was eased, not snapped: {max_gap}");
         panel.read_with(vcx, |panel, _| {
             assert!(panel.stick_to_bottom);
-            assert!(gap(panel).abs() <= 0.5, "caught up to the tail: {}", gap(panel));
+            assert!(
+                gap(panel).abs() <= 0.5,
+                "caught up to the tail: {}",
+                gap(panel)
+            );
         });
     }
 }

@@ -382,6 +382,8 @@ pub struct Panel {
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     /// Last frame of an eased tail follow. See `panel_tail_glide`.
     tail_glide_at: Option<Instant>,
+    /// Scroll velocity of the tail glide spring, in px per second.
+    tail_glide_velocity: f32,
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
     history_loaded: bool,
@@ -834,6 +836,7 @@ impl Panel {
             pending_history_scroll: None,
             bridge,
             tail_glide_at: None,
+            tail_glide_velocity: 0.0,
             preview_state: None,
             demo: false,
             history_loaded: false,
@@ -3221,7 +3224,7 @@ impl Panel {
                 .text_color(Theme::global().TEXT)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX {
-                        self.text_reveal.fading()
+                        self.text_reveal.fading(&self.streaming_text)
                     } else {
                         0
                     },
@@ -3251,7 +3254,7 @@ impl Panel {
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
-                        self.reasoning_reveal.fading()
+                        self.reasoning_reveal.fading(&self.streaming_reasoning)
                     } else {
                         0
                     },
@@ -4082,8 +4085,9 @@ impl Render for Panel {
                 self.reasoning_reveal
                     .visible(&self.streaming_reasoning)
                     .len()
-                    + self.reasoning_reveal.fading(),
-                self.text_reveal.visible(&self.streaming_text).len() + self.text_reveal.fading(),
+                    + self.reasoning_reveal.fading(&self.streaming_reasoning),
+                self.text_reveal.visible(&self.streaming_text).len()
+                    + self.text_reveal.fading(&self.streaming_text),
             ),
             (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
         ) {
@@ -4110,6 +4114,7 @@ impl Render for Panel {
             self.follow_transcript_tail(instant_motion || row_count_changed, window);
         } else {
             self.tail_glide_at = None;
+            self.tail_glide_velocity = 0.0;
         }
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));

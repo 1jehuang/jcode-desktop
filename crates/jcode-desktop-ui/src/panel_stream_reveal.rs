@@ -22,6 +22,10 @@ const MAX_FADE: f64 = 48.0;
 const SETTLE: f64 = 0.22;
 /// Ignore pathological frame gaps (suspend, debugger) so the reveal does not leap.
 const MAX_STEP: Duration = Duration::from_millis(100);
+/// Reveal whole words: a partial word at the end of a line would otherwise be
+/// painted there first, then reflow onto the next line once it stops fitting.
+/// Longer runs (URLs, hashes) are revealed in chunks of at most this many bytes.
+const MAX_WORD: usize = 40;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct StreamReveal {
@@ -84,20 +88,40 @@ impl StreamReveal {
         animating
     }
 
+    /// Visible length in bytes of `text`: the paced prefix extended to the end
+    /// of the word it is inside, so words never reflow while they appear.
+    fn visible_len(&self, text: &str) -> usize {
+        let cut = text.floor_char_boundary(self.shown as usize);
+        if cut == 0 || cut >= text.len() {
+            return cut;
+        }
+        let before = text[..cut].chars().next_back();
+        if before.is_none_or(char::is_whitespace) {
+            return cut;
+        }
+        let rest = &text[cut..];
+        let end = rest
+            .find(char::is_whitespace)
+            .map(|offset| cut + offset)
+            .unwrap_or(text.len());
+        if end - cut > MAX_WORD { cut } else { end }
+    }
+
     /// The revealed prefix, on a char boundary.
     pub(super) fn visible<'a>(&self, text: &'a str) -> &'a str {
         if !self.engaged {
             return text;
         }
-        &text[..text.floor_char_boundary(self.shown as usize)]
+        &text[..self.visible_len(text)]
     }
 
-    /// Bytes at the end of the visible prefix that are still fading in.
-    pub(super) fn fading(&self) -> usize {
+    /// Bytes at the end of the visible prefix of `text` still fading in.
+    pub(super) fn fading(&self, text: &str) -> usize {
         if !self.engaged {
             return 0;
         }
-        (self.shown - self.settled).max(0.0).round() as usize
+        let settled = (self.settled.max(0.0).round() as usize).min(text.len());
+        self.visible_len(text).saturating_sub(settled)
     }
 
     pub(super) fn shown_len(&self) -> usize {
@@ -133,11 +157,11 @@ mod tests {
             shown > 0 && shown < 400,
             "first frames reveal part of a burst: {shown}"
         );
-        assert!(reveal.fading() > 0);
+        assert!(reveal.fading(&"x".repeat(400)) > 0);
 
         let now = run(&mut reveal, 400, after_one, 90);
         assert_eq!(reveal.shown_len(), 400);
-        assert_eq!(reveal.fading(), 0);
+        assert_eq!(reveal.fading(&"x".repeat(400)), 0);
         assert!(!reveal.tick(400, now + Duration::from_millis(16), false));
     }
 
@@ -159,7 +183,10 @@ mod tests {
             "lag {}",
             len - reveal.shown_len()
         );
-        assert!(reveal.fading() as f64 <= MAX_FADE);
+        let text = "word ".repeat(len / 5 + 1);
+        let text = &text[..len];
+        // Whole-word reveal may extend the fading tail by at most one word.
+        assert!(reveal.fading(text) as f64 <= MAX_FADE + MAX_WORD as f64);
     }
 
     #[test]
@@ -175,7 +202,29 @@ mod tests {
 
         let mut reduced = StreamReveal::default();
         assert!(!reduced.tick(50, now, true));
-        assert_eq!((reduced.shown_len(), reduced.fading()), (50, 0));
+        assert_eq!(
+            (reduced.shown_len(), reduced.fading(&"x".repeat(50))),
+            (50, 0)
+        );
+    }
+
+    #[test]
+    fn partial_words_are_revealed_whole() {
+        let text = "alpha bravo charlie";
+        let mut reveal = StreamReveal {
+            shown: 7.0,
+            engaged: true,
+            ..Default::default()
+        };
+        assert_eq!(reveal.visible(text), "alpha bravo");
+        reveal.shown = 6.0;
+        assert_eq!(reveal.visible(text), "alpha ");
+        reveal.shown = 2.0;
+        assert_eq!(reveal.visible(text), "alpha");
+        assert_eq!(reveal.fading(text), 5);
+        let long = format!("see {}", "x".repeat(MAX_WORD + 10));
+        reveal.shown = 6.0;
+        assert_eq!(reveal.visible(&long).len(), 6, "long runs stay chunked");
     }
 
     #[test]
@@ -185,9 +234,9 @@ mod tests {
             engaged: true,
             ..Default::default()
         };
-        assert_eq!(reveal.visible("αβγ"), "α");
-        reveal.shown = 3.0;
-        assert_eq!(reveal.visible("αβγ"), "α");
+        assert_eq!(reveal.visible("α βγ"), "α");
+        reveal.shown = 6.0;
+        assert_eq!(reveal.visible("α βγ"), "α βγ", "mid-char cut completes the word");
         reveal.snap(3);
         assert_eq!(
             reveal.visible("αβγ"),
@@ -245,7 +294,9 @@ mod panel_tests {
             "{}",
             partial.len()
         );
-        assert!(panel.read_with(vcx, |panel, _| panel.reasoning_reveal.fading() > 0));
+        assert!(panel.read_with(vcx, |panel, _| {
+            panel.reasoning_reveal.fading(&panel.streaming_reasoning) > 0
+        }));
 
         panel.update(vcx, |panel, cx| {
             panel.apply(
@@ -275,7 +326,7 @@ mod panel_tests {
                 live_text(panel, usize::MAX).as_deref(),
                 Some(answer.as_str())
             );
-            assert_eq!(panel.text_reveal.fading(), 0);
+            assert_eq!(panel.text_reveal.fading(&panel.streaming_text), 0);
         });
     }
 }
