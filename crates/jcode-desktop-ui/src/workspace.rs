@@ -1482,6 +1482,10 @@ impl Workspace {
         window: &Window,
         cx: &App,
     ) -> anyhow::Result<WorkspaceSnapshot> {
+        // The old generation's panels are dropped next, ending any recording.
+        if self.slots.iter().any(|slot| slot.panel.read(cx).voice_active()) {
+            eprintln!("voice: hot reload is replacing the UI while a recording is active");
+        }
         self.snapshot_inner(window, cx, true)
     }
 

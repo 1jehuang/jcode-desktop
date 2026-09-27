@@ -308,6 +308,18 @@ impl Decoder {
             presses: 0,
         }
     }
+    /// Replace key state with the kernel's current view after dropped events.
+    /// Returns whether the trigger key is still held.
+    fn resync(&mut self, held: &[u8; KEY_BYTES]) -> bool {
+        self.down = KEYS.into_iter().filter(|k| bit(held, *k)).collect();
+        let down = &self.down;
+        self.order.retain(|key, _| down.contains(key));
+        self.suppressed.retain(|key| down.contains(key));
+        if self.trigger.is_some_and(|key| !self.down.contains(&key)) {
+            self.trigger = None;
+        }
+        self.trigger.is_some()
+    }
     fn pressed_at(&self, key: usize) -> Option<u64> {
         self.down
             .contains(&key)
@@ -438,7 +450,22 @@ impl Device {
             decoder: Decoder::snapshot(&held),
         }))
     }
+    /// After SYN_DROPPED, discard the stale queue and re-read which keys are
+    /// down (EVIOCGKEY). Returns whether the trigger key is still held.
+    fn resync(&mut self) -> io::Result<bool> {
+        while let Some(event) = self.read_raw()? {
+            if event.kind == 0 && event.code == 0 {
+                break;
+            }
+        }
+        let mut held = [0u8; KEY_BYTES];
+        ioctl(&self.file, request(false, 0x18, KEY_BYTES), &mut held)?;
+        Ok(self.decoder.resync(&held))
+    }
     fn read(&mut self) -> io::Result<Option<InputEvent>> {
+        self.read_raw()
+    }
+    fn read_raw(&mut self) -> io::Result<Option<InputEvent>> {
         let mut event = InputEvent {
             time: libc::timeval {
                 tv_sec: 0,
@@ -708,12 +735,43 @@ impl Listener {
             for _ in 0..256 {
                 let device = self.devices.get_mut(&path).expect("known device");
                 let event = match device.read() {
-                    Ok(Some(event)) if !(event.kind == 0 && event.code == 3) => event,
+                    // SYN_DROPPED: the poll stalled (build load, reload) and
+                    // key-repeat overflowed the buffer. Resync, never cancel.
+                    Ok(Some(event)) if event.kind == 0 && event.code == 3 => {
+                        let capturing =
+                            self.capture.as_ref().is_some_and(|(p, _, _)| p == &path);
+                        match device.resync() {
+                            Ok(held) => {
+                                eprintln!(
+                                    "global voice: keyboard events dropped (UI stalled); resynced, {}",
+                                    match (capturing, held) {
+                                        (true, true) => "hold continues",
+                                        (true, false) => "key was released",
+                                        _ => "no hold active",
+                                    }
+                                );
+                                if capturing && !held {
+                                    self.release(&mut edges);
+                                }
+                                continue;
+                            }
+                            Err(error) => {
+                                self.devices.remove(&path);
+                                self.healthy = false;
+                                self.cancel(
+                                    &format!("keyboard resync after dropped events failed: {error}"),
+                                    &mut edges,
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Some(event)) => event,
                     Ok(None) => break,
-                    _ => {
+                    Err(error) => {
                         self.devices.remove(&path);
                         self.healthy = false;
-                        self.cancel("keyboard read failed", &mut edges);
+                        self.cancel(&format!("keyboard read failed: {error}"), &mut edges);
                         break;
                     }
                 };
@@ -1020,6 +1078,23 @@ mod tests {
             )
         };
         file.write_all(bytes).unwrap();
+    }
+    #[test]
+    fn dropped_events_resync_keeps_a_held_key_and_releases_a_lifted_one() {
+        for still_held in [true, false] {
+            let (mut listener, mut writer, dir) = fake_listener();
+            send(&mut writer, 1, ASSISTANT as u16, 1);
+            assert_eq!(listener.poll(), vec![Edge::Press]);
+            let decoder = &mut listener.devices.get_mut(Path::new("fixture")).unwrap().decoder;
+            let mut held = [0u8; KEY_BYTES];
+            if still_held {
+                held[ASSISTANT / 8] |= 1 << (ASSISTANT % 8);
+            }
+            assert_eq!(decoder.resync(&held), still_held);
+            assert_eq!(decoder.trigger.is_some(), still_held);
+            drop(listener);
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
     #[test]
     fn poll_dropped_disconnect_deadline_and_drop() {

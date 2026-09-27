@@ -243,9 +243,17 @@ impl Workspace {
         self.global_voice.task = Some(cx.spawn_in(window, async move |this, cx| {
             let mut interval = IDLE_POLL;
             loop {
+                let slept = Instant::now();
                 cx.background_executor().timer(interval).await;
+                let late = slept.elapsed().saturating_sub(interval);
                 let result = cx.update(|window, cx| {
                     this.update(cx, |this, cx| {
+                        if this.global_voice.held && late >= Duration::from_millis(250) {
+                            eprintln!(
+                                "global voice: key poll stalled {}ms during a hold",
+                                late.as_millis()
+                            );
+                        }
                         this.poll_global_voice(window, cx);
                         // A held key is about to be released: poll faster so
                         // key-up reaches the recorder without a visible lag.
