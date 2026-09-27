@@ -917,6 +917,24 @@ struct PersistedSession {
     save_label: Option<String>,
     #[serde(default)]
     status: serde_json::Value,
+    /// The process that last owned the session. An `Active` record whose
+    /// owner is gone crashed without writing its final status.
+    #[serde(default)]
+    last_pid: Option<u32>,
+}
+
+impl PersistedSession {
+    /// Lifecycle status as the TUI picker reports it, including crashes the
+    /// dead process never had the chance to persist.
+    fn lifecycle_status(&self) -> String {
+        let status = persisted_session_status(&self.status);
+        match self.last_pid {
+            Some(pid) if status == "active" && !jcode_base::platform::is_process_running(pid) => {
+                "crashed".into()
+            }
+            _ => status,
+        }
+    }
 }
 
 fn persisted_session_status(status: &serde_json::Value) -> String {
@@ -1188,6 +1206,9 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         save_label: json_string_field(&tail, "save_label", true)
             .or_else(|| json_string_field(&head, "save_label", false)),
         status: json_value_field(&tail, "status", true).unwrap_or_default(),
+        last_pid: json_value_field(&tail, "last_pid", true)
+            .and_then(|value| value.as_u64())
+            .and_then(|pid| u32::try_from(pid).ok()),
     })
 }
 
@@ -1275,7 +1296,7 @@ pub(crate) fn merge_persisted_sessions(
             .join(format!("{}.json", session.session_id));
         let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
-            session.status = persisted_session_status(&record.status);
+            session.status = record.lifecycle_status();
         }
     }
 
@@ -1348,6 +1369,7 @@ pub(crate) fn merge_persisted_sessions(
         else {
             continue;
         };
+        let status = record.lifecycle_status();
         let save_label = record
             .saved
             .then_some(record.save_label)
@@ -1359,7 +1381,6 @@ pub(crate) fn merge_persisted_sessions(
             .or_else(|| save_label.clone())
             .or_else(|| persisted_todo_title(home, &id))
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
-        let status = persisted_session_status(&record.status);
         disk_sessions.push((
             recency,
             SessionInfo {
@@ -2459,6 +2480,23 @@ mod tests {
 
     #[test]
     fn persisted_sessions_fill_sidebar_in_last_interaction_order_without_duplicates_or_archives() {
+    #[test]
+    fn active_record_with_dead_owner_is_reported_as_crashed() {
+        let record = |last_pid| PersistedSession {
+            working_dir: None,
+            title: None,
+            custom_title: None,
+            saved: false,
+            save_label: None,
+            status: serde_json::json!("Active"),
+            last_pid,
+        };
+        // A pid beyond the kernel's pid_max can never be alive.
+        assert_eq!(record(Some(u32::MAX - 1)).lifecycle_status(), "crashed");
+        assert_eq!(record(Some(std::process::id())).lifecycle_status(), "active");
+        assert_eq!(record(None).lifecycle_status(), "active");
+    }
+
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-sessions-{}-{}",
             std::process::id(),

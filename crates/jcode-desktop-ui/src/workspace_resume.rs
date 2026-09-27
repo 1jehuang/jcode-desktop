@@ -7,6 +7,8 @@ pub(super) enum Filter {
     All,
     Active,
     Saved,
+    /// Sessions whose process died mid-work, so they can be recovered.
+    Crashed,
 }
 
 /// Legacy is only a decode fallback. Every new snapshot explicitly records
@@ -50,7 +52,13 @@ const PRESENCE_REFRESH: Duration = Duration::from_millis(1500);
 enum Liveness {
     Working,
     Open,
+    /// Not running, and its last owner died without a clean shutdown.
+    Crashed,
     Inactive,
+}
+
+fn status_is_crashed(status: &str) -> bool {
+    status == "crashed"
 }
 
 fn status_is_working(status: &str) -> bool {
@@ -110,6 +118,9 @@ fn filtered_sessions(
                     working.contains(&session.session_id) || status_is_working(&session.status)
                 }
                 Filter::Saved => session.saved,
+                Filter::Crashed => {
+                    status_is_crashed(&session.status) && !working.contains(&session.session_id)
+                }
             }
             && words.iter().all(|word| text.contains(word))
     });
@@ -429,11 +440,12 @@ impl Workspace {
         match key {
             "escape" => self.close_resume(window, cx),
             "enter" => self.resume_selected(window, cx),
-            "1" | "2" | "3" if event.keystroke.modifiers.control => {
+            "1" | "2" | "3" | "4" if event.keystroke.modifiers.control => {
                 self.set_resume_filter(
                     match key {
                         "2" => Filter::Active,
                         "3" => Filter::Saved,
+                        "4" => Filter::Crashed,
                         _ => Filter::All,
                     },
                     cx,
@@ -492,6 +504,8 @@ impl Workspace {
                 Liveness::Working
             } else if open_activity.contains_key(&session.session_id) {
                 Liveness::Open
+            } else if status_is_crashed(&session.status) {
+                Liveness::Crashed
             } else {
                 Liveness::Inactive
             }
@@ -535,7 +549,7 @@ impl Workspace {
             let status = match live {
                 Liveness::Working => "working".to_string(),
                 Liveness::Open => "open".to_string(),
-                Liveness::Inactive => session.status.clone(),
+                Liveness::Crashed | Liveness::Inactive => session.status.clone(),
             };
             let metadata = format!(
                 "{}{} · {}",
@@ -636,7 +650,7 @@ impl Workspace {
                     match liveness(session) {
                         Liveness::Working => "working now".to_string(),
                         Liveness::Open => "open in Desktop".to_string(),
-                        Liveness::Inactive => session.status.clone(),
+                        Liveness::Crashed | Liveness::Inactive => session.status.clone(),
                     },
                     if session.saved { " · saved" } else { "" }
                 )),
@@ -751,6 +765,7 @@ impl Workspace {
                             (Filter::All, "All", "resume-all"),
                             (Filter::Active, "Active", "resume-active"),
                             (Filter::Saved, "Saved", "resume-saved"),
+                            (Filter::Crashed, "Crashed", "resume-crashed"),
                         ]
                         .into_iter()
                         .map(|(value, label, id)| {
@@ -794,7 +809,7 @@ impl Workspace {
                     .child(preview),
             )
             .child(div().text_size(px(11.0)).text_color(theme.TEXT_DIM).child(
-                "↑ ↓ Navigate   Page Up / Down   Enter Resume   Esc Back   Ctrl+1/2/3 Filters",
+                "↑ ↓ Navigate   Page Up / Down   Enter Resume   Esc Back   Ctrl+1/2/3/4 Filters",
             ))
     }
 
@@ -873,6 +888,14 @@ fn resume_liveness_badge(
         Liveness::Inactive => return None,
         Liveness::Working => ("Working", theme.OK, Some(gpui::Rgba { a: 0.2, ..theme.OK })),
         Liveness::Open => ("Open", theme.TEXT_DIM, None),
+        Liveness::Crashed => (
+            "Crashed",
+            theme.ERROR,
+            Some(gpui::Rgba {
+                a: 0.18,
+                ..theme.ERROR
+            }),
+        ),
     };
     Some(
         div()
