@@ -48,6 +48,8 @@ mod activity;
 mod activity_state;
 #[path = "panel_scroll_motion.rs"]
 mod scroll_motion;
+#[path = "panel_tail_glide.rs"]
+mod tail_glide;
 use scroll_motion::WheelGlide;
 #[path = "panel_composer.rs"]
 mod composer;
@@ -374,6 +376,8 @@ pub struct Panel {
     transcript_end_visible: bool,
     /// A detached reload offset cannot be applied until asynchronous history
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
+    /// Last frame of an eased tail follow. See `panel_tail_glide`.
+    tail_glide_at: Option<Instant>,
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
     history_loaded: bool,
@@ -825,6 +829,7 @@ impl Panel {
             transcript_end_visible: true,
             pending_history_scroll: None,
             bridge,
+            tail_glide_at: None,
             preview_state: None,
             demo: false,
             history_loaded: false,
@@ -2685,7 +2690,8 @@ impl Panel {
 
     /// Advance the paced reveal of live reasoning and response text. Only the
     /// visible prefix is rendered, so bursts flow in instead of jumping.
-    fn tick_stream_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Returns true when motion is instant this frame (reduced motion, tests).
+    fn tick_stream_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         // Render tests assert on painted text from a single frame.
         #[cfg(test)]
         let test_snap = !self.animate_stream_in_tests;
@@ -3982,7 +3988,7 @@ impl Render for Panel {
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
-        self.tick_stream_reveal(window, cx);
+        let instant_motion = self.tick_stream_reveal(window, cx);
         self.sync_applet_rows(cx);
         let rows = Arc::new(self.transcript_render_rows());
         if let Some(document) = self.transcript_text_document.sync(
@@ -4028,7 +4034,8 @@ impl Render for Panel {
         self.input.update(cx, |input, cx| {
             input.set_spacious(fresh_session || self.startup_layout.is_some(), cx)
         });
-        if row_count != self.transcript_row_count {
+        let row_count_changed = row_count != self.transcript_row_count;
+        if row_count_changed {
             if row_count > self.transcript_row_count {
                 self.transcript_list.splice(
                     self.transcript_row_count..self.transcript_row_count,
@@ -4075,7 +4082,10 @@ impl Render for Panel {
         if startup_preview {
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
-            self.transcript_list.scroll_to_end();
+            // Ease wrapped-line growth of live text instead of jumping a line.
+            self.follow_transcript_tail(instant_motion || row_count_changed, window);
+        } else {
+            self.tail_glide_at = None;
         }
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -4250,7 +4260,9 @@ impl Render for Panel {
         let status_line = self.status_line();
         let theme = Theme::global();
         let usage_meters = self.render_usage_meters(cx);
-        let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
+        // The tail may sit a few pixels below the fold mid-glide.
+        let show_jump_chip =
+            row_count > 0 && !self.transcript_end_visible && !self.tail_gliding();
 
         let chat = div()
             .flex()
