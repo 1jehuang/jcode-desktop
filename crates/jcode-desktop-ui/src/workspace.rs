@@ -5332,6 +5332,7 @@ impl Workspace {
                 divider: false,
                 checkout,
                 checkout_header: false,
+                section: None,
                 agents,
             });
         }
@@ -5408,8 +5409,13 @@ impl Workspace {
                     previous = None;
                 }
                 previous_checkout = Some(checkout);
+                // Label where live panels start and where history begins, so
+                // open work and past sessions read as separate groups.
+                if !collapsed && previous.is_none_or(|(open, _)| open != row.open) {
+                    row.section = Some(if row.open { "Live" } else { "Past" });
+                }
                 row.divider = !row.open
-                    && previous.is_some_and(|(open, saved)| open || (saved && !row.session.saved));
+                    && previous.is_some_and(|(open, saved)| !open && saved && !row.session.saved);
                 previous = Some((row.open, row.session.saved));
                 ordered_sessions.push(row);
             }
@@ -5435,11 +5441,11 @@ impl Workspace {
                     header: row.header,
                     checkout_header: row.checkout_header,
                     divider: row.divider,
+                    section: row.section,
                     collapsed: row.collapsed,
                     selected,
                     saved: session.saved,
-                    details: (!row.open || selected || groups[row.project].1 < 2)
-                        && (row.subdirectory.is_some()
+                    details: (row.subdirectory.is_some()
                             || sidebar_session_created_ms(&session.session_id).is_some()
                             || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
                             || session.edit_stats.is_some()),
@@ -5518,7 +5524,80 @@ impl Workspace {
             );
         }
         if !ordered_sessions.is_empty() {
-            list = list.child(
+            // Projects whose header sits below the visible list. They stay
+            // reachable in a dock at the bottom, so one large project never
+            // hides the others. Uses the last layout, and list scrolling
+            // re-renders this view.
+            let below = if groups.len() > 1 {
+                ordered_sessions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.header)
+                    .filter(|(index, _)| {
+                        self.sidebar_sessions_list.item_is_below_viewport(*index) == Some(true)
+                    })
+                    .map(|(index, row)| (index, row.project))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let dock = (!below.is_empty()).then(|| {
+                div()
+                    .id("sidebar-project-dock")
+                    .debug_selector(|| "sidebar-project-dock".into())
+                    .flex_none()
+                    .w_full()
+                    .pl_2()
+                    .pr(px(crate::scrollbar::GUTTER + 4.0))
+                    .py(px(6.0))
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(Theme::global().PANEL_BORDER)
+                    .children(below.into_iter().map(|(item, project)| {
+                        let (info, _, count) = &groups[project];
+                        div()
+                            .id(("sidebar-project-dock-item", project))
+                            .debug_selector(move || format!("sidebar-project-dock-{project}"))
+                            .max_w_full()
+                            .h(px(22.0))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(Theme::global().TOOL_BG)
+                            .text_size(px(11.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .hover(|el| {
+                                el.bg(Theme::global().PANEL_BG)
+                                    .text_color(Theme::global().TEXT)
+                            })
+                            .child(div().min_w_0().truncate().child(info.label.clone()))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child(count.to_string()),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    this.sidebar_sessions_list.scroll_to(gpui::ListOffset {
+                                        item_ix: item,
+                                        offset_in_item: px(0.0),
+                                    });
+                                    cx.notify();
+                                }),
+                            )
+                    }))
+            });
+            list = list.child(div().relative().w_full().flex_1().min_h_0().child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
                     move |sidebar_index, _window, cx| {
@@ -5545,6 +5624,19 @@ impl Workspace {
                             if row.collapsed {
                                 return list.into_any_element();
                             }
+                            if let Some(section) = row.section {
+                                list = list.child(
+                                    div()
+                                        .debug_selector(move || format!("sidebar-section-{sidebar_index}"))
+                                        .ml(px(if checkout_rows[row.project] { 30.0 } else { 20.0 }))
+                                        .mt(px(2.0))
+                                        .mb(px(2.0))
+                                        .text_size(px(9.0))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(Theme::global().TEXT_FAINT)
+                                        .child(section),
+                                );
+                            }
                             if row.divider {
                                 list = list.child(
                                     div()
@@ -5558,7 +5650,6 @@ impl Workspace {
                             }
                             let selected =
                                 active_id.as_deref() == Some(session.session_id.as_str());
-                            let compact = is_open && !selected && groups[row.project].1 > 1;
                             let (icon, title) = sidebar_session_title_with_open_title(
                                 session,
                                 open_titles.get(&session.session_id).map(String::as_str),
@@ -5713,7 +5804,7 @@ impl Workspace {
                                                     }))
                                             )),
                                     )
-                                    .when(!compact && (details.is_some() || edits.is_some()), |row| {
+                                    .when(details.is_some() || edits.is_some(), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
@@ -5733,7 +5824,8 @@ impl Workspace {
                     },
                 )
                 .size_full(),
-            );
+            ));
+            list = list.children(dock);
         }
 
         if self.sidebar_session_layout.is_empty() {
@@ -8154,7 +8246,7 @@ impl Render for Workspace {
                                     .child(content)
                                     .child(self.render_workspace_bar(
                                         canvas_w,
-                                        compact && self.show_sidebar,
+                                        compact || !self.show_sidebar,
                                         coach_progress,
                                         window,
                                         cx,
@@ -8509,6 +8601,7 @@ struct SidebarSessionLayout {
     header: bool,
     checkout_header: bool,
     divider: bool,
+    section: Option<&'static str>,
     collapsed: bool,
     selected: bool,
     saved: bool,
@@ -8526,6 +8619,8 @@ struct SidebarRow {
     checkout: Option<sidebar_projects::Checkout>,
     /// First thread of a checkout, which carries its branch row.
     checkout_header: bool,
+    /// "Live" or "Past" caption above the first row of each group.
+    section: Option<&'static str>,
     /// Nested swarm agents: (total, working).
     agents: (usize, usize),
 }
@@ -8660,7 +8755,7 @@ fn format_time_ago(created_ms: u64, now_ms: u64) -> String {
 /// the stored transcript size, so estimate at ~4 bytes per token.
 fn format_estimated_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
-        return format!("~{tokens} tok");
+        return format!("{tokens} tok");
     }
     const UNITS: &[(f64, &str)] = &[(1.0, ""), (1_000.0, "k"), (1_000_000.0, "M")];
     let value = tokens as f64;
@@ -8670,9 +8765,9 @@ fn format_estimated_tokens(tokens: u64) -> String {
     }
     let scaled = value / UNITS[index].0;
     if scaled >= 100.0 {
-        format!("~{:.0}{} tok", scaled, UNITS[index].1)
+        format!("{:.0}{} tok", scaled, UNITS[index].1)
     } else {
-        format!("~{:.1}{} tok", scaled, UNITS[index].1)
+        format!("{:.1}{} tok", scaled, UNITS[index].1)
     }
 }
 
@@ -9754,7 +9849,7 @@ mod tests {
         );
         session.transcript_bytes = Some(48_000);
         let meta = sidebar_session_meta(&session).expect("meta line");
-        assert_eq!(meta, "5m ago · ~12.0k tok");
+        assert_eq!(meta, "5m ago · 12.0k tok");
     }
 
     #[test]
@@ -9776,10 +9871,10 @@ mod tests {
 
     #[test]
     fn sidebar_token_estimate_uses_tui_style_units() {
-        assert_eq!(format_estimated_tokens(500), "~500 tok");
-        assert_eq!(format_estimated_tokens(4_200), "~4.2k tok");
-        assert_eq!(format_estimated_tokens(250_000), "~250k tok");
-        assert_eq!(format_estimated_tokens(1_500_000), "~1.5M tok");
+        assert_eq!(format_estimated_tokens(500), "500 tok");
+        assert_eq!(format_estimated_tokens(4_200), "4.2k tok");
+        assert_eq!(format_estimated_tokens(250_000), "250k tok");
+        assert_eq!(format_estimated_tokens(1_500_000), "1.5M tok");
     }
 
     #[test]
@@ -10115,11 +10210,13 @@ mod tests {
                 workspace.sidebar_session_layout[0].session_id,
                 "session_fox_open"
             );
-            assert!(workspace.sidebar_session_layout[1].divider);
+            assert_eq!(workspace.sidebar_session_layout[0].section, Some("Live"));
+            assert_eq!(workspace.sidebar_session_layout[1].section, Some("Past"));
+            assert!(!workspace.sidebar_session_layout[1].divider);
         });
         assert!(
-            vcx.debug_bounds("sidebar-session-divider").is_some(),
-            "sessions without a panel are divided from open panels"
+            vcx.debug_bounds("sidebar-section-1").is_some(),
+            "sessions without a panel are labelled apart from open panels"
         );
     }
 
@@ -10177,7 +10274,7 @@ mod tests {
             scrollbar.right() == list.right() + px(SIDEBAR_SCROLLBAR_OUTSET - 4.0),
             "the thin scrollbar sits in the gap beyond the session tabs"
         );
-        assert_eq!(scrollbar.size.width, px(4.0));
+        assert_eq!(scrollbar.size.width, px(3.0));
         let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
         assert_eq!(gutter.right(), list.right() + px(SIDEBAR_SCROLLBAR_OUTSET));
         assert_eq!(gutter.size.width, px(crate::scrollbar::GUTTER));

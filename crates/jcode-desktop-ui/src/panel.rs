@@ -6864,7 +6864,7 @@ mod tests {
         let scrollbar_before = vcx
             .debug_bounds("transcript-scrollbar")
             .expect("an overflowing transcript paints a scrollbar");
-        assert_eq!(scrollbar_before.size.width, px(4.0));
+        assert_eq!(scrollbar_before.size.width, px(3.0));
         assert!(scrollbar_before.size.height >= px(28.0));
 
         // A real discrete upward wheel event over the transcript. Unlike a
@@ -6911,7 +6911,7 @@ mod tests {
         let scrollbar_after = vcx
             .debug_bounds("transcript-scrollbar")
             .expect("the scrollbar remains visible after scrolling");
-        assert_eq!(scrollbar_after.size.width, px(4.0));
+        assert_eq!(scrollbar_after.size.width, px(3.0));
         let chip = vcx
             .debug_bounds("jump-to-latest")
             .expect("the catch-up chip paints once detached");

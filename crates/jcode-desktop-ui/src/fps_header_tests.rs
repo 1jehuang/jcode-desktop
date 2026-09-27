@@ -24,9 +24,10 @@ fn fps_and_new_session_share_the_tab_row_without_a_top_header(cx: &mut gpui::Tes
                     });
                     vcx.run_until_parked();
                     let row = vcx.debug_bounds("workspace-tab-row").unwrap();
-                    // Compact windows swap the FPS readout for the sidebar menu.
+                    // Compact windows, and any window with the sidebar hidden,
+                    // swap the FPS readout for the sidebar menu pill.
                     let counter = vcx
-                        .debug_bounds(if sidebar && responsive::is_compact(width) {
+                        .debug_bounds(if !sidebar || responsive::is_compact(width) {
                             "compact-sidebar-toggle"
                         } else {
                             "fps-counter"

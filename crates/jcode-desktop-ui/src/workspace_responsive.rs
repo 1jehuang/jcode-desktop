@@ -48,6 +48,10 @@ impl Workspace {
             .text_size(px(15.0))
             .text_color(Theme::global().TEXT_DIM)
             .occlude()
+            .tooltip(|_, cx| {
+                cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
+                    .into()
+            })
             .hover(|el| {
                 el.bg(Theme::global().PANEL_BG)
                     .text_color(Theme::global().TEXT)
@@ -57,7 +61,14 @@ impl Workspace {
                 cx.listener(|this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    this.compact_sidebar_open = !this.compact_sidebar_open;
+                    if this.show_sidebar {
+                        this.compact_sidebar_open = !this.compact_sidebar_open;
+                    } else {
+                        // Restores a sidebar hidden with Ctrl+B or its hide
+                        // button. Wide windows reset the drawer flag on render.
+                        this.show_sidebar = true;
+                        this.compact_sidebar_open = true;
+                    }
                     window.focus(&this.focus_handle, cx);
                     cx.notify();
                 }),
@@ -280,6 +291,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn sidebar_hide_and_show_buttons_round_trip(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Hide", cx);
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        // Wide window: the sidebar button hides it, the tab-row pill restores it.
+        vcx.simulate_window_resize(handle, gpui::size(px(1440.), px(800.)));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        click(vcx, "sidebar-hide");
+        assert!(vcx.debug_bounds("sidebar").is_none());
+        assert!(!workspace.read_with(vcx, |w, _| w.show_sidebar));
+        click(vcx, "compact-sidebar-toggle");
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        assert!(vcx.debug_bounds("compact-sidebar-toggle").is_none());
+        // Compact window: the same button only dismisses the drawer. Snap the
+        // drawer so the click lands on its settled position.
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
+        vcx.simulate_window_resize(handle, gpui::size(px(640.), px(600.)));
+        vcx.run_until_parked();
+        click(vcx, "compact-sidebar-toggle");
+        assert!(workspace.read_with(vcx, |w, _| w.compact_sidebar_open));
+        click(vcx, "sidebar-hide");
+        workspace.read_with(vcx, |w, _| {
+            assert!(!w.compact_sidebar_open);
+            assert!(w.show_sidebar);
+        });
+    }
+
+    #[gpui::test]
     fn compact_sidebar_opens_without_reflow_and_escape_preserves_draft(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -341,7 +391,8 @@ mod tests {
                 );
             });
         }
-        // Explicitly hiding the sidebar remains respected across resizing.
+        // Explicitly hiding the sidebar remains respected across resizing,
+        // with the menu pill left as the mouse path to bring it back.
         workspace.update(vcx, |w, cx| {
             w.show_sidebar = false;
             cx.notify();
@@ -350,7 +401,8 @@ mod tests {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("sidebar").is_none());
-            assert!(vcx.debug_bounds("compact-sidebar-toggle").is_none());
+            assert!(vcx.debug_bounds("compact-sidebar-overlay").is_none());
+            assert!(vcx.debug_bounds("compact-sidebar-toggle").is_some());
         }
     }
 }

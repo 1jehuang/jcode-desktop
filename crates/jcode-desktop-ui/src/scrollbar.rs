@@ -8,7 +8,7 @@ use std::{cell::Cell, rc::Rc};
 
 use crate::theme::Theme;
 
-const WIDTH: f32 = 4.0;
+const WIDTH: f32 = 3.0;
 const INSET: f32 = 4.0;
 /// Space compact content can reserve for the track plus a gap on either side.
 /// Keep this stable even without overflow so rows do not shift as lists grow.

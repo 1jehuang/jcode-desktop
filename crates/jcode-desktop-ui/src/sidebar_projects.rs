@@ -248,6 +248,7 @@ impl Workspace {
             .id(("sidebar-project", index))
             .debug_selector(move || format!("sidebar-project-{index}"))
             .group(group)
+            .relative()
             .mx_2()
             .mb_1()
             .pl_2()
@@ -296,7 +297,6 @@ impl Workspace {
                     .debug_selector(move || format!("sidebar-project-branch-{index}"))
                     .flex_shrink(1.0)
                     .min_w(px(24.0))
-                    .max_w(px(120.0))
                     .h(px(16.0))
                     .px(px(6.0))
                     .flex()
@@ -310,14 +310,26 @@ impl Workspace {
                     .child(div().min_w_0().truncate().child(branch))
             }))
             .child(div().flex_1())
-            .when(git, |el| {
-                let directory = local.clone().unwrap_or_default();
-                el.child(
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(16.0))
+                    .text_right()
+                    .text_size(px(10.0))
+                    .text_color(theme.TEXT_DIM)
+                    .child(count.to_string()),
+            )
+            // Actions overlay the row end on hover instead of reserving width.
+            .when(git || local.is_some(), |el| {
+                let mut actions = sidebar_worktrees::hover_actions(group, 24.0);
+                if git {
+                    let directory = local.clone().unwrap_or_default();
+                    actions = actions.child(
                     sidebar_worktrees::header_action(
                         format!("sidebar-project-worktree-{index}").into(),
                         "New worktree: start a branch in its own checkout",
                         sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
-                        false,
+                        true,
                         group,
                     )
                     .on_mouse_down(
@@ -328,16 +340,16 @@ impl Workspace {
                             this.begin_worktree(directory.clone(), window, cx);
                         }),
                     ),
-                )
-            })
-            .when_some(local, |el, directory| {
-                let key = project.key.clone();
-                el.child(
+                    );
+                }
+                if let Some(directory) = local.clone() {
+                    let key = project.key.clone();
+                    actions = actions.child(
                     sidebar_worktrees::header_action(
                         format!("sidebar-project-new-{index}").into(),
                         "New thread in this project",
                         div().child("+").into_any_element(),
-                        false,
+                        true,
                         group,
                     )
                     .on_mouse_down(
@@ -350,17 +362,10 @@ impl Workspace {
                             this.open_local_draft(Some(directory.clone()), cx);
                         }),
                     ),
-                )
+                    );
+                }
+                el.child(actions)
             })
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(16.0))
-                    .text_right()
-                    .text_size(px(10.0))
-                    .text_color(theme.TEXT_DIM)
-                    .child(count.to_string()),
-            )
             .into_any_element()
     }
 
@@ -393,6 +398,7 @@ impl Workspace {
             .id(("sidebar-checkout", index))
             .debug_selector(move || format!("sidebar-checkout-{index}"))
             .group(group)
+            .relative()
             .ml(px(18.0))
             .mr_2()
             .mb(px(2.0))
@@ -438,11 +444,12 @@ impl Workspace {
             })
             .when_some(path, |el, path| {
                 el.child(
+                    sidebar_worktrees::hover_actions(group, 4.0).child(
                     sidebar_worktrees::header_action(
                         format!("sidebar-checkout-new-{index}").into(),
                         "New thread on this branch",
                         div().child("+").into_any_element(),
-                        false,
+                        true,
                         group,
                     )
                     .on_mouse_down(
@@ -453,6 +460,7 @@ impl Workspace {
                             this.focus_pending = true;
                             this.open_local_draft(Some(path.clone()), cx);
                         }),
+                    ),
                     ),
                 )
             })
@@ -583,8 +591,8 @@ mod tests {
         assert!(alpha.bottom() <= vcx.debug_bounds("sidebar-session-0").unwrap().top());
         assert!(vcx.debug_bounds("sidebar-session-2").unwrap().bottom() <= beta.top());
         assert!(
-            vcx.debug_bounds("sidebar-session-divider").is_some(),
-            "history is divided from open panels inside a project"
+            vcx.debug_bounds("sidebar-section-2").is_some(),
+            "history is labelled apart from open panels inside a project"
         );
 
         // Collapsing hides members but keeps the header, and never navigates.
@@ -668,7 +676,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn inactive_live_rows_in_a_shared_project_stay_compact(cx: &mut gpui::TestAppContext) {
+    fn every_live_row_in_a_shared_project_shows_details(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             for name in ["session_fox_1700000000000_a", "session_owl_1700000000001_b"] {
@@ -685,19 +693,15 @@ mod tests {
             });
             vcx.run_until_parked();
             workspace.read_with(vcx, |workspace, _| {
-                for (index, item) in workspace.sidebar_session_layout.iter().enumerate() {
-                    assert_eq!(item.details, index == active);
+                for item in &workspace.sidebar_session_layout {
+                    assert!(item.details);
                 }
             });
             for index in 0..2 {
                 let bounds = vcx
                     .debug_bounds(["sidebar-session-0", "sidebar-session-1"][index])
                     .unwrap();
-                if index == active {
-                    assert!(bounds.size.height > px(24.0));
-                } else {
-                    assert_eq!(bounds.size.height, px(24.0));
-                }
+                assert!(bounds.size.height > px(24.0), "row {index} active {active}");
             }
         }
     }

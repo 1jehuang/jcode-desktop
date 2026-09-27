@@ -6,6 +6,7 @@ use super::*;
 
 pub(super) const BRANCH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6"><circle cx="6" cy="5" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><path d="M6 7.5v9M18 7.5c0 6-12 2-12 8"/></g></svg>"#;
 pub(super) const FOLDER_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Zm0 3h18" fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round"/></svg>"#;
+pub(super) const HIDE_SIDEBAR_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16M16 9.5 13.5 12l2.5 2.5"/></g></svg>"#;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -47,6 +48,25 @@ pub(super) fn header_action(
         })
         .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.into())).into())
         .child(content)
+}
+
+/// Hover-only header actions. They float over the right end of the row, so the
+/// label and branch pill use the full width until the pointer arrives. The
+/// parent must be `relative()`; `right` leaves room for trailing content.
+pub(super) fn hover_actions(group: &'static str, right: f32) -> gpui::Div {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(px(right))
+        .flex()
+        .items_center()
+        .gap_1()
+        .pl_1()
+        .rounded_full()
+        .bg(Theme::global().TOOL_BG)
+        .opacity(0.0)
+        .group_hover(group, |el| el.opacity(1.0))
 }
 
 pub(super) fn icon(data: &'static [u8], size: f32) -> gpui::AnyElement {
@@ -316,6 +336,41 @@ impl Workspace {
                         this.open_folder(&OpenFolder, window, cx);
                     }),
                 ),
+            )
+            .child(
+                div()
+                    .id("sidebar-hide")
+                    .debug_selector(|| "sidebar-hide".into())
+                    .flex_none()
+                    .size(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .bg(Theme::global().TOOL_BG)
+                    .hover(|el| el.bg(Theme::global().PANEL_BG))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
+                            .into()
+                    })
+                    .child(icon(HIDE_SIDEBAR_ICON, 14.0))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            if this.compact_sidebar_open {
+                                // Narrow windows show the sidebar as a drawer:
+                                // just dismiss it and keep the menu button.
+                                this.compact_sidebar_open = false;
+                                this.focus_pending = true;
+                                cx.notify();
+                            } else {
+                                this.toggle_sidebar(&ToggleSidebar, window, cx);
+                            }
+                        }),
+                    ),
             )
             .into_any_element()
     }
