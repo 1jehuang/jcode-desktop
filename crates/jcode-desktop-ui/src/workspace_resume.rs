@@ -1,5 +1,8 @@
 //! A transient, keyboard-first session browser. It never becomes a runtime slot.
 use super::*;
+use crate::resume_content_search as content_search;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub(super) enum Filter {
@@ -43,7 +46,15 @@ pub(super) struct State {
     /// markers. Refreshed off the UI thread while the picker is open.
     streaming: HashSet<String>,
     _presence_task: Option<gpui::Task<()>>,
+    /// Transcript keyword hits for `content_query`, with an excerpt each.
+    content_hits: content_search::Hits,
+    content_query: Option<String>,
+    content_cancel: Arc<AtomicBool>,
+    content_task: Option<gpui::Task<()>>,
 }
+
+/// Let typing settle before scanning every stored transcript.
+const CONTENT_SEARCH_DEBOUNCE: Duration = Duration::from_millis(180);
 
 const PRESENCE_REFRESH: Duration = Duration::from_millis(1500);
 
@@ -98,8 +109,10 @@ fn filtered_sessions(
     query: &str,
     filter: Filter,
     working: &HashSet<String>,
+    content: &content_search::Hits,
 ) -> Vec<jcode_sdk::SessionInfo> {
     let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut metadata_hits = HashSet::new();
     sessions.retain(|session| {
         let text = format!(
             "{} {} {} {} {} {}",
@@ -122,11 +135,19 @@ fn filtered_sessions(
                     status_is_crashed(&session.status) && !working.contains(&session.session_id)
                 }
             }
-            && words.iter().all(|word| text.contains(word))
+            && if words.iter().all(|word| text.contains(word)) {
+                metadata_hits.insert(session.session_id.clone());
+                true
+            } else {
+                content.contains_key(&session.session_id)
+            }
     });
+    // Title, folder, and ID matches outrank sessions found only by transcript.
     sessions.sort_by(|a, b| {
-        b.saved
-            .cmp(&a.saved)
+        metadata_hits
+            .contains(&b.session_id)
+            .cmp(&metadata_hits.contains(&a.session_id))
+            .then_with(|| b.saved.cmp(&a.saved))
             .then_with(|| {
                 b.last_active_at_ms
                     .or(b.updated_at_ms)
@@ -178,6 +199,7 @@ impl Workspace {
                 state.selected = selected;
                 state.filter = filter;
                 state.start_on_close = start_on_close;
+                self.refresh_resume_content(cx);
             }
             None | Some(Snapshot::Legacy) if resume_requested => {
                 // Old linked hosts omitted picker state. Recover only while the
@@ -263,7 +285,64 @@ impl Workspace {
             &state.query,
             state.filter,
             &self.resume_working(cx),
+            state
+                .content_query
+                .as_ref()
+                .filter(|query| **query == state.query)
+                .map(|_| &state.content_hits)
+                .unwrap_or(&content_search::Hits::new()),
         )
+    }
+
+    /// Whether the transcript scan for the current query is still running.
+    fn resume_content_pending(&self) -> bool {
+        self.resume.as_ref().is_some_and(|state| {
+            !content_search::query_words(&state.query).is_empty()
+                && state.content_query.as_ref() != Some(&state.query)
+        })
+    }
+
+    /// Restart the transcript scan for the current query, cancelling the
+    /// previous one. Results only apply while the query is unchanged.
+    fn refresh_resume_content(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.resume.as_mut() else {
+            return;
+        };
+        state.content_cancel.store(true, Ordering::Relaxed);
+        state.content_task = None;
+        let words = content_search::query_words(&state.query);
+        let dir = (!cfg!(test)).then(content_search::sessions_dir).flatten();
+        let (false, Some(dir)) = (words.is_empty(), dir) else {
+            state.content_hits.clear();
+            state.content_query = Some(state.query.clone());
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.content_cancel = cancel.clone();
+        let query = state.query.clone();
+        state.content_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(CONTENT_SEARCH_DEBOUNCE)
+                .await;
+            let scan_cancel = cancel.clone();
+            let Some(hits) = cx
+                .background_executor()
+                .spawn(async move { content_search::scan(&dir, &words, &scan_cancel) })
+                .await
+            else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if let Some(state) = this.resume.as_mut()
+                    && state.query == query
+                    && !cancel.load(Ordering::Relaxed)
+                {
+                    state.content_hits = hits;
+                    state.content_query = Some(query);
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     /// Poll the daemon's streaming markers while the picker stays open.
@@ -310,7 +389,7 @@ impl Workspace {
         let search = cx.new(|cx| {
             PromptInput::new(
                 cx,
-                "Search sessions by title, folder, or ID…",
+                "Search sessions by title, folder, ID, or conversation…",
                 move |_, _, window, app| {
                     let _ = submit.update(app, |this, cx| this.resume_selected(window, cx));
                 },
@@ -322,6 +401,7 @@ impl Workspace {
                         state.selected = None;
                         state.scroll.scroll_to_item(0);
                     }
+                    this.refresh_resume_content(cx);
                     cx.notify();
                 });
             })
@@ -340,6 +420,10 @@ impl Workspace {
             preview_task: None,
             streaming: HashSet::new(),
             _presence_task: None,
+            content_hits: content_search::Hits::new(),
+            content_query: None,
+            content_cancel: Arc::new(AtomicBool::new(false)),
+            content_task: None,
         });
         let presence = Self::watch_resume_presence(cx);
         if let Some(state) = self.resume.as_mut() {
@@ -514,7 +598,13 @@ impl Workspace {
             .iter()
             .filter(|session| liveness(session) == Liveness::Working)
             .count();
+        let content_pending = self.resume_content_pending();
         let state = self.resume.as_mut().expect("resume picker is open");
+        let excerpts = if state.content_query.as_ref() == Some(&state.query) {
+            state.content_hits.clone()
+        } else {
+            content_search::Hits::new()
+        };
         // The session catalog arrives asynchronously after a reload. Do not
         // discard the restored selection while only local slots are available.
         if (state.selected.is_none() || !self.sessions.is_empty())
@@ -559,6 +649,7 @@ impl Workspace {
             );
             let badge =
                 resume_liveness_badge(live, open_spinners.get(&session.session_id).cloned(), index);
+            let excerpt = excerpts.get(&session.session_id).cloned();
             rows = rows.child(
                 div()
                     .id(("resume-row", index))
@@ -607,13 +698,23 @@ impl Workspace {
                             .text_size(px(11.0))
                             .text_color(theme.TEXT_FAINT)
                             .child(metadata),
-                    ),
+                    )
+                    .children(excerpt.map(|excerpt| {
+                        div()
+                            .debug_selector(move || format!("resume-row-excerpt-{index}"))
+                            .text_size(px(11.0))
+                            .text_color(theme.TEXT_DIM)
+                            .text_ellipsis()
+                            .child(excerpt)
+                    })),
             );
         }
         if matches.is_empty() {
             rows = rows.child(div().p_4().text_color(theme.TEXT_DIM).child(
                 if self.sessions.is_empty() {
                     "No sessions available yet."
+                } else if content_pending {
+                    "Searching conversations…"
                 } else {
                     "No matching sessions. Try another search or filter."
                 },
@@ -782,15 +883,13 @@ impl Workspace {
                                 .child(label)
                         }),
                     )
-                    .child(
-                        div()
-                            .text_color(theme.TEXT_DIM)
-                            .child(if working_count > 0 {
-                                format!("{} sessions · {working_count} working", matches.len())
-                            } else {
-                                format!("{} sessions", matches.len())
-                            }),
-                    ),
+                    .child(div().text_color(theme.TEXT_DIM).child(if content_pending {
+                        format!("{} sessions · searching conversations…", matches.len())
+                    } else if working_count > 0 {
+                        format!("{} sessions · {working_count} working", matches.len())
+                    } else {
+                        format!("{} sessions", matches.len())
+                    })),
             )
             .child(
                 div()
@@ -1139,6 +1238,7 @@ mod tests {
             "investor work",
             Filter::All,
             &HashSet::new(),
+            &Default::default(),
         );
         assert_eq!(
             matches
@@ -1157,11 +1257,26 @@ mod tests {
         let sessions = vec![alpha.clone(), beta];
         for query in ["  RÉSUMÉ   client ", "alpha-123", "PLANNER"] {
             assert_eq!(
-                filtered_sessions(sessions.clone(), query, Filter::All, &HashSet::new()),
+                filtered_sessions(
+                    sessions.clone(),
+                    query,
+                    Filter::All,
+                    &HashSet::new(),
+                    &Default::default()
+                ),
                 vec![alpha.clone()]
             );
         }
-        assert!(filtered_sessions(sessions, "not-found", Filter::All, &HashSet::new()).is_empty());
+        assert!(
+            filtered_sessions(
+                sessions,
+                "not-found",
+                Filter::All,
+                &HashSet::new(),
+                &Default::default()
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1178,15 +1293,33 @@ mod tests {
         archived.archived = true;
         let sessions = vec![duplicate, saved.clone(), archived, running.clone()];
         assert_eq!(
-            filtered_sessions(sessions.clone(), "", Filter::All, &HashSet::new()),
+            filtered_sessions(
+                sessions.clone(),
+                "",
+                Filter::All,
+                &HashSet::new(),
+                &Default::default()
+            ),
             vec![saved.clone(), running.clone()]
         );
         assert_eq!(
-            filtered_sessions(sessions.clone(), "", Filter::Active, &HashSet::new()),
+            filtered_sessions(
+                sessions.clone(),
+                "",
+                Filter::Active,
+                &HashSet::new(),
+                &Default::default()
+            ),
             vec![running]
         );
         assert_eq!(
-            filtered_sessions(sessions, "", Filter::Saved, &HashSet::new()),
+            filtered_sessions(
+                sessions,
+                "",
+                Filter::Saved,
+                &HashSet::new(),
+                &Default::default()
+            ),
             vec![saved]
         );
         assert!(is_resume_command(" /session \n"));
@@ -1202,9 +1335,45 @@ mod tests {
         let streaming = session_info("streaming", None);
         let working = HashSet::from(["streaming".to_string()]);
         assert_eq!(
-            filtered_sessions(vec![idle, streaming.clone()], "", Filter::Active, &working),
+            filtered_sessions(
+                vec![idle, streaming.clone()],
+                "",
+                Filter::Active,
+                &working,
+                &Default::default()
+            ),
             vec![streaming]
         );
+    }
+
+    #[test]
+    fn resume_search_includes_transcript_hits_after_metadata_hits() {
+        let mut titled = session_info("titled", Some("Kubernetes rollout"));
+        titled.updated_at_ms = Some(1);
+        let mut transcript = session_info("transcript", Some("Unrelated title"));
+        transcript.updated_at_ms = Some(50);
+        let other = session_info("other", Some("Other"));
+        let content = content_search::Hits::from([
+            (
+                "transcript".to_string(),
+                "…fix the kubernetes rollout…".to_string(),
+            ),
+            ("titled".to_string(), "…kubernetes…".to_string()),
+        ]);
+        let ids = |content: &content_search::Hits| {
+            filtered_sessions(
+                vec![other.clone(), transcript.clone(), titled.clone()],
+                "kubernetes",
+                Filter::All,
+                &HashSet::new(),
+                content,
+            )
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&content), vec!["titled", "transcript"]);
+        assert_eq!(ids(&Default::default()), vec!["titled"]);
     }
 
     #[gpui::test]

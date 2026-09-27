@@ -51,6 +51,7 @@ pub mod preview_state;
 mod prompt_background;
 mod publish;
 mod remote_targets;
+mod resume_content_search;
 mod scrollbar;
 mod sound_events;
 mod sounds;
