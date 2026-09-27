@@ -7840,12 +7840,18 @@ impl Render for Workspace {
         }
         let sidebar_width = responsive::sidebar_width(self.show_sidebar, compact);
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
-        let connector_width = if self.show_sidebar && folders {
+        // Compact windows spend every pixel on the session: no sidebar column,
+        // no connector gutter, and no decorative right margin.
+        let connector_width = if self.show_sidebar && folders && !compact {
             FOLDER_CONNECTOR_WIDTH
         } else {
             0.0
         };
-        let right_margin = if folders { FOLDER_RIGHT_MARGIN } else { 0. };
+        let right_margin = if folders && !compact {
+            FOLDER_RIGHT_MARGIN
+        } else {
+            0.
+        };
         let canvas_w =
             (f32::from(viewport.width) - sidebar_width - connector_width - right_margin).max(0.0);
         let viewport_w = canvas_w.max(1.0);
@@ -8116,12 +8122,8 @@ impl Render for Workspace {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(self.show_sidebar, |root| {
-                        root.child(if compact {
-                            self.render_compact_navigation(fullscreen, cx)
-                        } else {
-                            self.render_sidebar(fullscreen, cx)
-                        })
+                    .when(self.show_sidebar && !compact, |root| {
+                        root.child(self.render_sidebar(fullscreen, cx))
                     })
                     .child(
                         div()
@@ -8151,6 +8153,7 @@ impl Render for Workspace {
                                     .child(content)
                                     .child(self.render_workspace_bar(
                                         canvas_w,
+                                        compact && self.show_sidebar,
                                         coach_progress,
                                         window,
                                         cx,

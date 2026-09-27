@@ -7,6 +7,8 @@ const TAB_FLOAT_GAP: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
+/// Compact windows swap the FPS readout for a sidebar menu button.
+const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
 const TAB_CLOSE_WIDTH: f32 = 40.0;
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
@@ -262,6 +264,7 @@ pub(super) struct TabMotion {
     available: Option<f32>,
     pub(super) hit_targets: Vec<(usize, f32)>,
     pub(super) header_offset: f32,
+    pub(super) version_width: f32,
 }
 
 impl TabMotion {
@@ -334,6 +337,7 @@ impl Workspace {
     pub(super) fn render_workspace_bar(
         &mut self,
         canvas_width: f32,
+        menu_button: bool,
         coach_progress: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -349,7 +353,12 @@ impl Workspace {
         };
         // Session navigation takes priority over secondary build metadata.
         // Keep enough room for a useful selected tab before showing the chip.
-        let tab_budget = canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH;
+        let status_width = if menu_button {
+            TAB_MENU_WIDTH
+        } else {
+            TAB_STATUS_WIDTH
+        };
+        let tab_budget = canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH;
         let version_width = version_header_width(tab_budget);
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
@@ -374,13 +383,9 @@ impl Workspace {
                 *row == self.active_row && index.is_none_or(|index| index == self.active)
             })
             .unwrap_or(0);
-        let available = (canvas_width
-            - right
-            - TAB_STATUS_WIDTH
-            - TAB_NEW_WIDTH
-            - TAB_CLOSE_WIDTH
-            - version_width)
-            .max(0.0);
+        let available =
+            (canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH - version_width)
+                .max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
         let targets: Vec<_> = entries
@@ -415,7 +420,7 @@ impl Workspace {
                     self.render_coach_chip(
                         hint,
                         coach_progress,
-                        version_width + TAB_STATUS_WIDTH + left,
+                        version_width + status_width + left,
                         cx,
                     )
                 })
@@ -425,10 +430,11 @@ impl Workspace {
             .debug_selector(|| "live-session-tabs".into())
             .absolute()
             .top_0()
-            .left(px(version_width + TAB_STATUS_WIDTH))
+            .left(px(version_width + status_width))
             .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
-        self.live_tabs.header_offset = version_width + TAB_STATUS_WIDTH;
+        self.live_tabs.header_offset = version_width + status_width;
+        self.live_tabs.version_width = version_width;
         self.live_tabs.hit_targets.clear();
         for position in TabLayout::paint_order(entries.len(), selected) {
             let (index, row, _) = entries[position];
@@ -725,26 +731,32 @@ impl Workspace {
             .left_0()
             .right(px(right))
             .h(px(FOLDER_CONTENT_INSET))
-            .child(
-                div()
-                    .debug_selector(|| "fps-counter-slot".into())
-                    .absolute()
-                    .left(px(version_width))
-                    .top_0()
-                    .w(px(TAB_STATUS_WIDTH))
-                    .h(px(TAB_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .pl_2()
-                    .child(
+            .map(|el| {
+                if menu_button {
+                    el.child(self.render_compact_menu_button(version_width, cx))
+                } else {
+                    el.child(
                         div()
-                            .debug_selector(|| "fps-counter".into())
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(fps),
-                    ),
-            )
+                            .debug_selector(|| "fps-counter-slot".into())
+                            .absolute()
+                            .left(px(version_width))
+                            .top_0()
+                            .w(px(TAB_STATUS_WIDTH))
+                            .h(px(TAB_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .pl_2()
+                            .child(
+                                div()
+                                    .debug_selector(|| "fps-counter".into())
+                                    .font_family(Theme::global().FONT_MONO)
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child(fps),
+                            ),
+                    )
+                }
+            })
             .child(tabs)
             .when(version_width > 0.0, |el| {
                 el.child(self.render_version_header(version_width, cx))
@@ -1507,12 +1519,12 @@ mod tests {
                     w.resolve_camera_target(1200.0);
                     w.camera_x[0] = w.camera_target[0];
                     let before_camera = w.camera_target[0];
-                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                     w.live_tabs.settle();
                     let closed_id = w.slots[initial].panel.entity_id().as_u64();
                     w.close_panel(&ClosePanel, window, cx);
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                     assert_eq!(w.slots.len(), 5, "surface is still fading");
                     assert_eq!(w.live_tabs.tabs.len(), 4);
                     assert!(!w.live_tabs.tabs.contains_key(&closed_id));
@@ -1534,7 +1546,7 @@ mod tests {
                         cx,
                     );
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                     assert_eq!(w.slots.len(), 4);
                     assert_eq!(w.camera_target[0], camera, "no second camera move");
                     for (id, tab) in &w.live_tabs.tabs {
@@ -1566,7 +1578,7 @@ mod tests {
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.close_panel(&ClosePanel, window, cx);
-                let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert!(w.live_tabs.hit_targets.is_empty());
                 assert_eq!(w.live_tabs.tabs.len(), 1);

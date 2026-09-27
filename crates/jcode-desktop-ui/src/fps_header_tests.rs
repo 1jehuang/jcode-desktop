@@ -24,7 +24,14 @@ fn fps_and_new_session_share_the_tab_row_without_a_top_header(cx: &mut gpui::Tes
                     });
                     vcx.run_until_parked();
                     let row = vcx.debug_bounds("workspace-tab-row").unwrap();
-                    let counter = vcx.debug_bounds("fps-counter").unwrap();
+                    // Compact windows swap the FPS readout for the sidebar menu.
+                    let counter = vcx
+                        .debug_bounds(if sidebar && responsive::is_compact(width) {
+                            "compact-sidebar-toggle"
+                        } else {
+                            "fps-counter"
+                        })
+                        .unwrap();
                     let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
                     let plus = vcx.debug_bounds("tab-new-session").unwrap();
                     let body = vcx.debug_bounds("workspace-body").unwrap();
@@ -74,17 +81,8 @@ fn fps_and_new_session_share_the_tab_row_without_a_top_header(cx: &mut gpui::Tes
                         assert!((version.center().y - counter.center().y).abs() < px(1.0));
                         assert!(tabs.size.width >= px(208.0));
                     }
-                    if sidebar {
-                        assert_eq!(
-                            vcx.debug_bounds(if responsive::is_compact(width) {
-                                "compact-sidebar"
-                            } else {
-                                "sidebar"
-                            })
-                            .unwrap()
-                            .top(),
-                            body.top()
-                        );
+                    if sidebar && !responsive::is_compact(width) {
+                        assert_eq!(vcx.debug_bounds("sidebar").unwrap().top(), body.top());
                     }
                 }
             }
