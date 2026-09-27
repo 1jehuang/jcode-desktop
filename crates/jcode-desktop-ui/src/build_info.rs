@@ -74,7 +74,7 @@ fn version_label(raw: &str) -> String {
 }
 
 fn footer_label(version: &str, development: bool, built_at: Option<u64>, now: u64) -> String {
-    let mut label = format!("Desktop {}", version_label(version));
+    let mut label = format!("v{}", version_label(version));
     if development {
         // Keep local builds distinct from the installed release, even when
         // Cargo's base package version has not changed between rebuilds.
@@ -184,28 +184,28 @@ mod tests {
     fn footer_distinguishes_local_builds_without_exposing_epoch_ids() {
         assert_eq!(
             footer_label("0.1.0", true, Some(100), 100),
-            "Desktop 0.1.0 · Dev · built just now"
+            "v0.1.0 · Dev · built just now"
         );
         assert_eq!(
             footer_label("0.1.0", true, Some(100), 220),
-            "Desktop 0.1.0 · Dev · built 2m ago"
+            "v0.1.0 · Dev · built 2m ago"
         );
         assert_eq!(
             footer_label("0.1.0-beta.15", false, Some(100), 220),
-            "Desktop 0.1.0 · Beta 15"
+            "v0.1.0 · Beta 15"
         );
-        assert_eq!(footer_label("0.1.0", false, None, 220), "Desktop 0.1.0");
+        assert_eq!(footer_label("0.1.0", false, None, 220), "v0.1.0");
         assert_eq!(
             footer_label("0.1.0", true, None, 220),
-            "Desktop 0.1.0 · Dev"
+            "v0.1.0 · Dev"
         );
         assert_eq!(
             footer_label("0.1.0-dev", true, Some(300), 220),
-            "Desktop 0.1.0-dev · built just now"
+            "v0.1.0-dev · built just now"
         );
         assert_eq!(
             footer_label("0.3.0-dev.12", true, Some(100), 220),
-            "Desktop 0.3.0 · Dev 12 · built 2m ago"
+            "v0.3.0 · Dev 12 · built 2m ago"
         );
     }
 

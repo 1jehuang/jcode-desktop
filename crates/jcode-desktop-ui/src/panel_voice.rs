@@ -1023,11 +1023,66 @@ impl Panel {
         };
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
-        let size = super::composer::TAB_HEIGHT;
+        let size = VOICE_BUTTON_SIZE;
         let keycap_color = if active {
             theme.BG.opacity(0.8)
         } else {
             theme.TEXT_FAINT
+        };
+        // Idle, the button alternates between the microphone and its
+        // shortcut instead of showing both side by side. While voice is
+        // active, or with reduced motion, it holds the microphone.
+        let alternate = !active
+            && !cx.reduce_motion()
+            && !crate::config::get().appearance.reduce_motion;
+        let microphone = div()
+            .debug_selector(|| "voice-microphone-icon".into())
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/microphone.svg") as &'static [u8])
+                    .text_color(icon_color)
+                    .size(px(12.)),
+            );
+        let shortcut = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(voice_shortcut_keycap(keycap_color.into(), &theme));
+        let (microphone, shortcut) = if alternate {
+            (
+                gpui::AnimationExt::with_animation(
+                    microphone,
+                    "voice-microphone-swap",
+                    gpui::Animation::new(VOICE_SWAP_CYCLE).repeat().with_max_fps(30.),
+                    |el, t| {
+                        let (opacity, offset) = voice_swap_frame(t, false);
+                        el.opacity(opacity).top(px(offset)).bottom(px(-offset))
+                    },
+                )
+                .into_any_element(),
+                gpui::AnimationExt::with_animation(
+                    shortcut,
+                    "voice-shortcut-swap",
+                    gpui::Animation::new(VOICE_SWAP_CYCLE).repeat().with_max_fps(30.),
+                    |el, t| {
+                        let (opacity, offset) = voice_swap_frame(t, true);
+                        el.opacity(opacity).top(px(offset)).bottom(px(-offset))
+                    },
+                )
+                .into_any_element(),
+            )
+        } else {
+            (
+                microphone.into_any_element(),
+                shortcut.opacity(0.).into_any_element(),
+            )
         };
         let button = div()
             .id("voice-toggle")
@@ -1035,12 +1090,13 @@ impl Panel {
             .relative()
             .flex_none()
             .h(px(size))
-            .pl(px(8.))
-            .pr(px(9.))
-            .gap(px(6.))
+            .min_w(px(size))
+            .px(px(5.5))
             .rounded_full()
+            .overflow_hidden()
             .flex()
             .items_center()
+            .justify_center()
             .cursor_pointer()
             .bg(if active {
                 theme.ACCENT
@@ -1057,26 +1113,55 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
+            // Invisible keycap sizes the pill so both faces fit.
             .child(
                 div()
-                    .debug_selector(|| "voice-microphone-icon".into())
-                    .flex_none()
-                    .size(px(12.))
-                    .child(
-                        gpui::svg()
-                            .data(include_bytes!("../../../assets/icons/microphone.svg")
-                                as &'static [u8])
-                            .text_color(icon_color)
-                            .size(px(12.)),
-                    ),
+                    .invisible()
+                    .child(voice_shortcut_keycap(keycap_color.into(), &theme)),
             )
-            .child(voice_shortcut_keycap(keycap_color.into(), &theme));
+            .child(microphone)
+            .child(shortcut);
         div()
             .flex_none()
             .h(px(size))
             .child(button)
             .into_any_element()
     }
+}
+
+/// Height (and minimum width) of the in-box voice button.
+pub(super) const VOICE_BUTTON_SIZE: f32 = 26.;
+/// One full microphone, shortcut, microphone cycle.
+const VOICE_SWAP_CYCLE: Duration = Duration::from_millis(7000);
+
+/// Opacity and vertical offset for one face of the voice button at cycle
+/// progress `t`. The microphone holds for most of the first half, then the
+/// shortcut rises in while the microphone rises out, and back again.
+fn voice_swap_frame(t: f32, shortcut: bool) -> (f32, f32) {
+    const FADE: f32 = 0.07;
+    const RISE: f32 = 6.;
+    let ease = |x: f32| {
+        let x = x.clamp(0., 1.);
+        x * x * (3. - 2. * x)
+    };
+    // 0 shows the microphone, 1 the shortcut.
+    let (mix, rising) = if t < 0.5 - FADE {
+        (0., true)
+    } else if t < 0.5 {
+        (ease((t - (0.5 - FADE)) / FADE), true)
+    } else if t < 1. - FADE {
+        (1., false)
+    } else {
+        (1. - ease((t - (1. - FADE)) / FADE), false)
+    };
+    let visible = if shortcut { mix } else { 1. - mix };
+    // Faces enter from below and leave upward.
+    let offset = if shortcut == rising {
+        (1. - visible) * RISE
+    } else {
+        -(1. - visible) * RISE
+    };
+    (visible, offset)
 }
 
 #[cfg(test)]
@@ -1658,21 +1743,27 @@ mod tests {
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
                 let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
-                // The microphone is a round button detached above the input.
+                // The voice button sits inside the input box, at its right.
                 assert!(
-                    button.left() >= input.left() && button.right() <= input.right(),
+                    button.left() >= input.left()
+                        && button.right() <= input.right()
+                        && button.top() >= input.top()
+                        && button.bottom() <= input.bottom(),
                     "voice at {width}: {button:?} outside {input:?}"
                 );
                 assert!(
-                    button.bottom() < input.top(),
-                    "voice is detached from the input"
+                    input.right() - button.right() < px(16.),
+                    "voice hugs the input's right edge"
                 );
+                assert_eq!(button.size.height, px(VOICE_BUTTON_SIZE));
+                // Microphone and keybinding share one slot and alternate,
+                // rather than sitting side by side.
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert_eq!(icon.size.width, px(12.));
-                assert_eq!(button.size.height, px(crate::panel::composer::TAB_HEIGHT));
-                // The keybinding sits inside the pill, right of the icon.
-                assert!(icon.right() <= shortcut.left());
-                assert!(shortcut.right() <= button.right());
+                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
+                assert!(
+                    icon.right() > shortcut.left() && shortcut.right() > icon.left(),
+                    "faces overlap in one slot: {icon:?} {shortcut:?}"
+                );
                 if phase == Phase::Idle {
                     assert!(
                         vcx.debug_bounds("voice-ready-status").is_none(),
@@ -1681,6 +1772,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn voice_button_alternates_microphone_and_shortcut() {
+        // Mostly one face at a time, with a brief crossfade at each swap.
+        let (mic, _) = voice_swap_frame(0.1, false);
+        let (key, _) = voice_swap_frame(0.1, true);
+        assert_eq!((mic, key), (1., 0.));
+        let (mic, _) = voice_swap_frame(0.7, false);
+        let (key, _) = voice_swap_frame(0.7, true);
+        assert_eq!((mic, key), (0., 1.));
+        for t in [0., 0.2, 0.45, 0.47, 0.5, 0.8, 0.95, 0.99] {
+            let (mic, _) = voice_swap_frame(t, false);
+            let (key, _) = voice_swap_frame(t, true);
+            assert!((mic + key - 1.).abs() < 1e-5, "t={t}");
+        }
+        // The cycle loops seamlessly.
+        assert_eq!(voice_swap_frame(0., false), voice_swap_frame(1., false));
     }
 
     #[gpui::test]

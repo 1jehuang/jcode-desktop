@@ -28,7 +28,9 @@ fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
             .debug_bounds("fresh-session")
             .expect("fresh session paints");
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
-        assert!(input.size.height >= px(112.));
+        // Two lines tall, not three.
+        assert!(input.size.height >= px(crate::input::SPACIOUS_MIN_HEIGHT));
+        assert!(input.size.height < px(100.), "{input:?}");
         assert!(input.size.width <= px(760.));
         assert!(input.left() >= fresh.left() && input.right() <= fresh.right());
         assert!((f32::from(input.center().x - fresh.center().x)).abs() < 1.);
@@ -160,7 +162,10 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
         let grown = vcx.debug_bounds("prompt-input").unwrap();
         assert!(grown.top() > initial.top());
         let meta = vcx.debug_bounds("panel-meta").unwrap();
-        assert!((f32::from(grown.bottom() - meta.top())).abs() < 1.);
+        // The pill row sits between the input and the footer.
+        let tabs = vcx.debug_bounds("composer-tabs").unwrap();
+        assert!(tabs.top() >= grown.bottom());
+        assert!((f32::from(tabs.bottom() - meta.top())).abs() < 1.);
         assert!(
             panel
                 .read_with(vcx, |panel, _| panel.transcript_list.is_scrolled_to_end())

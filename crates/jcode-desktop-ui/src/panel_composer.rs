@@ -1,20 +1,31 @@
-//! Composer chrome: a plain location line and compact pills above the input.
+//! Composer chrome: the input with one row of compact pills below it.
 //!
-//! The model pill, a separate reasoning effort pill, and the credential
-//! method pill sit on the left, followed by the location (repo or directory)
-//! as plain text that truncates first. The voice pill (microphone plus its
-//! keybinding) sits on the right.
+//! Nothing sits above the input. The bottom row holds the model pill, a
+//! separate reasoning effort pill, the credential method pill and the context
+//! ring on the left, and the publish button plus the location (repo or
+//! directory) on the right. The voice button lives inside the input box.
 //! Pills are detached from the input and shaped like the transcript's user
 //! prompt cards, so nothing reads as a folder tab.
 use super::*;
 
 /// Pill height.
 pub(super) const TAB_HEIGHT: f32 = 22.;
-/// Gap between the pill row and the input.
+/// Gap between the input and the pill row below it.
 const PILL_GAP: f32 = 4.;
+/// Distance from the input's right edge to the in-box voice button.
+const VOICE_INSET: f32 = 8.;
+/// Right padding the input reserves so text never runs under the voice
+/// button. Linux shows a single-glyph keycap; other platforms spell out the
+/// chord, so their button is wider.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(super) const VOICE_TRAILING_SPACE: f32 = 44.;
+#[cfg(target_os = "macos")]
+pub(super) const VOICE_TRAILING_SPACE: f32 = 52.;
+#[cfg(target_os = "windows")]
+pub(super) const VOICE_TRAILING_SPACE: f32 = 128.;
 
 impl Panel {
-    /// Prompt input with its location line and pills. Every composer location
+    /// Prompt input with its pill row below. Every composer location
     /// (fresh session, startup layout, docked) uses this so the pills never
     /// drift apart from the input they label.
     pub(super) fn render_composer(
@@ -59,11 +70,13 @@ impl Panel {
             .items_center()
             .gap_1()
             .px_1()
-            .mb(px(PILL_GAP))
+            .mt(px(PILL_GAP))
             .child(
                 div()
                     .debug_selector(|| "panel-identity".into())
-                    .flex_1()
+                    // Auto basis: the pills claim their width before the
+                    // trailing directory, which truncates first.
+                    .flex_auto()
                     .min_w_0()
                     .flex()
                     .items_center()
@@ -107,6 +120,20 @@ impl Panel {
                                 cx.stop_propagation();
                             })),
                     )
+                    .children(self.render_context_meter()),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "composer-trailing".into())
+                    // The directory yields space before the identity pills.
+                    .flex_shrink(8.)
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .overflow_hidden()
+                    .children(self.render_publish_button(cx))
                     .children(remote_machine.map(|machine| {
                         // Remote sessions name their machine first, so a cloud
                         // chat never reads like a local one.
@@ -130,9 +157,9 @@ impl Panel {
                     .children(location.map(|(name, detail)| {
                         div()
                             .debug_selector(|| "composer-location".into())
-                            .flex_shrink(4.)
+                            .flex_shrink_1()
                             .min_w_0()
-                            .pl_1()
+                            .px_1()
                             .flex()
                             .items_baseline()
                             .gap_1p5()
@@ -156,9 +183,7 @@ impl Panel {
                                     .child(detail)
                             }))
                     })),
-            )
-            .children(self.render_publish_button(cx))
-            .child(self.render_voice_tab(cx));
+            );
         let strips = self.render_composer_applets(window, cx);
         div()
             .debug_selector(|| "composer".into())
@@ -168,8 +193,26 @@ impl Panel {
             .flex_col()
             .children(strips)
             .children(self.render_provider_picker(window, cx))
+            .child(
+                // The voice button floats inside the input's right edge. The
+                // input reserves matching trailing space for it.
+                div()
+                    .relative()
+                    .w_full()
+                    .min_w_0()
+                    .child(self.render_voice_input_slot(cx))
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(VOICE_INSET))
+                            .flex()
+                            .items_center()
+                            .child(self.render_voice_tab(cx)),
+                    ),
+            )
             .child(pills)
-            .child(self.render_voice_input_slot(cx))
             .into_any_element()
     }
 
@@ -369,7 +412,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn pills_sit_above_the_input_with_location_after_method(cx: &mut gpui::TestAppContext) {
+    fn pills_sit_below_the_input_with_location_on_the_right(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
         let handle = vcx.update(|window, _| window.window_handle());
         for width in [240., 480., 1440.] {
@@ -385,38 +428,43 @@ mod tests {
             });
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
-            let location = vcx.debug_bounds("composer-location").unwrap();
+            let editor = vcx.debug_bounds("prompt-editor").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
             let name = vcx.debug_bounds("panel-model-name").unwrap();
             let effort = vcx.debug_bounds("panel-model-effort").unwrap();
             let login = vcx.debug_bounds("panel-login").unwrap();
+            let context = vcx.debug_bounds("panel-context-meter").unwrap();
             let voice = vcx.debug_bounds("voice-toggle").unwrap();
-            assert!(
-                login.right() <= location.left(),
-                "location follows the method pill"
-            );
-            assert!(
-                location.right() <= voice.left(),
-                "location stays left of voice at {width}: {location:?} {voice:?} {login:?} {effort:?} {model:?}"
-            );
-            for (tab_name, tab) in [("model", model), ("login", login), ("voice", voice)] {
+            for (tab_name, tab) in [("model", model), ("login", login), ("context", context)] {
                 assert!(
-                    tab.bottom() < input.top(),
-                    "{tab_name} pill is detached from the input at {width}: {tab:?} {input:?}"
+                    tab.top() > input.bottom(),
+                    "{tab_name} pill sits below the input at {width}: {tab:?} {input:?}"
                 );
                 assert!(tab.left() >= input.left() && tab.right() <= input.right());
             }
             assert!(name.right() <= model.right());
-            assert!(
-                model.right() <= effort.left(),
-                "effort is its own pill after the model"
-            );
+            assert!(model.right() <= effort.left(), "effort follows the model");
             assert!(effort.right() <= login.left(), "method follows effort");
-            assert!(login.right() <= voice.left(), "voice sits on the right");
+            assert!(login.right() <= context.left(), "context ring follows method");
+            // The voice button lives inside the input box, on its right, and
+            // the editor never runs underneath it.
             assert!(
-                voice.size.width > voice.size.height,
-                "voice pill shows its shortcut"
+                voice.left() >= input.left()
+                    && voice.right() <= input.right()
+                    && voice.top() >= input.top()
+                    && voice.bottom() <= input.bottom(),
+                "voice sits inside the input at {width}: {voice:?} {input:?}"
             );
+            assert!(editor.right() <= voice.left(), "{editor:?} {voice:?}");
+            if width >= 480. {
+                let location = vcx.debug_bounds("composer-location").unwrap();
+                assert!(location.top() > input.bottom(), "location is below the input");
+                assert!(context.right() <= location.left(), "location sits right");
+                assert!(
+                    input.right() - location.right() < px(12.),
+                    "location hugs the right edge at {width}: {location:?} {input:?}"
+                );
+            }
         }
     }
 }

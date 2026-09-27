@@ -285,6 +285,43 @@ impl Panel {
         Some((total, turns))
     }
 
+    /// Context window ring plus percentage. Sits in the composer's bottom row
+    /// right after the credential method pill.
+    pub(super) fn render_context_meter(&self) -> Option<gpui::AnyElement> {
+        if self.model.is_none() && self.provider.is_none() {
+            return None;
+        }
+        let theme = Theme::global();
+        let window = self.model.as_deref().and_then(context_window_for_model);
+        let used = self.context_tokens;
+        let percent = used
+            .zip(window)
+            .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
+        // Unknown usage shows only the empty ring, never a placeholder dash.
+        let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
+        let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
+            .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
+            .unwrap_or_else(|| "Context usage is not reported yet.".into());
+        Some(
+            div()
+                .id("panel-context-meter")
+                .debug_selector(|| "panel-context-meter".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1()
+                .h(px(22.))
+                .px_1()
+                .text_size(px(10.5))
+                .font_family(theme.FONT_MONO)
+                .text_color(theme.TEXT_DIM)
+                .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
+                .child(context_ring(percent))
+                .children(label)
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_usage_meters(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
         if self.model.is_none() && self.provider.is_none() {
             return None;
@@ -298,30 +335,6 @@ impl Panel {
             .gap_2()
             .flex_nowrap()
             .overflow_hidden();
-        let window = self.model.as_deref().and_then(context_window_for_model);
-        let used = self.context_tokens;
-        let percent = used
-            .zip(window)
-            .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
-        // Unknown usage shows only the empty ring, never a placeholder dash.
-        let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
-        let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
-            .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
-            .unwrap_or_else(|| "Context usage is not reported yet.".into());
-        row = row.child(
-            div()
-                .id("panel-context-meter")
-                .debug_selector(|| "panel-context-meter".into())
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap_1()
-                .h(px(22.))
-                .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
-                .child(context_ring(percent))
-                .children(label),
-        );
         if let Some((cost, turns)) = self.session_api_cost() {
             let detail = format!(
                 "{}: estimated API spend for this session, priced from {turns} reported response{} at list rates. Not a bill.",
@@ -555,10 +568,14 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
         vcx.run_until_parked();
         let context = vcx.debug_bounds("panel-context-meter").unwrap();
+        let login = vcx.debug_bounds("panel-login").unwrap();
         assert!(vcx.debug_bounds("panel-model").unwrap().size.width > px(20.));
+        // The context ring rides in the composer's pill row, after the method.
+        assert!(login.right() <= context.left());
+        assert!((f32::from(context.center().y - login.center().y)).abs() < 1.);
         for selector in ["panel-limit-0", "panel-limit-1"] {
             let limit = vcx.debug_bounds(selector).unwrap();
-            assert_eq!(context.center().y, limit.center().y);
+            assert!(limit.top() >= context.bottom(), "limits stay in the footer");
             assert!(limit.right() <= px(640.));
         }
         workspace.update(vcx, |workspace, cx| {

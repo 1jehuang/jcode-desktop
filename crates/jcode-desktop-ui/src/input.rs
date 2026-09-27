@@ -201,6 +201,9 @@ pub struct PromptInput {
     submission_enabled: bool,
     pending_session: bool,
     spacious: bool,
+    /// Right padding reserved for a control the host floats inside the box
+    /// (the chat composer's voice button).
+    trailing_inset: f32,
     /// False when a host container draws the box (onboarding email tab).
     chrome: bool,
     /// Cycle example prompts behind an empty chat composer.
@@ -537,6 +540,7 @@ impl PromptInput {
             submission_enabled: true,
             pending_session: false,
             spacious: false,
+            trailing_inset: 0.,
             chrome: true,
             example_prompts: false,
             motion: MotionState::default(),
@@ -572,6 +576,14 @@ impl PromptInput {
     pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
         if self.spacious != spacious {
             self.spacious = spacious;
+            cx.notify();
+        }
+    }
+
+    /// Reserve room at the right edge for a host-drawn control.
+    pub(crate) fn set_trailing_inset(&mut self, inset: f32, cx: &mut Context<Self>) {
+        if self.trailing_inset != inset {
+            self.trailing_inset = inset;
             cx.notify();
         }
     }
@@ -1672,6 +1684,8 @@ struct PrepaintState {
 
 /// Space kept between the caret and the example placeholder.
 const PLACEHOLDER_INDENT: Pixels = px(6.);
+/// Fresh-session composer height: two 16px lines plus its 16px padding.
+pub(crate) const SPACIOUS_MIN_HEIGHT: f32 = 84.;
 
 fn selection_quads(
     line: &PromptLayout,
@@ -2314,8 +2328,10 @@ impl Render for PromptInput {
                     .py_2()
                     .text_size(px(14.0))
                     .when(spacious, |el| {
-                        el.min_h(px(112.0)).px_4().py_4().text_size(px(16.0))
+                        // Two lines of 16px text plus padding.
+                        el.min_h(px(SPACIOUS_MIN_HEIGHT)).px_4().py_4().text_size(px(16.0))
                     })
+                    .when(self.trailing_inset > 0., |el| el.pr(px(self.trailing_inset)))
                     .child(
                         div()
                             .id("prompt-editor")

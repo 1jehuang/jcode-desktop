@@ -128,6 +128,9 @@ pub(crate) type SessionOpener =
 // Keep the last message/card clear of the composer and its metadata. This is
 // outside the scrolling list so it remains visible even while reading history.
 const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
+/// Height of the soft veil over the transcript's bottom edge while scrolled
+/// away from the live end.
+const TRANSCRIPT_FADE_HEIGHT: f32 = 44.0;
 
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
@@ -4056,7 +4059,8 @@ impl Render for Panel {
             }
         }
         self.input.update(cx, |input, cx| {
-            input.set_spacious(fresh_session || self.startup_layout.is_some(), cx)
+            input.set_spacious(fresh_session || self.startup_layout.is_some(), cx);
+            input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
         });
         let row_count_changed = row_count != self.transcript_row_count;
         if row_count_changed {
@@ -4126,19 +4130,18 @@ impl Render for Panel {
         let end_visible = std::rc::Rc::new(std::cell::Cell::new(false));
         let row_end_visible = end_visible.clone();
         let end_list = self.transcript_list.clone();
+        let short_viewport = window.viewport_size().height < px(400.);
         let transcript = if fresh_session {
             div()
                 .debug_selector(|| "fresh-session".into())
                 .size_full()
                 .flex()
-                .items_center()
+                // Short windows anchor the composer (and its pill row below)
+                // to the bottom so it never spills into the footer.
+                .map(|el| if short_viewport { el.items_end() } else { el.items_center() })
                 .justify_center()
                 .px_4()
-                .pb(px(if window.viewport_size().height < px(400.) {
-                    8.
-                } else {
-                    64.
-                }))
+                .pb(px(if short_viewport { 8. } else { 64. }))
                 .child(
                     div()
                         .w_full()
@@ -4486,6 +4489,11 @@ impl Render for Panel {
                     // Hidden at the live end so the newest line stays crisp.
                     .when(show_jump_chip && self.startup_layout.is_none(), |el| {
                         let background = Theme::global().panel_background(self.surface_focused);
+                        let clear = gpui::Rgba { a: 0., ..background };
+                        let half = gpui::Rgba { a: 0.55, ..background };
+                        // Two stacked ramps approximate an eased blur-like
+                        // falloff: a long soft veil, then a firmer edge
+                        // where the transcript meets the composer.
                         el.child(
                             div()
                                 .debug_selector(|| "transcript-bottom-fade".into())
@@ -4493,16 +4501,19 @@ impl Render for Panel {
                                 .left_0()
                                 .bottom_0()
                                 .w_full()
-                                .h(px(18.))
-                                .bg(gpui::linear_gradient(
+                                .h(px(TRANSCRIPT_FADE_HEIGHT))
+                                .flex()
+                                .flex_col()
+                                .child(div().w_full().flex_1().bg(gpui::linear_gradient(
                                     0.,
-                                    gpui::linear_color_stop(background, 0.),
-                                    gpui::linear_color_stop(
-                                        gpui::Rgba {
-                                            a: 0.,
-                                            ..background
-                                        },
-                                        1.,
+                                    gpui::linear_color_stop(half, 0.),
+                                    gpui::linear_color_stop(clear, 1.),
+                                )))
+                                .child(div().w_full().h(px(TRANSCRIPT_FADE_HEIGHT * 0.4)).bg(
+                                    gpui::linear_gradient(
+                                        0.,
+                                        gpui::linear_color_stop(background, 0.),
+                                        gpui::linear_color_stop(half, 1.),
                                     ),
                                 )),
                         )
@@ -4623,8 +4634,8 @@ impl Render for Panel {
                     )
                 },
             )
-            // Slim bottom bar under the composer. Location, model,
-            // credential method, and voice live above the input.
+            // Slim bottom bar under the composer's pill row: build info,
+            // usage limits and status. The context ring sits in the pills.
             .children((!self.transcript_only).then(|| {
                 div()
                     .debug_selector(|| "panel-meta".into())
@@ -7840,9 +7851,9 @@ mod tests {
             .expect("identity tabs paint");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
-        // Identity lives in folder tabs on the input, status in the bar below.
-        assert!(identity.bottom() <= input.top() + gpui::px(1.));
-        assert!(input.bottom() <= bounds.top());
+        // Identity pills sit below the input, status in the bar below them.
+        assert!(identity.top() >= input.bottom());
+        assert!(identity.bottom() <= bounds.top() + gpui::px(1.));
         assert!(status.right() <= bounds.right());
         assert!(vcx.debug_bounds("panel-status-pulse").is_none());
     }

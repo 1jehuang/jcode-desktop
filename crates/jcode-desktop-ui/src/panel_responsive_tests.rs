@@ -113,15 +113,18 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             let identity = vcx.debug_bounds("panel-identity").unwrap();
             let model = vcx.debug_bounds("panel-model").unwrap();
             let login = vcx.debug_bounds("panel-login").unwrap();
-            assert!(model.left() >= identity.left() && login.right() <= identity.right());
+            assert!(
+                model.left() >= identity.left() && login.right() <= identity.right(),
+                "{width}x{height} fresh={fresh}: {model:?} {login:?} {identity:?}"
+            );
             assert!(
                 model.right() <= login.left(),
                 "identity controls must not overlap"
             );
             let build = vcx.debug_bounds("panel-build").unwrap();
             assert!(
-                login.right() <= build.left() || login.bottom() <= build.top(),
-                "build metadata must follow identity controls without overlapping"
+                login.bottom() <= build.top(),
+                "build metadata sits in the footer below the identity pills: {login:?} {build:?} {input:?} {footer:?}"
             );
             panel.update(vcx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {
