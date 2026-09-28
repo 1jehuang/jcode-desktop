@@ -51,6 +51,8 @@ mod scroll_motion;
 #[path = "panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
+#[path = "panel_cache_miss.rs"]
+mod cache_miss;
 #[path = "panel_composer.rs"]
 mod composer;
 #[path = "panel_diff.rs"]
@@ -87,8 +89,6 @@ pub(crate) mod shortcuts;
 mod startup;
 #[path = "panel_stop_reason.rs"]
 mod stop_reason;
-#[path = "panel_cache_miss.rs"]
-mod cache_miss;
 #[path = "panel_stream_reveal.rs"]
 mod stream_reveal;
 #[cfg(test)]
@@ -379,14 +379,14 @@ pub struct Panel {
     transcript_wheel_glide: WheelGlide,
     transcript_wheel_frame: Option<Instant>,
     transcript_wheel_frame_pending: bool,
-    stick_to_bottom: bool,
-    transcript_end_visible: bool,
-    /// A detached reload offset cannot be applied until asynchronous history
-    /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     /// Last frame of an eased tail follow. See `panel_tail_glide`.
     tail_glide_at: Option<Instant>,
     /// Scroll velocity of the tail glide spring, in px per second.
     tail_glide_velocity: f32,
+    stick_to_bottom: bool,
+    transcript_end_visible: bool,
+    /// A detached reload offset cannot be applied until asynchronous history
+    /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     pending_history_scroll: Option<(f32, f32)>,
     bridge: Bridge,
     history_loaded: bool,
@@ -834,12 +834,12 @@ impl Panel {
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
+            tail_glide_at: None,
+            tail_glide_velocity: 0.0,
             stick_to_bottom: true,
             transcript_end_visible: true,
             pending_history_scroll: None,
             bridge,
-            tail_glide_at: None,
-            tail_glide_velocity: 0.0,
             preview_state: None,
             demo: false,
             history_loaded: false,
@@ -1061,9 +1061,7 @@ impl Panel {
     }
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
-        self.can_fork()
-            && self.todoist.is_none()
-            && self.orchestration.is_none()
+        self.can_fork() && self.todoist.is_none() && self.orchestration.is_none()
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {
@@ -1792,8 +1790,8 @@ impl Panel {
                         provider: Some("openai".into()),
                         model: Some("openai:atlas-01".into()),
                         reasoning_effort: None,
-                        routes,
                         auth_method: None,
+                        routes,
                     },
                     cx,
                 );
@@ -2599,8 +2597,8 @@ impl Panel {
                 provider,
                 model,
                 reasoning_effort,
-                ..
                 auth_method,
+                ..
             } => {
                 if provider.is_some() {
                     self.provider = provider.clone();
@@ -2618,19 +2616,19 @@ impl Panel {
                         input.set_current_model(self.model.clone(), cx)
                     });
                 }
-                self.sync_effort_menu(cx);
                 // The daemon's resolved credential is authoritative, including
                 // an OAuth<->API key switch that keeps the same model id.
                 if let Some(method) = auth_method.as_deref() {
                     self.auth_method = Some(human_auth_method(method));
                 }
+                self.sync_effort_menu(cx);
             }
             ApiEvent::RuntimeInfo {
                 provider,
                 model,
                 reasoning_effort,
-                routes,
                 auth_method,
+                routes,
                 ..
             } => {
                 if provider.is_some() {
@@ -2663,6 +2661,8 @@ impl Panel {
                         *input,
                         *cache_read_input,
                         *cache_creation_input,
+                    ));
+            }
             ApiEvent::KvCacheMiss { .. } => {
                 if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
                     // Keep the notice in order: settle text streamed so far.
@@ -2670,8 +2670,6 @@ impl Panel {
                     self.flush_streaming();
                     self.items.push(Item::CacheMiss(notice));
                 }
-            }
-                    ));
             }
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
@@ -2737,6 +2735,7 @@ impl Panel {
         if text || reasoning {
             window.request_animation_frame();
         }
+        instant
     }
 
     /// Raw streamed input of a tool call in this transcript.
@@ -3156,8 +3155,8 @@ impl Panel {
                 crate::applet_surface::card(instance, true, &selection, window, cx)
                     .unwrap_or_else(|| div().into_any_element())
             }
-            Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
+            Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
@@ -4290,8 +4289,7 @@ impl Render for Panel {
         let theme = Theme::global();
         let usage_meters = self.render_usage_meters(cx);
         // The tail may sit a few pixels below the fold mid-glide.
-        let show_jump_chip =
-            row_count > 0 && !self.transcript_end_visible && !self.tail_gliding();
+        let show_jump_chip = row_count > 0 && !self.transcript_end_visible && !self.tail_gliding();
 
         let chat = div()
             .flex()
@@ -4833,11 +4831,11 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::CacheMiss(_)
         | Item::Applet(_)
         | Item::Error(_) => None,
     }
 }
-        | Item::CacheMiss(_)
 
 /// The credential route serving `model`, phrased for humans.
 /// Fallback for daemons that do not report the resolved credential. A model
@@ -6651,6 +6649,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                         routes: vec![unavailable, route("gpt-5.6-sol", "openai-api-key")],
                     },
                     cx,
@@ -6664,20 +6663,6 @@ mod tests {
         });
     }
 
-                        auth_method: None,
-    #[test]
-    fn compact_directory_marks_home_but_not_its_children() {
-        let home = std::env::var("HOME").expect("test home");
-        assert_eq!(compact_dir(&home), "~ (home)");
-        assert_eq!(compact_dir(&format!("{home}/project")), "~/project");
-        assert_eq!(
-            compact_dir(&format!("{home}-other")),
-            format!("{home}-other")
-        );
-    }
-
-    #[test]
-    fn footer_labels_keep_model_account_and_context_separate() {
     #[test]
     fn account_label_follows_the_serving_credential_not_the_first_route() {
         // A Claude model lists its API key route before its OAuth route.
@@ -6746,6 +6731,19 @@ mod tests {
         });
     }
 
+    #[test]
+    fn compact_directory_marks_home_but_not_its_children() {
+        let home = std::env::var("HOME").expect("test home");
+        assert_eq!(compact_dir(&home), "~ (home)");
+        assert_eq!(compact_dir(&format!("{home}/project")), "~/project");
+        assert_eq!(
+            compact_dir(&format!("{home}-other")),
+            format!("{home}-other")
+        );
+    }
+
+    #[test]
+    fn footer_labels_keep_model_account_and_context_separate() {
         assert_eq!(
             account_method_label(Some("openai"), Some("oauth")),
             "OpenAI · OAuth"
@@ -7773,6 +7771,7 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
+                        auth_method: None,
                         routes: vec![jcode_sdk::ModelRouteInfo {
                             usage: None,
                             model: "gpt-5.6-sol".into(),
@@ -7786,7 +7785,6 @@ mod tests {
                     cx,
                 );
                 panel.apply(
-                        auth_method: None,
                     &ApiEvent::TokenUsage {
                         session_id: "session-a".into(),
                         input: 100_000,
@@ -7808,6 +7806,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                     },
                     cx,
                 );
@@ -7821,8 +7820,8 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("anthropic".into()),
                         model: Some("claude-fable-5".into()),
-                        auth_method: None,
                         reasoning_effort: None,
+                        auth_method: None,
                     },
                     cx,
                 );
@@ -7836,7 +7835,6 @@ mod tests {
 
         let bounds = vcx
             .debug_bounds("panel-meta")
-                        auth_method: None,
             .expect("the identity footer should have painted");
         assert!(
             bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
@@ -8303,6 +8301,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                         routes: vec![
                             route("claude-fable-5", "anthropic-api-key"),
                             route("gpt-5.6-sol", "openai-oauth"),
@@ -8316,7 +8315,6 @@ mod tests {
         vcx.update(|window, cx| {
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
-                        auth_method: None,
         });
 
         vcx.simulate_input("/mod");

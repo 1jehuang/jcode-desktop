@@ -738,8 +738,7 @@ impl Listener {
                     // SYN_DROPPED: the poll stalled (build load, reload) and
                     // key-repeat overflowed the buffer. Resync, never cancel.
                     Ok(Some(event)) if event.kind == 0 && event.code == 3 => {
-                        let capturing =
-                            self.capture.as_ref().is_some_and(|(p, _, _)| p == &path);
+                        let capturing = self.capture.as_ref().is_some_and(|(p, _, _)| p == &path);
                         match device.resync() {
                             Ok(held) => {
                                 eprintln!(
@@ -759,7 +758,9 @@ impl Listener {
                                 self.devices.remove(&path);
                                 self.healthy = false;
                                 self.cancel(
-                                    &format!("keyboard resync after dropped events failed: {error}"),
+                                    &format!(
+                                        "keyboard resync after dropped events failed: {error}"
+                                    ),
                                     &mut edges,
                                 );
                                 break;
@@ -1085,7 +1086,11 @@ mod tests {
             let (mut listener, mut writer, dir) = fake_listener();
             send(&mut writer, 1, ASSISTANT as u16, 1);
             assert_eq!(listener.poll(), vec![Edge::Press]);
-            let decoder = &mut listener.devices.get_mut(Path::new("fixture")).unwrap().decoder;
+            let decoder = &mut listener
+                .devices
+                .get_mut(Path::new("fixture"))
+                .unwrap()
+                .decoder;
             let mut held = [0u8; KEY_BYTES];
             if still_held {
                 held[ASSISTANT / 8] |= 1 << (ASSISTANT % 8);

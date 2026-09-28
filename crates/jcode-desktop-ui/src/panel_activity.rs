@@ -272,7 +272,11 @@ fn dot_path(
             return tessellated_circle(r, gpui::point(dot.x, dot.y), origin);
         };
         let mut path = gpui::Path::new(at(first[0]));
-        let st = (gpui::point(0., 1.), gpui::point(0., 1.), gpui::point(0., 1.));
+        let st = (
+            gpui::point(0., 1.),
+            gpui::point(0., 1.),
+            gpui::point(0., 1.),
+        );
         for [a, b, c] in unit.iter() {
             path.push_triangle((at(*a), at(*b), at(*c)), st);
         }
@@ -632,7 +636,10 @@ mod tests {
             let cached = dot_path(&dot, 0.3, origin);
             let exact = tessellated_circle(r, gpui::point(7.5, 8.25), origin);
             assert!(!cached.vertices.is_empty());
-            assert!(cached.vertices.len() <= exact.vertices.len() * 2 + 12, "r={r}");
+            assert!(
+                cached.vertices.len() <= exact.vertices.len() * 2 + 12,
+                "r={r}"
+            );
             for (a, b) in [
                 (cached.bounds.origin.x, exact.bounds.origin.x),
                 (cached.bounds.origin.y, exact.bounds.origin.y),

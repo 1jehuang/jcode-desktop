@@ -75,7 +75,7 @@ impl Panel {
         });
         if !self.items.iter().any(|item| matches!(item, Item::User(_)))
             && custom_session_title(&self.session_id, self.title.as_ref()).is_none()
-            && let Some(title) = first_prompt_title(&content)
+            && let Some(title) = first_prompt_title(&super::voice::tag::strip(&content).0)
         {
             self.title = title.into();
         }

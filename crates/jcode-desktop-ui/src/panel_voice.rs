@@ -22,6 +22,8 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
 
 #[path = "panel_voice_overlay.rs"]
 mod overlay;
+#[path = "panel_voice_tag.rs"]
+pub(crate) mod tag;
 
 #[cfg(test)]
 #[path = "panel_global_voice_tests.rs"]
@@ -323,7 +325,7 @@ impl Panel {
                 .into(),
         );
         self.input
-            .update(cx, |input, cx| input.append_dictation(text, cx));
+            .update(cx, |input, cx| input.append_dictation(&tag::wrap(text), cx));
         cx.notify();
     }
 
@@ -726,7 +728,7 @@ impl Panel {
                     return;
                 }
                 self.input.update(cx, |input, cx| {
-                    input.append_dictation(&text, cx);
+                    input.append_dictation(&tag::wrap(&text), cx);
                 });
                 self.voice.error = None;
             }
@@ -769,7 +771,7 @@ impl Panel {
                 text.chars().count()
             );
             self.input
-                .update(cx, |input, cx| input.append_dictation(&text, cx));
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(&text), cx));
             self.voice.phase = Phase::Idle;
             self.voice.error = None;
             cx.notify();
@@ -788,7 +790,7 @@ impl Panel {
         // Focused holds show the sent prompt in the transcript. Only the
         // unfocused OS pill needs a confirmation label.
         self.voice.decision = self.voice.global_capture.then(|| "Sent to agent".into());
-        self.submit_or_queue(text.trim().to_string(), Vec::new(), false, cx);
+        self.submit_or_queue(tag::wrap(&text), Vec::new(), false, cx);
         jcode_base::voice::timing::mark("ui sent transcript");
         cx.notify();
     }
@@ -918,7 +920,7 @@ impl Panel {
             // Send only this utterance, never text or attachments already in the composer.
             // Send ASAP like Enter: an active turn is steered, not queued behind.
             self.voice.decision = Some("Jev chose: Coding agent · Sent now".into());
-            self.submit_or_queue(text, Vec::new(), false, cx);
+            self.submit_or_queue(tag::wrap(&text), Vec::new(), false, cx);
         } else if let Some(action) = quick_action {
             self.voice.decision = Some("Jev chose: Quick action · Navigation".into());
             cx.emit(VoiceActionRequested(action, text));
@@ -928,7 +930,7 @@ impl Panel {
             cx.emit(VoiceSessionRequested(session, text));
         } else {
             self.input
-                .update(cx, |input, cx| input.append_dictation(&text, cx));
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(&text), cx));
         }
         cx.notify();
     }
@@ -1214,7 +1216,7 @@ mod tests {
             assert_eq!(trace.usage.unwrap().input_tokens, 1200);
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "typed work\nmaybe switch somewhere"
+                format!("typed work\n{}", tag::wrap("maybe switch somewhere"))
             );
             // A duplicate completion cannot replace the evidence or append again.
             panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("late failure")), cx);
@@ -1236,7 +1238,7 @@ mod tests {
             assert!(panel.voice.trace.is_none());
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "typed work\nmaybe switch somewhere"
+                format!("typed work\n{}", tag::wrap("maybe switch somewhere"))
             );
         });
     }
@@ -1269,7 +1271,7 @@ mod tests {
                     .unwrap()
                     .contains("provider unavailable")
             );
-            assert_eq!(panel.input.read(cx).content.as_ref(), "keep this");
+            assert_eq!(panel.input.read(cx).content.as_ref(), tag::wrap("keep this"));
         });
     }
 
@@ -1298,7 +1300,7 @@ mod tests {
         });
         assert!(
             matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
-            if session_id == "voice-agent" && content == "debug this failure" && images.is_empty())
+            if session_id == "voice-agent" && *content == tag::wrap("debug this failure") && images.is_empty())
         );
         assert!(
             commands.try_recv().is_err(),
@@ -1339,7 +1341,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-pending-prompt").is_none());
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "fix the flaky test")
+            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if *content == tag::wrap("fix the flaky test"))
         );
     }
 
@@ -1358,7 +1360,7 @@ mod tests {
         // Sent while still running, never held for the turn to finish. The
         // harness delivers a Send during an active turn as an urgent steer.
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "then add tests")
+            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if *content == tag::wrap("then add tests"))
         );
     }
 
@@ -1458,7 +1460,7 @@ mod tests {
                 panel
                     .items
                     .iter()
-                    .any(|item| matches!(item, Item::User(text) if text == "fix the bug"))
+                    .any(|item| matches!(item, Item::User(text) if text == &tag::wrap("fix the bug")))
             );
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
@@ -1527,7 +1529,7 @@ mod tests {
                 panel.voice.sessions = Some(Vec::new());
                 let before = panel.items.len();
                 panel.resolve_voice_for_test("spoken words", result, cx);
-                assert_eq!(panel.input.read(cx).content.as_ref(), "typed\nspoken words");
+                assert_eq!(panel.input.read(cx).content.as_ref(), format!("typed\n{}", tag::wrap("spoken words")));
                 assert_eq!(panel.items.len(), before);
                 assert!(!panel.voice_active());
                 assert!(panel.voice.live_transcript.is_empty());
@@ -1887,7 +1889,7 @@ mod tests {
                     .items
                     .iter()
                     .skip(items)
-                    .any(|item| matches!(item, Item::User(text) if text == "dictated words")),
+                    .any(|item| matches!(item, Item::User(text) if text == &tag::wrap("dictated words"))),
                 "voice sends only the trimmed utterance"
             );
             let items = panel.items.len();

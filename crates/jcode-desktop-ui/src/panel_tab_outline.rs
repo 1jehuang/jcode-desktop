@@ -7,7 +7,9 @@
 //! arms at most one pending tick, so clipped tabs stop animating on their own.
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Pixels, Point, Render, Rgba, Task, Window, canvas, div, point, prelude::*, px};
+use gpui::{
+    Context, Pixels, Point, Render, Rgba, Task, Window, canvas, div, point, prelude::*, px,
+};
 
 use crate::theme::Theme;
 
@@ -53,7 +55,10 @@ pub(crate) struct TabRing {
 }
 
 impl TabRing {
-    pub(crate) fn resolve(state: MinimapSessionState, todos: Option<(usize, usize)>) -> Option<Self> {
+    pub(crate) fn resolve(
+        state: MinimapSessionState,
+        todos: Option<(usize, usize)>,
+    ) -> Option<Self> {
         let theme = Theme::global();
         let progress = todos
             .filter(|(_, total)| *total > 0)
@@ -310,7 +315,10 @@ fn comet(
 
 impl Render for TabOutline {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ring = self.panel.upgrade().and_then(|panel| panel.read(cx).tab_ring());
+        let ring = self
+            .panel
+            .upgrade()
+            .and_then(|panel| panel.read(cx).tab_ring());
         let outline = cx.entity().downgrade();
         div().size_full().when_some(ring, |el, ring| {
             el.child(
@@ -320,8 +328,8 @@ impl Render for TabOutline {
                         if !bounds.intersects(&window.content_mask().bounds) {
                             return;
                         }
-                        let reduce_motion = cx.reduce_motion()
-                            || crate::config::get().appearance.reduce_motion;
+                        let reduce_motion =
+                            cx.reduce_motion() || crate::config::get().appearance.reduce_motion;
                         let Some(progress) = outline
                             .update(cx, |outline, cx| {
                                 let easing = outline.ease_progress(ring.progress, reduce_motion);

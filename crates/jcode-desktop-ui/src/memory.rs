@@ -53,10 +53,35 @@ pub fn disable_transparent_huge_pages() {
 /// Release free heap pages. Blocking; call from a background executor.
 pub fn trim() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    // SAFETY: malloc_trim is thread-safe and only releases free pages.
-    unsafe {
-        libc::malloc_trim(0);
+    {
+        let before = heap_stats();
+        // SAFETY: malloc_trim is thread-safe and only releases free pages.
+        unsafe {
+            libc::malloc_trim(0);
+        }
+        // Every tenth trim (about five minutes) keeps a low-noise record
+        // that separates live heap growth from allocator fragmentation.
+        static TRIMS: AtomicU64 = AtomicU64::new(0);
+        if TRIMS.fetch_add(1, Ordering::Relaxed) % 10 == 0 {
+            eprintln!("jcode desktop heap: before {before} after {}", heap_stats());
+        }
     }
+}
+
+/// glibc allocator totals in MiB: live bytes, free bytes held by arenas,
+/// and bytes in large direct mappings.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn heap_stats() -> String {
+    // SAFETY: mallinfo2 only reads allocator counters.
+    let info = unsafe { libc::mallinfo2() };
+    let mib = |bytes: usize| bytes as f64 / 1_048_576.0;
+    format!(
+        "live={:.1} free={:.1} mmap={:.1} arena={:.1}",
+        mib(info.uordblks),
+        mib(info.fordblks),
+        mib(info.hblkhd),
+        mib(info.arena),
+    )
 }
 
 #[cfg(test)]

@@ -29,6 +29,7 @@ pub(super) fn fixture_items() -> Vec<Item> {
         Item::User("Please make this naturally wrapped prompt fit closely around every rendered line, keeping **bold text**, `inline code`, and [links](https://example.com) selectable without filling the unused space after the final words. Fin.".into()),
         Item::User("Unicode stays aligned: café 日本語 🦀\nSmall.\nA longer third line to exercise both inward and outward curves.".into()),
         Item::User("A separate paragraph stays separate.\n\nTiny.".into()),
+        Item::User(super::voice::tag::wrap("Can you fix the flaky sidebar test and then rerun it")),
         Item::User("Please review this pasted specification and preserve the complete original prompt.\n".repeat(30)),
     ]
 }
@@ -187,6 +188,9 @@ impl Panel {
         });
         let background = Theme::global()
             .prompt_background(prompt_distance(&self.items, index).unwrap_or(usize::MAX));
+        // The model receives `<transcription>` tags. People see a pill instead.
+        let (visible, transcribed) = super::voice::tag::strip(text);
+        let text: &str = &visible;
         let preview = compact_prompt(text);
         let expanded = self.expanded_prompts.contains(&(index, pinned));
         let collapsed = preview.is_some() && !expanded;
@@ -239,6 +243,32 @@ impl Panel {
                         background,
                     )),
             )
+            .when(transcribed, |card| {
+                let theme = Theme::global();
+                card.child(
+                    div()
+                        .debug_selector(move || format!("prompt-transcribed-{index}").into())
+                        .mt_1()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .self_start()
+                        .px(px(7.))
+                        .h(px(18.))
+                        .rounded_full()
+                        .bg(theme.INLINE_CODE_BG)
+                        .text_size(px(10.))
+                        .text_color(theme.TEXT_DIM)
+                        .child(
+                            gpui::svg()
+                                .data(include_bytes!("../../../assets/icons/microphone.svg")
+                                    as &'static [u8])
+                                .text_color(theme.TEXT_DIM)
+                                .size(px(10.)),
+                        )
+                        .child("Transcribed"),
+                )
+            })
             .when(preview.is_some(), |card| {
                 card.child(
                     div()

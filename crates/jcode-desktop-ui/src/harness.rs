@@ -1712,6 +1712,7 @@ fn session_worker_with_connector(
                     model: info.model,
                     routes: info.routes,
                     reasoning_effort: info.reasoning_effort,
+                    auth_method: info.auth_method,
                 },
             });
         }
@@ -1737,7 +1738,7 @@ fn session_worker_with_connector(
                                     model: info.model,
                                     routes: info.routes,
                                     reasoning_effort: info.reasoning_effort,
-                    auth_method: info.auth_method,
+                                    auth_method: info.auth_method,
                                 },
                             });
                         }
@@ -1763,7 +1764,6 @@ fn session_worker_with_connector(
                         let steering = turn_active || !unaccepted_sends.is_empty();
                         let result = if steering {
                             client.soft_interrupt_with_images(real_id, &content, images, true)
-                                    auth_method: info.auth_method,
                         } else {
                             client.send_message(real_id, &content, images, None)
                         };
@@ -1886,7 +1886,9 @@ fn session_worker_with_connector(
                                 action,
                                 state,
                                 source_key,
-                            } => client.applet_action(real_id, &instance, action, state, source_key),
+                            } => {
+                                client.applet_action(real_id, &instance, action, state, source_key)
+                            }
                             SessionOperation::CloseApplet(instance) => {
                                 client.close_applet(real_id, &instance)
                             }
@@ -2386,14 +2388,19 @@ mod tests {
                 provider: None,
                 model: Some(model.into()),
                 reasoning_effort: None,
+                auth_method: None,
                 routes: Vec::new(),
             },
         };
         // A usage-update storm: thousands of full catalogs for two panels,
         // interleaved with ordinary updates that must all survive in order.
         for index in 0..5000 {
-            updates.try_send(runtime("a", &format!("a{index}"))).unwrap();
-            updates.try_send(runtime("b", &format!("b{index}"))).unwrap();
+            updates
+                .try_send(runtime("a", &format!("a{index}")))
+                .unwrap();
+            updates
+                .try_send(runtime("b", &format!("b{index}")))
+                .unwrap();
             if index % 1000 == 0 {
                 updates.try_send(Update::Status(index.to_string())).unwrap();
             }
@@ -2413,16 +2420,24 @@ mod tests {
             _ => panic!("unexpected update"),
         };
         let seen: Vec<_> = rest.iter().map(describe).collect();
-                auth_method: None,
         let runtime_count = seen.iter().filter(|s| s.starts_with("runtime")).count();
         // At most one catalog per session per MAX_SCAN window, never thousands.
-        assert!(runtime_count <= 6, "{runtime_count} catalogs applied: {seen:?}");
+        assert!(
+            runtime_count <= 6,
+            "{runtime_count} catalogs applied: {seen:?}"
+        );
         assert!(seen.contains(&"runtime a4999".to_string()));
         assert!(seen.contains(&"runtime b4999".to_string()));
         let statuses: Vec<_> = seen.iter().filter(|s| s.starts_with("status")).collect();
         assert_eq!(
             statuses,
-            ["status 0", "status 1000", "status 2000", "status 3000", "status 4000"]
+            [
+                "status 0",
+                "status 1000",
+                "status 2000",
+                "status 3000",
+                "status 4000"
+            ]
         );
         // The last catalogs follow every status update that preceded them.
         let last_status = seen.iter().rposition(|s| s.starts_with("status")).unwrap();
@@ -2466,21 +2481,6 @@ mod tests {
     }
 
     #[test]
-    fn session_recency_uses_timestamp_from_modern_and_legacy_ids() {
-        assert_eq!(
-            session_recency_ms("session_wolf_1787082160300_cab86a9cb334fa3f"),
-            Some(1_787_082_160_300)
-        );
-        assert_eq!(
-            session_recency_ms("session_1768160401354_2233921634250370970"),
-            Some(1_768_160_401_354)
-        );
-        assert_eq!(session_recency_ms("legacy-name"), None);
-    }
-
-    #[test]
-    fn persisted_sessions_fill_sidebar_in_last_interaction_order_without_duplicates_or_archives() {
-    #[test]
     fn active_record_with_dead_owner_is_reported_as_crashed() {
         let record = |last_pid| PersistedSession {
             working_dir: None,
@@ -2497,6 +2497,21 @@ mod tests {
         assert_eq!(record(None).lifecycle_status(), "active");
     }
 
+    #[test]
+    fn session_recency_uses_timestamp_from_modern_and_legacy_ids() {
+        assert_eq!(
+            session_recency_ms("session_wolf_1787082160300_cab86a9cb334fa3f"),
+            Some(1_787_082_160_300)
+        );
+        assert_eq!(
+            session_recency_ms("session_1768160401354_2233921634250370970"),
+            Some(1_768_160_401_354)
+        );
+        assert_eq!(session_recency_ms("legacy-name"), None);
+    }
+
+    #[test]
+    fn persisted_sessions_fill_sidebar_in_last_interaction_order_without_duplicates_or_archives() {
         let home = std::env::temp_dir().join(format!(
             "jcode-desktop-sessions-{}-{}",
             std::process::id(),

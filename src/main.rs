@@ -108,14 +108,22 @@ fn record_build_timing(force: bool, elapsed: std::time::Duration, success: bool)
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
-    let profile = if cfg!(debug_assertions) { "dev" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "dev"
+    } else {
+        "release"
+    };
     let scenario = if force { "ctrl-r" } else { "startup" };
     let line = format!(
         "{{\"ts\":\"{ts}\",\"unix\":{ts},\"source\":\"host\",\"profile\":\"{profile}\",\"scenario\":\"{scenario}\",\"build_s\":{secs:.2},\"median_s\":{secs:.2},\"success\":{success},\"pid\":{}}}\n",
         std::process::id()
     );
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/build-timings.jsonl");
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = file.write_all(line.as_bytes());
     }
 }
@@ -798,7 +806,10 @@ mod tests {
                 "workspace::EndVoiceHold",
             ),
         ] {
-            assert_eq!(super::voice_cli_command(flag.as_ref()), Some(command.clone()));
+            assert_eq!(
+                super::voice_cli_command(flag.as_ref()),
+                Some(command.clone())
+            );
             assert_eq!(super::voice_action(command), Some(action));
         }
         assert_eq!(super::voice_cli_command("--reload-ui".as_ref()), None);

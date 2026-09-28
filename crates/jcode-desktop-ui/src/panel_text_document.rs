@@ -88,6 +88,7 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
         }
         Item::CacheMiss(notice) => notice.text().hash(&mut state),
         Item::Image(_) | Item::ResponseStats(_) | Item::Todos(_) => {}
+        Item::Applet(instance) => instance.hash(&mut state),
     }
     state.finish()
 }
@@ -101,10 +102,11 @@ fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: boo
     };
     match item {
         Item::User(text) => {
+            let (text, _) = super::voice::tag::strip(text);
             let visible = if prompt_expanded {
-                text.as_str()
+                &*text
             } else {
-                prompt::compact_prompt(text).unwrap_or(text)
+                prompt::compact_prompt(&text).unwrap_or(&text)
             };
             return markdown::selection_segments(visible, index, false, true);
         }
@@ -174,9 +176,9 @@ fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: boo
             push(format!("background-label-{index}"), label.clone());
             push(format!("background-summary-{index}"), summary.clone());
         }
-        // Pinned todos and non-text chrome are outside the transcript document.
-        Item::Todos(_) | Item::Image(_) | Item::ResponseStats(_) => {}
         Item::CacheMiss(notice) => push(format!("{index}-kv-cache-miss"), notice.text()),
+        // Pinned todos and non-text chrome are outside the transcript document.
+        Item::Todos(_) | Item::Image(_) | Item::ResponseStats(_) | Item::Applet(_) => {}
     }
     result
 }

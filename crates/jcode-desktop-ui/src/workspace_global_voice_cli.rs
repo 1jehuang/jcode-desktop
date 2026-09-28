@@ -86,7 +86,9 @@ impl Workspace {
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);
         let serial = self.global_voice.press_serial;
         let resolve = cx.background_executor().spawn(async {
-            let session = jcode_base::dictation::focused_cli_session().ok().flatten()?;
+            let session = jcode_base::dictation::focused_cli_session()
+                .ok()
+                .flatten()?;
             let allowed = crate::global_voice_session::permitted().await;
             Some((session, allowed))
         });

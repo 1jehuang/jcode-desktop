@@ -98,7 +98,12 @@ fn unchanged_runtime_routes_skip_rebuilding_the_catalog(cx: &mut gpui::TestAppCo
         // A real catalog change is still applied.
         routes[7].available = false;
         input.set_model_routes(Vec::new(), &routes, Some("atlas-0006".into()), cx);
-        assert!(!input.command_models.iter().any(|m| m.ends_with("atlas-0007")));
+        assert!(
+            !input
+                .command_models
+                .iter()
+                .any(|m| m.ends_with("atlas-0007"))
+        );
 
         // Offline fallback models replace the catalog, so the next identical
         // RuntimeInfo must restore routes rather than hit a stale cache.

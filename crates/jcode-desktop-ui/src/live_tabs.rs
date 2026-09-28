@@ -367,7 +367,6 @@ impl Render for TabTooltip {
             .child(self.0.clone())
     }
 }
-
 impl Workspace {
     /// Workspace a pointer "next" click lands on: the next occupied workspace
     /// below (wrapping), or a fresh adjacent one when nothing else is open.
@@ -541,7 +540,12 @@ impl Workspace {
         } else {
             TAB_STATUS_WIDTH
         };
-        let tab_budget = canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_NEXT_WORKSPACE_WIDTH - TAB_CLOSE_WIDTH;
+        let tab_budget = canvas_width
+            - right
+            - status_width
+            - TAB_NEW_WIDTH
+            - TAB_NEXT_WORKSPACE_WIDTH
+            - TAB_CLOSE_WIDTH;
         let version_width = version_header_width(tab_budget);
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
@@ -566,9 +570,14 @@ impl Workspace {
                 *row == self.active_row && index.is_none_or(|index| index == self.active)
             })
             .unwrap_or(0);
-        let available =
-            (canvas_width - right - status_width - TAB_NEW_WIDTH - TAB_NEXT_WORKSPACE_WIDTH - TAB_CLOSE_WIDTH - version_width)
-                .max(0.0);
+        let available = (canvas_width
+            - right
+            - status_width
+            - TAB_NEW_WIDTH
+            - TAB_NEXT_WORKSPACE_WIDTH
+            - TAB_CLOSE_WIDTH
+            - version_width)
+            .max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
         let keys: Vec<u64> = entries
@@ -633,7 +642,9 @@ impl Workspace {
             .absolute()
             .top_0()
             .left(px(version_width + status_width))
-            .right(px(TAB_NEW_WIDTH + TAB_NEXT_WORKSPACE_WIDTH + TAB_CLOSE_WIDTH))
+            .right(px(TAB_NEW_WIDTH
+                + TAB_NEXT_WORKSPACE_WIDTH
+                + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
         self.live_tabs.header_offset = version_width + status_width;
         self.live_tabs.version_width = version_width;
@@ -756,18 +767,9 @@ impl Workspace {
                             .opacity(0.0)
                             .group_hover("live-session-tab", |style| style.opacity(1.0))
                             .child(div().h_full().w(px(16.0)).bg(fade(hover_bg)))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .flex()
-                                    .items_center()
-                                    .bg(hover_bg)
-                                    .children(self.render_tab_actions(
-                                        index.unwrap(),
-                                        focused && can_rename,
-                                        cx,
-                                    )),
-                            ),
+                            .child(div().h_full().flex().items_center().bg(hover_bg).children(
+                                self.render_tab_actions(index.unwrap(), focused && can_rename, cx),
+                            )),
                     )
                 });
             tabs = tabs.child(
@@ -803,16 +805,14 @@ impl Workspace {
                     .bg(tab_bg)
                     .text_size(px(11.0))
                     .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
+                    .when(popped, |el| el.shadow_md())
                     .text_color(if focused {
                         Theme::global().TEXT
-                    .when(popped, |el| el.shadow_md())
                     } else {
                         Theme::global().TEXT_DIM
                     })
                     .occlude()
                     .cursor_pointer()
-                    .tooltip({
-                        let title: gpui::SharedString =
                     .when(index.is_some(), |el| {
                         el.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                             let next = if *hovered {
@@ -828,6 +828,8 @@ impl Workspace {
                             }
                         }))
                     })
+                    .tooltip({
+                        let title: gpui::SharedString =
                             format!("Workspace {} · {title}", row + 1).into();
                         move |_, cx| cx.new(|_| TabTooltip(title.clone())).into()
                     })
@@ -1325,10 +1327,10 @@ mod tests {
             vcx.run_until_parked();
             for selected in [4, 8, 0, 7, 3, 2, 6, 5, 1] {
                 workspace.update(vcx, |w, cx| {
-                    w.live_tabs.settle();
-                    cx.notify();
                     // Measure resting layout, not a tab popped out under the pointer.
                     w.live_tabs.hovered = None;
+                    w.live_tabs.settle();
+                    cx.notify();
                 });
                 vcx.run_until_parked();
                 let track = vcx.debug_bounds("live-session-tabs").unwrap();
@@ -1376,8 +1378,6 @@ mod tests {
                     gpui::Modifiers::default(),
                 );
                 vcx.run_until_parked();
-                workspace.update_in(vcx, |w, window, cx| {
-                    assert_eq!(w.active, selected, "width={width}");
                 // Leave the tab row so the next pass measures resting geometry.
                 vcx.simulate_mouse_move(
                     gpui::point(px(5.0), px(600.0)),
@@ -1385,6 +1385,8 @@ mod tests {
                     gpui::Modifiers::default(),
                 );
                 vcx.run_until_parked();
+                workspace.update_in(vcx, |w, window, cx| {
+                    assert_eq!(w.active, selected, "width={width}");
                     assert_eq!(w.active_row, selected / 3);
                     assert_eq!(w.navigation_state(window, cx)["keyboard_panel"], selected);
                     assert!(!w.overview);
@@ -1577,8 +1579,6 @@ mod tests {
     }
 
     #[test]
-    fn live_tabs_overlap_preserves_folder_width_and_centers_the_stack() {
-    #[test]
     fn hovered_tab_pops_out_on_top_without_leaving_the_pointer() {
         let order = TabLayout::hover_paint_order(4, 1, Some(3));
         assert_eq!(order.last(), Some(&3), "hovered tab paints above focus");
@@ -1598,6 +1598,8 @@ mod tests {
         }
     }
 
+    #[test]
+    fn live_tabs_overlap_preserves_folder_width_and_centers_the_stack() {
         for available in [0.0, 40.0, 180.0, 352.0, 800.0, 2400.0] {
             for count in 1..=200 {
                 let layout = TabLayout::new(available, count);

@@ -1484,7 +1484,11 @@ impl Workspace {
         cx: &App,
     ) -> anyhow::Result<WorkspaceSnapshot> {
         // The old generation's panels are dropped next, ending any recording.
-        if self.slots.iter().any(|slot| slot.panel.read(cx).voice_active()) {
+        if self
+            .slots
+            .iter()
+            .any(|slot| slot.panel.read(cx).voice_active())
+        {
             eprintln!("voice: hot reload is replacing the UI while a recording is active");
         }
         self.snapshot_inner(window, cx, true)
@@ -5790,6 +5794,17 @@ impl Workspace {
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
                                                     .child(agent_total.to_string()),
                                             ))
+                                            .when_some(activity, |row, spinner| {
+                                                row.child(
+                                                    div()
+                                                        .debug_selector(move || {
+                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
+                                                        })
+                                                        .flex_none()
+                                                        .child(spinner),
+                                                )
+                                            })
+                                            // Last child: the hover close sits at the row's far right.
                                             .when(is_open, |row| row.child(
                                                 div().id(("sidebar-close", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
@@ -5876,17 +5891,6 @@ impl Workspace {
                             Theme::global().PANEL_BG
                         })
                         .child(
-                                            .when_some(activity, |row, spinner| {
-                                                row.child(
-                                                    div()
-                                                        .debug_selector(move || {
-                                                            format!("sidebar-session-spinner-{sidebar_index}").into()
-                                                        })
-                                                        .flex_none()
-                                                        .child(spinner),
-                                                )
-                                            })
-                                            // Last child: the hover close sits at the row's far right.
                             div()
                                 .absolute()
                                 .left_0()
