@@ -1,0 +1,5 @@
+{
+  "id": "sheets",
+  "command": ["python3", "provider.py"],
+  "autostart": true
+}

@@ -852,6 +852,98 @@ else:
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The bundled Sheets applet claims `mcp__sheets__*` calls and renders them
+    /// as tool cards that pass host validation. A fake `gog` stands in for
+    /// Google, so this runs offline.
+    #[test]
+    fn bundled_sheets_applet_renders_tool_cards() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("jcode-sheets-applet-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fake_gog = r#"#!/usr/bin/env python3
+import json, sys
+args = [a for a in sys.argv[1:] if not a.startswith("--json") and a != "--no-input"]
+cmd = args[1]
+if cmd == "metadata":
+    print(json.dumps({"title": "Jcode CRM", "sheets": [
+        {"properties": {"title": "Contacts", "sheetId": 0}},
+        {"properties": {"title": "Accounts", "sheetId": 7}}]}))
+elif cmd == "get":
+    print(json.dumps({"range": args[3], "values": [["Company", "Name"], ["SUSE", "Rhys Oxenham"]]}))
+else:
+    sys.exit("unexpected gog call")
+"#;
+        let gog = root.join("gog");
+        std::fs::write(&gog, fake_gog).unwrap();
+        std::fs::set_permissions(&gog, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../applets/sheets");
+        let mut applet = discover(dir.parent().unwrap())
+            .into_iter()
+            .find(|a| a.id == "sheets")
+            .expect("bundled sheets applet");
+        applet
+            .env
+            .insert("JCODE_SHEETS_GOG".into(), gog.display().to_string());
+
+        let runtime = Runtime::default();
+        runtime.host.borrow_mut().trust("sheets");
+        runtime.start(&applet).unwrap();
+        let wait = |what: &str, check: &dyn Fn(&Runtime) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while std::time::Instant::now() < deadline {
+                runtime.pump();
+                if check(&runtime) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("timed out waiting for {what}");
+        };
+        wait("register", &|r| r.host.borrow().manifest("sheets").is_some());
+        assert_eq!(
+            runtime
+                .host
+                .borrow()
+                .tool_card_claims("mcp__sheets__read", None),
+            vec!["sheets"]
+        );
+
+        let sid = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+        runtime.notify_tool_call(jcode_applet_types::HostMessage::ToolCall {
+            session_id: "sess".into(),
+            call_id: "call-1".into(),
+            tool: "mcp__sheets__read".into(),
+            input: json!({"spreadsheet": sid, "range": "Contacts"}),
+            output: Some(format!(
+                "Spreadsheet: https://docs.google.com/spreadsheets/d/{sid}/edit\nRange: Contacts (2 rows)"
+            )),
+            error: None,
+            done: true,
+        });
+        let doc = |r: &Runtime| {
+            r.host
+                .borrow()
+                .tool_card("sess", "call-1")
+                .map(|m| serde_json::to_string(&m.instance.document).unwrap())
+                .unwrap_or_default()
+        };
+        wait("table card", &|r| doc(r).contains("Rhys Oxenham"));
+        let card = doc(&runtime);
+        for expected in ["Jcode CRM · Contacts", "\"table\"", "Open in Sheets", "Accounts"] {
+            assert!(card.contains(expected), "card lacks {expected}: {card}");
+        }
+        let host = runtime.host.borrow();
+        let mounted = host.tool_card("sess", "call-1").unwrap();
+        assert!(
+            mounted.last_error.is_none(),
+            "provider documents must validate: {:?}",
+            mounted.last_error
+        );
+        drop(host);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
