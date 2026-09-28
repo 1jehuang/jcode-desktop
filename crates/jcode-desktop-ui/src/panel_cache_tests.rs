@@ -106,3 +106,44 @@ fn panel_cache_descendant_composer_notifications_remain_live(cx: &mut gpui::Test
         "cache invalidation"
     );
 }
+
+#[gpui::test]
+fn typing_pauses_do_not_repaint_the_panel_while_the_caret_is_solid(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("caret-solid", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.focus(&panel.read(cx).input_focus_handle(cx), cx));
+    vcx.simulate_keystrokes("h i");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.simulate_next_frame(cx));
+    vcx.run_until_parked();
+    // A typing pause shorter than the solid caret phase. The caret is fully
+    // opaque, so every composer frame here would re-render the whole chat
+    // panel for nothing and compete with the next keystroke.
+    let before = count(&panel);
+    for _ in 0..12 {
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(34));
+        vcx.run_until_parked();
+    }
+    assert!(
+        count(&panel) - before <= 1,
+        "solid caret repainted the panel {} times between keystrokes",
+        count(&panel) - before
+    );
+    // Breathing still animates afterwards.
+    let before = count(&panel);
+    for _ in 0..30 {
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(34));
+        vcx.run_until_parked();
+    }
+    assert!(
+        count(&panel) > before + 10,
+        "caret breathing must keep animating"
+    );
+}

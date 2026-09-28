@@ -218,7 +218,8 @@ struct MotionState {
     key: Option<(SharedString, usize)>,
     seed: usize,
     glide: Option<motion::Glide>,
-    live: bool,
+    /// Delay until the painted motion next changes. `None` once settled.
+    next: Option<Duration>,
     ticker: Option<gpui::Task<()>>,
 }
 
@@ -232,7 +233,7 @@ impl Default for MotionState {
             key: None,
             seed,
             glide: None,
-            live: false,
+            next: None,
             ticker: None,
         }
     }
@@ -1762,7 +1763,9 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let now = Instant::now();
+        // The executor clock, so motion and its sleeping ticker share one
+        // time source (real time in production, simulated in tests).
+        let now = cx.background_executor().now();
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
@@ -1869,10 +1872,16 @@ impl Element for TextElement {
         );
         let focused = self.input.read(cx).focus_handle.is_focused(window);
         let reduced = motion_reduced(cx);
-        let (cursor_pos, caret_alpha, caret_live, caret_gliding) =
+        let (cursor_pos, caret_alpha, caret_next, caret_gliding) =
             self.input.update(cx, |input, _| {
                 let key = (input.content.clone(), cursor);
+                let mut edited = false;
                 if input.motion.key.as_ref() != Some(&key) {
+                    edited = input
+                        .motion
+                        .key
+                        .as_ref()
+                        .is_some_and(|(old, _)| *old != key.0);
                     if key.0.is_empty()
                         && input
                             .motion
@@ -1890,14 +1899,21 @@ impl Element for TextElement {
                     .motion
                     .glide
                     .get_or_insert_with(|| motion::Glide::new(target, now));
-                glide.retarget(target, line_height, now, reduced);
+                if edited {
+                    // Typed text lands this frame, so the caret must too. A
+                    // glide here trails the new character and forces extra
+                    // full-panel frames between keystrokes.
+                    glide.snap(target, now);
+                } else {
+                    glide.retarget(target, line_height, now, reduced);
+                }
                 let (position, gliding) = glide.position(now);
-                let (alpha, breathing) =
+                let (alpha, next) =
                     motion::caret_alpha(now.saturating_duration_since(input.motion.epoch), reduced);
                 (
                     position,
                     alpha,
-                    focused && (gliding || breathing),
+                    next.filter(|_| focused),
                     focused && gliding,
                 )
             });
@@ -1905,9 +1921,13 @@ impl Element for TextElement {
             // The 33ms ticker is too coarse for a 55ms glide. Draw every frame.
             window.request_animation_frame();
         }
-        let motion_live = caret_live || placeholder_live;
+        let motion_next = if placeholder_live {
+            Some(Duration::ZERO)
+        } else {
+            caret_next
+        };
         self.input
-            .update(cx, |input, _| input.motion.live = motion_live);
+            .update(cx, |input, _| input.motion.next = motion_next);
         let (selection, cursor) = if selected_range.is_empty() {
             let mut color = to_hsla(Theme::global().CURSOR);
             color.a *= caret_alpha;
@@ -2003,19 +2023,29 @@ impl Element for TextElement {
             }
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
-            if input.motion.live && input.motion.ticker.is_none() {
+            if input.motion.next.is_some() && input.motion.ticker.is_none() {
                 // One bounded ticker drives placeholder typing and caret
-                // breathing. It exits as soon as motion settles.
+                // breathing. It sleeps through the solid caret phase, since
+                // each wake re-renders the whole chat panel, and exits as soon
+                // as motion settles.
                 input.motion.ticker = Some(_cx.spawn(async move |this, cx| {
                     loop {
-                        crate::animation_clock::next_tick(cx.background_executor(), motion::TICK).await;
+                        let idle = this
+                            .read_with(cx, |input, _| input.motion.next)
+                            .ok()
+                            .flatten()
+                            .unwrap_or(Duration::ZERO);
+                        if idle > motion::TICK {
+                            cx.background_executor().timer(idle - motion::TICK).await;
+                        }
+                        crate::animation_clock::next_tick(cx.background_executor(), motion::TICK)
+                            .await;
                         let keep = this
                             .update(cx, |input, cx| {
-                                if !input.motion.live {
+                                if input.motion.next.take().is_none() {
                                     input.motion.ticker = None;
                                     return false;
                                 }
-                                input.motion.live = false;
                                 cx.notify();
                                 true
                             })

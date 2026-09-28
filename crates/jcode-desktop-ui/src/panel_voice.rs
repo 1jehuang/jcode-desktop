@@ -153,6 +153,9 @@ pub(super) struct VoiceState {
     peak: f32,
     /// The end of this attempt was already logged.
     end_logged: bool,
+    /// Phase origin and pending wake for the idle microphone/shortcut swap.
+    swap_epoch: Option<Instant>,
+    swap_tick: Option<Task<()>>,
 }
 
 /// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
@@ -1013,7 +1016,7 @@ impl Panel {
     /// Voice pill on the right of the composer's pill row: microphone plus its
     /// keybinding, so the shortcut is visible without hovering. While
     /// voice is active it fills with the accent. No glow or halo.
-    pub(super) fn render_voice_tab(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    pub(super) fn render_voice_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
         let active = phase != Phase::Idle;
@@ -1058,29 +1061,32 @@ impl Panel {
             .justify_center()
             .child(voice_shortcut_keycap(keycap_color.into(), &theme));
         let (microphone, shortcut) = if alternate {
+            // A repeating GPUI animation would notify this whole panel at
+            // 30 Hz forever, re-rendering the transcript and composer and
+            // competing with keystrokes, although the faces only move during
+            // two short crossfades per cycle. Sleep through the holds.
+            let now = cx.background_executor().now();
+            let epoch = *self.voice.swap_epoch.get_or_insert(now);
+            let cycle = VOICE_SWAP_CYCLE.as_secs_f32();
+            let t = (now.saturating_duration_since(epoch).as_secs_f32() / cycle).fract();
+            self.schedule_voice_swap(VOICE_SWAP_CYCLE.mul_f32(voice_swap_idle(t)), cx);
+            let (mic_opacity, mic_offset) = voice_swap_frame(t, false);
+            let (key_opacity, key_offset) = voice_swap_frame(t, true);
             (
-                gpui::AnimationExt::with_animation(
-                    microphone,
-                    "voice-microphone-swap",
-                    gpui::Animation::new(VOICE_SWAP_CYCLE).repeat().with_max_fps(30.),
-                    |el, t| {
-                        let (opacity, offset) = voice_swap_frame(t, false);
-                        el.opacity(opacity).top(px(offset)).bottom(px(-offset))
-                    },
-                )
-                .into_any_element(),
-                gpui::AnimationExt::with_animation(
-                    shortcut,
-                    "voice-shortcut-swap",
-                    gpui::Animation::new(VOICE_SWAP_CYCLE).repeat().with_max_fps(30.),
-                    |el, t| {
-                        let (opacity, offset) = voice_swap_frame(t, true);
-                        el.opacity(opacity).top(px(offset)).bottom(px(-offset))
-                    },
-                )
-                .into_any_element(),
+                microphone
+                    .opacity(mic_opacity)
+                    .top(px(mic_offset))
+                    .bottom(px(-mic_offset))
+                    .into_any_element(),
+                shortcut
+                    .opacity(key_opacity)
+                    .top(px(key_offset))
+                    .bottom(px(-key_offset))
+                    .into_any_element(),
             )
         } else {
+            self.voice.swap_epoch = None;
+            self.voice.swap_tick = None;
             (
                 microphone.into_any_element(),
                 shortcut.opacity(0.).into_any_element(),
@@ -1135,12 +1141,51 @@ impl Panel {
 pub(super) const VOICE_BUTTON_SIZE: f32 = 26.;
 /// One full microphone, shortcut, microphone cycle.
 const VOICE_SWAP_CYCLE: Duration = Duration::from_millis(7000);
+/// Frame interval while the voice button crossfades.
+const VOICE_SWAP_FRAME: Duration = Duration::from_nanos(33_333_334);
+/// Portion of each half cycle spent crossfading.
+const VOICE_SWAP_FADE: f32 = 0.07;
+
+impl Panel {
+    /// Repaint the voice button after `idle` (a hold), or on the next shared
+    /// animation tick while its faces are moving.
+    fn schedule_voice_swap(&mut self, idle: Duration, cx: &mut Context<Self>) {
+        if self.voice.swap_tick.is_some() {
+            return;
+        }
+        self.voice.swap_tick = Some(cx.spawn(async move |this, cx| {
+            if idle > VOICE_SWAP_FRAME {
+                cx.background_executor().timer(idle).await;
+            } else {
+                crate::animation_clock::next_tick(cx.background_executor(), VOICE_SWAP_FRAME).await;
+            }
+            let _ = this.update(cx, |panel, cx| {
+                panel.voice.swap_tick = None;
+                cx.notify();
+            });
+        }));
+    }
+}
+
+/// Cycle fraction from `t` until the voice button next moves. Zero while a
+/// crossfade is running.
+fn voice_swap_idle(t: f32) -> f32 {
+    if t < 0.5 - VOICE_SWAP_FADE {
+        0.5 - VOICE_SWAP_FADE - t
+    } else if t < 0.5 {
+        0.
+    } else if t < 1. - VOICE_SWAP_FADE {
+        1. - VOICE_SWAP_FADE - t
+    } else {
+        0.
+    }
+}
 
 /// Opacity and vertical offset for one face of the voice button at cycle
 /// progress `t`. The microphone holds for most of the first half, then the
 /// shortcut rises in while the microphone rises out, and back again.
 fn voice_swap_frame(t: f32, shortcut: bool) -> (f32, f32) {
-    const FADE: f32 = 0.07;
+    const FADE: f32 = VOICE_SWAP_FADE;
     const RISE: f32 = 6.;
     let ease = |x: f32| {
         let x = x.clamp(0., 1.);
@@ -1772,6 +1817,31 @@ mod tests {
                         "idle Ready status is hidden"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn voice_button_sleeps_through_holds_and_ticks_only_while_crossfading() {
+        assert!((voice_swap_idle(0.) - (0.5 - VOICE_SWAP_FADE)).abs() < 1e-6);
+        assert_eq!(voice_swap_idle(0.47), 0.);
+        assert!((voice_swap_idle(0.5) - (0.5 - VOICE_SWAP_FADE)).abs() < 1e-6);
+        assert_eq!(voice_swap_idle(0.97), 0.);
+        // Faces are exactly still wherever the scheduler sleeps.
+        for (t, still) in [
+            (0., 0.2),
+            (0.1, 0.2),
+            (0.42, 0.2),
+            (0.5, 0.7),
+            (0.7, 0.7),
+            (0.92, 0.7),
+        ] {
+            assert!(voice_swap_idle(t) > 0.);
+            for shortcut in [false, true] {
+                assert_eq!(
+                    voice_swap_frame(t, shortcut),
+                    voice_swap_frame(still, shortcut)
+                );
             }
         }
     }

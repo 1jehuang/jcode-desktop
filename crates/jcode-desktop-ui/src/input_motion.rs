@@ -100,20 +100,23 @@ pub(super) fn placeholder_at(
     (last, false)
 }
 
-/// Caret opacity at `since` the caret last moved. Smooth breathing, not an
-/// on/off blink, and fully solid while the user is actively typing.
-pub(super) fn caret_alpha(since: Duration, reduce_motion: bool) -> (f32, bool) {
+/// Caret opacity at `since` the caret last moved, and how long until it next
+/// changes. Smooth breathing, not an on/off blink, and fully solid while the
+/// user is actively typing. The solid phase reports its remaining length
+/// rather than asking for frames, because every composer frame re-renders the
+/// whole chat panel and those redundant frames compete with keystrokes.
+pub(super) fn caret_alpha(since: Duration, reduce_motion: bool) -> (f32, Option<Duration>) {
     if reduce_motion || since >= CARET_ACTIVE {
-        return (1.0, false);
+        return (1.0, None);
     }
     if since < CARET_SOLID {
-        return (1.0, true);
+        return (1.0, Some(CARET_SOLID - since));
     }
     let phase = (since - CARET_SOLID).as_secs_f32() / CARET_PERIOD;
     let wave = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
     // Ease toward the extremes so the caret lingers visible, then dips.
     let eased = wave * wave * (3. - 2. * wave);
-    (0.18 + 0.82 * eased, true)
+    (0.18 + 0.82 * eased, Some(Duration::ZERO))
 }
 
 /// Caret glide from its previous position to the new one.
@@ -151,6 +154,12 @@ impl Glide {
         self.from = if reduce_motion || far { to } else { current };
         self.to = to;
         self.start = now;
+    }
+
+    /// Jump straight to `to`. Typing uses this so the caret never trails the
+    /// character just inserted.
+    pub(super) fn snap(&mut self, to: Point<Pixels>, now: Instant) {
+        *self = Self::new(to, now);
     }
 
     pub(super) fn position(&self, now: Instant) -> (Point<Pixels>, bool) {
@@ -224,7 +233,15 @@ mod tests {
 
     #[test]
     fn caret_breathes_smoothly_then_settles_solid() {
-        assert_eq!(caret_alpha(Duration::from_millis(100), false), (1.0, true));
+        assert_eq!(
+            caret_alpha(Duration::from_millis(100), false),
+            (1.0, Some(CARET_SOLID - Duration::from_millis(100))),
+            "the solid phase sleeps until breathing starts instead of ticking"
+        );
+        assert_eq!(
+            caret_alpha(CARET_SOLID + Duration::from_millis(1), false).1,
+            Some(Duration::ZERO)
+        );
         let dim = caret_alpha(
             CARET_SOLID + Duration::from_secs_f32(CARET_PERIOD / 2.),
             false,
@@ -238,8 +255,8 @@ mod tests {
             assert!((alpha - last).abs() < 0.2, "jump at {ms}ms");
             last = alpha;
         }
-        assert_eq!(caret_alpha(CARET_ACTIVE, false), (1.0, false));
-        assert_eq!(caret_alpha(Duration::from_secs(2), true), (1.0, false));
+        assert_eq!(caret_alpha(CARET_ACTIVE, false), (1.0, None));
+        assert_eq!(caret_alpha(Duration::from_secs(2), true), (1.0, None));
     }
 
     #[test]
@@ -252,5 +269,11 @@ mod tests {
         assert_eq!(glide.position(now + GLIDE).0, point(px(20.), px(0.)));
         glide.retarget(point(px(4.), px(36.)), px(18.), now + GLIDE, false);
         assert_eq!(glide.position(now + GLIDE).0, point(px(4.), px(36.)));
+        glide.retarget(point(px(40.), px(36.)), px(18.), now + GLIDE, false);
+        glide.snap(point(px(48.), px(36.)), now + GLIDE);
+        assert_eq!(
+            glide.position(now + GLIDE),
+            (point(px(48.), px(36.)), false)
+        );
     }
 }
