@@ -2,7 +2,8 @@
 
 ## Git Workflow
 
-- Always commit and push completed changes. Do this every time unless the user explicitly asks you not to.
+- Work directly on `main`. Do not create feature branches or worktrees unless the user asks or isolation is genuinely required, and merge any such branch back into `main` promptly. The automatic release workflow only publishes from `main`, so work left on other branches never ships.
+- Always commit and push completed changes to `main`. Do this every time unless the user explicitly asks you not to.
 - Commit only the changes you made. Do not include unrelated or pre-existing modifications.
 - Use the user's configured Git identity. Never override it with `Jcode`, an invented agent email, `git -c user.*`, or `GIT_AUTHOR_*` / `GIT_COMMITTER_*` values. If identity is missing, resolve the user's established identity rather than inventing one.
 - Before committing, verify `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT`. On this checkout the established identity is Jeremy Huang <94247773+1jehuang@users.noreply.github.com>.
