@@ -22,6 +22,27 @@ pub fn companion_executable(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The desktop executable to relaunch for new windows. A long-running host
+/// whose binary was rebuilt in place reports `/path (deleted)` on Linux, which
+/// cannot be spawned. The rebuilt file at the original path is the right
+/// target, so strip that marker whenever the unmarked path still exists.
+pub fn self_executable() -> std::io::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    Ok(relaunchable(current))
+}
+
+fn relaunchable(current: PathBuf) -> PathBuf {
+    if current.exists() {
+        return current;
+    }
+    current
+        .to_str()
+        .and_then(|path| path.strip_suffix(" (deleted)"))
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .unwrap_or(current)
+}
+
 fn companion_next_to(current: &Path, name: &str) -> Option<PathBuf> {
     let sibling = current.parent()?.join(name);
     is_executable(&sibling).then_some(sibling)
@@ -44,6 +65,20 @@ fn is_executable(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn relaunches_the_rebuilt_binary_after_an_in_place_rebuild() {
+        let root = std::env::temp_dir().join(format!("jcode-relaunch-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("jcode-desktop");
+        fs::write(&binary, []).unwrap();
+        let deleted = PathBuf::from(format!("{} (deleted)", binary.display()));
+        assert_eq!(relaunchable(deleted), binary);
+        assert_eq!(relaunchable(binary.clone()), binary);
+        let missing = root.join("gone (deleted)");
+        assert_eq!(relaunchable(missing.clone()), missing);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn missing_companion_falls_back_to_the_program_name() {

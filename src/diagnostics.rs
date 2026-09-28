@@ -175,7 +175,9 @@ struct MemorySample {
 impl MemorySample {
     #[cfg(target_os = "linux")]
     fn read() -> Option<Self> {
-        Some(Self::parse_status(&fs::read_to_string("/proc/self/status").ok()?))
+        Some(Self::parse_status(
+            &fs::read_to_string("/proc/self/status").ok()?,
+        ))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -314,9 +316,17 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("grew 800MiB")));
         // No repeated threshold warning until the next doubling.
         assert!(monitor.observe(sample(1200)).is_empty());
-        assert!(monitor.observe(sample(2100)).iter().any(|l| l.contains("above 2048MiB")));
+        assert!(
+            monitor
+                .observe(sample(2100))
+                .iter()
+                .any(|l| l.contains("above 2048MiB"))
+        );
         monitor.ticks = MEMORY_LOG_EVERY;
-        assert_eq!(monitor.observe(sample(2150)), vec![format!("memory: {}", sample(2150))]);
+        assert_eq!(
+            monitor.observe(sample(2150)),
+            vec![format!("memory: {}", sample(2150))]
+        );
     }
 
     #[test]

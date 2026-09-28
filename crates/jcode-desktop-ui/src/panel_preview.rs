@@ -46,6 +46,7 @@ impl Panel {
                 provider: Some("openai".into()),
                 model: Some("preview-model".into()),
                 reasoning_effort: None,
+                auth_method: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
                     usage: None,
                     model: "preview-model".into(),
@@ -102,7 +103,8 @@ impl Panel {
             | PreviewState::VoiceListening
             | PreviewState::VoiceRouting
             | PreviewState::VoiceCodingAgent
-            | PreviewState::VoiceQuickAction => {
+            | PreviewState::VoiceQuickAction
+            | PreviewState::VoiceTimeout => {
                 self.seed_voice_preview(state);
             }
             PreviewState::Streaming => {

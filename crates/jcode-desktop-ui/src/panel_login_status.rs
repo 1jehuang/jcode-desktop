@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConnectionStatus {
     Checking,
+    Testing,
     Connected,
     Unverified,
     Expired,
@@ -20,8 +21,9 @@ impl ConnectionStatus {
     pub fn label(self) -> &'static str {
         match self {
             Self::Checking => "Checking…",
+            Self::Testing => "Testing…",
             Self::Connected => "Connected",
-            Self::Unverified => "Not verified",
+            Self::Unverified => "Untested",
             Self::Expired => "Expired",
             Self::Failed => "Needs attention",
             Self::NotConnected => "Not connected",
@@ -32,12 +34,13 @@ impl ConnectionStatus {
     pub fn detail(self) -> &'static str {
         match self {
             Self::Checking => "Reading account status on this computer.",
-            Self::Connected => "Credentials available and the latest runtime check passed.",
+            Self::Testing => "Sending a small live request through this account.",
+            Self::Connected => "A live request through this account succeeded in the last 7 days.",
             Self::Unverified => {
-                "Credentials saved, but no recent working check. Sign in again if needed."
+                "Credentials are saved, but no live request has been sent in the last 7 days. Press Test to send one."
             }
             Self::Expired => "Your sign-in has expired. Connect again to continue.",
-            Self::Failed => "The latest account check failed. Reconnect to try again.",
+            Self::Failed => "The latest live request failed. Test again or reconnect.",
             Self::NotConnected => "Connect this account to make its models available.",
             Self::Unknown => "Could not read account health. Reopen Accounts to try again.",
         }
@@ -47,6 +50,7 @@ impl ConnectionStatus {
         let theme = crate::theme::Theme::global();
         match self {
             Self::Connected => theme.OK,
+            Self::Testing => theme.ACCENT,
             Self::Unverified | Self::Unknown => theme.WARN,
             Self::Expired | Self::Failed => theme.ERROR,
             Self::NotConnected | Self::Checking => theme.TEXT_DIM,
@@ -156,6 +160,79 @@ pub(super) fn fetch_connection_statuses() -> Option<ConnectionStatuses> {
     parse_connection_statuses(&json)
 }
 
+/// Outcome of a live smoke test for one provider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LiveTestResult {
+    pub status: ConnectionStatus,
+    /// Why the test failed, from the doctor's validation result.
+    pub error: Option<String>,
+}
+
+fn parse_live_results(json: &str) -> Option<HashMap<String, LiveTestResult>> {
+    let statuses = parse_connection_statuses(json)?;
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let errors: HashMap<&str, String> = value["providers"]
+        .as_array()?
+        .iter()
+        .filter_map(|provider| {
+            let result = provider["validation_result"].as_str()?;
+            let id = provider["id"].as_str()?;
+            (result != "validation passed").then(|| (id, result.trim().to_owned()))
+        })
+        .collect();
+    Some(
+        statuses
+            .into_iter()
+            .map(|(id, status)| {
+                let error = errors.get(id.as_str()).cloned();
+                (id, LiveTestResult { status, error })
+            })
+            .collect(),
+    )
+}
+
+/// Send a real request through each configured provider (or just `provider`)
+/// and record the result. This spends a small amount of quota or credit, so
+/// it only runs when the user presses Test.
+pub(super) fn run_live_test(provider: Option<&str>) -> Option<HashMap<String, LiveTestResult>> {
+    if crate::harness::screenshot_mode() {
+        return None;
+    }
+    let mut args = vec!["auth", "doctor"];
+    args.extend(provider);
+    args.extend(["--validate", "--json"]);
+    let mut output = tempfile::tempfile().ok()?;
+    let mut child = Command::new(crate::platform::companion_executable("jcode"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(output.try_clone().ok()?)
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // The doctor bounds each provider at 120s. Leave room for several.
+    let deadline = Instant::now() + Duration::from_secs(if provider.is_some() { 150 } else { 600 });
+    loop {
+        match child.try_wait() {
+            // The doctor exits non-zero when any provider has an issue, and
+            // still prints the full report.
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    output.seek(SeekFrom::Start(0)).ok()?;
+    let mut json = String::new();
+    output
+        .take(4 * 1024 * 1024)
+        .read_to_string(&mut json)
+        .ok()?;
+    parse_live_results(&json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +273,17 @@ mod tests {
             status_for(Some(&statuses), "working", true),
             ConnectionStatus::Checking
         );
+    }
+
+    #[test]
+    fn live_results_carry_the_failure_reason() {
+        let results = parse_live_results(r#"{"providers":[
+            {"id":"ok","status":"available","validation_result":"validation passed","validation_detail":{"success":true,"stale":false}},
+            {"id":"bad","status":"available","validation_result":"401 Unauthorized","validation_detail":{"success":false,"stale":false}}
+        ]}"#).unwrap();
+        assert_eq!(results["ok"].status, ConnectionStatus::Connected);
+        assert_eq!(results["ok"].error, None);
+        assert_eq!(results["bad"].status, ConnectionStatus::Failed);
+        assert_eq!(results["bad"].error.as_deref(), Some("401 Unauthorized"));
     }
 }

@@ -8,6 +8,8 @@ use gpui::{
 const EDGE: f32 = 8.;
 // One-pixel borders and p_1 (four pixels) on both vertical sides.
 const CHROME: f32 = 10.;
+/// Room for a group header and about three model rows.
+const MIN_ABOVE: f32 = 200.;
 
 pub(super) fn scroll_height(viewport: Pixels, model: bool) -> Pixels {
     let height = f32::from(viewport);
@@ -37,9 +39,13 @@ fn origin(
 fn available_side(composer: Bounds<Pixels>, viewport: Size<Pixels>, gap: Pixels) -> (bool, Pixels) {
     let above = (composer.top() - gap - px(EDGE)).max(px(0.));
     let below = (viewport.height - composer.bottom() - gap - px(EDGE)).max(px(0.));
-    // Prefer above whenever there is enough room for the full model popup.
-    // Otherwise choose the larger side, keeping the search editor accessible.
-    if above >= scroll_height(viewport.height, true) + px(CHROME) || above >= below {
+    // Always open upward when a usable list fits there, even if more room is
+    // below: a menu that jumps between sides reads as unpredictable. The list
+    // scrolls, so it only needs space for a few rows. Fall back to the larger
+    // side only when the composer sits against the top edge.
+    if above >= px(MIN_ABOVE).min(scroll_height(viewport.height, true) + px(CHROME))
+        || above >= below
+    {
         (true, above)
     } else {
         (false, below)
@@ -224,6 +230,17 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn suggestions_open_upward_unless_the_composer_hugs_the_top() {
+        let viewport = size(px(1000.), px(880.));
+        let composer = |top: f32| Bounds::new(point(px(0.), px(top)), size(px(800.), px(200.)));
+        // More room below than above, but plenty for a scrolling list.
+        assert!(available_side(composer(380.), viewport, px(4.)).0);
+        assert!(available_side(composer(220.), viewport, px(4.)).0);
+        // Pinned near the top: there is no usable space above.
+        assert!(!available_side(composer(60.), viewport, px(4.)).0);
+    }
+
     #[test]
     fn suggestions_remain_above_composer_when_space_allows() {
         let popup = size(px(400.), px(200.));

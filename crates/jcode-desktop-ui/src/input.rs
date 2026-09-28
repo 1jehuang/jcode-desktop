@@ -32,6 +32,8 @@ use layout::PromptLayout;
 mod model_menu;
 #[path = "input_model_picker.rs"]
 mod model_picker;
+#[path = "input_model_search.rs"]
+mod model_search;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
 
@@ -138,6 +140,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", Submit, Some("PromptInput")),
         KeyBinding::new("ctrl-enter", Queue, Some("PromptInput")),
     ]);
+    // Registered after the composer keys so the effort chords outrank word
+    // motion in a chat composer. See `effort::bind_keys` for the fallthrough.
+    crate::effort::bind_keys(cx);
 }
 
 pub struct PromptInput {
@@ -162,6 +167,9 @@ pub struct PromptInput {
     attachments: Vec<Attachment>,
     model_menu_draft: Option<(SharedString, Vec<Attachment>)>,
     attachment_notice: Option<SharedString>,
+    /// Short-lived feedback such as `Effort: High`, cleared by a timer.
+    transient_notice: Option<SharedString>,
+    transient_notice_generation: u64,
     /// The newest paste briefly appears at reading size, then flies into its
     /// thumbnail. The index keeps simultaneous attachments independent.
     attachment_preview: Option<paste_preview::Preview>,
@@ -172,10 +180,17 @@ pub struct PromptInput {
     command_models: Vec<String>,
     command_completion: bool,
     command_selection: usize,
-    model_logo_providers: HashMap<String, String>,
     model_details: HashMap<String, model_menu::ModelDetails>,
+    /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
+    /// rebroadcast on every usage tick with an unchanged catalog, and
+    /// rebuilding plus re-ranking hundreds of routes each time showed up as a
+    /// steady share of main-thread time in live profiles.
+    applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>)>,
     expanded_model_groups: HashSet<String>,
     current_model: Option<String>,
+    /// Levels the serving model accepts, for the `/effort` menu.
+    effort_ladder: Vec<&'static str>,
+    current_effort: Option<String>,
     command_scroll: gpui::ListState,
     suggestions_revision: u64,
     suggestions_cache: RefCell<Option<model_picker::SuggestionsCache>>,
@@ -186,6 +201,9 @@ pub struct PromptInput {
     submission_enabled: bool,
     pending_session: bool,
     spacious: bool,
+    /// Right padding reserved for a control the host floats inside the box
+    /// (the chat composer's voice button).
+    trailing_inset: f32,
     /// False when a host container draws the box (onboarding email tab).
     chrome: bool,
     /// Cycle example prompts behind an empty chat composer.
@@ -236,6 +254,21 @@ struct CommandSuggestion {
 }
 
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
+    command_suggestions_with_efforts(input, models, EffortMenu::default())
+}
+
+/// What the `/effort` menu offers: the serving model's ladder and its level.
+#[derive(Clone, Copy, Default)]
+struct EffortMenu<'a> {
+    ladder: Option<&'a [&'static str]>,
+    current: Option<&'a str>,
+}
+
+fn command_suggestions_with_efforts(
+    input: &str,
+    models: &[String],
+    efforts: EffortMenu<'_>,
+) -> Vec<CommandSuggestion> {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') || trimmed.contains('\n') {
         return Vec::new();
@@ -264,12 +297,19 @@ fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion>
             .split_once(' ')
             .map(|(_, query)| query.trim().to_ascii_lowercase())
             .unwrap_or_default();
-        return ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-            .into_iter()
+        let fallback = crate::effort::ladder(None, None);
+        let ladder = efforts.ladder.unwrap_or(&fallback);
+        return ladder
+            .iter()
+            .copied()
             .filter(|effort| query.is_empty() || effort.contains(&query))
             .map(|effort| CommandSuggestion {
                 value: format!("/effort {effort}"),
-                help: "Set reasoning effort".into(),
+                help: if efforts.current == Some(effort) {
+                    "Current".into()
+                } else {
+                    "Set reasoning effort".into()
+                },
                 detail: None,
                 header: None,
                 toggle: None,
@@ -474,6 +514,8 @@ impl PromptInput {
             attachments: Vec::new(),
             model_menu_draft: None,
             attachment_notice: None,
+            transient_notice: None,
+            transient_notice_generation: 0,
             attachment_preview: None,
             preview_panel_bounds: Default::default(),
             on_submit: Box::new(on_submit),
@@ -482,10 +524,12 @@ impl PromptInput {
             command_models: Vec::new(),
             command_completion: true,
             command_selection: 0,
-            model_logo_providers: HashMap::new(),
             model_details: HashMap::new(),
+            applied_model_routes: None,
             expanded_model_groups: HashSet::new(),
             current_model: None,
+            effort_ladder: crate::effort::ladder(None, None),
+            current_effort: None,
             command_scroll: gpui::ListState::new(0, gpui::ListAlignment::Top, px(48.)),
             suggestions_revision: 0,
             suggestions_cache: RefCell::new(None),
@@ -496,6 +540,7 @@ impl PromptInput {
             submission_enabled: true,
             pending_session: false,
             spacious: false,
+            trailing_inset: 0.,
             chrome: true,
             example_prompts: false,
             motion: MotionState::default(),
@@ -531,6 +576,14 @@ impl PromptInput {
     pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
         if self.spacious != spacious {
             self.spacious = spacious;
+            cx.notify();
+        }
+    }
+
+    /// Reserve room at the right edge for a host-drawn control.
+    pub(crate) fn set_trailing_inset(&mut self, inset: f32, cx: &mut Context<Self>) {
+        if self.trailing_inset != inset {
+            self.trailing_inset = inset;
             cx.notify();
         }
     }
@@ -575,6 +628,7 @@ impl PromptInput {
     pub fn set_command_models(&mut self, models: Vec<String>, cx: &mut Context<Self>) {
         if self.command_models != models {
             self.command_models = models;
+            self.applied_model_routes = None;
             self.suggestions_revision += 1;
             self.command_selection = 0;
             cx.notify();
@@ -588,6 +642,17 @@ impl PromptInput {
         current_model: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .applied_model_routes
+            .as_ref()
+            .is_some_and(|(applied_models, applied_routes)| {
+                *applied_models == models && applied_routes.as_slice() == routes
+            })
+        {
+            self.set_current_model(current_model, cx);
+            return;
+        }
+        let applied = (models.clone(), routes.to_vec());
         let selected = self
             .command_suggestions()
             .get(self.command_selection)
@@ -600,6 +665,7 @@ impl PromptInput {
         }
         model_menu::rank(&mut models, &self.model_details);
         self.set_command_models(models, cx);
+        self.applied_model_routes = Some(applied);
         if let Some(model) = selected
             .as_ref()
             .and_then(|row| row.value.strip_prefix("/model "))
@@ -642,17 +708,6 @@ impl PromptInput {
         }
     }
 
-    pub fn set_model_logo_providers(
-        &mut self,
-        providers: HashMap<String, String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.model_logo_providers != providers {
-            self.model_logo_providers = providers;
-            cx.notify();
-        }
-    }
-
     #[cfg(test)]
     pub fn model_picker_rows(&self) -> Vec<(String, bool)> {
         self.command_suggestions()
@@ -674,6 +729,31 @@ impl PromptInput {
     #[cfg(test)]
     pub(crate) fn command_models(&self) -> &[String] {
         &self.command_models
+    }
+
+    /// An available catalog spec for a signed-in provider, preferring the current model.
+    pub(crate) fn provider_route_spec(&self, provider: &str, current: Option<&str>) -> Option<String> {
+        let wanted = provider_route_methods(provider);
+        let mut matches: Vec<_> = self
+            .model_details
+            .iter()
+            .filter(|(_, detail)| {
+                let method = detail.api_method.to_ascii_lowercase();
+                let owner = detail.provider.to_ascii_lowercase();
+                wanted.iter().any(|wanted| {
+                    method == *wanted || method.starts_with(&format!("{wanted}-")) || owner == *wanted
+                })
+            })
+            .collect();
+        matches.sort_by(|(a, left), (b, right)| {
+            let current_left = current.is_some_and(|model| left.model == model);
+            let current_right = current.is_some_and(|model| right.model == model);
+            current_right
+                .cmp(&current_left)
+                .then_with(|| right.recommended.cmp(&left.recommended))
+                .then_with(|| a.cmp(b))
+        });
+        matches.first().map(|(spec, _)| (*spec).clone())
     }
 
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
@@ -707,7 +787,14 @@ impl PromptInput {
                 })
                 .collect()
             } else {
-                command_suggestions(&self.content, &self.command_models)
+                command_suggestions_with_efforts(
+                    &self.content,
+                    &self.command_models,
+                    EffortMenu {
+                        ladder: Some(&self.effort_ladder),
+                        current: self.current_effort.as_deref(),
+                    },
+                )
             };
         suggestions
             .into_iter()
@@ -1151,6 +1238,56 @@ impl PromptInput {
             self.attachment_preview = None;
         }
         self.set_content("/effort ".into(), cx);
+        // Open on the current level so Enter keeps it and arrows step from it.
+        if let Some(index) = self
+            .command_suggestions()
+            .iter()
+            .position(|row| row.help == "Current")
+        {
+            self.command_selection = index;
+            self.reveal_command(index);
+        }
+    }
+
+    /// Short feedback under the composer that clears itself, e.g. after an
+    /// effort key. A newer notice restarts the timer.
+    pub fn set_transient_notice(&mut self, notice: String, cx: &mut Context<Self>) {
+        self.transient_notice_generation += 1;
+        let generation = self.transient_notice_generation;
+        self.transient_notice = Some(notice.into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(2_500))
+                .await;
+            let _ = this.update(cx, |input, cx| {
+                if input.transient_notice_generation == generation {
+                    input.transient_notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transient_notice(&self) -> Option<&str> {
+        self.transient_notice.as_deref()
+    }
+
+    /// The serving model's effort ladder and level, for the `/effort` menu.
+    pub fn set_effort_state(
+        &mut self,
+        ladder: Vec<&'static str>,
+        current: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.effort_ladder != ladder || self.current_effort != current {
+            self.effort_ladder = ladder;
+            self.current_effort = current;
+            self.suggestions_revision += 1;
+            cx.notify();
+        }
     }
 
     pub(crate) fn effort_menu_open(&self) -> bool {
@@ -1547,6 +1684,8 @@ struct PrepaintState {
 
 /// Space kept between the caret and the example placeholder.
 const PLACEHOLDER_INDENT: Pixels = px(6.);
+/// Fresh-session composer height: two 16px lines plus its 16px padding.
+pub(crate) const SPACIOUS_MIN_HEIGHT: f32 = 84.;
 
 fn selection_quads(
     line: &PromptLayout,
@@ -1869,7 +2008,7 @@ impl Element for TextElement {
                 // breathing. It exits as soon as motion settles.
                 input.motion.ticker = Some(_cx.spawn(async move |this, cx| {
                     loop {
-                        cx.background_executor().timer(motion::TICK).await;
+                        crate::animation_clock::next_tick(cx.background_executor(), motion::TICK).await;
                         let keep = this
                             .update(cx, |input, cx| {
                                 if !input.motion.live {
@@ -2166,14 +2305,20 @@ impl Render for PromptInput {
                         .children(attachments),
                 )
             })
-            .children(self.attachment_notice.clone().map(|notice| {
-                div()
-                    .px_3()
-                    .pt_1()
-                    .text_size(px(10.0))
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(notice)
-            }))
+            .children(
+                self.attachment_notice
+                    .clone()
+                    .or_else(|| self.transient_notice.clone())
+                    .map(|notice| {
+                        div()
+                            .debug_selector(|| "composer-notice".into())
+                            .px_3()
+                            .pt_1()
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(notice)
+                    }),
+            )
             .child(
                 div()
                     .w_full()
@@ -2183,8 +2328,10 @@ impl Render for PromptInput {
                     .py_2()
                     .text_size(px(14.0))
                     .when(spacious, |el| {
-                        el.min_h(px(112.0)).px_4().py_4().text_size(px(16.0))
+                        // Two lines of 16px text plus padding.
+                        el.min_h(px(SPACIOUS_MIN_HEIGHT)).px_4().py_4().text_size(px(16.0))
                     })
+                    .when(self.trailing_inset > 0., |el| el.pr(px(self.trailing_inset)))
                     .child(
                         div()
                             .id("prompt-editor")
@@ -3078,3 +3225,13 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+fn provider_route_methods(provider: &str) -> Vec<String> {
+    match provider {
+        "openai" => vec!["openai-oauth".into()],
+        "openai-api" => vec!["openai-api-key".into(), "openai-api".into()],
+        "claude" => vec!["claude-oauth".into()],
+        "anthropic-api" => vec!["anthropic-api-key".into(), "anthropic-api".into(), "claude-api".into()],
+        other => vec![other.into()],
+    }
+}

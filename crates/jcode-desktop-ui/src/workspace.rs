@@ -7,6 +7,11 @@
 #[path = "workspace_account_sign_in.rs"]
 mod account_sign_in;
 
+#[path = "workspace_applets.rs"]
+pub(crate) mod applets;
+
+#[path = "workspace_applet_surfaces.rs"]
+mod applet_surfaces;
 #[path = "workspace_side_panel.rs"]
 mod side_panel;
 
@@ -173,6 +178,7 @@ actions!(
         OpenGmail,
         OpenTodoist,
         OpenOrchestration,
+        OpenAppletShowcase,
         NewUnfinishedWork,
         OpenFolder,
         ClosePanel,
@@ -203,6 +209,8 @@ actions!(
 /// Spatial transitions settle in 150 ms. Cubic easing keeps motion visible
 /// across the available frames instead of concentrating it at the start.
 const CAMERA_DURATION: Duration = transition::STANDARD_DURATION;
+/// The bundled applet behind Super+Shift+G and the sidebar inbox entry.
+const GMAIL_APPLET: &str = "gmail";
 /// A tiny amount of presentation smoothing removes the one-frame stepping
 /// caused by touchpad events arriving between compositor frames without making
 /// the canvas feel detached from the fingers.
@@ -211,15 +219,15 @@ const TOUCH_PAN_DURATION: Duration = Duration::from_millis(42);
 const GAP: f32 = 0.0;
 /// niri `layout { struts { ... 0.58 } }`, the outer gap around the strip.
 const STRUT: f32 = 0.58;
-/// Leave the canvas visible around the joined folder surfaces.
-const STRIP_PADDING_Y: f32 = 16.0;
+/// Folder surfaces sit flush against the window's bottom edge.
+const STRIP_PADDING_Y: f32 = 0.0;
 /// A tighter header keeps floating tabs close to the top without crowding the footer.
 const STRIP_PADDING_TOP: f32 = 6.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 32.0;
-/// Keep the sidebar separate from the session sheet with a canvas gutter.
-const FOLDER_CONNECTOR_WIDTH: f32 = 12.0;
-const FOLDER_RIGHT_MARGIN: f32 = 12.0;
+/// The session sheet sits flush against the sidebar and the window's right edge.
+const FOLDER_CONNECTOR_WIDTH: f32 = 0.0;
+const FOLDER_RIGHT_MARGIN: f32 = 0.0;
 
 #[path = "folder_surface.rs"]
 mod folder_surface;
@@ -310,9 +318,8 @@ Composer shortcuts ported from the TUI:
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
 const SIDEBAR_WIDTH: f32 = 224.0;
-// Center the 4px thumb in the gap between the session tabs and main sheet.
-// The normal layout has no connector gap, so its gutter stays inside the sidebar.
-const SIDEBAR_SCROLLBAR_OUTSET: f32 = 8.0;
+// With no connector gap the gutter stays inside the sidebar in every layout.
+const SIDEBAR_SCROLLBAR_OUTSET: f32 = 0.0;
 const ACCOUNT_ROW_HEIGHT: f32 = 60.0;
 /// Height of the macOS titlebar the window draws through. The window uses a
 /// transparent system titlebar, so the app's own chrome has to leave this much
@@ -708,6 +715,14 @@ pub struct Workspace {
     preview_control: Option<crate::preview_control::Server>,
     preview_task: Option<gpui::Task<()>>,
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
+    /// Latest applet toast and when it arrived.
+    applet_toast: Option<(String, Instant)>,
+    /// Applet ids whose consent prompt the user dismissed for this run.
+    applet_consent_dismissed: HashSet<String>,
+    /// Text selection scope for sidebar and overlay applet cards.
+    applet_text_selection: Option<Entity<crate::text_selection::TextSelection>>,
+    /// Sidebar applet section, rendered with window access before the sidebar.
+    sidebar_applets: Option<gpui::AnyElement>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -867,8 +882,7 @@ impl Workspace {
         let update_bridge = bridge.clone();
         let bridge_task = cx.spawn(async move |this, cx| {
             while let Some(first) = update_bridge.recv().await {
-                let mut updates = vec![first];
-                updates.extend(update_bridge.drain_up_to(127));
+                let updates = update_bridge.extend_batch(vec![first], 127);
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     let mut changed = false;
                     for update in updates {
@@ -897,6 +911,9 @@ impl Workspace {
         // Streaming markers are local files, so only poll them for a real
         // local daemon, never in tests or offline screenshot fixtures.
         let poll_daemon_running = !cfg!(test) && !harness::screenshot_mode();
+        // Also applied by the host at startup. Repeating it here lets a
+        // hot-reloaded UI fix an older, still-running host process.
+        crate::memory::disable_transparent_huge_pages();
         let housekeeping_task = cx.spawn(async move |this, cx| {
             let mut last_session_refresh = Instant::now();
             // The first catalog read queues cached legacy edit statistics.
@@ -1011,6 +1028,10 @@ impl Workspace {
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
+            applet_toast: None,
+            applet_consent_dismissed: HashSet::new(),
+            applet_text_selection: None,
+            sidebar_applets: None,
             bridge,
             host,
             single_panel,
@@ -1210,6 +1231,9 @@ impl Workspace {
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("publish") {
                 workspace.open_publish_fixture(cx);
             }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("applet") {
+                workspace.open_applet_fixture(cx);
+            }
             let panel_count = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANELS")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
@@ -1234,6 +1258,15 @@ impl Workspace {
                 workspace.active = panel_count / 2;
             }
             workspace.focus_pending = true;
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
+                && let Some(slot) = workspace.slots.first()
+            {
+                let source = slot.panel.clone();
+                let session = source.read(cx).session_id.clone();
+                let bridge = workspace.bridge.clone();
+                let panel = cx.new(|cx| Panel::new_accounts(&session, None, bridge, cx));
+                workspace.slots[0].panel = panel;
+            }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_HISTORY").as_deref() == Ok("1") {
                 for index in 0..80 {
                     let mut session = workspace.sessions[0].clone();
@@ -1341,6 +1374,10 @@ impl Workspace {
             preview_control: None,
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
+            applet_toast: None,
+            applet_consent_dismissed: HashSet::new(),
+            applet_text_selection: None,
+            sidebar_applets: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -1446,6 +1483,14 @@ impl Workspace {
         window: &Window,
         cx: &App,
     ) -> anyhow::Result<WorkspaceSnapshot> {
+        // The old generation's panels are dropped next, ending any recording.
+        if self
+            .slots
+            .iter()
+            .any(|slot| slot.panel.read(cx).voice_active())
+        {
+            eprintln!("voice: hot reload is replacing the UI while a recording is active");
+        }
         self.snapshot_inner(window, cx, true)
     }
 
@@ -1567,6 +1612,8 @@ impl Workspace {
             if panel_state.session_id.starts_with("preview://")
                 || panel_state.session_id.starts_with("accounts://")
                 || panel_state.session_id == Panel::CHANGELOG_SESSION_ID
+                // The retired native inbox. Gmail is now an applet panel.
+                || panel_state.session_id == "gmail://inbox"
             {
                 continue;
             }
@@ -1646,8 +1693,11 @@ impl Workspace {
             } else if let Some(path) = panel_state.session_id.strip_prefix("file://") {
                 let path = PathBuf::from(path);
                 cx.new(|cx| Panel::new_code_file(path, self.bridge.clone(), cx))
-            } else if panel_state.session_id == "gmail://inbox" {
-                cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx))
+            } else if let Some(instance) = panel_state
+                .session_id
+                .strip_prefix(crate::panel::applet_panel::APPLET_PREFIX)
+            {
+                cx.new(|cx| Panel::new_applet(instance.to_owned(), self.bridge.clone(), cx))
             } else if panel_state.session_id == "todoist://tasks" {
                 cx.new(|cx| Panel::new_todoist(self.bridge.clone(), cx))
             } else if panel_state.session_id == crate::panel::orchestration::SESSION_ID {
@@ -1681,7 +1731,10 @@ impl Workspace {
             } else if !panel.read(cx).is_default_directory() {
                 Panel::connect_input(&panel, cx);
             }
-            panel.update(cx, |panel, cx| panel.restore_snapshot(panel_state, cx));
+            panel.update(cx, |panel, cx| {
+                panel.restore_snapshot(panel_state, cx);
+                panel.prefetch_persisted_history(cx);
+            });
             if panel
                 .read(cx)
                 .session_id
@@ -2107,6 +2160,12 @@ impl Workspace {
                 if let jcode_sdk::ApiEvent::SidePanelState { snapshot, .. } = &event {
                     return self.apply_side_panel(&session_id, snapshot, cx);
                 }
+                if let jcode_sdk::ApiEvent::AppletState { snapshot, .. } = &event {
+                    // Keyed by the panel's session id, which for remote
+                    // hosts is namespaced, so instances land in that panel.
+                    return crate::applet_runtime::get(cx).sync_agent(&session_id, snapshot);
+                }
+                self.forward_tool_call(&session_id, &event, cx);
                 if sidebar_edits::refresh_after(&event) {
                     self.bridge.send(Command::RefreshSessions);
                 }
@@ -2172,6 +2231,53 @@ impl Workspace {
                 }
             }
             Update::MessageSubmitted { .. } => {}
+            Update::SessionSaved {
+                session_id,
+                saved,
+                label,
+            } => {
+                let label = label
+                    .map(|label| label.trim().to_string())
+                    .filter(|label| !label.is_empty());
+                if let Some(session) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.session_id == session_id)
+                {
+                    session.saved = saved;
+                    if !saved {
+                        session.save_label = None;
+                    } else if let Some(label) = &label {
+                        session.save_label = Some(label.clone());
+                        session.title = Some(label.clone());
+                    }
+                }
+                if saved && let Some(label) = &label {
+                    for slot in &self.slots {
+                        if slot.panel.read(cx).session_id == session_id {
+                            slot.panel.update(cx, |panel, cx| {
+                                panel.title = label.clone().into();
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+                self.bridge.send(Command::RefreshSessions);
+            }
+            Update::EffortSettled {
+                session_id,
+                effort,
+                error,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.effort_settled(&effort, error.as_deref(), cx);
+                        });
+                        break;
+                    }
+                }
+            }
             Update::CommandFailed { session_id, reason } => {
                 if session_id == Panel::STARTUP_SESSION_ID {
                     self.remotes.startup_failed = true;
@@ -2244,6 +2350,7 @@ impl Workspace {
         });
         Panel::connect_input(&panel, cx);
         if !Panel::is_pending_session_id(&session_id) {
+            panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
             self.bridge.send(Command::Watch { session_id });
         }
         let slot = Slot {
@@ -3096,6 +3203,14 @@ impl Workspace {
         cx.subscribe_in(
             &panel,
             window,
+            move |this, _, event: &crate::panel::AccountsPanelRedeemReset, _, cx| {
+                this.open_usage_reset(&event.0, cx);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &panel,
+            window,
             move |this, panel, _: &crate::panel::AccountsPanelClosed, window, cx| {
                 this.close_accounts(panel, &source_for_close, false, window, cx);
             },
@@ -3156,56 +3271,34 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Super+Shift+G and the sidebar inbox entry open the bundled Gmail
+    /// applet. An open Gmail panel is focused instead of duplicated.
     fn open_gmail(&mut self, _: &OpenGmail, window: &mut Window, cx: &mut Context<Self>) {
+        let prefix = format!(
+            "{}{GMAIL_APPLET}#",
+            crate::panel::applet_panel::APPLET_PREFIX
+        );
         if let Some(index) = self
             .slots
             .iter()
-            .position(|slot| slot.panel.read(cx).session_id == "gmail://inbox")
+            .position(|slot| !slot.closing && slot.panel.read(cx).session_id.starts_with(&prefix))
         {
             self.set_active(index, cx);
             self.focus_active(window, cx);
             return;
         }
-        let width_fraction = spawned_panel_width(self.slots.len());
-        let panel = cx.new(|cx| Panel::new_gmail(self.bridge.clone(), cx));
-        if self.single_panel {
-            if let Err(error) = panel_window::open_panel_window(panel, None, window, cx) {
-                eprintln!("Could not open panel window: {error:#}");
+        let launched = crate::applet_runtime::get(cx)
+            .launch_trigger(GMAIL_APPLET, jcode_applet_types::manifest::Trigger::Sidebar);
+        match launched {
+            Ok(Some(instance)) => self.open_applet_instance(&instance, window, cx),
+            // The provider mounts shortly and the applet loop opens its panel.
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("jcode desktop: {error}");
+                self.applet_toast =
+                    Some((format!("Could not open Gmail: {error}"), Instant::now()));
             }
-            return;
         }
-        let insert_at = if self.slots.is_empty() {
-            0
-        } else {
-            self.active + 1
-        };
-        self.slots.insert(
-            insert_at,
-            Slot {
-                panel,
-                row: self.active_row,
-                width_fraction,
-                animated_width: AnimatedValue::new(
-                    width_fraction,
-                    transition::policy(Transition::PanelOpen).duration,
-                ),
-                order_offset: AnimatedValue::new(
-                    0.0,
-                    transition::policy(Transition::PanelOrder).duration,
-                ),
-                order_distance_fraction: width_fraction,
-                close_progress: AnimatedValue::new(
-                    1.0,
-                    transition::policy(Transition::PanelClose).duration,
-                ),
-                closing: false,
-                restore_fraction: None,
-            },
-        );
-        crate::sounds::play(crate::sounds::Cue::PanelOpen, cx);
-        self.set_active(insert_at, cx);
-        self.retarget_camera();
-        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -5087,7 +5180,7 @@ impl Workspace {
             .iter()
             .map(|slot| {
                 let panel = slot.panel.read(cx);
-                (panel.session_id.clone(), panel.sidebar_mark())
+                (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
         let open_titles = self
@@ -5243,6 +5336,7 @@ impl Workspace {
                 divider: false,
                 checkout,
                 checkout_header: false,
+                section: None,
                 agents,
             });
         }
@@ -5319,8 +5413,13 @@ impl Workspace {
                     previous = None;
                 }
                 previous_checkout = Some(checkout);
+                // Label where live panels start and where history begins, so
+                // open work and past sessions read as separate groups.
+                if !collapsed && previous.is_none_or(|(open, _)| open != row.open) {
+                    row.section = Some(if row.open { "Live" } else { "Past" });
+                }
                 row.divider = !row.open
-                    && previous.is_some_and(|(open, saved)| open || (saved && !row.session.saved));
+                    && previous.is_some_and(|(open, saved)| !open && saved && !row.session.saved);
                 previous = Some((row.open, row.session.saved));
                 ordered_sessions.push(row);
             }
@@ -5346,11 +5445,11 @@ impl Workspace {
                     header: row.header,
                     checkout_header: row.checkout_header,
                     divider: row.divider,
+                    section: row.section,
                     collapsed: row.collapsed,
                     selected,
                     saved: session.saved,
-                    details: (!row.open || selected || groups[row.project].1 < 2)
-                        && (row.subdirectory.is_some()
+                    details: (row.subdirectory.is_some()
                             || sidebar_session_created_ms(&session.session_id).is_some()
                             || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
                             || session.edit_stats.is_some()),
@@ -5384,6 +5483,9 @@ impl Workspace {
             .overflow_hidden();
         list = list.flex().flex_col();
         list = list.child(self.render_sidebar_quick_actions(cx));
+        if let Some(applets) = self.sidebar_applets.take() {
+            list = list.child(applets);
+        }
         if let Some(form) = self.render_worktree_form(cx) {
             list = list.child(form);
         }
@@ -5426,7 +5528,80 @@ impl Workspace {
             );
         }
         if !ordered_sessions.is_empty() {
-            list = list.child(
+            // Projects whose header sits below the visible list. They stay
+            // reachable in a dock at the bottom, so one large project never
+            // hides the others. Uses the last layout, and list scrolling
+            // re-renders this view.
+            let below = if groups.len() > 1 {
+                ordered_sessions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.header)
+                    .filter(|(index, _)| {
+                        self.sidebar_sessions_list.item_is_below_viewport(*index) == Some(true)
+                    })
+                    .map(|(index, row)| (index, row.project))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let dock = (!below.is_empty()).then(|| {
+                div()
+                    .id("sidebar-project-dock")
+                    .debug_selector(|| "sidebar-project-dock".into())
+                    .flex_none()
+                    .w_full()
+                    .pl_2()
+                    .pr(px(crate::scrollbar::GUTTER + 4.0))
+                    .py(px(6.0))
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(Theme::global().PANEL_BORDER)
+                    .children(below.into_iter().map(|(item, project)| {
+                        let (info, _, count) = &groups[project];
+                        div()
+                            .id(("sidebar-project-dock-item", project))
+                            .debug_selector(move || format!("sidebar-project-dock-{project}"))
+                            .max_w_full()
+                            .h(px(22.0))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(Theme::global().TOOL_BG)
+                            .text_size(px(11.0))
+                            .text_color(Theme::global().TEXT_DIM)
+                            .hover(|el| {
+                                el.bg(Theme::global().PANEL_BG)
+                                    .text_color(Theme::global().TEXT)
+                            })
+                            .child(div().min_w_0().truncate().child(info.label.clone()))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child(count.to_string()),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    this.sidebar_sessions_list.scroll_to(gpui::ListOffset {
+                                        item_ix: item,
+                                        offset_in_item: px(0.0),
+                                    });
+                                    cx.notify();
+                                }),
+                            )
+                    }))
+            });
+            list = list.child(div().relative().w_full().flex_1().min_h_0().child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
                     move |sidebar_index, _window, cx| {
@@ -5453,6 +5628,19 @@ impl Workspace {
                             if row.collapsed {
                                 return list.into_any_element();
                             }
+                            if let Some(section) = row.section {
+                                list = list.child(
+                                    div()
+                                        .debug_selector(move || format!("sidebar-section-{sidebar_index}"))
+                                        .ml(px(if checkout_rows[row.project] { 30.0 } else { 20.0 }))
+                                        .mt(px(2.0))
+                                        .mb(px(2.0))
+                                        .text_size(px(9.0))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(Theme::global().TEXT_FAINT)
+                                        .child(section),
+                                );
+                            }
                             if row.divider {
                                 list = list.child(
                                     div()
@@ -5466,7 +5654,6 @@ impl Workspace {
                             }
                             let selected =
                                 active_id.as_deref() == Some(session.session_id.as_str());
-                            let compact = is_open && !selected && groups[row.project].1 > 1;
                             let (icon, title) = sidebar_session_title_with_open_title(
                                 session,
                                 open_titles.get(&session.session_id).map(String::as_str),
@@ -5607,19 +5794,6 @@ impl Workspace {
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
                                                     .child(agent_total.to_string()),
                                             ))
-                                            .when(is_open, |row| row.child(
-                                                div().id(("sidebar-close", sidebar_index))
-                                                    .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
-                                                    .px_1().cursor_pointer().child("×")
-                                                    .opacity(0.0)
-                                                    .group_hover("sidebar-session-row", |style| style.opacity(1.0))
-                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                        window.prevent_default();
-                                                        cx.stop_propagation();
-                                                        this.sidebar_gesture = None;
-                                                        this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
-                                                    }))
-                                            ))
                                             .when_some(activity, |row, spinner| {
                                                 row.child(
                                                     div()
@@ -5629,9 +5803,23 @@ impl Workspace {
                                                         .flex_none()
                                                         .child(spinner),
                                                 )
-                                            }),
+                                            })
+                                            // Last child: the hover close sits at the row's far right.
+                                            .when(is_open, |row| row.child(
+                                                div().id(("sidebar-close", sidebar_index))
+                                                    .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
+                                                    .flex_none().px_1().cursor_pointer().child("×")
+                                                    .opacity(0.0)
+                                                    .group_hover("sidebar-session-row", |style| style.opacity(1.0))
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                        window.prevent_default();
+                                                        cx.stop_propagation();
+                                                        this.sidebar_gesture = None;
+                                                        this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
+                                                    }))
+                                            )),
                                     )
-                                    .when(!compact && (details.is_some() || edits.is_some()), |row| {
+                                    .when(details.is_some() || edits.is_some(), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
@@ -5651,7 +5839,8 @@ impl Workspace {
                     },
                 )
                 .size_full(),
-            );
+            ));
+            list = list.children(dock);
         }
 
         if self.sidebar_session_layout.is_empty() {
@@ -6461,71 +6650,122 @@ impl Workspace {
                 if has_resets {
                     details = details.child(pills);
                 }
+                if let Some((label, url)) = account.upgrade_offer() {
+                    details = details.child(
+                        div().mt(px(3.0)).flex().child(
+                            div()
+                                .id(("account-upgrade", index))
+                                .debug_selector({
+                                    let id = account.id.clone();
+                                    move || format!("account-{id}-upgrade")
+                                })
+                                .flex_none()
+                                .px(px(8.0))
+                                .h(px(16.0))
+                                .flex()
+                                .items_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .text_size(px(9.0))
+                                .bg(Theme::global().WARN.opacity(0.16))
+                                .text_color(Theme::global().WARN)
+                                .hover(|el| el.bg(Theme::global().WARN.opacity(0.26)))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        remotes::HeaderTooltip(
+                                            "Opens Jcode pricing in your browser. Nothing is purchased here."
+                                                .into(),
+                                        )
+                                    })
+                                    .into()
+                                })
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.open_url(&url);
+                                })
+                                .child(label),
+                        ),
+                    );
+                }
             }
 
             if account.shows_oauth_history() {
+                // One short line per login. The full token counts, pricing
+                // caveats and estimate note live in the hover tooltip.
                 let mut history = div()
                     .debug_selector(|| format!("account-{}-history", account.id))
-                    .mt_2()
+                    .mt(px(3.0))
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .text_size(px(10.0))
-                    .line_height(px(15.0))
+                    .gap(px(1.0))
+                    .text_size(px(9.0))
+                    .line_height(px(13.0))
                     .text_color(Theme::global().TEXT_DIM);
                 if account.usage_reports.is_empty() {
                     history = history.child(
                         div()
                             .debug_selector(|| "account-openai-history-unavailable".into())
-                            .child("Today / Lifetime: usage history unavailable. No recorded usage has been received."),
+                            .child("No usage recorded yet"),
                     );
                 }
+                let many = account.usage_reports.len() > 1;
                 for (report_index, report) in account.usage_reports.iter().enumerate() {
-                    let mut report_view = div()
-                        .debug_selector(move || {
-                            format!("account-openai-history-report-{report_index}")
-                        })
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_color(ink).child(report.title()));
+                    let mut tooltip = report.title();
                     for period in ["Today", "Lifetime"] {
-                        let value = report
-                            .extra_info
-                            .iter()
-                            .find(|(key, _)| key == period)
-                            .map(|(_, value)| value.as_str())
-                            .unwrap_or("Usage history unavailable");
-                        report_view = report_view.child(
-                            div()
-                                .debug_selector(move || {
-                                    format!("account-openai-history-{report_index}-{period}")
-                                })
-                                .child(format!("{period}: {value}")),
-                        );
+                        let value = report.period_detail(period).unwrap_or("unavailable");
+                        tooltip.push_str(&format!("\n{period}: {value}"));
                     }
                     // Retain backend coverage, estimate and pricing caveats verbatim.
                     for (key, value) in &report.extra_info {
                         if !matches!(key.as_str(), "Today" | "Lifetime") {
-                            report_view = report_view.child(div().child(format!("{key}: {value}")));
+                            tooltip.push_str(&format!("\n{key}: {value}"));
                         }
                     }
-                    history = history.child(report_view);
+                    tooltip.push_str(&format!("\n\n{}", accounts::USAGE_ESTIMATE_NOTE));
+                    let amount = |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
+                    // Estimates: the tooltip carries the caveat, not the row.
+                    let summary = format!(
+                        "today {} · total {}",
+                        amount("Today"),
+                        amount("Lifetime")
+                    );
+                    let label = report
+                        .account_label
+                        .clone()
+                        .filter(|_| many);
+                    history = history.child(
+                        div()
+                            .id(("account-history", index * 100 + report_index))
+                            .debug_selector(move || {
+                                format!("account-openai-history-report-{report_index}")
+                            })
+                            .flex()
+                            .gap_1()
+                            .min_w_0()
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
+                                    .into()
+                            })
+                            .when_some(label, |el, label| {
+                                el.child(
+                                    div()
+                                        .flex_shrink(1.0)
+                                        .min_w(px(24.0))
+                                        .truncate()
+                                        .text_color(ink)
+                                        .child(label),
+                                )
+                            })
+                            .child(div().flex_1().min_w_0().truncate().child(summary)),
+                    );
                 }
-                details = details.child(history).child(
-                    div()
-                        .debug_selector(|| "account-openai-estimate-note".into())
-                        .mt_2()
-                        .text_size(px(9.0))
-                        .line_height(px(13.0))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(accounts::USAGE_ESTIMATE_NOTE),
-                );
+                details = details.child(history);
             }
 
             // Rows with history or a reset pill need more than the compact height.
             let grows = account.shows_oauth_history()
-                || (available && account.offerable_resets().next().is_some());
+                || (available && account.offerable_resets().next().is_some())
+                || (available && account.upgrade_offer().is_some());
             list = list.child(
                 div()
                     .flex_none()
@@ -6771,9 +7011,11 @@ impl Workspace {
                         .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
                 ),
         );
+        let applet_settings = self.render_applet_settings(cx);
         settings
             .child(self.render_account_settings(cx))
             .child(self.render_sound_settings(cx))
+            .children(applet_settings)
             .child(
                 div()
                     .id("settings-machines")
@@ -7654,6 +7896,7 @@ impl Render for Workspace {
         if self.single_panel {
             return self.render_single_panel(window, cx);
         }
+        self.sidebar_applets = self.render_sidebar_applets(window, cx);
         self.restore_hidden_machine_focus(window, cx);
         if self.show_sidebar
             && self.layout_mode == crate::config::LayoutMode::Normal
@@ -7694,12 +7937,18 @@ impl Render for Workspace {
         }
         let sidebar_width = responsive::sidebar_width(self.show_sidebar, compact);
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
-        let connector_width = if self.show_sidebar && folders {
+        // Compact windows spend every pixel on the session: no sidebar column,
+        // no connector gutter, and no decorative right margin.
+        let connector_width = if self.show_sidebar && folders && !compact {
             FOLDER_CONNECTOR_WIDTH
         } else {
             0.0
         };
-        let right_margin = if folders { FOLDER_RIGHT_MARGIN } else { 0. };
+        let right_margin = if folders && !compact {
+            FOLDER_RIGHT_MARGIN
+        } else {
+            0.
+        };
         let canvas_w =
             (f32::from(viewport.width) - sidebar_width - connector_width - right_margin).max(0.0);
         let viewport_w = canvas_w.max(1.0);
@@ -7937,6 +8186,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::rename_session))
             .on_action(cx.listener(Self::new_terminal))
             .on_action(cx.listener(Self::open_gmail))
+            .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::publish_desktop))
@@ -7969,12 +8219,8 @@ impl Render for Workspace {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(self.show_sidebar, |root| {
-                        root.child(if compact {
-                            self.render_compact_navigation(fullscreen, cx)
-                        } else {
-                            self.render_sidebar(fullscreen, cx)
-                        })
+                    .when(self.show_sidebar && !compact, |root| {
+                        root.child(self.render_sidebar(fullscreen, cx))
                     })
                     .child(
                         div()
@@ -8004,6 +8250,7 @@ impl Render for Workspace {
                                     .child(content)
                                     .child(self.render_workspace_bar(
                                         canvas_w,
+                                        compact || !self.show_sidebar,
                                         coach_progress,
                                         window,
                                         cx,
@@ -8049,7 +8296,10 @@ impl Render for Workspace {
             })
             .when(self.show_beta_notice, |root| {
                 root.child(self.render_beta_notice(window, cx))
-            });
+            })
+            .children(self.render_applet_overlays(window, cx))
+            .children(self.render_applet_consent(cx))
+            .children(self.render_applet_toast(cx));
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
         let action_capture_pending = self
@@ -8355,6 +8605,7 @@ struct SidebarSessionLayout {
     header: bool,
     checkout_header: bool,
     divider: bool,
+    section: Option<&'static str>,
     collapsed: bool,
     selected: bool,
     saved: bool,
@@ -8372,6 +8623,8 @@ struct SidebarRow {
     checkout: Option<sidebar_projects::Checkout>,
     /// First thread of a checkout, which carries its branch row.
     checkout_header: bool,
+    /// "Live" or "Past" caption above the first row of each group.
+    section: Option<&'static str>,
     /// Nested swarm agents: (total, working).
     agents: (usize, usize),
 }
@@ -8506,7 +8759,7 @@ fn format_time_ago(created_ms: u64, now_ms: u64) -> String {
 /// the stored transcript size, so estimate at ~4 bytes per token.
 fn format_estimated_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
-        return format!("~{tokens} tok");
+        return format!("{tokens} tok");
     }
     const UNITS: &[(f64, &str)] = &[(1.0, ""), (1_000.0, "k"), (1_000_000.0, "M")];
     let value = tokens as f64;
@@ -8516,9 +8769,9 @@ fn format_estimated_tokens(tokens: u64) -> String {
     }
     let scaled = value / UNITS[index].0;
     if scaled >= 100.0 {
-        format!("~{:.0}{} tok", scaled, UNITS[index].1)
+        format!("{:.0}{} tok", scaled, UNITS[index].1)
     } else {
-        format!("~{:.1}{} tok", scaled, UNITS[index].1)
+        format!("{:.1}{} tok", scaled, UNITS[index].1)
     }
 }
 
@@ -9502,7 +9755,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_mark_persists_for_open_sessions_through_idle_and_activity(
+    fn sidebar_mark_shows_only_while_open_session_is_active(
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -9517,8 +9770,9 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
-        assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_some());
+        // Idle open sessions show no orb: a frozen mark reads as "running".
+        assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
+        assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_none());
         assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
         let mark_id = workspace.read_with(vcx, |workspace, cx| {
             workspace.slots[0]
@@ -9528,67 +9782,6 @@ mod tests {
                 .unwrap()
                 .entity_id()
         });
-        let idle_title_width = vcx
-            .debug_bounds("sidebar-session-title-0")
-            .unwrap()
-            .size
-            .width;
-
-        for status in [
-            "generating",
-            "thinking",
-            "running",
-            "streaming",
-            "running_tools",
-            "busy",
-            "idle",
-            "connected",
-            "lost: disconnected",
-            "crashed",
-            "error",
-        ] {
-            workspace.update(vcx, |workspace, cx| {
-                workspace.apply(
-                    Update::Event {
-                        session_id: "sidebar-activity".into(),
-                        event: jcode_sdk::ApiEvent::SessionStatus {
-                            session_id: "sidebar-activity".into(),
-                            status: status.into(),
-                        },
-                    },
-                    cx,
-                );
-                cx.notify();
-            });
-            vcx.run_until_parked();
-            assert!(
-                vcx.debug_bounds("sidebar-session-spinner-0").is_some(),
-                "status {status}",
-            );
-            workspace.read_with(vcx, |workspace, cx| {
-                assert_eq!(
-                    workspace.slots[0]
-                        .panel
-                        .read(cx)
-                        .sidebar_mark()
-                        .unwrap()
-                        .entity_id(),
-                    mark_id,
-                    "status {status} must retain the same morphing mark",
-                );
-            });
-            assert!(vcx.debug_bounds("sidebar-session-spinner-1").is_some());
-            assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
-            let title_width = vcx
-                .debug_bounds("sidebar-session-title-0")
-                .unwrap()
-                .size
-                .width;
-            assert_eq!(
-                title_width, idle_title_width,
-                "open rows keep stable mark space during activity changes"
-            );
-        }
 
         for event in [
             jcode_sdk::ApiEvent::ReasoningDelta {
@@ -9634,14 +9827,14 @@ mod tests {
                 let panel = workspace.slots[0].panel.read(cx);
                 assert!(panel.sidebar_activity().is_none());
                 assert!(
-                    panel.tab_activity().is_none(),
-                    "idle tabs keep their normal emoji"
+                    panel.tab_ring().is_none(),
+                    "idle tabs keep their normal outline"
                 );
                 assert_eq!(panel.sidebar_mark().unwrap().entity_id(), mark_id);
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_some());
+            assert!(vcx.debug_bounds("sidebar-session-spinner-0").is_none());
             assert!(vcx.debug_bounds("sidebar-session-spinner-2").is_none());
         }
     }
@@ -9660,7 +9853,7 @@ mod tests {
         );
         session.transcript_bytes = Some(48_000);
         let meta = sidebar_session_meta(&session).expect("meta line");
-        assert_eq!(meta, "5m ago · ~12.0k tok");
+        assert_eq!(meta, "5m ago · 12.0k tok");
     }
 
     #[test]
@@ -9682,10 +9875,10 @@ mod tests {
 
     #[test]
     fn sidebar_token_estimate_uses_tui_style_units() {
-        assert_eq!(format_estimated_tokens(500), "~500 tok");
-        assert_eq!(format_estimated_tokens(4_200), "~4.2k tok");
-        assert_eq!(format_estimated_tokens(250_000), "~250k tok");
-        assert_eq!(format_estimated_tokens(1_500_000), "~1.5M tok");
+        assert_eq!(format_estimated_tokens(500), "500 tok");
+        assert_eq!(format_estimated_tokens(4_200), "4.2k tok");
+        assert_eq!(format_estimated_tokens(250_000), "250k tok");
+        assert_eq!(format_estimated_tokens(1_500_000), "1.5M tok");
     }
 
     #[test]
@@ -10021,11 +10214,13 @@ mod tests {
                 workspace.sidebar_session_layout[0].session_id,
                 "session_fox_open"
             );
-            assert!(workspace.sidebar_session_layout[1].divider);
+            assert_eq!(workspace.sidebar_session_layout[0].section, Some("Live"));
+            assert_eq!(workspace.sidebar_session_layout[1].section, Some("Past"));
+            assert!(!workspace.sidebar_session_layout[1].divider);
         });
         assert!(
-            vcx.debug_bounds("sidebar-session-divider").is_some(),
-            "sessions without a panel are divided from open panels"
+            vcx.debug_bounds("sidebar-section-1").is_some(),
+            "sessions without a panel are labelled apart from open panels"
         );
     }
 
@@ -10083,7 +10278,7 @@ mod tests {
             scrollbar.right() == list.right() + px(SIDEBAR_SCROLLBAR_OUTSET - 4.0),
             "the thin scrollbar sits in the gap beyond the session tabs"
         );
-        assert_eq!(scrollbar.size.width, px(4.0));
+        assert_eq!(scrollbar.size.width, px(3.0));
         let gutter = vcx.debug_bounds("sidebar-scroll-gutter").unwrap();
         assert_eq!(gutter.right(), list.right() + px(SIDEBAR_SCROLLBAR_OUTSET));
         assert_eq!(gutter.size.width, px(crate::scrollbar::GUTTER));
@@ -10153,8 +10348,10 @@ mod tests {
                     let scrollbar = vcx.debug_bounds("sidebar-scrollbar").unwrap();
                     let tab = vcx.debug_bounds("sidebar-session-0").unwrap();
                     let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
-                    assert_eq!(scrollbar.left() - tab.right(), px(8.0));
-                    assert_eq!(canvas.left() - scrollbar.right(), px(8.0));
+                    // The sheet is flush with the sidebar, so the thumb stays
+                    // inside the sidebar between the tabs and the canvas.
+                    assert!(scrollbar.left() >= tab.right());
+                    assert!(scrollbar.right() <= canvas.left());
                 }
                 let tabs_before =
                     workspace.read_with(vcx, |w, _| w.sidebar_navigation_scroll.offset());
@@ -10804,6 +11001,53 @@ mod tests {
     }
 
     #[gpui::test]
+    fn jcode_account_row_shows_daily_limits_and_upgrade_pill(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        // Real `jcode usage --json` shape captured from the live gateway.
+        let usage = r#"{"providers":[{"provider_name":"Jcode subscription","limits":[
+            {"name":"Memory recall (daily)","usage_percent":100.0,"reset_in":"19h 34m"},
+            {"name":"Browser automation (daily)","usage_percent":0.1,"reset_in":"19h 34m"}
+          ],"extra_info":[["Plan","Plus"],["Upgrade","Pro raises daily limits: https://jcode.sh/pricing"]]}]}"#;
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Accounts;
+            w.accounts = accounts::parse(
+                r#"{"providers":[
+                {"id":"jcode","display_name":"Jcode","status":"available","auth_kind":"API key"}
+            ]}"#,
+            )
+            .unwrap();
+            accounts::merge_usage_for_tests(&mut w.accounts, usage);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let row = vcx.debug_bounds("account-jcode").unwrap();
+        let memory = vcx.debug_bounds("account-jcode-limit-0").unwrap();
+        let pill = vcx.debug_bounds("account-jcode-upgrade").unwrap();
+        assert!(memory.top() >= row.top() && memory.bottom() <= row.bottom());
+        assert!(
+            pill.top() >= row.top() && pill.bottom() <= row.bottom(),
+            "pill clipped: {pill:?} in {row:?}"
+        );
+        assert_eq!(
+            workspace.read_with(vcx, |w, _| w.accounts[0].upgrade_offer()),
+            Some((
+                "Pro raises daily limits".into(),
+                "https://jcode.sh/pricing".into()
+            ))
+        );
+        // Below the hint threshold `jcode usage` omits Upgrade and no pill renders.
+        workspace.update(vcx, |w, cx| {
+            w.accounts[0].usage_reports[0]
+                .extra_info
+                .retain(|(key, _)| key != "Upgrade");
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("account-jcode-upgrade").is_none());
+    }
+
+    #[gpui::test]
     fn accounts_oauth_history_renders_named_periods_and_unavailable_state(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -10842,23 +11086,22 @@ mod tests {
         let row = vcx.debug_bounds("account-openai").unwrap();
         let first = vcx.debug_bounds("account-openai-history-report-0").unwrap();
         let second = vcx.debug_bounds("account-openai-history-report-1").unwrap();
-        let today = vcx.debug_bounds("account-openai-history-0-Today").unwrap();
-        let lifetime = vcx
-            .debug_bounds("account-openai-history-0-Lifetime")
-            .unwrap();
-        let note = vcx.debug_bounds("account-openai-estimate-note").unwrap();
-        assert!(row.size.height > px(ACCOUNT_ROW_HEIGHT));
-        assert!(today.top() < lifetime.top());
+        // Each login is one short line. Verbose token counts and caveats moved
+        // to the tooltip, so the sidebar row stays compact.
+        assert!(vcx.debug_bounds("account-openai-estimate-note").is_none());
+        assert!(first.size.height <= px(14.0), "{first:?}");
         assert!(first.bottom() <= second.top());
-        assert!(second.bottom() <= note.top());
         assert!(
-            note.bottom() <= row.bottom(),
+            second.bottom() <= row.bottom(),
             "history must not be clipped by compact row height"
         );
         assert!(
-            today.right() <= row.right(),
-            "long token details must wrap inside the sidebar"
+            first.right() <= row.right(),
+            "summary must fit inside the sidebar"
         );
+        let report = workspace.read_with(vcx, |w, _| w.accounts[0].usage_reports[0].clone());
+        assert_eq!(report.period_amount("Today").as_deref(), Some("$0.02"));
+        assert_eq!(report.period_amount("Lifetime").as_deref(), Some("$0.00"));
     }
 
     #[gpui::test]
@@ -12624,6 +12867,52 @@ mod tests {
         );
     }
 
+    /// Stand in for the bundled Gmail provider: register it, then answer the
+    /// launch Desktop queued by mounting a panel, like provider.py does.
+    fn fake_gmail_provider(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, app| {
+            let runtime = crate::applet_runtime::get(app);
+            runtime
+                .apply(
+                    GMAIL_APPLET,
+                    serde_json::from_value(serde_json::json!({
+                        "type": "register",
+                        "manifest": {
+                            "schema": jcode_applet_types::SCHEMA,
+                            "id": GMAIL_APPLET,
+                            "title": "Gmail",
+                            "launchers": [{"trigger": "sidebar", "placement": {"kind": "panel"}}]
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            runtime
+                .apply(
+                    GMAIL_APPLET,
+                    serde_json::from_value(serde_json::json!({
+                        "type": "mount",
+                        "instance": "gmail#launch0",
+                        "placement": {"kind": "panel"},
+                        "document": {"revision": 1, "title": "Gmail",
+                            "view": {"type": "text", "text": "Inbox"}}
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            let _ = window;
+        });
+    }
+
+    fn sync_applets(workspace: &Entity<Workspace>, cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, app| {
+            workspace.update(app, |workspace, cx| {
+                workspace.sync_applet_panels(window, cx)
+            });
+        });
+        cx.run_until_parked();
+    }
+
     #[gpui::test]
     fn inbox_button_lives_in_the_sidebar_and_opens_gmail(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
@@ -12636,11 +12925,13 @@ mod tests {
 
         assert!(vcx.debug_bounds("sidebar-section-trigger").unwrap().right() <= px(SIDEBAR_WIDTH));
         click_sidebar_navigation(&workspace, vcx, "open-gmail");
+        fake_gmail_provider(vcx);
+        sync_applets(&workspace, vcx);
 
         workspace.update(vcx, |workspace, cx| {
             assert_eq!(
                 workspace.slots[workspace.active].panel.read(cx).session_id,
-                "gmail://inbox"
+                "applet://gmail#launch0"
             );
         });
     }
@@ -14279,7 +14570,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn super_shift_g_opens_and_paints_the_gmail_inbox_panel(cx: &mut gpui::TestAppContext) {
+    fn super_shift_g_opens_and_paints_the_gmail_applet_panel(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, cx) = cx.add_window_view(|window, cx| {
             let workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -14292,12 +14583,20 @@ mod tests {
         });
 
         cx.simulate_keystrokes("super-shift-g");
+        workspace.update(cx, |workspace, _| {
+            assert!(
+                workspace.slots.is_empty(),
+                "the panel waits for the provider"
+            );
+        });
+        fake_gmail_provider(cx);
+        sync_applets(&workspace, cx);
 
         workspace.update(cx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 1);
             assert_eq!(
                 workspace.slots[0].panel.read(cx).session_id,
-                "gmail://inbox"
+                "applet://gmail#launch0"
             );
         });
         cx.draw(
@@ -14306,8 +14605,8 @@ mod tests {
             |_, _| gpui::div(),
         );
         assert!(
-            cx.debug_bounds("gmail-inbox").is_some(),
-            "the Gmail inbox surface should paint in the newly created panel"
+            cx.debug_bounds("applet-body").is_some(),
+            "the Gmail applet should paint in the newly created panel"
         );
         // Opening the public shortcut again focuses the existing inbox instead
         // of creating duplicate panels.
@@ -14397,14 +14696,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing sidebar choice {expanded}"));
             let trigger = cx.debug_bounds("sidebar-section-trigger").unwrap();
             assert!(
-                choice.top() >= trigger.bottom(),
-                "menu opens below the title"
+                choice.left() >= trigger.right(),
+                "menu opens beside the sidebar"
             );
+            let popout = cx.debug_bounds("sidebar-roller-popout").unwrap();
             cx.simulate_click(choice.center(), gpui::Modifiers::default());
             cx.run_until_parked();
             // Leave the header and its menu before using the page.
             cx.update(|window, cx| {
-                window.simulate_mouse_move(gpui::point(px(130.0), px(400.0)), cx);
+                window.simulate_mouse_move(
+                    gpui::point(px(130.0), popout.bottom() + px(40.0)),
+                    cx,
+                );
             });
             cx.run_until_parked();
             assert!(cx.debug_bounds(expanded).is_none());
@@ -14537,8 +14840,12 @@ mod accounts_panel_tests {
         });
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
         vcx.run_until_parked();
-        let footer = vcx.debug_bounds("panel-login").expect("preview footer");
-        vcx.simulate_click(footer.center(), gpui::Modifiers::default());
+        // The method pill selects a provider inline. Accounts opens explicitly.
+        let request = OpenAccounts {
+            source: source.entity_id(),
+            login_command: None,
+        };
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
         vcx.run_until_parked();
         let accounts = workspace.read_with(vcx, |w, cx| {
             let accounts = w.slots[w.active].panel.clone();
@@ -14619,10 +14926,12 @@ mod accounts_panel_tests {
         });
         vcx.run_until_parked();
         let before = source.read_with(vcx, |panel, cx| panel.snapshot(cx));
-        let footer = vcx
-            .debug_bounds("panel-login")
-            .expect("Account method control paints");
-        vcx.simulate_click(footer.center(), gpui::Modifiers::default());
+        // The method pill selects a provider inline. Accounts opens explicitly.
+        let request = OpenAccounts {
+            source: source.entity_id(),
+            login_command: None,
+        };
+        workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
         vcx.run_until_parked();
         let accounts = workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots.len(), 2);

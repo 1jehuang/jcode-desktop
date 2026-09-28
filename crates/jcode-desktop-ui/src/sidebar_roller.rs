@@ -298,15 +298,18 @@ impl Workspace {
                             .text_color(Theme::global().TEXT)
                     })
                     .child(if label == "+" { "new chat" } else { label })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.sidebar_roller.expanded = false;
-                            this.activate_roller_tab(index, window, cx);
-                        }),
-                    ),
+                    // Fire on click, not mouse-down: the pop-out sits over the
+                    // canvas, and closing it mid-press would hand the mouse-up
+                    // to the panel underneath, refocusing it.
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.sidebar_roller.expanded = false;
+                        this.activate_roller_tab(index, window, cx);
+                    })),
             );
         }
         div()
@@ -315,11 +318,15 @@ impl Workspace {
             .absolute()
             .top_0()
             .left_0()
-            .w(px(SIDEBAR_WIDTH))
-            // Include the original header in the hit area: crossing from the
-            // collapsed control to an option never dismisses the pop-out.
-            .pt(px(TITLEBAR_HEIGHT))
-            .px_2()
+            .w(px(SIDEBAR_WIDTH * 2.0))
+            // Open beside the sidebar, not over it, so scrolling through pages
+            // previews each one live in the sidebar itself. The hover area
+            // spans the header column too, so crossing from the control to an
+            // option never dismisses the pop-out. That strip is transparent, so
+            // the sidebar stays visible while the menu is open.
+            .pl(px(SIDEBAR_WIDTH + 4.0))
+            .pt(px(6.0))
+            .pr_2()
             .pb_2()
             .occlude()
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
@@ -493,9 +500,10 @@ mod tests {
             trigger.center().x
         );
         let menu = vcx.debug_bounds("sidebar-section-menu").unwrap();
+        let sidebar = vcx.debug_bounds("sidebar").unwrap();
         assert!(
-            menu.top() >= trigger.bottom(),
-            "menu must not replace the trigger"
+            menu.left() >= trigger.right() && menu.left() >= sidebar.right(),
+            "menu opens beside the sidebar instead of covering it"
         );
         for (id, _, _) in TABS {
             assert!(

@@ -600,7 +600,10 @@ mod tests {
                     );
                 });
                 owner.read_with(vcx, |panel, cx| {
-                    assert_eq!(panel.input.read(cx).content.as_ref(), "typed\nnavigate");
+                    assert_eq!(
+                        panel.input.read(cx).content.as_ref(),
+                        format!("typed\n{}", crate::panel::voice::tag::wrap("navigate"))
+                    );
                 });
                 drop(owner);
             }
@@ -684,7 +687,7 @@ mod tests {
                         .read(cx)
                         .content
                         .as_ref(),
-                    "typed\nnavigate"
+                    format!("typed\n{}", crate::panel::voice::tag::wrap("navigate"))
                 );
             });
         }

@@ -36,6 +36,10 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--binary", type=Path, default=repo / "target/debug/jcode-desktop")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--accounts", action="store_true",
+                        help="open the Accounts panel with offline multi-account fixtures")
+    parser.add_argument("--sign-in-steps", action="store_true",
+                        help="open Accounts mid OAuth sign-in to review the numbered checklist offline")
     parser.add_argument("--release-status", choices=("current", "newer", "checking", "error", "source"),
                         help="render an offline Desktop release status in the workspace top bar")
     parser.add_argument("--account-sign-in", action="store_true",
@@ -110,9 +114,11 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "publish", "orchestration"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "publish", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
-    parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
+    parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
+                        help="select the showcase tab for --transcript applet")
+    parser.add_argument("--preview-state", choices=("empty", "streaming", "interrupted", "crashed", "voice-connecting", "voice-listening", "voice-routing", "voice-coding-agent", "voice-quick-action", "voice-timeout", "login-error", "model-access-error", "rate-limit", "disconnected", "login-dialog-error"),
                         help="render a named self-dev panel state using the real, offline UI")
     parser.add_argument("--preview-interact", action="store_true",
                         help="verify the self-dev control API and native recovery actions offline")
@@ -446,6 +452,11 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         if args.changelog:
             env["JCODE_DESKTOP_SCREENSHOT_CHANGELOG"] = "1"
+        if args.accounts:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNTS"] = "1"
+        if args.sign_in_steps:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNTS"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_SIGN_IN_STEPS"] = "1"
         config = root / "desktop.toml"
         config.write_text(f'[appearance]\nlayout_mode = "{args.layout_mode}"\ntheme = "{args.theme}"\n'
                           + (f"ai_font = {json.dumps(args.ai_font)}\n" if args.ai_font else ""))
@@ -453,6 +464,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.applet_tab:
+            env["JCODE_DESKTOP_SCREENSHOT_APPLET_TAB"] = args.applet_tab
         if args.pending_interact:
             env["JCODE_DESKTOP_SCREENSHOT_PENDING"] = "1"
         if args.cloud_startup:
@@ -533,7 +546,7 @@ def main():
                 # while it is still visible. Other fixtures can fully settle.
                 time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
-                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact):
+                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)

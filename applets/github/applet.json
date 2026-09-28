@@ -1,0 +1,5 @@
+{
+  "id": "github",
+  "command": ["python3", "provider.py"],
+  "autostart": true
+}

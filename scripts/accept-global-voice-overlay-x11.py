@@ -141,7 +141,8 @@ def main():
         box = changed_bounds(baseline, image)
         if box is None:
             return False
-        assert box[0] >= WIDTH / 2 - 110 and box[2] <= WIDTH / 2 + 110, ('pixels outside pill', box)
+        # The surface is 264px wide. Allow a few pixels of backend offset.
+        assert box[0] >= WIDTH / 2 - 136 and box[2] <= WIDTH / 2 + 136, ('pixels outside pill', box)
         assert box[1] >= HEIGHT - 80, ('pill not bottom anchored', box)
         assert (box[2] - box[0]) * (box[3] - box[1]) > 500, ('pill too small', box)
         evidence.append({'pill_bounds': box})
@@ -170,7 +171,10 @@ def main():
         assert display.isdigit(), 'Xvfb failed to allocate a display'
         env['DISPLAY'] = ':' + display
         launch('openbox', ['openbox', '--sm-disable', '--config-file', str(wm_config)])
-        time.sleep(.5)
+        # Mapping the target before Openbox manages the screen leaves it unmapped.
+        wait(lambda: 'window id' in x('xprop', '-root', '_NET_SUPPORTING_WM_CHECK', check=False),
+             'openbox ready')
+        time.sleep(1.5)
         # A foreign, full-screen, focusable X11 client with a flat background.
         target_image = root / 'target.png'
         Image.new('RGB', (WIDTH, HEIGHT), (24, 32, 42)).save(target_image)
@@ -204,7 +208,9 @@ def main():
             assert 'Normal' not in attrs, ('pill is a WM-managed window', attrs)
         evidence.append({'overlay_windows': windows})
         command('transcribing')
-        wait_frame('transcribing', lambda image: visible(image) and changed_bounds(listening, image) is not None)
+        transcribing = wait_frame('transcribing', lambda image: visible(image) and changed_bounds(listening, image) is not None)
+        command('no-speech')
+        wait_frame('no-speech', lambda image: visible(image) and changed_bounds(transcribing, image) is not None)
         command('complete')
         wait_frame('complete', lambda image: changed_bounds(baseline, image) is None)
         command('complete')  # repeated completion is harmless

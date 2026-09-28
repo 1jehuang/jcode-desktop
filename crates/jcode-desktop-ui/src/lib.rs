@@ -2,7 +2,13 @@
 
 mod accounts;
 mod ack;
+mod animation_clock;
+mod applet_host;
+mod applet_runtime;
+mod applet_surface;
+mod applet_view;
 mod build_info;
+mod bundled_applets;
 mod changelog;
 mod clipboard_image;
 mod commands;
@@ -12,6 +18,7 @@ mod diff_block;
 mod diff_model;
 mod diff_review_content;
 mod diff_view;
+mod effort;
 mod fps_counter;
 #[cfg(target_os = "linux")]
 mod global_voice_input;
@@ -26,9 +33,10 @@ mod learning;
 mod live_profile;
 pub mod login_input;
 mod managed_cloud;
+mod managed_cloud_parity;
 mod markdown;
 mod markdown_inline_code;
-mod memory;
+pub mod memory;
 mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;
@@ -36,12 +44,14 @@ mod panel;
 mod pdf_render;
 mod pdf_viewer;
 mod performance;
+mod persisted_history;
 mod platform;
 mod preview_control;
 pub mod preview_state;
 mod prompt_background;
 mod publish;
 mod remote_targets;
+mod resume_content_search;
 mod scrollbar;
 mod sound_events;
 mod sounds;
@@ -295,6 +305,7 @@ unsafe extern "C-unwind" fn activate(
             }
         });
         workspace::recovery::install(&workspace, window, app);
+        workspace::applets::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup
         // rebuild must not steal OS focus if the user switched applications.
     }));

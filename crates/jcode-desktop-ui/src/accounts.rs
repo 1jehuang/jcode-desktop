@@ -103,10 +103,10 @@ impl BankedReset {
         })
     }
 
-    /// Worth offering: redeemable now. OpenAI resets are banked, so they are
-    /// only suggested once the limit actually binds, never spent early.
+    /// Worth offering: redeemable now. Availability can be inspected before
+    /// limits bind, but neither provider's reset should be offered early.
     pub fn offerable(&self) -> bool {
-        self.available_count > 0 && (self.limit_reached || self.provider == ResetProvider::Claude)
+        self.available_count > 0 && self.limit_reached
     }
 
     /// Compact pill caption.
@@ -121,12 +121,62 @@ impl BankedReset {
 
 pub const USAGE_ESTIMATE_NOTE: &str = "Recorded by Jcode. API-equivalent estimates, not your ChatGPT bill. Today starts at local midnight. Lifetime covers recorded history only.";
 
+/// `extra_info` key carrying the CLI's quota fetch error for a login.
+pub const USAGE_ERROR_KEY: &str = "Usage error";
+
 impl UsageReport {
     pub fn title(&self) -> String {
         match &self.account_label {
             Some(label) => format!("{} · {label}", self.provider_name),
             None => self.provider_name.clone(),
         }
+    }
+
+    /// One short dollar figure for a usage period, e.g. `$0.02` or `$0.00`.
+    /// The full token and caveat text stays in [`Self::period_detail`].
+    pub fn period_amount(&self, period: &str) -> Option<String> {
+        let text = self.period_detail(period)?;
+        if text.starts_with("No recorded usage") {
+            return Some("$0.00".into());
+        }
+        let start = text.find('$')?;
+        let amount: String = text[start + 1..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        amount
+            .parse::<f64>()
+            .ok()
+            .map(|value| format!("${value:.2}"))
+    }
+
+    pub fn period_detail(&self, period: &str) -> Option<&str> {
+        self.extra_info
+            .iter()
+            .find(|(key, _)| key == period)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Short, human reason quota could not be fetched, if it failed.
+    pub fn usage_error(&self) -> Option<String> {
+        let (_, error) = self
+            .extra_info
+            .iter()
+            .find(|(key, _)| key == USAGE_ERROR_KEY)?;
+        let lower = error.to_ascii_lowercase();
+        Some(if lower.contains("429") || lower.contains("rate limit") {
+            "the provider's usage endpoint is rate limiting requests. Jcode will retry automatically".into()
+        } else if lower.contains("expired") || lower.contains("401") {
+            "the login needs to be refreshed. Sign in again from Accounts".into()
+        } else {
+            error
+                .lines()
+                .next()
+                .unwrap_or(error)
+                .chars()
+                .take(160)
+                .collect()
+        })
     }
 }
 
@@ -141,16 +191,26 @@ pub struct UsageLimit {
 impl Account {
     /// The CLI marks its active OAuth login with ✦. Never blend unrelated logins.
     pub fn active_limits(&self) -> Option<&[UsageLimit]> {
+        self.active_report()
+            .map(|report| report.limits.as_slice())
+            .or_else(|| {
+                self.usage_reports
+                    .is_empty()
+                    .then_some(self.limits.as_slice())
+            })
+    }
+
+    /// The active login's quota report, never a blend of unrelated logins.
+    pub fn active_report(&self) -> Option<&UsageReport> {
         let active: Vec<_> = self
             .usage_reports
             .iter()
             .filter(|report| report.provider_name.trim_end().ends_with('✦'))
             .collect();
         match active.as_slice() {
-            [report] => Some(&report.limits),
+            [report] => Some(report),
             [] => match self.usage_reports.as_slice() {
-                [report] => Some(&report.limits),
-                [] => Some(&self.limits),
+                [report] => Some(report),
                 _ => None,
             },
             _ => None,
@@ -186,6 +246,21 @@ impl Account {
 
     pub fn shows_oauth_history(&self) -> bool {
         self.id == "openai" && self.status != "not_configured"
+    }
+
+    /// Jcode plan upgrade suggested by `jcode usage` when a daily included
+    /// allowance is running out: (label, url). Only jcode.sh links are offered.
+    pub fn upgrade_offer(&self) -> Option<(String, String)> {
+        if self.id != "jcode" {
+            return None;
+        }
+        self.usage_reports.iter().find_map(|report| {
+            let (_, value) = report.extra_info.iter().find(|(key, _)| key == "Upgrade")?;
+            let (label, url) = value.rsplit_once(": ")?;
+            let url = url.trim();
+            (url.starts_with("https://jcode.sh/") || url.starts_with("https://www.jcode.sh/"))
+                .then(|| (label.trim().to_owned(), url.to_owned()))
+        })
     }
 }
 
@@ -374,7 +449,7 @@ fn shared_poller() -> &'static Poller {
     })
 }
 
-fn fetch() -> Option<Vec<Account>> {
+pub(crate) fn fetch() -> Option<Vec<Account>> {
     let output = std::process::Command::new(crate::platform::companion_executable("jcode"))
         .args(["auth", "status", "--json"])
         .output()
@@ -423,6 +498,11 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
     Some(accounts)
 }
 
+#[cfg(test)]
+pub(crate) fn merge_usage_for_tests(accounts: &mut [Account], json: &str) {
+    merge_usage(accounts, json)
+}
+
 /// Merge the usage command's provider reports into the canonical auth rows.
 /// The usage schema predates stable provider ids, so names are normalized here.
 fn merge_usage(accounts: &mut [Account], json: &str) {
@@ -463,15 +543,20 @@ fn merge_usage(accounts: &mut [Account], json: &str) {
             .iter()
             .find(|(key, _)| key == "Account label")
             .map(|(_, value)| value.clone());
+        let mut extra_info: Vec<_> = extra_info
+            .into_iter()
+            .filter(|(key, _)| key != "Account label")
+            .collect();
+        // Keep why quota is missing so the footer can say so honestly.
+        if let Some(error) = provider.get("error").and_then(|value| value.as_str()) {
+            extra_info.push((USAGE_ERROR_KEY.into(), error.trim().to_owned()));
+        }
         account.usage_reports.push(UsageReport {
             provider_name: provider_name.to_owned(),
             account_label,
             banked_reset: provider.get("banked_reset").and_then(BankedReset::parse),
             limits: Vec::new(),
-            extra_info: extra_info
-                .into_iter()
-                .filter(|(key, _)| key != "Account label")
-                .collect(),
+            extra_info,
         });
         let limits: Vec<_> = provider
             .get("limits")
@@ -786,6 +871,22 @@ mod tests {
     }
 
     #[test]
+    fn claude_banked_reset_below_wall_is_informational_only() {
+        let mut reset = BankedReset {
+            provider: ResetProvider::Claude,
+            account_label: Some("work".into()),
+            available_count: 1,
+            limit_reached: false,
+            next_available_at: None,
+        };
+        assert!(!reset.offerable());
+        reset.limit_reached = true;
+        assert!(reset.offerable());
+        reset.available_count = 0;
+        assert!(!reset.offerable());
+    }
+
+    #[test]
     fn banked_resets_merge_per_login_and_only_redeemable_ones_are_offered() {
         let mut accounts = parse(SAMPLE).unwrap();
         merge_usage(
@@ -863,6 +964,69 @@ mod tests {
         assert!(accounts[0].active_limits().is_none());
         accounts[0].usage_reports[1].provider_name.push_str(" ✦");
         assert_eq!(accounts[0].active_limits().unwrap()[0].usage_percent, 91.);
+    }
+
+    #[test]
+    fn jcode_subscription_usage_attaches_daily_limits_and_upgrade_hint() {
+        let mut accounts = parse(
+            r#"{"any_available": true, "providers": [
+                {"id": "jcode", "display_name": "Jcode", "status": "available",
+                 "method": "API key", "auth_kind": "API key"}
+            ]}"#,
+        )
+        .unwrap();
+        merge_usage(
+            &mut accounts,
+            r#"{"providers":[{"provider_name":"Jcode subscription","limits":[
+                {"name":"Memory recall (daily)","usage_percent":100.0,"reset_in":"20h 21m"},
+                {"name":"Browser automation (daily)","usage_percent":0.05,"reset_in":"20h 21m"}
+              ],"extra_info":[["Plan","Plus"],["Upgrade","Pro raises daily limits: https://jcode.sh/pricing"]]}]}"#,
+        );
+        let jcode = &accounts[0];
+        assert_eq!(jcode.limits.len(), 2);
+        assert_eq!(jcode.limits[0].usage_percent, 100.0);
+        let report = &jcode.usage_reports[0];
+        assert!(
+            report
+                .extra_info
+                .iter()
+                .any(|(key, value)| key == "Upgrade" && value.contains("https://jcode.sh/pricing"))
+        );
+    }
+
+    #[test]
+    fn upgrade_offer_only_for_jcode_with_jcode_sh_links() {
+        let mut accounts = parse(
+            r#"{"providers":[{"id":"jcode","display_name":"Jcode","status":"available","auth_kind":"API key"},
+                             {"id":"openrouter","display_name":"OpenRouter","status":"available","auth_kind":"API key"}]}"#,
+        )
+        .unwrap();
+        let jcode = accounts.iter().position(|a| a.id == "jcode").unwrap();
+        let other = accounts.iter().position(|a| a.id == "openrouter").unwrap();
+        for index in [jcode, other] {
+            accounts[index].usage_reports.push(UsageReport {
+                provider_name: "Jcode subscription".into(),
+                account_label: None,
+                banked_reset: None,
+                limits: Vec::new(),
+                extra_info: vec![(
+                    "Upgrade".into(),
+                    "Pro raises daily limits: https://jcode.sh/pricing".into(),
+                )],
+            });
+        }
+        assert_eq!(
+            accounts[jcode].upgrade_offer(),
+            Some((
+                "Pro raises daily limits".into(),
+                "https://jcode.sh/pricing".into()
+            ))
+        );
+        assert_eq!(accounts[other].upgrade_offer(), None);
+        accounts[jcode].usage_reports[0].extra_info[0].1 = "Pro: https://evil.example/pay".into();
+        assert_eq!(accounts[jcode].upgrade_offer(), None);
+        accounts[jcode].usage_reports[0].extra_info[0].1 = "no link here".into();
+        assert_eq!(accounts[jcode].upgrade_offer(), None);
     }
 
     #[test]

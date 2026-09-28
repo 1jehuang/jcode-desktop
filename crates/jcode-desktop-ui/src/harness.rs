@@ -126,6 +126,12 @@ pub enum Update {
         session_id: String,
         reason: String,
     },
+    /// A reasoning effort request finished. `error` is the provider's refusal.
+    EffortSettled {
+        session_id: String,
+        effort: String,
+        error: Option<String>,
+    },
     /// A per-session connection died.
     SessionLost {
         session_id: String,
@@ -134,6 +140,12 @@ pub enum Update {
     /// A per-session connection was established again.
     SessionConnected {
         session_id: String,
+    },
+    /// A session was bookmarked or unbookmarked. A label also names it.
+    SessionSaved {
+        session_id: String,
+        saved: bool,
+        label: Option<String>,
     },
     /// The control connection died; the bridge will retry.
     Disconnected {
@@ -148,6 +160,13 @@ pub enum Command {
     RefreshSessions,
     RefreshRuntime {
         session_id: String,
+    },
+    /// Credentials for `provider` changed. Tell the daemon on this session's
+    /// own connection: the post-login model switch is session-local, so a
+    /// notification from any other connection never moves this session.
+    AuthChanged {
+        session_id: String,
+        provider: String,
     },
     CreateSession {
         working_dir: Option<String>,
@@ -201,12 +220,24 @@ pub enum SessionOperation {
     Compact,
     SetEffort(String),
     Rename(Option<String>),
+    /// Bookmark (`true`) or unbookmark. A label also becomes the title.
+    SetSaved(bool, Option<String>),
     Rewind(usize),
     RewindUndo,
+    /// The user acted on an agent applet instance.
+    AppletAction {
+        instance: String,
+        action: jcode_applet_types::Action,
+        state: serde_json::Value,
+        source_key: Option<String>,
+    },
+    /// The user closed an agent applet instance.
+    CloseApplet(String),
 }
 
 enum SessionCommand {
     RefreshRuntime,
+    AuthChanged(String),
     Send {
         content: String,
         images: Vec<(String, String)>,
@@ -248,18 +279,61 @@ impl Bridge {
 
     /// Leave excess updates queued so a busy producer cannot monopolize the UI.
     pub fn drain_up_to(&self, limit: usize) -> Vec<Update> {
-        let mut out = Vec::new();
-        while out.len() < limit {
+        self.extend_batch(Vec::new(), limit)
+    }
+
+    /// Append up to `limit` more updates to `batch`, collapsing runtime info.
+    ///
+    /// Every `RuntimeInfo` carries the complete route catalog (hundreds of
+    /// KiB) and is rebroadcast on each model usage change. Applying one is
+    /// slow, so a UI thread that falls behind used to let thousands of them
+    /// pile up in the unbounded channel, growing the heap by gigabytes. Each
+    /// is a full identity snapshot, so only the newest per session matters.
+    /// Superseded copies do not count toward `limit`, which lets the consumer
+    /// discard a backlog quickly instead of rendering every stale catalog.
+    pub fn extend_batch(&self, batch: Vec<Update>, limit: usize) -> Vec<Update> {
+        const MAX_SCAN: usize = 8192;
+        let mut slots: Vec<Option<Update>> = Vec::with_capacity(batch.len());
+        let mut runtime_slot: HashMap<String, usize> = HashMap::new();
+        let mut live = 0usize;
+        let mut push = |slots: &mut Vec<Option<Update>>, live: &mut usize, update: Update| {
+            if let Some(session) = runtime_info_session(&update) {
+                if let Some(previous) = runtime_slot.insert(session.to_owned(), slots.len()) {
+                    slots[previous] = None;
+                    *live -= 1;
+                }
+            }
+            slots.push(Some(update));
+            *live += 1;
+        };
+        for update in batch {
+            push(&mut slots, &mut live, update);
+        }
+        let target = live.saturating_add(limit);
+        let mut scanned = 0;
+        while live < target && scanned < MAX_SCAN {
             let Ok(update) = self.updates.try_recv() else {
                 break;
             };
-            out.push(update);
+            scanned += 1;
+            push(&mut slots, &mut live, update);
         }
-        out
+        slots.into_iter().flatten().collect()
     }
 
     pub async fn recv(&self) -> Option<Update> {
         self.updates.recv().await.ok()
+    }
+}
+
+/// The panel session whose identity snapshot this update replaces wholesale.
+fn runtime_info_session(update: &Update) -> Option<&str> {
+    match update {
+        Update::Event {
+            session_id,
+            event: ApiEvent::RuntimeInfo { .. },
+        } => Some(session_id),
+        _ => None,
     }
 }
 
@@ -647,6 +721,17 @@ fn run_with_transports(
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
+            Command::AuthChanged {
+                session_id,
+                provider,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::AuthChanged(provider),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
             Command::SessionOperation {
                 session_id,
                 operation,
@@ -708,9 +793,34 @@ fn create_remote_session(
             request_id: request_id.clone(),
             failed: false,
         });
+        let working_dir = working_dir.or_else(|| {
+            // The managed bootstrap creates this persistent workspace. Naming
+            // it explicitly also lets older cloud bridges report the directory.
+            managed.then(|| crate::managed_cloud::DEFAULT_WORKSPACE.to_owned())
+        });
         let mut session = client
-            .create_session(working_dir)
+            .create_session(working_dir.clone())
             .map_err(|error| error.to_string())?;
+        if session.working_dir.as_deref().is_none_or(str::is_empty) {
+            session.working_dir = working_dir;
+        }
+        if managed && !screenshot_mode() && !cfg!(test) {
+            // Start on this computer's default model and effort, not the
+            // cloud daemon's. A failure keeps the session on its current model.
+            let defaults = crate::managed_cloud_parity::Snapshot::session_defaults();
+            if let Err(message) = crate::managed_cloud_parity::apply_to_session(
+                &client,
+                &session.session_id,
+                &defaults,
+            ) {
+                let _ = updates.send(Update::RemoteStatus {
+                    host: host.clone(),
+                    message,
+                    request_id: request_id.clone(),
+                    failed: false,
+                });
+            }
+        }
         session.session_id = remote::namespace(&host, &session.session_id);
         Ok((session, client))
     });
@@ -804,7 +914,27 @@ struct PersistedSession {
     #[serde(default)]
     saved: bool,
     #[serde(default)]
+    save_label: Option<String>,
+    #[serde(default)]
     status: serde_json::Value,
+    /// The process that last owned the session. An `Active` record whose
+    /// owner is gone crashed without writing its final status.
+    #[serde(default)]
+    last_pid: Option<u32>,
+}
+
+impl PersistedSession {
+    /// Lifecycle status as the TUI picker reports it, including crashes the
+    /// dead process never had the chance to persist.
+    fn lifecycle_status(&self) -> String {
+        let status = persisted_session_status(&self.status);
+        match self.last_pid {
+            Some(pid) if status == "active" && !jcode_base::platform::is_process_running(pid) => {
+                "crashed".into()
+            }
+            _ => status,
+        }
+    }
 }
 
 fn persisted_session_status(status: &serde_json::Value) -> String {
@@ -1073,7 +1203,12 @@ fn read_persisted_session(path: &Path, bytes: u64) -> Option<PersistedSession> {
         saved: json_value_field(&tail, "saved", true)
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        save_label: json_string_field(&tail, "save_label", true)
+            .or_else(|| json_string_field(&head, "save_label", false)),
         status: json_value_field(&tail, "status", true).unwrap_or_default(),
+        last_pid: json_value_field(&tail, "last_pid", true)
+            .and_then(|value| value.as_u64())
+            .and_then(|pid| u32::try_from(pid).ok()),
     })
 }
 
@@ -1161,7 +1296,7 @@ pub(crate) fn merge_persisted_sessions(
             .join(format!("{}.json", session.session_id));
         let bytes = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
         if let Some(record) = read_persisted_session(&path, bytes.unwrap_or_default()) {
-            session.status = persisted_session_status(&record.status);
+            session.status = record.lifecycle_status();
         }
     }
 
@@ -1234,12 +1369,18 @@ pub(crate) fn merge_persisted_sessions(
         else {
             continue;
         };
+        let status = record.lifecycle_status();
+        let save_label = record
+            .saved
+            .then_some(record.save_label)
+            .flatten()
+            .filter(|label| !label.trim().is_empty());
         let title = record
             .custom_title
             .filter(|title| !title.trim().is_empty())
+            .or_else(|| save_label.clone())
             .or_else(|| persisted_todo_title(home, &id))
             .or_else(|| record.title.filter(|title| !title.trim().is_empty()));
-        let status = persisted_session_status(&record.status);
         disk_sessions.push((
             recency,
             SessionInfo {
@@ -1253,7 +1394,7 @@ pub(crate) fn merge_persisted_sessions(
                 last_active_at_ms: None,
                 archived: false,
                 archived_at_ms: None,
-                save_label: None,
+                save_label,
                 parent_session_id: None,
                 agent_label: None,
                 swarm_status: None,
@@ -1571,6 +1712,7 @@ fn session_worker_with_connector(
                     model: info.model,
                     routes: info.routes,
                     reasoning_effort: info.reasoning_effort,
+                    auth_method: info.auth_method,
                 },
             });
         }
@@ -1596,7 +1738,20 @@ fn session_worker_with_connector(
                                     model: info.model,
                                     routes: info.routes,
                                     reasoning_effort: info.reasoning_effort,
+                                    auth_method: info.auth_method,
                                 },
+                            });
+                        }
+                    }
+                    SessionCommand::AuthChanged(provider) => {
+                        // The daemon re-resolves this session's route and
+                        // pushes the new catalog and model as ordinary events.
+                        if let Err(error) = client.notify_auth_changed(&provider) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!(
+                                    "Signed in, but this session could not switch to the new account: {error}"
+                                ),
                             });
                         }
                     }
@@ -1686,11 +1841,56 @@ fn session_worker_with_connector(
                         ) {
                             recovery.supersede();
                         }
+                        // Effort settles the panel's optimistic label either
+                        // way, so its outcome is reported rather than only a
+                        // failure. The identity broadcast that follows carries
+                        // the level the provider actually applied.
+                        if let SessionOperation::SetEffort(effort) = &operation {
+                            let error = client
+                                .set_reasoning_effort(real_id, effort)
+                                .err()
+                                .map(|error| error.to_string());
+                            let _ = updates.send(Update::EffortSettled {
+                                session_id: session_id.clone(),
+                                effort: effort.clone(),
+                                error,
+                            });
+                            continue;
+                        }
+                        if let SessionOperation::SetSaved(saved, label) = &operation {
+                            match client.set_session_saved(real_id, *saved, label.clone()) {
+                                Ok(()) => {
+                                    let _ = updates.send(Update::SessionSaved {
+                                        session_id: session_id.clone(),
+                                        saved: *saved,
+                                        label: label.clone(),
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = updates.send(Update::CommandFailed {
+                                        session_id: session_id.clone(),
+                                        reason: format!("Failed to save session: {error}"),
+                                    });
+                                }
+                            }
+                            continue;
+                        }
                         let result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
                             SessionOperation::Compact => client.compact(real_id).map(|_| ()),
-                            SessionOperation::SetEffort(effort) => {
-                                client.set_reasoning_effort(real_id, &effort)
+                            SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
+                                Ok(())
+                            }
+                            SessionOperation::AppletAction {
+                                instance,
+                                action,
+                                state,
+                                source_key,
+                            } => {
+                                client.applet_action(real_id, &instance, action, state, source_key)
+                            }
+                            SessionOperation::CloseApplet(instance) => {
+                                client.close_applet(real_id, &instance)
                             }
                             SessionOperation::Rename(title) => {
                                 client.rename_session(real_id, title)
@@ -1831,6 +2031,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
         | ApiEvent::SidePanelState { session_id, .. }
+        | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
@@ -1869,6 +2070,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::ToolDone { session_id, .. }
         | ApiEvent::SidePaneImages { session_id, .. }
         | ApiEvent::SidePanelState { session_id, .. }
+        | ApiEvent::AppletState { session_id, .. }
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
@@ -2170,6 +2372,79 @@ mod tests {
         assert!(bridge.drain_up_to(128).is_empty());
     }
 
+    #[test]
+    fn runtime_info_backlog_collapses_to_newest_per_session_in_order() {
+        let (updates, receiver) = async_channel::unbounded();
+        let (commands, _command_rx) = channel();
+        let bridge = Bridge {
+            _lifetime: std::sync::Arc::new(BridgeLifetime(commands.clone())),
+            commands,
+            updates: receiver,
+        };
+        let runtime = |session: &str, model: &str| Update::Event {
+            session_id: session.into(),
+            event: ApiEvent::RuntimeInfo {
+                session_id: session.into(),
+                provider: None,
+                model: Some(model.into()),
+                reasoning_effort: None,
+                auth_method: None,
+                routes: Vec::new(),
+            },
+        };
+        // A usage-update storm: thousands of full catalogs for two panels,
+        // interleaved with ordinary updates that must all survive in order.
+        for index in 0..5000 {
+            updates
+                .try_send(runtime("a", &format!("a{index}")))
+                .unwrap();
+            updates
+                .try_send(runtime("b", &format!("b{index}")))
+                .unwrap();
+            if index % 1000 == 0 {
+                updates.try_send(Update::Status(index.to_string())).unwrap();
+            }
+        }
+        let first = bridge.updates.try_recv().unwrap();
+        let batch = bridge.extend_batch(vec![first], 127);
+        let mut rest = batch;
+        while !bridge.updates.is_empty() {
+            rest.extend(bridge.drain_up_to(127));
+        }
+        let describe = |update: &Update| match update {
+            Update::Status(value) => format!("status {value}"),
+            Update::Event {
+                event: ApiEvent::RuntimeInfo { model, .. },
+                ..
+            } => format!("runtime {}", model.clone().unwrap_or_default()),
+            _ => panic!("unexpected update"),
+        };
+        let seen: Vec<_> = rest.iter().map(describe).collect();
+        let runtime_count = seen.iter().filter(|s| s.starts_with("runtime")).count();
+        // At most one catalog per session per MAX_SCAN window, never thousands.
+        assert!(
+            runtime_count <= 6,
+            "{runtime_count} catalogs applied: {seen:?}"
+        );
+        assert!(seen.contains(&"runtime a4999".to_string()));
+        assert!(seen.contains(&"runtime b4999".to_string()));
+        let statuses: Vec<_> = seen.iter().filter(|s| s.starts_with("status")).collect();
+        assert_eq!(
+            statuses,
+            [
+                "status 0",
+                "status 1000",
+                "status 2000",
+                "status 3000",
+                "status 4000"
+            ]
+        );
+        // The last catalogs follow every status update that preceded them.
+        let last_status = seen.iter().rposition(|s| s.starts_with("status")).unwrap();
+        let last_a = seen.iter().rposition(|s| s == "runtime a4999").unwrap();
+        assert!(last_a > last_status);
+    }
+
     fn session_info(id: &str) -> SessionInfo {
         SessionInfo {
             session_id: id.into(),
@@ -2203,6 +2478,23 @@ mod tests {
             "crashed"
         );
         assert_eq!(persisted_session_status(&serde_json::json!(null)), "idle");
+    }
+
+    #[test]
+    fn active_record_with_dead_owner_is_reported_as_crashed() {
+        let record = |last_pid| PersistedSession {
+            working_dir: None,
+            title: None,
+            custom_title: None,
+            saved: false,
+            save_label: None,
+            status: serde_json::json!("Active"),
+            last_pid,
+        };
+        // A pid beyond the kernel's pid_max can never be alive.
+        assert_eq!(record(Some(u32::MAX - 1)).lifecycle_status(), "crashed");
+        assert_eq!(record(Some(std::process::id())).lifecycle_status(), "active");
+        assert_eq!(record(None).lifecycle_status(), "active");
     }
 
     #[test]

@@ -3183,7 +3183,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/1jehuang/zed?rev=ff1a26d02a7326d679583e63fdd4d509fc571291#ff1a26d02a7326d679583e63fdd4d509fc571291"
+source = "git+https://github.com/1jehuang/zed?rev=b1c1a162e53d90492c0b1663440c93c5c15fc42c#b1c1a162e53d90492c0b1663440c93c5c15fc42c"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -4375,15 +4375,18 @@ dependencies = [
  "handterm-common",
  "hdrhistogram",
  "image",
+ "jcode-applet-types",
  "jcode-base",
  "jcode-core",
  "jcode-desktop-api",
  "jcode-desktop-motion",
+ "jcode-fuzzy",
  "jcode-provider-core",
  "jcode-render-core",
  "jcode-sdk",
  "jcode-selfdev-types",
  "libc",
+ "memchr",
  "mermaid-rs-renderer",
  "ratex-layout",
  "ratex-parser",
@@ -4402,6 +4405,10 @@ dependencies = [
  "unicode-segmentation",
  "zbus",
 ]
+
+[[package]]
+name = "jcode-fuzzy"
+version = "0.1.0"
 
 [[package]]
 name = "jcode-gateway-types"

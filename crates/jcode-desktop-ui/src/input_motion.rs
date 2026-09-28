@@ -45,8 +45,9 @@ pub(super) const CARET_ACTIVE: Duration = Duration::from_secs(20);
 /// Short enough that the caret never trails the character just typed.
 const GLIDE: Duration = Duration::from_millis(55);
 
-/// Tick interval while any motion is live.
-pub(super) const TICK: Duration = Duration::from_millis(33);
+/// Tick interval while any motion is live. Matches the orb and tab ring
+/// period so all decorative ticks share one frame on the animation grid.
+pub(super) const TICK: Duration = Duration::from_nanos(33_333_334);
 
 /// Two prompts drawn from the catalog by `seed`: the first is typed, held
 /// and deleted, then the second is typed and stays. Returns the visible

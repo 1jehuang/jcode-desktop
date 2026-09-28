@@ -17,10 +17,9 @@ fn global_voice_sends_transcript_and_pill_says_so(cx: &mut gpui::TestAppContext)
         assert!(panel.voice.phase == Phase::Idle);
         assert_eq!(panel.input.read(cx).content.as_ref(), "keep my draft");
         assert!(
-            panel
-                .items
-                .iter()
-                .any(|item| matches!(item, Item::User(text) if text == "note this down"))
+            panel.items.iter().any(
+                |item| matches!(item, Item::User(text) if text == &tag::wrap("note this down"))
+            )
         );
         let _ = commands;
         let pill = panel.global_voice_snapshot(&attempt).unwrap();
@@ -89,7 +88,7 @@ fn global_voice_old_attempt_cannot_stop_or_cancel_new_local_hold(cx: &mut gpui::
         panel.prepare_voice_attempt(true);
         let local = panel.voice.canceled.clone();
         panel.end_global_voice_hold(&old, cx);
-        panel.cancel_global_voice(&old, cx);
+        panel.cancel_global_voice(&old, "test", cx);
         assert!(Arc::ptr_eq(&local, &panel.voice.canceled));
         assert!(panel.voice.phase == Phase::Checking);
         assert!(!local.load(Ordering::SeqCst));
@@ -111,7 +110,7 @@ fn global_voice_safety_cancel_discards_partial_text_and_ignores_late_completion(
         panel.voice.phase = Phase::Transcribing;
         panel.voice.live_transcript = "partial private speech".into();
         let attempt = panel.voice.canceled.clone();
-        panel.cancel_global_voice(&attempt, cx);
+        panel.cancel_global_voice(&attempt, "test", cx);
         assert!(attempt.load(Ordering::SeqCst));
         assert!(panel.voice.phase == Phase::Idle);
         assert!(panel.voice.live_transcript.is_empty());
@@ -182,7 +181,11 @@ fn global_voice_final_delivery_requires_fresh_permission_and_is_exactly_once(
                 _ => None,
             })
             .collect();
-        assert!(sent.contains(&"new speech"));
-        assert!(!sent.contains(&"old speech") && !sent.contains(&"hidden speech"));
+        assert!(sent.contains(&tag::wrap("new speech").as_str()));
+        assert!(
+            !sent
+                .iter()
+                .any(|text| text.contains("old speech") || text.contains("hidden speech"))
+        );
     });
 }

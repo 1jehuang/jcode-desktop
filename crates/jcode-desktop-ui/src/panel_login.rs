@@ -8,10 +8,22 @@ use jcode_sdk::{
 #[path = "panel_login_status.rs"]
 mod connection;
 use connection::{ConnectionStatus, ConnectionStatuses};
+#[path = "panel_login_accounts.rs"]
+mod accounts;
 #[path = "panel_login_catalog.rs"]
 mod catalog;
+#[path = "panel_provider_picker.rs"]
+mod provider_picker;
+#[cfg(test)]
+#[path = "panel_provider_picker_tests.rs"]
+mod provider_picker_tests;
+#[path = "panel_login_steps.rs"]
+mod steps;
+use steps::manual_input_visible;
 
 pub(super) struct LoginState {
+    /// Composer account selection never starts a sign-in flow.
+    selection_only: bool,
     client: AuthClient,
     providers: Vec<LoginProvider>,
     provider: Option<LoginProvider>,
@@ -27,11 +39,25 @@ pub(super) struct LoginState {
     task: Option<Task<()>>,
     callback_task: Option<Task<()>>,
     callback_waiting: bool,
+    /// The browser returned an authorization to the local callback. This is
+    /// the only signal that confirms the approve step without guessing.
+    authorized: bool,
+    /// The user chose to paste a callback URL while automatic return waits.
+    manual_entry: bool,
     statuses: Option<ConnectionStatuses>,
     status_loading: bool,
     status_task: Option<Task<()>>,
     search: Entity<PromptInput>,
     usage: Option<catalog::MethodUsage>,
+    accounts: accounts::AccountsData,
+    accounts_task: Option<Task<()>>,
+    /// Provider ids with a live smoke test in flight.
+    live_testing: std::collections::HashSet<String>,
+    /// A "Test all" run is in flight.
+    live_test_all: bool,
+    /// Failure reasons from the most recent live test, by provider id.
+    live_errors: HashMap<String, String>,
+    live_tasks: Vec<Task<()>>,
 }
 
 impl Drop for LoginState {
@@ -60,10 +86,7 @@ impl Panel {
             .provider
             .as_ref()
             .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
-            || state
-                .prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode))
+            || manual_input_visible(state))
         .then(|| state.input.read(cx).focus_handle.clone())
     }
 
@@ -136,6 +159,7 @@ impl Panel {
             search
         });
         self.login = Some(LoginState {
+            selection_only: false,
             client,
             providers,
             provider: None,
@@ -151,11 +175,19 @@ impl Panel {
             task: None,
             callback_task: None,
             callback_waiting: false,
+            authorized: false,
+            manual_entry: false,
             statuses: None,
             status_loading: false,
             status_task: None,
             search,
             usage: None,
+            accounts: accounts::AccountsData::default(),
+            accounts_task: None,
+            live_testing: Default::default(),
+            live_test_all: false,
+            live_errors: HashMap::new(),
+            live_tasks: Vec::new(),
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
@@ -163,6 +195,26 @@ impl Panel {
                 "This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.".into());
         } else {
             self.refresh_login_status(cx);
+        }
+        // Offline screenshot fixture: an OAuth sign-in waiting for the
+        // browser, so the checklist can be reviewed without a network.
+        if crate::harness::screenshot_mode()
+            && std::env::var("JCODE_DESKTOP_SCREENSHOT_SIGN_IN_STEPS").as_deref() == Ok("1")
+            && let Some(state) = self.login.as_mut()
+        {
+            state.provider = state
+                .providers
+                .iter()
+                .find(|provider| provider.method == LoginMethod::OAuth)
+                .copied();
+            state.prompt = Some(AuthPrompt {
+                auth_url: "https://example.invalid/authorize".into(),
+                input_kind: AuthInputKind::AuthCodeOrCallbackUrl,
+                user_code: None,
+                expires_at_ms: i64::MAX,
+            });
+            state.browser_opened = true;
+            state.callback_waiting = true;
         }
         cx.notify();
     }
@@ -178,6 +230,39 @@ impl Panel {
         }
         state.status_loading = true;
         state.statuses = None;
+        let accounts_task = cx.background_executor().spawn(async move {
+            if offline {
+                accounts::offline_data()
+            } else {
+                // A default chosen elsewhere (model picker, /account, CLI
+                // login) before this sync existed still reorders the list.
+                let default_route = jcode_base::config::Config::load().provider.default_provider;
+                if let Some(route) = default_route.as_deref()
+                    && let Err(error) =
+                        jcode_base::auth::account_pool::sync_order_with_default_route(route)
+                {
+                    eprintln!("[accounts] could not sync order with default: {error}");
+                }
+                accounts::AccountsData {
+                    accounts: crate::accounts::fetch(),
+                    logins: jcode_base::auth::account_pool::oauth_logins(),
+                    pool: jcode_base::auth::account_pool::AccountPool::load(),
+                    default_route,
+                    default_key: None,
+                }
+            }
+        });
+        state.accounts_task = Some(cx.spawn(async move |this, cx| {
+            let data = accounts_task.await;
+            let _ = this.update(cx, |panel, cx| {
+                if let Some(state) = panel.login.as_mut() {
+                    let mut data = data;
+                    data.resolve_default(&state.providers);
+                    state.accounts = data;
+                    cx.notify();
+                }
+            });
+        }));
         let provider_ids: Vec<_> = state
             .providers
             .iter()
@@ -212,6 +297,79 @@ impl Panel {
                     state.status_loading = false;
                     cx.notify();
                 }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Send one real request through `provider` (or every configured
+    /// provider) and fold the results into the row statuses.
+    pub(super) fn live_test_providers(&mut self, provider: Option<String>, cx: &mut Context<Self>) {
+        let offline =
+            self.preview_state.is_some() || cfg!(test) || crate::harness::screenshot_mode();
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        if state.live_test_all
+            || provider
+                .as_ref()
+                .is_some_and(|id| state.live_testing.contains(id))
+        {
+            return;
+        }
+        match &provider {
+            Some(id) => {
+                state.live_testing.insert(id.clone());
+                state.live_errors.remove(id);
+            }
+            None => {
+                state.live_test_all = true;
+                state.live_errors.clear();
+            }
+        }
+        let arg = provider.clone();
+        let task = cx.background_executor().spawn(async move {
+            if offline {
+                None
+            } else {
+                connection::run_live_test(arg.as_deref())
+            }
+        });
+        state.live_tasks.push(cx.spawn(async move |this, cx| {
+            let results = task.await;
+            let _ = this.update(cx, |panel, cx| {
+                let Some(state) = panel.login.as_mut() else {
+                    return;
+                };
+                match &provider {
+                    Some(id) => {
+                        state.live_testing.remove(id);
+                    }
+                    None => state.live_test_all = false,
+                }
+                match results {
+                    Some(results) => {
+                        let statuses = state.statuses.get_or_insert_with(Default::default);
+                        for (id, result) in results {
+                            // A single-provider run only reports that provider.
+                            if provider.as_ref().is_some_and(|p| *p != id) {
+                                continue;
+                            }
+                            if let Some(error) = result.error {
+                                state.live_errors.insert(id.clone(), error);
+                            }
+                            statuses.insert(id, result.status);
+                        }
+                    }
+                    None if !offline => {
+                        state.error = Some(
+                            "The live test did not finish. Check your network and try again."
+                                .into(),
+                        );
+                    }
+                    None => {}
+                }
+                cx.notify();
             });
         }));
         cx.notify();
@@ -262,6 +420,17 @@ impl Panel {
     }
 
     fn select_login_provider(&mut self, provider: LoginProvider, cx: &mut Context<Self>) {
+        self.select_login_provider_for(provider, None, cx)
+    }
+
+    /// Sign in to `provider`. `account` names an OAuth login to refresh, or an
+    /// unknown label to add another login next to the existing ones.
+    fn select_login_provider_for(
+        &mut self,
+        provider: LoginProvider,
+        account: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.login_is_remote() {
             return;
         }
@@ -272,6 +441,8 @@ impl Panel {
         state.task = None;
         state.callback_task = None;
         state.callback_waiting = false;
+        state.authorized = false;
+        state.manual_entry = false;
         let previous_flow = state.flow.take();
         state.provider = Some(provider);
         state.prompt = None;
@@ -297,7 +468,7 @@ impl Panel {
             }
             state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
         } else {
-            match state.client.begin(provider.id, None) {
+            match state.client.begin(provider.id, account.as_deref()) {
                 Ok(flow) => {
                     state.flow = Some(flow.clone());
                     self.run_login_task(
@@ -395,13 +566,34 @@ impl Panel {
         state.flow = None;
         state.prompt = None;
         state.input.update(cx, |input, cx| input.clear(cx));
-        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. Choose an available model below. You do not need to reuse the sign-in code.".into());
-        if !self.is_accounts_panel() {
-            self.bridge.send(Command::RefreshRuntime {
-                session_id: self.session_id.clone(),
+        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. If this session does not switch, choose another model. You do not need to reuse the sign-in code.".into());
+        let provider = state.provider.map(|provider| provider.id.to_string());
+        // The CLI and API-key paths notify the daemon on a throwaway
+        // connection. That refreshes credentials everywhere, but the automatic
+        // post-login model switch only applies to the notifying session, so
+        // the session this login is for must notify on its own connection.
+        if let Some(session_id) = self.login_target_session() {
+            self.bridge.send(match provider {
+                Some(provider) => Command::AuthChanged {
+                    session_id,
+                    provider,
+                },
+                None => Command::RefreshRuntime { session_id },
             });
         }
         crate::accounts::request_refresh();
+        cx.notify();
+    }
+
+    /// The live session whose model should follow this login, if any. An
+    /// Accounts panel signs in on behalf of the chat it was opened from.
+    fn login_target_session(&self) -> Option<String> {
+        if let Some(source) = self.session_id.strip_prefix("accounts://") {
+            // Drafts, settings pages and remote sessions have no local runtime.
+            return (!source.is_empty() && !source.contains("://")).then(|| source.to_string());
+        }
+        self.can_refresh_account_runtime()
+            .then(|| self.session_id.clone())
     }
 
     fn wait_for_login_callback(&mut self, cx: &mut Context<Self>) {
@@ -444,6 +636,7 @@ impl Panel {
                         match update {
                             None => {
                                 exchanging = true;
+                                state.authorized = true;
                                 state.callback_waiting = false;
                                 state.busy = true;
                             }
@@ -489,6 +682,16 @@ impl Panel {
         let Some(provider) = state.provider.clone() else {
             return;
         };
+        // Enter while the browser is expected to return must not fail the step.
+        if provider.method != LoginMethod::ApiKey
+            && state
+                .prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
+            && !manual_input_visible(state)
+        {
+            return;
+        }
         let secret = state.input.update(cx, |input, cx| input.take(cx));
         if provider.method == LoginMethod::ApiKey {
             if secret.trim().is_empty() {
@@ -557,6 +760,9 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        if self.login.as_ref().is_some_and(|state| state.selection_only) {
+            return None;
+        }
         if let Some(state) = self.login.as_mut()
             && state.focus_pending
         {
@@ -570,11 +776,7 @@ impl Panel {
             {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
-            } else if state
-                .prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.input_kind != AuthInputKind::DeviceCode)
-            {
+            } else if manual_input_visible(state) {
                 let focus = state.input.read(cx).focus_handle.clone();
                 focus.focus(window, cx);
             } else {
@@ -594,7 +796,12 @@ impl Panel {
         let theme = Theme::global();
         let remote = self.login_is_remote();
         let mut body = div().flex().flex_col().gap_3();
-        if let Some(error) = &state.error {
+        // An in-progress sign-in shows its error inside the failed step.
+        if let Some(error) = state
+            .error
+            .as_ref()
+            .filter(|_| state.provider.is_none() || state.complete)
+        {
             body = body.child(
                 div()
                     .debug_selector(|| "login-error".into())
@@ -603,6 +810,9 @@ impl Panel {
             );
         }
         if state.complete {
+            if let Some(provider) = state.provider {
+                body = body.child(self.render_login_steps(state, provider, cx));
+            }
             body = body
                 .child(
                     div()
@@ -612,31 +822,51 @@ impl Panel {
                         } else {
                             theme.OK
                         })
-                        .child("Sign-in complete. Account connected. Choose a model to continue."),
+                        .child(if self.login_target_session().is_some() {
+                            "Account connected. This session now uses it."
+                        } else {
+                            "Account connected."
+                        }),
                 )
                 .child(
-                    login_button("login-choose-model", "Choose a model").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.close_login_picker(cx);
-                            if this.is_accounts_panel() {
-                                cx.emit(AccountsPanelChooseModel);
-                            } else {
-                                this.open_recovery_models(cx);
-                            }
-                        },
-                    )),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(login_button("login-done", "Done").on_click(cx.listener(
+                            |this, _, window, cx| {
+                                this.close_login_picker(cx);
+                                if this.is_accounts_panel() {
+                                    cx.emit(AccountsPanelClosed);
+                                } else {
+                                    this.focus_input(window, cx);
+                                }
+                            },
+                        )))
+                        .child(
+                            login_button("login-choose-model", "Pick a different model").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.close_login_picker(cx);
+                                    if this.is_accounts_panel() {
+                                        cx.emit(AccountsPanelChooseModel);
+                                    } else {
+                                        this.open_recovery_models(cx);
+                                    }
+                                }),
+                            ),
+                        ),
                 );
-        } else if let Some(provider) = &state.provider {
+        } else if let Some(provider) = state.provider {
             body = body.child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(login_logo(provider))
+                    .child(login_logo(&provider))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(provider.display_name),
+                            .child(format!("Sign in to {}", provider.display_name)),
                     ),
             );
             let status =
@@ -649,149 +879,7 @@ impl Panel {
                         .child(status.detail()),
                 );
             }
-            if state.busy && state.prompt.is_none() {
-                body = body.child(div().debug_selector(|| "login-busy".into()).child(
-                    if provider.method == LoginMethod::ApiKey {
-                        "Saving your API key securely…"
-                    } else {
-                        "Step 1 of 3: Preparing a secure sign-in link…"
-                    },
-                ));
-            } else if provider.method == LoginMethod::ApiKey {
-                body = body
-                    .child(div().text_color(theme.TEXT_DIM).child(
-                        "Your key is saved in Jcode's private credential store, never in chat.",
-                    ))
-                    .child(state.input.clone())
-                    .child(
-                        login_button("login-paste", "Paste from clipboard").on_click(
-                            cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
-                        ),
-                    )
-                    .child(
-                        login_button("login-submit", "Connect account")
-                            .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                    );
-            } else if let Some(prompt) = &state.prompt {
-                body = body.child(
-                    div().debug_selector(|| "login-progress".into())
-                        .text_size(px(12.)).text_color(theme.TEXT_DIM)
-                        .child("1. Prepare sign-in link  →  2. Approve in browser  →  3. Connect account"),
-                ).child(
-                    div().debug_selector(|| "login-current-step".into())
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(if state.error.is_some() {
-                            "Sign-in paused. Review the error above."
-                        } else if state.busy && prompt.input_kind != AuthInputKind::DeviceCode {
-                            "Step 3 of 3: Authorization received. Connecting your account…"
-                        } else if state.callback_waiting {
-                            "Step 2 of 3: Waiting for browser authorization and callback…"
-                        } else if prompt.input_kind == AuthInputKind::DeviceCode {
-                            "Step 2 of 3: Waiting for browser approval…"
-                        } else {
-                            "Step 2 of 3: Finish in your browser, then paste the result below."
-                        }),
-                );
-                let url = prompt.auth_url.clone();
-                let preview = self.preview_state.is_some() || crate::harness::screenshot_mode();
-                let copy_url = url.clone();
-                body = body
-                    .child(
-                        div().child(
-                            if prompt.input_kind == AuthInputKind::DeviceCode || state.callback_waiting {
-                                "Approve access in your browser. This window will connect automatically."
-                            } else {
-                                "Continue in your browser, then paste the returned code or callback URL."
-                            },
-                        ),
-                    )
-                    .child(
-                        div().flex().gap_2().flex_wrap()
-                            .child(login_button("login-open-browser", "Open sign-in page").on_click(
-                                move |_, _, cx| { if !preview { cx.open_url(&url); } },
-                            ))
-                            .child(login_button("login-copy-link", "Copy link").on_click(
-                                move |_, _, cx| { cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_url.clone())); },
-                            )),
-                    );
-                if let Some(code) = &prompt.user_code {
-                    let code = code.clone();
-                    body = body.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_family(theme.FONT_MONO)
-                                    .child(format!("Device code: {code}")),
-                            )
-                            .child(login_button("login-copy-code", "Copy code").on_click(
-                                move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        code.clone(),
-                                    ));
-                                },
-                            )),
-                    );
-                }
-                if prompt.input_kind != AuthInputKind::DeviceCode {
-                    body = body
-                        .child(div().text_color(theme.TEXT_DIM).child(
-                            if state.callback_waiting {
-                                "Waiting for your browser. If it does not return, paste the full callback URL here and press Enter."
-                            } else if prompt.input_kind == AuthInputKind::CallbackUrl {
-                                "Automatic callback is unavailable (the local port may be in use). After approving, copy the full localhost address from your browser and paste it here. It stays private."
-                            } else {
-                                "Paste the returned code or full callback URL below. It stays private."
-                            },
-                        ))
-                        .child(state.input.clone())
-                        .child(
-                            login_button("login-paste", "Paste from clipboard").on_click(
-                                cx.listener(|this, _, window, cx| this.paste_login(window, cx)),
-                            ),
-                        );
-                }
-                if state.busy {
-                    body = body.child(
-                        div()
-                            .debug_selector(|| "login-busy".into())
-                            .text_color(theme.TEXT_DIM)
-                            .child(if prompt.input_kind == AuthInputKind::DeviceCode {
-                                "Waiting for browser approval…"
-                            } else {
-                                "Exchanging authorization and saving credentials…"
-                            }),
-                    );
-                } else {
-                    body = body.child(
-                        login_button("login-submit", "Finish sign-in")
-                            .on_click(cx.listener(|this, _, _, cx| this.submit_login(cx))),
-                    );
-                }
-                if state.error.is_some() {
-                    let provider = *provider;
-                    body = body.child(login_button("login-retry", "Start a new sign-in").on_click(
-                        cx.listener(move |this, _, _, cx| this.select_login_provider(provider, cx)),
-                    ));
-                }
-            } else {
-                let provider = provider.clone();
-                body = body.child(
-                    login_button("login-retry", "Try again").on_click(cx.listener(
-                        move |this, _, _, cx| this.select_login_provider(provider.clone(), cx),
-                    )),
-                );
-            }
-            body = body.child(
-                login_button("login-back", "Choose another provider").on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.close_login_picker(cx);
-                        this.open_login_picker(cx);
-                    },
-                )),
-            );
+            body = body.child(self.render_login_steps(state, provider, cx));
         } else if !remote {
             let providers = catalog::filtered_providers(
                 &state.providers,
@@ -808,68 +896,8 @@ impl Panel {
                         .child("No accounts match your search."),
                 );
             }
-            for provider in &providers {
-                let provider = provider.clone();
-                let id = format!("login-provider-{}", provider.id);
-                let status = connection::status_for(
-                    state.statuses.as_ref(),
-                    provider.id,
-                    state.status_loading,
-                );
-                let color = status.color();
-                let status_id = format!("login-status-{}", provider.id);
-                let label = provider.display_name;
-                body = body.child(
-                    div()
-                        .id(SharedString::from(id.clone()))
-                        .debug_selector(move || id.clone())
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.PANEL_BORDER)
-                        .bg(theme.HEADER_BG)
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(theme.ACCENT_DIM))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_login_provider(provider.clone(), cx)
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .flex_wrap()
-                                .child(login_method_icon(provider.method))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(80.))
-                                        .whitespace_normal()
-                                        .child(label),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(move || status_id.clone())
-                                        .flex_none()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .bg(color.opacity(0.12))
-                                        .text_size(px(11.))
-                                        .text_color(color)
-                                        .child(div().size(px(6.)).rounded_full().bg(color))
-                                        .child(status.label()),
-                                ),
-                        ),
-                );
-            }
+            let rows = self.render_account_catalog(&providers, cx);
+            body = body.children(rows);
         }
         Some(
             div()
@@ -915,6 +943,30 @@ impl Panel {
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child("Accounts"),
+                        )
+                        .when(
+                            state.provider.is_none() && !state.complete && !remote,
+                            |el| {
+                                let running = state.live_test_all;
+                                el.child(
+                                    login_button(
+                                        "login-test-all",
+                                        if running { "Testing all…" } else { "Test all" },
+                                    )
+                                    .when(running, |el| el.opacity(0.6))
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| {
+                                            super::usage::MeterTooltip(
+                                                "Send one small live request through every connected account to confirm each one works. Uses a little quota or credit.".into(),
+                                            )
+                                        })
+                                        .into()
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.live_test_providers(None, cx)
+                                    })),
+                                )
+                            },
                         )
                         .child(
                             login_button(
@@ -972,7 +1024,6 @@ fn login_method_icon(method: LoginMethod) -> gpui::AnyElement {
     };
     div()
         .debug_selector(move || format!("login-method-{icon}"))
-        .w(px(110.))
         .flex_none()
         .flex()
         .items_center()
@@ -1018,9 +1069,9 @@ fn login_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::D
     div()
         .id(id)
         .debug_selector(move || id.into())
-        .px_3()
-        .py_2()
-        .rounded_md()
+        .px_4()
+        .py_1p5()
+        .rounded_full()
         .bg(Theme::global().ACCENT_DIM)
         .text_color(Theme::global().TEXT)
         .cursor_pointer()
@@ -1204,6 +1255,33 @@ mod tests {
             commands.try_recv().is_err(),
             "login must not replay user prompts"
         );
+    }
+
+    #[gpui::test]
+    fn accounts_login_switches_the_source_session_not_a_throwaway(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new_accounts("chat-session", None, bridge, cx));
+        panel.update(vcx, |panel, cx| {
+            let state = panel.login.as_mut().unwrap();
+            state.provider = state.client.resolve_provider("claude");
+            panel.complete_login(false, cx);
+        });
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::AuthChanged { session_id, provider })
+                if session_id == "chat-session" && provider == "claude"
+        ));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("login-done").is_some());
+        assert!(vcx.debug_bounds("login-choose-model").is_some());
+        // Nothing live behind a draft, settings page or remote host.
+        for source in ["startup://draft", "ssh://host/session", ""] {
+            panel.update(vcx, |panel, _| {
+                panel.session_id = format!("accounts://{source}");
+                assert_eq!(panel.login_target_session(), None, "{source}");
+            });
+        }
     }
 
     #[gpui::test]

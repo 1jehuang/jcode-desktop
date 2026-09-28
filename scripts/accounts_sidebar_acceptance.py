@@ -12,7 +12,8 @@ def verify(output, env, root):
         ui.native("mousemove", 132, 30)
 
         def find_accounts(image):
-            words = ui.words(image, (0, 52, 264, 340), "accounts-menu", psm=11)
+            # The section menu opens beside the 224px sidebar.
+            words = ui.words(image, (228, 0, 448, 300), "accounts-menu", psm=11)
             return phrase_bounds(words, "accounts")
 
         ui.click(ui.wait_frame("accounts-menu", find_accounts))

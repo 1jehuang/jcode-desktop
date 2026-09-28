@@ -25,6 +25,7 @@
 
 ## Visual Design
 
+- Do not add decorative status dots beside text labels or inside status pills. Labels such as Connected, Untested, or Needs attention already convey the state. Use text and subtle color instead of redundant dots.
 - Never use decorative left-hand vertical lines, accent bars, or tree rails to mark or group content, including sidebar swarm agents. Use indentation, spacing, typography, or subtle background fills instead.
 - This rule does not prohibit functional scrollbars, pane dividers, or complete control outlines.
 - Prefer pills over boxy cards. Buttons, chips, toggles, list rows, and small grouped items use fully rounded (`rounded_full`) shapes. Do not default to square or lightly rounded (`rounded_sm`/`rounded_md`) boxes.

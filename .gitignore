@@ -1,4 +1,4 @@
 /target
 **/target/
-/scripts/__pycache__/
-/tests/__pycache__/
+/target-*/
+__pycache__/

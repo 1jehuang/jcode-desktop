@@ -2,8 +2,9 @@
 //!
 //! Every action enters through GPUI's public keystroke dispatcher, from both
 //! root and composer focus. Recording bridges never start a runtime/provider.
-//! Gmail/Todoist cover only reuse of an existing fixture panel: their real
-//! constructors start service workers and are deliberately not called here.
+//! Gmail/Todoist cover only reuse of an existing fixture panel: Todoist's real
+//! constructor starts service workers and Gmail's applet spawns a provider, so
+//! neither is created here.
 //! Run with `cargo test -p jcode-desktop-ui --lib super_action_behavior_tests
 //! -- --test-threads=1`, since theme selection is process-global.
 #![cfg(not(target_os = "macos"))]
@@ -257,7 +258,7 @@ fn check_existing_service_panel(cx: &mut gpui::TestAppContext, chord: &str, sess
 
 #[gpui::test]
 fn super_shift_g_focuses_existing_gmail_without_service_requests(cx: &mut gpui::TestAppContext) {
-    check_existing_service_panel(cx, "super-shift-g", "gmail://inbox");
+    check_existing_service_panel(cx, "super-shift-g", "applet://gmail#launch0");
 }
 
 #[gpui::test]

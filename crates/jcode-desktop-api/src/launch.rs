@@ -145,8 +145,14 @@ mod tests {
     fn single_panel_windows_share_a_host_unless_isolated() {
         assert!(LaunchMode::shared_single_panel(["--single-panel"]));
         assert!(LaunchMode::shared_single_panel(["--resume"]));
-        assert!(!LaunchMode::shared_single_panel(["--single-panel", "--new-process"]));
-        assert!(!LaunchMode::shared_single_panel(["--new-process", "--single-panel"]));
+        assert!(!LaunchMode::shared_single_panel([
+            "--single-panel",
+            "--new-process"
+        ]));
+        assert!(!LaunchMode::shared_single_panel([
+            "--new-process",
+            "--single-panel"
+        ]));
         assert!(!LaunchMode::shared_single_panel(["--no-sidebar"]));
         assert!(!LaunchMode::shared_single_panel(Vec::<&str>::new()));
         assert_eq!(
@@ -157,8 +163,14 @@ mod tests {
             LaunchMode::instance_name_for_args(["--single-panel", "--new-process"], 7).as_deref(),
             Some("single-panel-7")
         );
-        assert_eq!(LaunchMode::instance_name_for_args(["--workspace"], 7).as_deref(), Some("no-sidebar"));
-        assert_eq!(LaunchMode::instance_name_for_args(Vec::<&str>::new(), 7), None);
+        assert_eq!(
+            LaunchMode::instance_name_for_args(["--workspace"], 7).as_deref(),
+            Some("no-sidebar")
+        );
+        assert_eq!(
+            LaunchMode::instance_name_for_args(Vec::<&str>::new(), 7),
+            None
+        );
     }
 
     #[test]

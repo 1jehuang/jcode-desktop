@@ -1,16 +1,29 @@
 use super::*;
 
-gpui::actions!(panel_shortcuts, [JumpToLatest]);
+gpui::actions!(panel_shortcuts, [JumpToLatest, JumpToLatestIfEmpty]);
 
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
-    cx.bind_keys([gpui::KeyBinding::new(
-        "shift-space",
-        JumpToLatest,
-        Some("ChatPanel"),
-    )]);
+    cx.bind_keys([
+        gpui::KeyBinding::new("shift-space", JumpToLatest, Some("ChatPanel")),
+        // Plain space jumps only while the composer is empty. With a draft the
+        // handler propagates so the space is typed normally.
+        gpui::KeyBinding::new(
+            "space",
+            JumpToLatestIfEmpty,
+            Some("ChatPanel > PromptInput"),
+        ),
+    ]);
 }
 
 impl Panel {
+    pub(super) fn jump_to_latest_if_empty(&mut self, cx: &mut Context<Self>) {
+        if self.input.read(cx).content.is_empty() {
+            self.jump_to_latest(cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
     pub(super) fn jump_to_latest(&mut self, cx: &mut Context<Self>) {
         self.cancel_transcript_momentum();
         self.release_startup_preview();
@@ -64,8 +77,9 @@ pub(super) fn jump_to_latest_keycaps(color: gpui::Hsla) -> gpui::AnyElement {
 mod tests {
     use super::*;
 
-    #[gpui::test]
-    fn shift_space_jumps_to_latest_from_composer(cx: &mut gpui::TestAppContext) {
+    fn scrolled_up_panel(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<Panel>, &mut gpui::VisualTestContext) {
         cx.update(crate::bind_workspace_keys);
         cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -92,13 +106,46 @@ mod tests {
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("jump-to-latest").is_some());
-        assert!(vcx.debug_bounds("jump-to-latest-shift").is_some());
-        assert!(vcx.debug_bounds("jump-to-latest-space").is_some());
         vcx.update(|window, cx| {
             let handle = panel.read(cx).input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
         });
         vcx.run_until_parked();
+        (panel, vcx)
+    }
+
+    #[gpui::test]
+    fn space_jumps_to_latest_only_when_composer_is_empty(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = scrolled_up_panel(cx);
+        vcx.simulate_input("draft");
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+        assert!(!panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            "draft "
+        );
+        panel.update(vcx, |panel, cx| {
+            panel
+                .input
+                .update(cx, |input, cx| input.set_content(String::new(), cx));
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+        assert!(panel.read_with(vcx, |panel, _| panel.stick_to_bottom));
+        assert!(vcx.debug_bounds("jump-to-latest").is_none());
+        assert_eq!(
+            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
+            ""
+        );
+    }
+
+    #[gpui::test]
+    fn shift_space_jumps_to_latest_from_composer(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = scrolled_up_panel(cx);
+        assert!(vcx.debug_bounds("jump-to-latest-shift").is_some());
+        assert!(vcx.debug_bounds("jump-to-latest-space").is_some());
         vcx.simulate_input("keep this draft");
         vcx.simulate_keystrokes("shift-space");
         vcx.run_until_parked();

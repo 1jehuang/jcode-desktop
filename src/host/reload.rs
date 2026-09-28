@@ -60,10 +60,7 @@ impl ReloadManager {
             }],
             active: 0,
             activation_history: Vec::new(),
-            staging: source
-                .as_deref()
-                .map(create_staging_dir)
-                .transpose()?,
+            staging: source.as_deref().map(create_staging_dir).transpose()?,
             source,
             window: Some(window),
             extra_windows: Vec::new(),
@@ -123,7 +120,10 @@ impl ReloadManager {
     pub fn forget_window(&mut self, window: gpui::WindowId) {
         self.extra_windows
             .retain(|handle| handle.window_id() != window);
-        if self.window.is_some_and(|handle| handle.window_id() == window) {
+        if self
+            .window
+            .is_some_and(|handle| handle.window_id() == window)
+        {
             self.window = (!self.extra_windows.is_empty()).then(|| self.extra_windows.remove(0));
         }
     }
@@ -447,8 +447,7 @@ fn process_alive(pid: u32) -> bool {
     };
     // Signal 0 performs only the existence and permission check.
     let alive = unsafe { libc::kill(pid, 0) } == 0;
-    alive
-        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(not(unix))]
@@ -803,7 +802,9 @@ mod tests {
                 calls.get()
             });
             if call == 3 {
-                return unsafe { failed_after_replacing_root(window, app, host, snapshot, len, schema) };
+                return unsafe {
+                    failed_after_replacing_root(window, app, host, snapshot, len, schema)
+                };
             }
             unsafe { stable_activate(window, app, host, snapshot, len, schema) }
         }
@@ -848,7 +849,11 @@ mod tests {
             .unwrap();
         manager.forget_window(first.window_id());
         assert_eq!(
-            manager.windows().iter().map(|w| w.window_id()).collect::<Vec<_>>(),
+            manager
+                .windows()
+                .iter()
+                .map(|w| w.window_id())
+                .collect::<Vec<_>>(),
             vec![second.window_id()]
         );
         manager.forget_window(second.window_id());

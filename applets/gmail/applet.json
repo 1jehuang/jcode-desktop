@@ -1,0 +1,5 @@
+{
+  "id": "gmail",
+  "command": ["python3", "provider.py"],
+  "autostart": true
+}

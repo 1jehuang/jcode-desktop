@@ -36,7 +36,7 @@ registration. Each row names an observed action outcome and its test boundary.
 | `super-n` | `NewPanel` | E | One new focused SDK session, actual daemon working directory is isolated HOME. |
 | `super-space` | `ForkPanel` | B/E | One new focused child from an unsaved parent. Saved child has the exact parent ID, inherited directory and fork notice. Runtime fix verified through native key, SDK, daemon and disk. |
 | `super-t` | `NewTerminal` | E/B | One terminal panel inserted and focused. Native run uses real host PTY, GPUI test uses inert host. |
-| `super-shift-g` | `OpenGmail` | E/B | Opens gmail://inbox and focuses it. Repeating focuses the same panel, without duplicates. No credentials or mailbox mutations. |
+| `super-shift-g` | `OpenGmail` | E/B | Opens the bundled Gmail applet panel (`applet://gmail#launch0`) and focuses it, installing and starting the provider on first use. Repeating focuses the same panel, without duplicates. No credentials or mailbox mutations. |
 | `super-shift-d` | `OpenTodoist` | E/B | Opens todoist://tasks and focuses it. Repeating reuses it. No token or task mutations. |
 | `super-enter` | `NewPanelInPinnedDirectory` | W/Enter | One new focused session in /home/jeremy/jcode-desktop, before/after restart and from empty workspace. |
 | `super-;` | `NewPanelInPinnedDirectory` | W/Enter | One new focused session in /home/jeremy/jcode-desktop, before/after restart. |

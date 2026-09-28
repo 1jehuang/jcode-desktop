@@ -24,7 +24,7 @@ fn health_group(status: ConnectionStatus) -> u8 {
         ConnectionStatus::Expired | ConnectionStatus::Failed => 1,
         // Saved but unverified credentials must not masquerade as working.
         ConnectionStatus::Unverified => 2,
-        ConnectionStatus::Checking | ConnectionStatus::Unknown => 3,
+        ConnectionStatus::Checking | ConnectionStatus::Testing | ConnectionStatus::Unknown => 3,
         ConnectionStatus::NotConnected => 4,
     }
 }

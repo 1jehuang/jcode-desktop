@@ -13,6 +13,7 @@ fn recovery_fence(worker: &Worker) {
         model: None,
         routes: vec![],
         reasoning_effort: None,
+        auth_method: None,
     });
     worker.wait_for(|update| {
         matches!(

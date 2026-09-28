@@ -14,6 +14,9 @@ use crate::global_voice_overlay::{self as overlay, Snapshot, VoiceOverlay};
 use gpui::{Task, WeakEntity, WindowHandle};
 use std::sync::{Arc, atomic::AtomicBool};
 
+#[cfg(target_os = "linux")]
+#[path = "workspace_global_voice_cli.rs"]
+mod cli;
 #[path = "workspace_global_voice_fixture.rs"]
 mod fixture;
 
@@ -24,6 +27,8 @@ struct Capture {
 
 /// Host-delivered holds have no kernel-side deadline, so bound them here too.
 const HOST_HOLD_DEADLINE: Duration = Duration::from_secs(120);
+const IDLE_POLL: Duration = Duration::from_millis(40);
+const HELD_POLL: Duration = Duration::from_millis(8);
 
 #[derive(Default)]
 pub(super) struct State {
@@ -46,6 +51,12 @@ pub(super) struct State {
     /// Whether this Jcode window has focus. The chat's own voice pill is the
     /// single source of truth. The OS pill mirrors it only while unfocused.
     window_active: bool,
+    /// Hold recorded for a focused Jcode CLI terminal instead of a chat.
+    #[cfg(target_os = "linux")]
+    cli: Option<cli::CliCapture>,
+    /// Resolving whether the focused window is a Jcode CLI.
+    #[cfg(target_os = "linux")]
+    cli_resolve: Option<Task<()>>,
 }
 
 /// Exactly one voice pill is ever visible. The OS-level pill mirrors capture
@@ -79,10 +90,10 @@ const SPAWNED_HOLD_FLAG: &str = "--global-voice-hold";
 /// Shift+Copilot: a new single-panel window in `voice.spawn_working_dir`
 /// that takes over the current hold. This window only launches it.
 #[cfg(target_os = "linux")]
-fn spawn_voice_window() {
-    let Ok(executable) = std::env::current_exe() else {
+fn spawn_voice_window() -> bool {
+    let Ok(executable) = crate::platform::self_executable() else {
         eprintln!("global voice: cannot locate the desktop executable to spawn");
-        return;
+        return false;
     };
     let mut command = std::process::Command::new(executable);
     command.args(spawn_args(std::env::args_os().skip(1)));
@@ -90,8 +101,14 @@ fn spawn_voice_window() {
         command.env("JCODE_DESKTOP_WORKING_DIR", dir);
     }
     match command.spawn() {
-        Ok(child) => eprintln!("global voice: spawned voice window {}", child.id()),
-        Err(error) => eprintln!("global voice: could not spawn voice window: {error}"),
+        Ok(child) => {
+            eprintln!("global voice: spawned voice window {}", child.id());
+            true
+        }
+        Err(error) => {
+            eprintln!("global voice: could not spawn voice window: {error}");
+            false
+        }
     }
 }
 
@@ -150,11 +167,17 @@ impl State {
         #[cfg(target_os = "linux")]
         {
             self.listener = None;
+            self.cli = None;
+            self.cli_resolve = None;
         }
         self.host_held_since = None;
         if let Some(panel) = self.owner.as_ref().and_then(|owner| owner.panel.upgrade()) {
             panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&self.owner.as_ref().unwrap().attempt, cx)
+                panel.cancel_global_voice(
+                    &self.owner.as_ref().unwrap().attempt,
+                    "global voice listener shut down (window closed or Desktop reload)",
+                    cx,
+                )
             });
         }
         self.close_overlay(cx);
@@ -218,12 +241,28 @@ impl Workspace {
         cx.on_release(|this, cx| this.global_voice.shutdown(cx))
             .detach();
         self.global_voice.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut interval = IDLE_POLL;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(40))
-                    .await;
+                let slept = Instant::now();
+                cx.background_executor().timer(interval).await;
+                let late = slept.elapsed().saturating_sub(interval);
                 let result = cx.update(|window, cx| {
-                    this.update(cx, |this, cx| this.poll_global_voice(window, cx))
+                    this.update(cx, |this, cx| {
+                        if this.global_voice.held && late >= Duration::from_millis(250) {
+                            eprintln!(
+                                "global voice: key poll stalled {}ms during a hold",
+                                late.as_millis()
+                            );
+                        }
+                        this.poll_global_voice(window, cx);
+                        // A held key is about to be released: poll faster so
+                        // key-up reaches the recorder without a visible lag.
+                        interval = if this.global_voice.held {
+                            HELD_POLL
+                        } else {
+                            IDLE_POLL
+                        };
+                    })
                 });
                 if !matches!(result, Ok(Ok(()))) {
                     let _ = this.update(cx, |this, cx| this.global_voice.shutdown(cx));
@@ -255,18 +294,47 @@ impl Workspace {
                             std::mem::take(&mut self.global_voice.adopting_spawned_hold),
                         ) =>
                     {
-                        spawn_voice_window()
+                        // A focused Jcode CLI gets the transcript. Anything
+                        // else opens a new voice window, as before.
+                        self.global_press_unfocused(window, cx)
                     }
                     Edge::Press => self.global_voice_press(window, cx),
-                    Edge::Spawn => spawn_voice_window(),
+                    Edge::Spawn if !self.single_panel => {
+                        // Workspace mode: add a fresh panel here and record
+                        // into it, rather than opening a separate window.
+                        let dir = crate::config::get()
+                            .voice
+                            .spawn_working_dir
+                            .as_ref()
+                            .map(|dir| dir.to_string_lossy().into_owned())
+                            .or_else(|| self.default_working_dir());
+                        self.open_default_draft(dir, cx);
+                        self.global_voice_press(window, cx)
+                    }
+                    Edge::Spawn => {
+                        if !spawn_voice_window() {
+                            self.global_voice_press(window, cx)
+                        }
+                    }
                     Edge::Tap => {
                         self.global_voice.adopting_spawned_hold = false;
                         self.toggle_voice(&ToggleVoice, window, cx)
                     }
+                    Edge::Release
+                        if self.global_voice.cli_resolve.is_some()
+                            || self
+                                .global_voice
+                                .cli
+                                .as_ref()
+                                .is_some_and(|c| c.recording()) =>
+                    {
+                        self.global_voice.cli_resolve = None;
+                        self.cli_release()
+                    }
                     Edge::Release => self.global_voice_release(cx),
                     Edge::Cancel => {
                         eprintln!("global voice: canceled by input listener");
-                        self.cancel_global_voice_capture(cx)
+                        self.cancel_global_voice_capture("input listener canceled the hold", cx)
                     }
                 }
             }
@@ -277,9 +345,17 @@ impl Workspace {
             .is_some_and(|since| since.elapsed() >= HOST_HOLD_DEADLINE)
         {
             eprintln!("global voice: host shortcut hold exceeded its deadline");
-            self.cancel_global_voice_capture(cx);
+            self.cancel_global_voice_capture("host shortcut hold exceeded its deadline", cx);
         }
-        if self.global_voice.owner.is_some()
+        #[cfg(target_os = "linux")]
+        let cli_recording = self
+            .global_voice
+            .cli
+            .as_ref()
+            .is_some_and(|c| c.recording());
+        #[cfg(not(target_os = "linux"))]
+        let cli_recording = false;
+        if (self.global_voice.owner.is_some() || cli_recording)
             && self.global_voice.permission_task.is_none()
             && self
                 .global_voice
@@ -287,6 +363,10 @@ impl Workspace {
                 .is_none_or(|last| last.elapsed() >= Duration::from_millis(250))
         {
             self.check_global_voice_permission(false, window, cx);
+        }
+        #[cfg(target_os = "linux")]
+        if self.poll_cli_capture(cx) {
+            return;
         }
         self.update_global_voice_overlay(cx);
     }
@@ -364,8 +444,13 @@ impl Workspace {
         }
     }
 
-    fn cancel_global_voice_capture(&mut self, cx: &mut Context<Self>) {
+    fn cancel_global_voice_capture(&mut self, reason: &'static str, cx: &mut Context<Self>) {
         self.global_voice.held = false;
+        #[cfg(target_os = "linux")]
+        {
+            self.global_voice.cli = None;
+            self.global_voice.cli_resolve = None;
+        }
         self.global_voice.host_held_since = None;
         self.global_voice.pending_target = None;
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);
@@ -373,7 +458,7 @@ impl Workspace {
         if let Some(owner) = self.global_voice.owner.as_ref() {
             if let Some(panel) = owner.panel.upgrade() {
                 panel.update(cx, |panel, cx| {
-                    panel.cancel_global_voice(&owner.attempt, cx)
+                    panel.cancel_global_voice(&owner.attempt, reason, cx)
                 });
             }
         }
@@ -400,7 +485,7 @@ impl Workspace {
                 this.global_voice.permission_task = None;
                 if !allowed {
                     eprintln!("global voice: denied by session check");
-                    this.cancel_global_voice_capture(cx);
+                    this.cancel_global_voice_capture("session check denied voice", cx);
                 } else if start && this.global_voice.held {
                     this.begin_global_voice(window, cx);
                 }
@@ -492,7 +577,11 @@ impl Workspace {
             .any(|slot| !slot.closing && slot.panel == panel)
         {
             panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                panel.cancel_global_voice(
+                    &self.global_voice.owner.as_ref().unwrap().attempt,
+                    "owning chat panel is closing",
+                    cx,
+                )
             });
             self.global_voice.close_overlay(cx);
             return;
@@ -513,8 +602,11 @@ impl Workspace {
                 // The result pill expires in both places, so focusing this
                 // window later never reveals a stale "Sent to agent".
                 panel.update(cx, |panel, cx| {
-                    panel
-                        .cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                    panel.cancel_global_voice(
+                        &self.global_voice.owner.as_ref().unwrap().attempt,
+                        "result pill expired",
+                        cx,
+                    )
                 });
                 self.global_voice.close_overlay(cx);
                 return;
@@ -544,7 +636,11 @@ impl Workspace {
         } else if !shown {
             // Never keep recording without a visible indicator.
             panel.update(cx, |panel, cx| {
-                panel.cancel_global_voice(&self.global_voice.owner.as_ref().unwrap().attempt, cx)
+                panel.cancel_global_voice(
+                    &self.global_voice.owner.as_ref().unwrap().attempt,
+                    "OS voice pill could not be shown",
+                    cx,
+                )
             });
             self.global_voice.close_overlay(cx);
         }

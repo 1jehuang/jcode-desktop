@@ -28,6 +28,10 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 #[path = "panel_selection_tests.rs"]
 mod selection_tests;
 
+#[cfg(test)]
+#[path = "panel_provisional_history_tests.rs"]
+mod provisional_history_tests;
+
 #[path = "panel_text_document.rs"]
 mod text_document;
 
@@ -44,11 +48,17 @@ mod activity;
 mod activity_state;
 #[path = "panel_scroll_motion.rs"]
 mod scroll_motion;
+#[path = "panel_tail_glide.rs"]
+mod tail_glide;
 use scroll_motion::WheelGlide;
+#[path = "panel_cache_miss.rs"]
+mod cache_miss;
 #[path = "panel_composer.rs"]
 mod composer;
 #[path = "panel_diff.rs"]
 mod diff_review;
+#[path = "panel_effort.rs"]
+mod effort_switch;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_pane.rs"]
@@ -85,6 +95,8 @@ mod stream_reveal;
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
 pub use startup::StartupLayout;
+#[path = "panel_applet.rs"]
+pub(crate) mod applet_panel;
 #[path = "panel_demo_replay.rs"]
 pub(crate) mod demo_replay;
 #[path = "panel_gmail_draft_card.rs"]
@@ -97,8 +109,9 @@ pub(crate) mod orchestration;
 mod response_stats;
 #[path = "panel_side_document.rs"]
 mod side_document;
-#[path = "panel_tab_emoji.rs"]
-mod tab_emoji;
+#[path = "panel_tab_outline.rs"]
+mod tab_outline;
+pub(crate) use tab_outline::TabRing;
 #[path = "panel_task_label.rs"]
 mod task_label;
 #[path = "panel_tool_streaming.rs"]
@@ -115,6 +128,9 @@ pub(crate) type SessionOpener =
 // Keep the last message/card clear of the composer and its metadata. This is
 // outside the scrolling list so it remains visible even while reading history.
 const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
+/// Height of the soft veil over the transcript's bottom edge while scrolled
+/// away from the live end.
+const TRANSCRIPT_FADE_HEIGHT: f32 = 44.0;
 
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
@@ -157,6 +173,12 @@ pub enum Item {
     Todos(TodoCardPayload),
     Error(String),
     Stopped(stop_reason::StopNotice),
+    /// Daemon-reported KV (prompt) cache miss for a provider request.
+    CacheMiss(cache_miss::CacheMissNotice),
+    /// An applet instance placed in this transcript that is not anchored to
+    /// a tool call. Only ever a derived render row, never stored in `items`.
+    #[serde(skip)]
+    Applet(String),
 }
 
 #[derive(Clone)]
@@ -273,6 +295,10 @@ pub struct PanelSnapshot {
 
 pub(crate) struct AccountsPanelClosed;
 pub(crate) struct AccountsPanelChooseModel;
+/// A banked reset on the Accounts page was clicked. Opens the review only.
+pub(crate) struct AccountsPanelRedeemReset(pub crate::accounts::BankedReset);
+
+impl gpui::EventEmitter<AccountsPanelRedeemReset> for Panel {}
 
 impl gpui::EventEmitter<AccountsPanelChooseModel> for Panel {}
 
@@ -295,6 +321,8 @@ pub struct Panel {
     pub auth_method: Option<String>,
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
+    /// Effort requests the runtime has not answered yet.
+    pending_effort: Option<effort_switch::PendingEffort>,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
     response_stats: response_stats::Tracker,
@@ -310,7 +338,7 @@ pub struct Panel {
     sound_events: crate::sound_events::SoundEvents,
     activity_spinner: Entity<activity::Spinner>,
     latest_activity_spinner: Entity<activity::Spinner>,
-    tab_emoji: Entity<tab_emoji::TabEmoji>,
+    tab_outline: Entity<tab_outline::TabOutline>,
     sidebar_spinner: Entity<activity::Spinner>,
     /// Selected workspace surface, independent of temporary keyboard focus.
     surface_focused: bool,
@@ -351,6 +379,10 @@ pub struct Panel {
     transcript_wheel_glide: WheelGlide,
     transcript_wheel_frame: Option<Instant>,
     transcript_wheel_frame_pending: bool,
+    /// Last frame of an eased tail follow. See `panel_tail_glide`.
+    tail_glide_at: Option<Instant>,
+    /// Scroll velocity of the tail glide spring, in px per second.
+    tail_glide_velocity: f32,
     stick_to_bottom: bool,
     transcript_end_visible: bool,
     /// A detached reload offset cannot be applied until asynchronous history
@@ -360,6 +392,13 @@ pub struct Panel {
     history_loaded: bool,
     reconnect_response: Option<jcode_sdk::HistoryMessage>,
     restored_transcript: bool,
+    /// Leading items painted from the persisted session record while the
+    /// runtime attaches. The authoritative history reply replaces them.
+    provisional_items: usize,
+    provisional_task: Option<gpui::Task<()>>,
+    /// A stored transcript is being read. Suppress the fresh-session empty
+    /// state so an established conversation never flashes the new-chat prompt.
+    awaiting_persisted: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
     pinned_task_label: Entity<task_label::TypeInLabel>,
@@ -370,6 +409,15 @@ pub struct Panel {
     accepted_users: HashMap<usize, Instant>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
     arriving_tools: HashMap<String, Instant>,
+    /// Item count when each unanchored inline applet first appeared, so an
+    /// `end` card stays where it was mounted as the conversation continues.
+    applet_positions: HashMap<String, usize>,
+    /// Selection scope for transcript applet cards.
+    applet_selection: Entity<TextSelection>,
+    /// Applet runtime generation last reflected in transcript measurements.
+    applet_generation: (u64, usize),
+    /// Unanchored transcript applets as `(item position, instance)`, in order.
+    applet_rows: Vec<(usize, String)>,
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
@@ -379,12 +427,8 @@ pub struct Panel {
     /// A read-only source file opened from the workspace file browser.
     code_file: Option<CodeFile>,
     side_document: Option<side_document::SideDocument>,
-    /// A native, read-only view of the locally connected Gmail inbox.
-    gmail_inbox: Option<GmailInboxState>,
-    /// The message currently opened from the Gmail inbox.
-    gmail_message: Option<GmailMessageState>,
-    /// Persistent scroll position shared by the inbox and opened message body.
-    gmail_scroll: ScrollHandle,
+    /// One mounted applet instance, rendered from the shared applet runtime.
+    applet: Option<applet_panel::AppletPanel>,
     /// A native Todoist-backed task view. The existing session todo cards remain
     /// independent and continue to represent the agent's current work.
     todoist: Option<TodoistPanelState>,
@@ -398,7 +442,6 @@ pub struct Panel {
     pub(crate) transcript_only: bool,
     login: Option<login::LoginState>,
     available_models: Vec<String>,
-    model_logo_providers: HashMap<String, String>,
 }
 
 /// Panel/chrome notifications do not imply that settled message heights changed.
@@ -515,165 +558,6 @@ impl TodoistPanelState {
     }
 }
 
-#[derive(Debug, Clone)]
-struct GmailMessageSummary {
-    id: String,
-    from: String,
-    subject: String,
-    date: String,
-    snippet: String,
-    unread: bool,
-    important: bool,
-    starred: bool,
-    category: Option<String>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct GmailMetadata {
-    unread: bool,
-    important: bool,
-    starred: bool,
-    category: Option<String>,
-}
-
-fn gmail_metadata(labels: &[String]) -> GmailMetadata {
-    let has_label = |wanted: &str| labels.iter().any(|label| label == wanted);
-    let category = labels.iter().find_map(|label| {
-        label.strip_prefix("CATEGORY_").map(|category| {
-            let mut chars = category.chars();
-            chars
-                .next()
-                .map(|first| {
-                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
-                })
-                .unwrap_or_default()
-        })
-    });
-    GmailMetadata {
-        unread: has_label("UNREAD"),
-        important: has_label("IMPORTANT"),
-        starred: has_label("STARRED"),
-        category,
-    }
-}
-
-#[cfg(test)]
-mod gmail_metadata_tests {
-    use super::{GmailMetadata, gmail_metadata};
-
-    fn labels(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_owned()).collect()
-    }
-
-    #[test]
-    fn identifies_gmail_attention_metadata_and_category() {
-        assert_eq!(
-            gmail_metadata(&labels(&[
-                "INBOX",
-                "UNREAD",
-                "IMPORTANT",
-                "STARRED",
-                "CATEGORY_PROMOTIONS",
-            ])),
-            GmailMetadata {
-                unread: true,
-                important: true,
-                starred: true,
-                category: Some("Promotions".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn ordinary_and_custom_labels_do_not_create_false_priority() {
-        assert_eq!(
-            gmail_metadata(&labels(&["INBOX", "Label_42"])),
-            GmailMetadata {
-                unread: false,
-                important: false,
-                starred: false,
-                category: None,
-            }
-        );
-    }
-}
-
-#[derive(Debug, Clone)]
-struct GmailMessageDetail {
-    summary: GmailMessageSummary,
-    to: String,
-    body: String,
-}
-
-#[derive(Debug, Clone)]
-enum GmailInboxState {
-    Loading,
-    Ready(Vec<GmailMessageSummary>),
-    Error(String),
-}
-
-#[derive(Debug, Clone)]
-enum GmailMessageState {
-    Loading(GmailMessageSummary),
-    Ready(GmailMessageDetail),
-    Error(GmailMessageSummary, String),
-}
-
-async fn load_gmail_inbox() -> anyhow::Result<Vec<GmailMessageSummary>> {
-    let client = jcode_base::gmail::GmailClient::new();
-    if !client.is_configured() {
-        anyhow::bail!(client.not_configured_message());
-    }
-    let list = client
-        .list_messages(Some("in:inbox"), Some(&["INBOX"]), 30)
-        .await?;
-    let client = Arc::new(client);
-    let mut tasks = tokio::task::JoinSet::new();
-    for (index, item) in list.messages.unwrap_or_default().into_iter().enumerate() {
-        let client = Arc::clone(&client);
-        tasks.spawn(async move {
-            let message = client
-                .get_message(&item.id, jcode_base::gmail::MessageFormat::Metadata)
-                .await?;
-            let metadata = gmail_metadata(message.label_ids.as_deref().unwrap_or_default());
-            anyhow::Ok((
-                index,
-                GmailMessageSummary {
-                    id: message.id.clone(),
-                    from: message.from().unwrap_or("Unknown sender").to_owned(),
-                    subject: message.subject().unwrap_or("(no subject)").to_owned(),
-                    date: message.date().unwrap_or_default().to_owned(),
-                    snippet: message.snippet.unwrap_or_default(),
-                    unread: metadata.unread,
-                    important: metadata.important,
-                    starred: metadata.starred,
-                    category: metadata.category,
-                },
-            ))
-        });
-    }
-    let mut messages = Vec::new();
-    while let Some(result) = tasks.join_next().await {
-        messages.push(result??);
-    }
-    messages.sort_by_key(|(index, _)| *index);
-    let messages = messages.into_iter().map(|(_, message)| message).collect();
-    Ok(messages)
-}
-
-async fn load_gmail_message(summary: GmailMessageSummary) -> anyhow::Result<GmailMessageDetail> {
-    let client = jcode_base::gmail::GmailClient::new();
-    let message = client
-        .get_message(&summary.id, jcode_base::gmail::MessageFormat::Full)
-        .await?;
-    let to = message.header("To").unwrap_or_default().to_owned();
-    let body = message
-        .body_text()
-        .filter(|body| !body.trim().is_empty())
-        .unwrap_or_else(|| summary.snippet.clone());
-    Ok(GmailMessageDetail { summary, to, body })
-}
-
 #[path = "panel_changelog.rs"]
 mod changelog_panel;
 
@@ -687,9 +571,27 @@ impl Panel {
         self.session_id == Self::CHANGELOG_SESSION_ID
     }
 
-    pub(crate) fn tab_activity(&self) -> Option<gpui::AnyView> {
-        self.activity_active()
-            .then(|| self.tab_emoji.clone().into())
+    /// State ring painted over the tab outline. The session emoji stays still.
+    pub(crate) fn tab_ring(&self) -> Option<TabRing> {
+        // Only a live turn animates. `minimap_state` treats any non-idle
+        // status as work, which would ring merely connected sessions.
+        let state = match self.minimap_state() {
+            MinimapSessionState::Error => MinimapSessionState::Error,
+            _ if self.activity_active() => MinimapSessionState::Working,
+            MinimapSessionState::Complete => MinimapSessionState::Complete,
+            _ if self
+                .latest_todo_progress()
+                .is_some_and(|(done, total)| total > 0 && done == total) =>
+            {
+                MinimapSessionState::Complete
+            }
+            _ => MinimapSessionState::Idle,
+        };
+        TabRing::resolve(state, self.latest_todo_progress())
+    }
+
+    pub(crate) fn tab_outline(&self) -> gpui::AnyView {
+        self.tab_outline.clone().into()
     }
 
     /// Sidebar spinner for a session running in the shared daemon without an
@@ -698,6 +600,7 @@ impl Panel {
         cx.new(activity::Spinner::for_daemon_session).into()
     }
 
+    #[cfg(test)]
     pub(crate) fn sidebar_mark(&self) -> Option<gpui::AnyView> {
         self.supports_voice()
             .then(|| self.sidebar_spinner.clone().into())
@@ -727,8 +630,7 @@ impl Panel {
             || self.is_accounts_panel()
             || self.code_file.is_some()
             || self.is_side_document()
-            || self.gmail_inbox.is_some()
-            || self.gmail_message.is_some()
+            || self.applet.is_some()
             || self.todoist.is_some()
             || self.orchestration.is_some()
             || self.terminal.is_some()
@@ -771,10 +673,6 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.session_id = session.session_id;
-        let emoji = jcode_core::id::extract_session_name(&self.session_id)
-            .map(jcode_core::id::session_icon)
-            .unwrap_or("💫");
-        self.tab_emoji = cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx));
         self.title = session
             .title
             .filter(|title| !title.is_empty())
@@ -860,9 +758,6 @@ impl Panel {
             );
         let usage_fixture = crate::harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tokens");
-        let emoji = jcode_core::id::extract_session_name(&session_id)
-            .map(jcode_core::id::session_icon)
-            .unwrap_or("💫");
         let activity_status =
             if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
                 match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
@@ -885,6 +780,7 @@ impl Panel {
             provider: usage_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
             reasoning_effort: usage_fixture.then(|| "high".into()),
+            pending_effort: None,
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
             items: demo_items(),
@@ -903,7 +799,7 @@ impl Panel {
             show_build_footer: true,
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
-            tab_emoji: cx.new(|cx| tab_emoji::TabEmoji::new(emoji, cx)),
+            tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
             sidebar_spinner: cx
                 .new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
             surface_focused: true,
@@ -938,6 +834,8 @@ impl Panel {
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
+            tail_glide_at: None,
+            tail_glide_velocity: 0.0,
             stick_to_bottom: true,
             transcript_end_visible: true,
             pending_history_scroll: None,
@@ -947,6 +845,9 @@ impl Panel {
             history_loaded: false,
             reconnect_response: None,
             restored_transcript: false,
+            provisional_items: 0,
+            provisional_task: None,
+            awaiting_persisted: false,
             expanded_tools: HashSet::new(),
             pinned_task_label: cx.new(task_label::TypeInLabel::new),
             tool_detail_motion: HashMap::new(),
@@ -954,6 +855,10 @@ impl Panel {
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
+            applet_positions: HashMap::new(),
+            applet_selection: cx.new(TextSelection::new),
+            applet_generation: (u64::MAX, 0),
+            applet_rows: Vec::new(),
             tool_started: HashMap::new(),
             tool_durations: HashMap::new(),
             terminal: None,
@@ -961,9 +866,7 @@ impl Panel {
             unfinished_session_opener: None,
             code_file: None,
             side_document: None,
-            gmail_inbox: None,
-            gmail_message: None,
-            gmail_scroll: ScrollHandle::new(),
+            applet: None,
             todoist: (crate::harness::screenshot_mode()
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos"))
             .then(|| TodoistPanelState::fixture(80)),
@@ -977,7 +880,6 @@ impl Panel {
             transcript_only: false,
             login: None,
             available_models: Vec::new(),
-            model_logo_providers: HashMap::new(),
         }
     }
 
@@ -1159,28 +1061,11 @@ impl Panel {
     }
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
-        self.can_fork()
-            && self.gmail_inbox.is_none()
-            && self.todoist.is_none()
-            && self.orchestration.is_none()
+        self.can_fork() && self.todoist.is_none() && self.orchestration.is_none()
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {
         self.session_id.starts_with("accounts://")
-    }
-
-    pub fn new_gmail(bridge: Bridge, cx: &mut Context<Self>) -> Self {
-        let mut panel = Self::new(
-            "gmail://inbox".into(),
-            Some("inbox".into()),
-            None,
-            bridge,
-            cx,
-        );
-        panel.items.clear();
-        panel.gmail_inbox = Some(GmailInboxState::Loading);
-        panel.refresh_gmail(cx);
-        panel
     }
 
     pub fn new_todoist(bridge: Bridge, cx: &mut Context<Self>) -> Self {
@@ -1596,589 +1481,6 @@ impl Panel {
             .into_any_element()
     }
 
-    fn refresh_gmail(&mut self, cx: &mut Context<Self>) {
-        self.gmail_message = None;
-        // Unit UI tests must not access real credentials/network or leave an OS
-        // worker waking GPUI after its deterministic test scheduler is dropped.
-        // Tests that need inbox contents install their own explicit fixtures.
-        if cfg!(test) {
-            self.gmail_inbox = Some(GmailInboxState::Error(
-                "Gmail network access is disabled in UI unit tests".into(),
-            ));
-            cx.notify();
-            return;
-        }
-        self.gmail_inbox = Some(GmailInboxState::Loading);
-        cx.notify();
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::Builder::new()
-            .name("jcode-gmail-inbox".into())
-            .spawn(move || {
-                let result = tokio::runtime::Runtime::new()
-                    .map_err(anyhow::Error::from)
-                    .and_then(|runtime| runtime.block_on(load_gmail_inbox()));
-                let _ = tx.send_blocking(result);
-            })
-            .expect("spawn Gmail inbox worker");
-        cx.spawn(async move |this, cx| {
-            let result = rx
-                .recv()
-                .await
-                .unwrap_or_else(|error| Err(anyhow::Error::from(error)));
-            let _ = this.update(cx, |panel, cx| {
-                panel.gmail_inbox = Some(match result {
-                    Ok(messages) => GmailInboxState::Ready(messages),
-                    Err(error) => GmailInboxState::Error(error.to_string()),
-                });
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn open_gmail_message(&mut self, summary: GmailMessageSummary, cx: &mut Context<Self>) {
-        // Isolate detail/retry requests as well as the initial inbox refresh.
-        if cfg!(test) {
-            self.gmail_message = Some(GmailMessageState::Error(
-                summary,
-                "Gmail network access is disabled in UI unit tests".into(),
-            ));
-            cx.notify();
-            return;
-        }
-        self.gmail_message = Some(GmailMessageState::Loading(summary.clone()));
-        cx.notify();
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::Builder::new()
-            .name("jcode-gmail-message".into())
-            .spawn(move || {
-                let result = tokio::runtime::Runtime::new()
-                    .map_err(anyhow::Error::from)
-                    .and_then(|runtime| runtime.block_on(load_gmail_message(summary)));
-                let _ = tx.send_blocking(result);
-            })
-            .expect("spawn Gmail message worker");
-        cx.spawn(async move |this, cx| {
-            let result = rx
-                .recv()
-                .await
-                .unwrap_or_else(|error| Err(anyhow::Error::from(error)));
-            let _ = this.update(cx, |panel, cx| {
-                panel.gmail_message = Some(match result {
-                    Ok(message) => GmailMessageState::Ready(message),
-                    Err(error) => {
-                        let summary = match panel.gmail_message.take() {
-                            Some(GmailMessageState::Loading(summary)) => summary,
-                            Some(GmailMessageState::Error(summary, _)) => summary,
-                            Some(GmailMessageState::Ready(message)) => message.summary,
-                            None => return,
-                        };
-                        GmailMessageState::Error(summary, error.to_string())
-                    }
-                });
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn render_gmail(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let detail_open = self.gmail_message.is_some();
-        let title = if detail_open { "Message" } else { "Email" };
-        let mut header = div()
-            .flex_none()
-            .h(px(52.))
-            .px_4()
-            .flex()
-            .items_center()
-            .gap_3()
-            .border_b_1()
-            .border_color(Theme::global().PANEL_BORDER);
-        if detail_open {
-            header = header.child(
-                div()
-                    .id("gmail-back")
-                    .cursor_pointer()
-                    .rounded_md()
-                    .px_2()
-                    .py_1()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.gmail_message = None;
-                            cx.notify();
-                        }),
-                    )
-                    .child("‹  Email"),
-            );
-        }
-        header = header
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(format!("Gmail  ·  {title}")),
-            )
-            .child(
-                div()
-                    .id("gmail-chat")
-                    .debug_selector(|| "gmail-chat".into())
-                    .cursor_pointer()
-                    .rounded_md()
-                    .px_2()
-                    .py_1()
-                    .text_size(px(11.))
-                    .bg(Theme::global().ACCENT_DIM)
-                    .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, _| {
-                            this.bridge.send(Command::CreateSession {
-                                working_dir: None,
-                                request_id: None,
-                            });
-                        }),
-                    )
-                    .child("Chat with email"),
-            )
-            .when(!detail_open, |header| {
-                header.child(
-                    div()
-                        .id("gmail-refresh")
-                        .cursor_pointer()
-                        .rounded_md()
-                        .px_2()
-                        .py_1()
-                        .text_size(px(11.))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.refresh_gmail(cx)),
-                        )
-                        .child("↻  Refresh"),
-                )
-            });
-
-        let mut body = div()
-            .id("gmail-inbox")
-            .debug_selector(|| "gmail-inbox".into())
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .restrict_scroll_to_axis()
-            .track_scroll(&self.gmail_scroll)
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_2();
-
-        if let Some(message) = &self.gmail_message {
-            body = match message {
-                GmailMessageState::Loading(summary) => body
-                    .child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(summary.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child("Loading message…"),
-                    ),
-                GmailMessageState::Error(summary, error) => {
-                    let retry = summary.clone();
-                    body.child(
-                        div()
-                            .text_size(px(18.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(summary.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_color(Theme::global().ERROR)
-                            .child("Could not load this message"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(error.clone()),
-                    )
-                    .child(
-                        div()
-                            .id("gmail-message-retry")
-                            .cursor_pointer()
-                            .rounded_md()
-                            .px_3()
-                            .py_2()
-                            .bg(Theme::global().INLINE_CODE_BG)
-                            .child("Try again")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.open_gmail_message(retry.clone(), cx)
-                                }),
-                            ),
-                    )
-                }
-                GmailMessageState::Ready(message) => {
-                    let initial = message
-                        .summary
-                        .from
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_uppercase()
-                        .to_string();
-                    body.child(
-                        div()
-                            .flex_none()
-                            .text_size(px(20.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(message.summary.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .mt_2()
-                            .p_3()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER)
-                            .bg(Theme::global().HEADER_BG)
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .size(px(36.))
-                                    .rounded_full()
-                                    .bg(Theme::global().INLINE_CODE_BG)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(initial),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(message.summary.from.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(10.))
-                                            .text_color(Theme::global().TEXT_FAINT)
-                                            .child(format!("to {}", message.to)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .child(message.summary.date.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .mt_2()
-                            .p_4()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER)
-                            .text_size(px(13.))
-                            .line_height(relative(1.55))
-                            .whitespace_normal()
-                            .child(message.body.clone()),
-                    )
-                }
-            };
-        } else if let Some(inbox) = &self.gmail_inbox {
-            match inbox {
-                GmailInboxState::Loading => {
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child("Loading your email…"),
-                    );
-                }
-                GmailInboxState::Error(error) => {
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER)
-                            .child(
-                                div()
-                                    .text_color(Theme::global().ERROR)
-                                    .child("Could not load Gmail"),
-                            )
-                            .child(
-                                div()
-                                    .mt_2()
-                                    .text_size(px(11.))
-                                    .text_color(Theme::global().TEXT_DIM)
-                                    .child(error.clone()),
-                            ),
-                    );
-                }
-                GmailInboxState::Ready(messages) if messages.is_empty() => {
-                    body = body.child(
-                        div()
-                            .p_6()
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child("You’re all caught up. Your email inbox is empty."),
-                    );
-                }
-                GmailInboxState::Ready(messages) => {
-                    body = body.child(
-                        div()
-                            .mb_2()
-                            .text_size(px(11.))
-                            .text_color(Theme::global().TEXT_FAINT)
-                            .child(format!("{} recent messages", messages.len())),
-                    );
-                    for (index, message) in messages.iter().enumerate() {
-                        let open_message = message.clone();
-                        let initial = message
-                            .from
-                            .chars()
-                            .next()
-                            .unwrap_or('?')
-                            .to_uppercase()
-                            .to_string();
-                        body = body.child(
-                            div()
-                                .id(("gmail-message", index))
-                                .debug_selector(move || format!("gmail-message-{index}").into())
-                                .flex_none()
-                                .cursor_pointer()
-                                .p_3()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(Theme::global().PANEL_BORDER)
-                                .bg(if message.unread {
-                                    Theme::global().HEADER_BG
-                                } else {
-                                    Theme::global().PANEL_BG
-                                })
-                                .hover(|el| el.bg(Theme::global().INLINE_CODE_BG))
-                                .flex()
-                                .items_start()
-                                .gap_3()
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.open_gmail_message(open_message.clone(), cx)
-                                    }),
-                                )
-                                .child(
-                                    div()
-                                        .mt_1()
-                                        .size(px(32.))
-                                        .rounded_full()
-                                        .bg(Theme::global().INLINE_CODE_BG)
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(11.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(initial),
-                                )
-                                .child(
-                                    div()
-                                        .mt_1()
-                                        .w(px(18.))
-                                        .flex_none()
-                                        .flex()
-                                        .flex_col()
-                                        .items_center()
-                                        .gap(px(2.))
-                                        .when(message.starred, |el| {
-                                            el.child(
-                                                div()
-                                                    .text_size(px(13.))
-                                                    .text_color(Theme::global().ACCENT)
-                                                    .child("★"),
-                                            )
-                                        })
-                                        .when(message.important, |el| {
-                                            el.child(
-                                                div()
-                                                    .text_size(px(10.))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(Theme::global().USER_ACCENT)
-                                                    .child("››"),
-                                            )
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(3.))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .overflow_hidden()
-                                                        .whitespace_nowrap()
-                                                        .text_ellipsis()
-                                                        .font_weight(if message.unread {
-                                                            FontWeight::SEMIBOLD
-                                                        } else {
-                                                            FontWeight::NORMAL
-                                                        })
-                                                        .child(message.from.clone()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_none()
-                                                        .text_size(px(10.))
-                                                        .text_color(Theme::global().TEXT_FAINT)
-                                                        .child(message.date.clone()),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .font_weight(if message.unread {
-                                                    FontWeight::SEMIBOLD
-                                                } else {
-                                                    FontWeight::NORMAL
-                                                })
-                                                .child(message.subject.clone()),
-                                        )
-                                        .when(
-                                            message.unread
-                                                || message.important
-                                                || message.starred
-                                                || message.category.is_some(),
-                                            |content| {
-                                                let metadata = div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .text_size(px(9.));
-                                                let metadata =
-                                                    metadata.when(message.unread, |el| {
-                                                        el.child(
-                                                            div()
-                                                                .debug_selector(|| {
-                                                                    "gmail-metadata-unread".into()
-                                                                })
-                                                                .px_1()
-                                                                .rounded_sm()
-                                                                .bg(Theme::global().ACCENT_DIM)
-                                                                .font_weight(FontWeight::SEMIBOLD)
-                                                                .child("Unread"),
-                                                        )
-                                                    });
-                                                let metadata =
-                                                    metadata.when(message.important, |el| {
-                                                        el.child(
-                                                            div()
-                                                                .debug_selector(|| {
-                                                                    "gmail-metadata-important"
-                                                                        .into()
-                                                                })
-                                                                .px_1()
-                                                                .rounded_sm()
-                                                                .text_color(
-                                                                    Theme::global().USER_ACCENT,
-                                                                )
-                                                                .child("Important"),
-                                                        )
-                                                    });
-                                                let metadata =
-                                                    metadata.when(message.starred, |el| {
-                                                        el.child(
-                                                            div()
-                                                                .debug_selector(|| {
-                                                                    "gmail-metadata-starred".into()
-                                                                })
-                                                                .px_1()
-                                                                .rounded_sm()
-                                                                .child("Starred"),
-                                                        )
-                                                    });
-                                                let metadata = match &message.category {
-                                                    Some(category) => metadata.child(
-                                                        div()
-                                                            .debug_selector(|| {
-                                                                "gmail-metadata-category".into()
-                                                            })
-                                                            .px_1()
-                                                            .rounded_sm()
-                                                            .text_color(Theme::global().TEXT_DIM)
-                                                            .child(category.clone()),
-                                                    ),
-                                                    None => metadata,
-                                                };
-                                                content.child(metadata)
-                                            },
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(11.))
-                                                .text_color(Theme::global().TEXT_DIM)
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .child(message.snippet.clone()),
-                                        ),
-                                ),
-                        );
-                    }
-                }
-            }
-        }
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .track_focus(&self.focus_handle)
-            .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .child(body)
-                    .child(crate::scrollbar::vertical(
-                        &self.gmail_scroll,
-                        "gmail-scrollbar",
-                    )),
-            )
-            .into_any_element()
-    }
-
     pub fn new_terminal(
         working_dir: Option<String>,
         bridge: Bridge,
@@ -2319,6 +1621,13 @@ impl Panel {
                             return;
                         }
                         // First-run launch is local, including before a session connects.
+                        if images.is_empty() && content.trim() == "/applets" {
+                            _window.dispatch_action(
+                                Box::new(crate::workspace::OpenAppletShowcase),
+                                app,
+                            );
+                            return;
+                        }
                         if images.is_empty()
                             && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
                         {
@@ -2481,6 +1790,7 @@ impl Panel {
                         provider: Some("openai".into()),
                         model: Some("openai:atlas-01".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                         routes,
                     },
                     cx,
@@ -2492,6 +1802,15 @@ impl Panel {
                     .update(cx, |input, cx| input.set_pending_session(true, cx));
             }
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_slash_command_for_test(
+        &mut self,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.handle_slash_command(content, cx)
     }
 
     fn handle_slash_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
@@ -2519,18 +1838,12 @@ impl Panel {
             self.items
                 .push(Item::Assistant(format!("Switching model to `{model}`…")));
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
-            const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-            if EFFORTS.contains(&effort) {
+            let effort = effort.to_ascii_lowercase();
+            if self.request_effort(&effort, cx) {
                 let input = self.input.clone();
                 cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
-                self.run_session_operation(
-                    SessionOperation::SetEffort(effort.to_string()),
-                    format!("Reasoning effort set to `{effort}`."),
-                );
-            } else {
-                self.items.push(Item::Error(format!(
-                    "Usage: `/effort <{}>`",
-                    EFFORTS.join("|")
+                self.items.push(Item::Assistant(format!(
+                    "Reasoning effort set to `{effort}`."
                 )));
             }
         } else if let Some(title) = trimmed.strip_prefix("/rename ").map(str::trim) {
@@ -2542,6 +1855,23 @@ impl Panel {
                 let title = (title != "--clear").then(|| title.to_string());
                 self.run_session_operation(SessionOperation::Rename(title), "Session renamed.");
             }
+        } else if trimmed == "/save" || trimmed.starts_with("/save ") {
+            let label = trimmed["/save".len()..].trim();
+            let label = (!label.is_empty()).then(|| label.to_string());
+            let message = match &label {
+                Some(label) => {
+                    format!(
+                        "📌 Session saved as \"{label}\". It will appear at the top of /resume."
+                    )
+                }
+                None => "📌 Session saved. It will appear at the top of /resume.".to_string(),
+            };
+            self.run_session_operation(SessionOperation::SetSaved(true, label), message);
+        } else if trimmed == "/unsave" {
+            self.run_session_operation(
+                SessionOperation::SetSaved(false, None),
+                "Session removed from saved.",
+            );
         } else if let Some(target) = trimmed.strip_prefix("/rewind ").map(str::trim) {
             if target == "undo" {
                 self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");
@@ -2638,9 +1968,21 @@ impl Panel {
                         }).detach();
                     }
                 }
-                "/effort" => self.items.push(Item::Assistant(
-                    "Usage: `/effort <none|minimal|low|medium|high|xhigh|max>`.".into(),
-                )),
+                "/effort" => {
+                    let ladder = self.effort_ladder();
+                    let current = self.reasoning_effort.as_deref().unwrap_or("default");
+                    let keys = crate::effort::bound_keys_label(cx)
+                        .map(|keys| format!(" or {keys}"))
+                        .unwrap_or_default();
+                    self.items.push(Item::Assistant(if ladder.is_empty() {
+                        "Reasoning effort is not available for this model.".into()
+                    } else {
+                        format!(
+                            "Effort: `{current}`. Use `/effort <{}>`{keys} to change it.",
+                            ladder.join("|")
+                        )
+                    }));
+                }
                 "/rename" => self.items.push(Item::Error(
                     "Usage: `/rename <session name>` or `/rename --clear`.".into(),
                 )),
@@ -2764,56 +2106,13 @@ impl Panel {
         crate::sounds::play(crate::sounds::Cue::Sent, cx);
     }
 
-    pub(crate) fn history_loaded(&self) -> bool {
-        self.history_loaded
-    }
-
-    pub fn load_history(
-        &mut self,
+    /// Convert protocol history into transcript items. Shared by the
+    /// authoritative reply and the provisional on-disk prefix so both paint
+    /// identically.
+    fn history_items(
         messages: Vec<jcode_sdk::HistoryMessage>,
         images: Vec<jcode_sdk::RenderedImage>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.is_side_document() {
-            return;
-        }
-        self.transcript_measurements.dirty = true;
-        if self.restored_transcript {
-            self.hydrate_restored_prefix(&messages);
-            // An empty/behind reply still completes the connection handshake.
-            // Keep the cache reconciliation marker independent of readiness.
-            self.history_loaded = true;
-            self.input
-                .update(cx, |input, cx| input.set_pending_session(false, cx));
-        }
-        if self.history_loaded {
-            // History is persisted message state, not a replay of the live turn.
-            // Wait for authoritative idle before reconciling it with a saved
-            // suffix. Buffered deltas must not be appended to a history prefix.
-            self.defer_reconnect_history(&messages);
-            for image in images {
-                self.insert_rendered_image(image);
-            }
-            self.send_queued_prompts(cx);
-            cx.notify();
-            return;
-        }
-        self.history_loaded = true;
-        if !self.is_pending_session() {
-            self.input
-                .update(cx, |input, cx| input.set_pending_session(false, cx));
-        }
-        // An established session can paint an empty placeholder before its
-        // history arrives. That must not adopt a new conversation's layout.
-        if !messages.is_empty()
-            && self.pending_users.is_empty()
-            && self
-                .startup_layout
-                .as_ref()
-                .is_some_and(|layout| !layout.committed)
-        {
-            self.startup_layout = None;
-        }
+    ) -> Vec<Item> {
         let mut images_by_prompt: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut images_by_message: HashMap<usize, Vec<jcode_sdk::RenderedImage>> = HashMap::new();
         let mut trailing_images = Vec::new();
@@ -2882,6 +2181,167 @@ impl Panel {
                 .into_iter()
                 .map(|image| Item::Image(TranscriptImage::from_rendered(image))),
         );
+        items
+    }
+
+    /// Paint the locally persisted transcript while the runtime attaches.
+    /// Attaching restores the agent before `get_history` can answer, which
+    /// takes hundreds of milliseconds. The stored record renders in a few, so
+    /// the reader sees the conversation at once and the authoritative reply
+    /// swaps in underneath (usually as a no-op when nothing changed).
+    pub fn prefetch_persisted_history(&mut self, cx: &mut Context<Self>) {
+        if cfg!(test) || crate::harness::screenshot_mode() {
+            return;
+        }
+        let id = self.session_id.clone();
+        if !crate::persisted_history::is_local_session_id(&id)
+            || !jcode_base::session::session_path(&id).is_ok_and(|path| path.exists())
+        {
+            return;
+        }
+        self.prefetch_history_with(move || crate::persisted_history::load(&id), cx);
+    }
+
+    pub(crate) fn prefetch_history_with(
+        &mut self,
+        loader: impl FnOnce() -> Result<crate::persisted_history::History, String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_show_provisional() {
+            return;
+        }
+        self.awaiting_persisted = true;
+        let started = Instant::now();
+        // Parse, render, and decode images off the UI thread.
+        let request = cx.background_executor().spawn(async move {
+            loader().map(|(messages, images)| Self::history_items(messages, images))
+        });
+        self.provisional_task = Some(cx.spawn(async move |this, cx| {
+            let result = request.await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.provisional_task = None;
+                if std::mem::take(&mut panel.awaiting_persisted) {
+                    cx.notify();
+                }
+                let Ok(items) = result else { return };
+                if items.is_empty() || !panel.can_show_provisional() {
+                    return;
+                }
+                eprintln!(
+                    "jcode desktop: provisional transcript items={} in {:?}",
+                    items.len(),
+                    started.elapsed()
+                );
+                panel.provisional_items = items.len();
+                panel.items = items;
+                panel.transcript_measurements.dirty = true;
+                if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
+                    panel.startup_layout = None;
+                }
+                if panel.pending_history_scroll.is_none() && panel.stick_to_bottom {
+                    panel.transcript_list.scroll_to_end();
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Only an untouched, not-yet-hydrated transcript may borrow the disk copy.
+    fn can_show_provisional(&self) -> bool {
+        !self.history_loaded
+            && !self.restored_transcript
+            && !self.transcript_only
+            && !self.is_side_document()
+            && self.provisional_items == 0
+            && self.items.is_empty()
+            && self.pending_users.is_empty()
+            && self.streaming_text.is_empty()
+            && self.streaming_reasoning.is_empty()
+    }
+
+    /// Retire the provisional prefix before the authoritative history lands.
+    /// Returns true when the reply matched it exactly and nothing else is
+    /// needed, which keeps measurements and scroll position untouched.
+    fn adopt_authoritative_over_provisional(&mut self, items: &[Item]) -> bool {
+        self.provisional_task = None;
+        self.awaiting_persisted = false;
+        let count = std::mem::take(&mut self.provisional_items).min(self.items.len());
+        if count == 0 {
+            return false;
+        }
+        if self.items[..count] == *items {
+            return true;
+        }
+        self.items.drain(..count);
+        self.pending_users = self
+            .pending_users
+            .drain(..)
+            .filter_map(|index| index.checked_sub(count))
+            .collect();
+        self.accepted_users = std::mem::take(&mut self.accepted_users)
+            .into_iter()
+            .filter_map(|(index, at)| Some((index.checked_sub(count)?, at)))
+            .collect();
+        self.expanded_prompts.clear();
+        false
+    }
+
+    pub(crate) fn history_loaded(&self) -> bool {
+        self.history_loaded
+    }
+
+    pub fn load_history(
+        &mut self,
+        messages: Vec<jcode_sdk::HistoryMessage>,
+        images: Vec<jcode_sdk::RenderedImage>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_side_document() {
+            return;
+        }
+        self.transcript_measurements.dirty = true;
+        if self.restored_transcript {
+            self.hydrate_restored_prefix(&messages);
+            // An empty/behind reply still completes the connection handshake.
+            // Keep the cache reconciliation marker independent of readiness.
+            self.history_loaded = true;
+            self.input
+                .update(cx, |input, cx| input.set_pending_session(false, cx));
+        }
+        if self.history_loaded {
+            // History is persisted message state, not a replay of the live turn.
+            // Wait for authoritative idle before reconciling it with a saved
+            // suffix. Buffered deltas must not be appended to a history prefix.
+            self.defer_reconnect_history(&messages);
+            for image in images {
+                self.insert_rendered_image(image);
+            }
+            self.send_queued_prompts(cx);
+            cx.notify();
+            return;
+        }
+        self.history_loaded = true;
+        if !self.is_pending_session() {
+            self.input
+                .update(cx, |input, cx| input.set_pending_session(false, cx));
+        }
+        // An established session can paint an empty placeholder before its
+        // history arrives. That must not adopt a new conversation's layout.
+        if !messages.is_empty()
+            && self.pending_users.is_empty()
+            && self
+                .startup_layout
+                .as_ref()
+                .is_some_and(|layout| !layout.committed)
+        {
+            self.startup_layout = None;
+        }
+        let mut items = Self::history_items(messages, images);
+        if self.adopt_authoritative_over_provisional(&items) {
+            self.send_queued_prompts(cx);
+            cx.notify();
+            return;
+        }
         // History goes first; anything echoed locally before it arrived is
         // appended, minus the duplicate the server already knows about.
         let mut existing = std::mem::take(&mut self.items);
@@ -3137,6 +2597,7 @@ impl Panel {
                 provider,
                 model,
                 reasoning_effort,
+                auth_method,
                 ..
             } => {
                 if provider.is_some() {
@@ -3144,7 +2605,7 @@ impl Panel {
                 }
                 // Identity events always carry the current effort, and `None`
                 // means the provider has none, so a stale label never lingers.
-                self.reasoning_effort = reasoning_effort.clone();
+                self.identity_effort(reasoning_effort.clone());
                 // Only an actual switch invalidates the auth method: the route
                 // catalog keyed it by model, but effort broadcasts repeat the
                 // current model and must not wipe a still-correct label.
@@ -3155,29 +2616,38 @@ impl Panel {
                         input.set_current_model(self.model.clone(), cx)
                     });
                 }
+                // The daemon's resolved credential is authoritative, including
+                // an OAuth<->API key switch that keeps the same model id.
+                if let Some(method) = auth_method.as_deref() {
+                    self.auth_method = Some(human_auth_method(method));
+                }
+                self.sync_effort_menu(cx);
             }
             ApiEvent::RuntimeInfo {
                 provider,
                 model,
                 reasoning_effort,
+                auth_method,
                 routes,
                 ..
             } => {
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
-                self.reasoning_effort = reasoning_effort.clone();
+                self.identity_effort(reasoning_effort.clone());
                 if model.is_some() {
                     self.model = model.clone();
                 }
-                self.auth_method = auth_method_for_model(self.model.as_deref(), routes);
+                self.auth_method = auth_method
+                    .as_deref()
+                    .map(human_auth_method)
+                    .or_else(|| auth_method_for_model(self.model.as_deref(), routes));
                 let models = available_model_names(routes);
-                self.model_logo_providers = available_model_logo_providers(routes);
                 self.available_models = models.clone();
                 self.input.update(cx, |input, cx| {
                     input.set_model_routes(models, routes, self.model.clone(), cx);
-                    input.set_model_logo_providers(self.model_logo_providers.clone(), cx);
                 });
+                self.sync_effort_menu(cx);
             }
             ApiEvent::TokenUsage {
                 input,
@@ -3192,6 +2662,14 @@ impl Panel {
                         *cache_read_input,
                         *cache_creation_input,
                     ));
+            }
+            ApiEvent::KvCacheMiss { .. } => {
+                if let Some(notice) = cache_miss::CacheMissNotice::from_event(event) {
+                    // Keep the notice in order: settle text streamed so far.
+                    self.flush_reasoning();
+                    self.flush_streaming();
+                    self.items.push(Item::CacheMiss(notice));
+                }
             }
             ApiEvent::SessionRenamed { display_title, .. } => {
                 self.title = display_title.clone().into();
@@ -3236,7 +2714,8 @@ impl Panel {
 
     /// Advance the paced reveal of live reasoning and response text. Only the
     /// visible prefix is rendered, so bursts flow in instead of jumping.
-    fn tick_stream_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Returns true when motion is instant this frame (reduced motion, tests).
+    fn tick_stream_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         // Render tests assert on painted text from a single frame.
         #[cfg(test)]
         let test_snap = !self.animate_stream_in_tests;
@@ -3256,6 +2735,17 @@ impl Panel {
         if text || reasoning {
             window.request_animation_frame();
         }
+        instant
+    }
+
+    /// Raw streamed input of a tool call in this transcript.
+    pub(crate) fn tool_input(&self, call_id: &str) -> Option<&str> {
+        self.items.iter().rev().find_map(|item| match item {
+            Item::Tool {
+                call_id: id, input, ..
+            } if id == call_id => Some(input.as_str()),
+            _ => None,
+        })
     }
 
     fn find_tool(&mut self, call_id: &str) -> Option<&mut Item> {
@@ -3475,11 +2965,70 @@ impl Panel {
             .into_any_element()
     }
 
+    /// Refresh transcript applet placement from the shared runtime. Cards
+    /// anchored to a tool call render in that call's row. Everything else
+    /// (`end`, `after_message`, and tool anchors whose call is not in this
+    /// transcript, such as batch subcalls) is pinned at the position where
+    /// it first appeared so it scrolls with the conversation.
+    fn sync_applet_rows(&mut self, cx: &mut Context<Self>) {
+        use jcode_applet_types::{Placement, placement::Anchor};
+        let runtime = crate::applet_runtime::get(cx);
+        let generation = runtime.generation.get();
+        let key = (generation, self.items.len());
+        if key == self.applet_generation {
+            return;
+        }
+        self.applet_generation = key;
+        let host = runtime.host.borrow();
+        let mut rows = Vec::new();
+        let mut seen = HashSet::new();
+        for mounted in host.inline_for(&self.session_id) {
+            let id = mounted.instance.id.clone();
+            if let Placement::Inline {
+                anchor: Anchor::ToolCall { call_id },
+                ..
+            } = &mounted.instance.placement
+                && self
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::Tool { call_id: c, .. } if c == call_id))
+            {
+                continue;
+            }
+            let position = *self
+                .applet_positions
+                .entry(id.clone())
+                .or_insert(self.items.len());
+            seen.insert(id.clone());
+            rows.push((position, id));
+        }
+        drop(host);
+        self.applet_positions.retain(|id, _| seen.contains(id));
+        rows.sort_by_key(|(position, _)| *position);
+        // Any card change (mount, patch, close) can change row heights.
+        self.transcript_measurements.dirty = true;
+        self.applet_rows = rows;
+    }
+
     fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
+        let mut applets = self.applet_rows.iter().enumerate().peekable();
+        let applet_row = |ordinal: usize, instance: &String| TranscriptRenderRow {
+            // Derived rows need indices that never collide with items or the
+            // live streaming sentinels at the top of the range.
+            index: usize::MAX / 2 + ordinal,
+            source: TranscriptRowSource::Owned(Box::new(Item::Applet(instance.clone()))),
+            role: None,
+            show_label: false,
+        };
 
         for (index, item) in self.items.iter().enumerate() {
+            while let Some((ordinal, (_, instance))) =
+                applets.next_if(|(_, (position, _))| *position <= index)
+            {
+                rows.push(applet_row(ordinal, instance));
+            }
             if matches!(item, Item::Todos(_))
                 || matches!(item, Item::Tool { name, .. } if name == "todo")
             {
@@ -3516,6 +3065,10 @@ impl Panel {
                 show_label: role.is_some() && role != previous_role,
             });
             previous_role = role.or(previous_role);
+        }
+
+        for (ordinal, (_, instance)) in applets {
+            rows.push(applet_row(ordinal, instance));
         }
 
         for (index, item) in [
@@ -3593,11 +3146,17 @@ impl Panel {
         index: usize,
         item: &Item,
         _show_avatar: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match item {
+            Item::Applet(instance) => {
+                let selection = self.applet_selection.clone();
+                crate::applet_surface::card(instance, true, &selection, window, cx)
+                    .unwrap_or_else(|| div().into_any_element())
+            }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
+            Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
@@ -3664,7 +3223,7 @@ impl Panel {
                 .text_color(Theme::global().TEXT)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX {
-                        self.text_reveal.fading()
+                        self.text_reveal.fading(&self.streaming_text)
                     } else {
                         0
                     },
@@ -3694,7 +3253,7 @@ impl Panel {
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
-                        self.reasoning_reveal.fading()
+                        self.reasoning_reveal.fading(&self.streaming_reasoning)
                     } else {
                         0
                     },
@@ -3760,6 +3319,26 @@ impl Panel {
                     .unwrap_or((0.0, 1.0, false));
                 if animating {
                     window.request_animation_frame();
+                }
+                let tool_card = crate::applet_runtime::get(cx)
+                    .host
+                    .borrow()
+                    .tool_card(&self.session_id, call_id)
+                    .map(|mounted| mounted.instance.id.clone());
+                if let Some(instance) = tool_card {
+                    let selection = self.applet_selection.clone();
+                    if let Some(card) =
+                        crate::applet_surface::card(&instance, true, &selection, window, cx)
+                    {
+                        return div()
+                            .id(("tool", index))
+                            .debug_selector(|| "tool-applet".into())
+                            .flex_none()
+                            .ml(px(offset))
+                            .opacity(opacity)
+                            .child(card)
+                            .into_any_element();
+                    }
                 }
                 if name == "todo"
                     && *done
@@ -4057,7 +3636,7 @@ impl Panel {
             || self.is_changelog()
             || self.code_file.is_some()
             || self.is_side_document()
-            || self.gmail_inbox.is_some()
+            || self.applet.is_some()
         {
             // Read-only panels do not render their prompt input. Focusing that
             // detached handle prevents workspace actions such as FocusLeft from
@@ -4282,8 +3861,8 @@ impl Render for Panel {
                 .child(body)
                 .into_any_element();
         }
-        if self.gmail_inbox.is_some() {
-            return self.render_gmail(cx);
+        if self.applet.is_some() {
+            return self.render_applet(window, cx);
         }
         if self.todoist.is_some() {
             return self.render_todoist(window, cx);
@@ -4435,7 +4014,8 @@ impl Render for Panel {
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
-        self.tick_stream_reveal(window, cx);
+        let instant_motion = self.tick_stream_reveal(window, cx);
+        self.sync_applet_rows(cx);
         let rows = Arc::new(self.transcript_render_rows());
         if let Some(document) = self.transcript_text_document.sync(
             &self.items,
@@ -4464,6 +4044,7 @@ impl Render for Panel {
         // Derive the empty state from session content, not the draft. Typing,
         // pasting attachments, and reconnecting must not move the composer.
         let fresh_session = !self.transcript_only
+            && !self.awaiting_persisted
             && self.items.is_empty()
             && row_count == 0
             && !self.activity_active()
@@ -4477,9 +4058,11 @@ impl Render for Panel {
             }
         }
         self.input.update(cx, |input, cx| {
-            input.set_spacious(fresh_session || self.startup_layout.is_some(), cx)
+            input.set_spacious(fresh_session || self.startup_layout.is_some(), cx);
+            input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
         });
-        if row_count != self.transcript_row_count {
+        let row_count_changed = row_count != self.transcript_row_count;
+        if row_count_changed {
             if row_count > self.transcript_row_count {
                 self.transcript_list.splice(
                     self.transcript_row_count..self.transcript_row_count,
@@ -4502,8 +4085,9 @@ impl Render for Panel {
                 self.reasoning_reveal
                     .visible(&self.streaming_reasoning)
                     .len()
-                    + self.reasoning_reveal.fading(),
-                self.text_reveal.visible(&self.streaming_text).len() + self.text_reveal.fading(),
+                    + self.reasoning_reveal.fading(&self.streaming_reasoning),
+                self.text_reveal.visible(&self.streaming_text).len()
+                    + self.text_reveal.fading(&self.streaming_text),
             ),
             (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
         ) {
@@ -4526,7 +4110,11 @@ impl Render for Panel {
         if startup_preview {
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
-            self.transcript_list.scroll_to_end();
+            // Ease wrapped-line growth of live text instead of jumping a line.
+            self.follow_transcript_tail(instant_motion || row_count_changed, window);
+        } else {
+            self.tail_glide_at = None;
+            self.tail_glide_velocity = 0.0;
         }
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -4541,19 +4129,18 @@ impl Render for Panel {
         let end_visible = std::rc::Rc::new(std::cell::Cell::new(false));
         let row_end_visible = end_visible.clone();
         let end_list = self.transcript_list.clone();
+        let short_viewport = window.viewport_size().height < px(400.);
         let transcript = if fresh_session {
             div()
                 .debug_selector(|| "fresh-session".into())
                 .size_full()
                 .flex()
-                .items_center()
+                // Short windows anchor the composer (and its pill row below)
+                // to the bottom so it never spills into the footer.
+                .map(|el| if short_viewport { el.items_end() } else { el.items_center() })
                 .justify_center()
                 .px_4()
-                .pb(px(if window.viewport_size().height < px(400.) {
-                    8.
-                } else {
-                    64.
-                }))
+                .pb(px(if short_viewport { 8. } else { 64. }))
                 .child(
                     div()
                         .w_full()
@@ -4701,7 +4288,8 @@ impl Render for Panel {
         let status_line = self.status_line();
         let theme = Theme::global();
         let usage_meters = self.render_usage_meters(cx);
-        let show_jump_chip = row_count > 0 && !self.transcript_end_visible;
+        // The tail may sit a few pixels below the fold mid-glide.
+        let show_jump_chip = row_count > 0 && !self.transcript_end_visible && !self.tail_gliding();
 
         let chat = div()
             .flex()
@@ -4720,9 +4308,24 @@ impl Render for Panel {
             .on_action(cx.listener(|panel, _: &shortcuts::JumpToLatest, _, cx| {
                 panel.jump_to_latest(cx);
             }))
+            .on_action(
+                cx.listener(|panel, _: &shortcuts::JumpToLatestIfEmpty, _, cx| {
+                    panel.jump_to_latest_if_empty(cx);
+                }),
+            )
             .on_action(cx.listener(|panel, _: &voice::ToggleVoice, _, cx| {
                 panel.toggle_voice(cx);
             }))
+            .on_action(
+                cx.listener(|panel, _: &crate::effort::IncreaseEffort, _, cx| {
+                    panel.step_effort(1, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|panel, _: &crate::effort::DecreaseEffort, _, cx| {
+                    panel.step_effort(-1, cx);
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);
@@ -4742,6 +4345,15 @@ impl Render for Panel {
                 }
             }))
             .children(crate::harness::remote_host(&self.session_id).map(|host| {
+                let machine = if host == crate::managed_cloud::HOST {
+                    "Jcode Cloud".to_string()
+                } else {
+                    format!("SSH · {host}")
+                };
+                let label = match self.working_dir.as_deref().filter(|d| !d.is_empty()) {
+                    Some(dir) => format!("Running on {machine} · {dir}"),
+                    None => format!("Running on {machine}"),
+                };
                 div()
                     .debug_selector(|| "panel-remote-host".into())
                     .flex_none()
@@ -4750,7 +4362,8 @@ impl Render for Panel {
                     .text_size(px(11.0))
                     .text_color(theme.ACCENT)
                     .bg(theme.ACCENT_DIM)
-                    .child(format!("SSH · {host}"))
+                    .truncate()
+                    .child(label)
             }))
             .children(publish_tracker)
             .children(pinned_todo.map(|payload| {
@@ -4874,6 +4487,11 @@ impl Render for Panel {
                     // Hidden at the live end so the newest line stays crisp.
                     .when(show_jump_chip && self.startup_layout.is_none(), |el| {
                         let background = Theme::global().panel_background(self.surface_focused);
+                        let clear = gpui::Rgba { a: 0., ..background };
+                        let half = gpui::Rgba { a: 0.55, ..background };
+                        // Two stacked ramps approximate an eased blur-like
+                        // falloff: a long soft veil, then a firmer edge
+                        // where the transcript meets the composer.
                         el.child(
                             div()
                                 .debug_selector(|| "transcript-bottom-fade".into())
@@ -4881,16 +4499,19 @@ impl Render for Panel {
                                 .left_0()
                                 .bottom_0()
                                 .w_full()
-                                .h(px(18.))
-                                .bg(gpui::linear_gradient(
+                                .h(px(TRANSCRIPT_FADE_HEIGHT))
+                                .flex()
+                                .flex_col()
+                                .child(div().w_full().flex_1().bg(gpui::linear_gradient(
                                     0.,
-                                    gpui::linear_color_stop(background, 0.),
-                                    gpui::linear_color_stop(
-                                        gpui::Rgba {
-                                            a: 0.,
-                                            ..background
-                                        },
-                                        1.,
+                                    gpui::linear_color_stop(half, 0.),
+                                    gpui::linear_color_stop(clear, 1.),
+                                )))
+                                .child(div().w_full().h(px(TRANSCRIPT_FADE_HEIGHT * 0.4)).bg(
+                                    gpui::linear_gradient(
+                                        0.,
+                                        gpui::linear_color_stop(background, 0.),
+                                        gpui::linear_color_stop(half, 1.),
                                     ),
                                 )),
                         )
@@ -5011,8 +4632,8 @@ impl Render for Panel {
                     )
                 },
             )
-            // Slim bottom bar under the composer. Location, model,
-            // credential method, and voice live above the input.
+            // Slim bottom bar under the composer's pill row: build info,
+            // usage limits and status. The context ring sits in the pills.
             .children((!self.transcript_only).then(|| {
                 div()
                     .debug_selector(|| "panel-meta".into())
@@ -5067,7 +4688,7 @@ impl Render for Panel {
                             .gap_2()
                             .overflow_hidden()
                             .children(usage_meters)
-                            .child(self.render_image_pane_toggle(cx))
+                            .children(self.render_image_pane_toggle(cx))
                             .children(self.render_voice_status(status_line)),
                     )
             }))
@@ -5210,27 +4831,48 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::BackgroundTask { .. }
         | Item::Todos(_)
         | Item::Stopped(_)
+        | Item::CacheMiss(_)
+        | Item::Applet(_)
         | Item::Error(_) => None,
     }
 }
 
-/// The credential route serving `model`, phrased for humans. The route
-/// catalog's `api_method` values are stable ids like `openai-oauth` or
-/// `anthropic-api-key`; the footer says "oauth" or "api key".
+/// The credential route serving `model`, phrased for humans.
+/// Fallback for daemons that do not report the resolved credential. A model
+/// can have both an API key and an OAuth route, so the first match is not the
+/// serving one: prefer an available route, and OAuth over API key, matching
+/// the daemon's own auto rule.
 fn auth_method_for_model(
     model: Option<&str>,
     routes: &[jcode_sdk::ModelRouteInfo],
 ) -> Option<String> {
     let model = model?;
-    let route = routes.iter().find(|route| route.model == model)?;
-    let method = route.api_method.to_lowercase();
-    Some(if method.contains("oauth") {
+    let route = routes
+        .iter()
+        .filter(|route| route.model == model)
+        .max_by_key(|route| {
+            (
+                route.available,
+                route.api_method.to_ascii_lowercase().contains("oauth"),
+            )
+        })?;
+    Some(human_auth_method(&route.api_method))
+}
+
+/// `oauth`, `api_key`, or a route id such as `claude-oauth`, phrased for the
+/// account label.
+fn human_auth_method(method: &str) -> String {
+    let method = method.to_lowercase();
+    if method.contains("oauth") {
         "oauth".to_string()
-    } else if method.contains("api-key") || method.contains("api_key") {
+    } else if method.contains("api-key")
+        || method.contains("api_key")
+        || method.ends_with("-api")
+    {
         "api key".to_string()
     } else {
         method
-    })
+    }
 }
 
 fn available_model_names(routes: &[jcode_sdk::ModelRouteInfo]) -> Vec<String> {
@@ -5242,70 +4884,6 @@ fn available_model_names(routes: &[jcode_sdk::ModelRouteInfo]) -> Vec<String> {
     models.sort();
     models.dedup();
     models
-}
-
-fn available_model_logo_providers(routes: &[jcode_sdk::ModelRouteInfo]) -> HashMap<String, String> {
-    routes
-        .iter()
-        .filter(|route| route.available)
-        .map(|route| {
-            (
-                route.model.clone(),
-                model_logo_provider(&route.model, &route.api_method).to_string(),
-            )
-        })
-        .collect()
-}
-
-fn model_logo_provider<'a>(model: &str, api_method: &'a str) -> &'a str {
-    let method = api_method.to_ascii_lowercase();
-    for provider in [
-        "anthropic",
-        "openai",
-        "gemini",
-        "google",
-        "copilot",
-        "openrouter",
-        "bedrock",
-        "azure",
-        "cursor",
-        "antigravity",
-        "xai",
-        "mistral",
-        "deepseek",
-        "kimi",
-        "zai",
-        "groq",
-        "perplexity",
-        "cerebras",
-        "minimax",
-        "ollama",
-    ] {
-        if method.contains(provider) {
-            return match provider {
-                "anthropic" => "anthropic-api",
-                "openai" => "openai",
-                other => other,
-            };
-        }
-    }
-
-    let model = model.to_ascii_lowercase();
-    if model.starts_with("claude") {
-        "anthropic-api"
-    } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
-        "openai"
-    } else if model.starts_with("gemini") {
-        "gemini"
-    } else if model.starts_with("grok") {
-        "xai"
-    } else if model.starts_with("mistral") || model.starts_with("codestral") {
-        "mistral"
-    } else if model.starts_with("deepseek") {
-        "deepseek"
-    } else {
-        api_method
-    }
 }
 
 /// Label the account control with the current provider and credential method.
@@ -5343,7 +4921,7 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
 /// report a canonical id (`anthropic`, `claude-api`) or a display name that
 /// already names the method (`Anthropic API`). The method pill says how you
 /// are signed in, so the provider half stays a plain brand name.
-fn pretty_provider_name(provider: &str) -> String {
+pub(crate) fn pretty_provider_name(provider: &str) -> String {
     let lower = provider.to_ascii_lowercase();
     let base = lower
         .trim_end_matches(" api key")
@@ -6103,48 +5681,6 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn gmail_requests_are_isolated_from_network_and_worker_teardown(cx: &mut gpui::TestAppContext) {
-        let panel =
-            cx.update(|cx| cx.new(|cx| Panel::new_gmail(crate::harness::spawn_inert(), cx)));
-        panel.update(cx, |panel, cx| {
-            let disabled = "Gmail network access is disabled in UI unit tests";
-            assert!(matches!(
-                &panel.gmail_inbox,
-                Some(GmailInboxState::Error(error)) if error == disabled
-            ));
-            let summary = GmailMessageSummary {
-                id: "offline-message".into(),
-                from: "Fixture sender".into(),
-                subject: "Fixture subject".into(),
-                date: String::new(),
-                snippet: "Fixture preview".into(),
-                unread: false,
-                important: false,
-                starred: false,
-                category: None,
-            };
-            for _ in 0..2 {
-                panel.open_gmail_message(summary.clone(), cx);
-                assert!(matches!(
-                    &panel.gmail_message,
-                    Some(GmailMessageState::Error(message, error))
-                        if message.id == summary.id && error == disabled
-                ));
-            }
-            panel.refresh_gmail(cx);
-            assert!(panel.gmail_message.is_none());
-            assert!(matches!(
-                &panel.gmail_inbox,
-                Some(GmailInboxState::Error(error)) if error == disabled
-            ));
-        });
-        let weak = panel.downgrade();
-        drop(panel);
-        cx.run_until_parked();
-        assert!(weak.upgrade().is_none());
-    }
-
-    #[gpui::test]
     fn transcript_scroll_handler_does_not_keep_closed_panel_alive(cx: &mut gpui::TestAppContext) {
         let panel = cx.update(|cx| {
             cx.new(|cx| {
@@ -6413,105 +5949,6 @@ mod tests {
             progress.size.width, panel_bounds.size.width,
             "a fully complete todo set fills the minimap progress footline"
         );
-    }
-
-    #[gpui::test]
-    fn email_panel_paints_attention_metadata_from_gmail_labels(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace =
-                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-            workspace.push_test_panel("gmail-acceptance", cx);
-            workspace
-        });
-        let panel = workspace
-            .read_with(vcx, |workspace, _| workspace.test_panel(0))
-            .expect("panel exists");
-        panel.update(vcx, |panel, cx| {
-            panel.items.clear();
-            panel.gmail_inbox = Some(GmailInboxState::Ready(vec![GmailMessageSummary {
-                id: "live-shape".into(),
-                from: "Important Sender".into(),
-                subject: "Priority message".into(),
-                date: "Today".into(),
-                snippet: "An important unread update".into(),
-                unread: true,
-                important: true,
-                starred: true,
-                category: Some("Updates".into()),
-            }]));
-            cx.notify();
-        });
-        vcx.run_until_parked();
-
-        for selector in [
-            "gmail-inbox",
-            "gmail-message-0",
-            "gmail-metadata-unread",
-            "gmail-metadata-important",
-            "gmail-metadata-starred",
-            "gmail-metadata-category",
-        ] {
-            assert!(
-                vcx.debug_bounds(selector).is_some(),
-                "Email acceptance surface must paint {selector}"
-            );
-        }
-    }
-
-    #[gpui::test]
-    fn email_inbox_moves_when_the_user_scrolls(cx: &mut gpui::TestAppContext) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace =
-                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
-            workspace.push_test_panel("gmail-scroll", cx);
-            workspace
-        });
-        let panel = workspace
-            .read_with(vcx, |workspace, _| workspace.test_panel(0))
-            .expect("panel exists");
-        panel.update(vcx, |panel, cx| {
-            panel.items.clear();
-            panel.gmail_inbox = Some(GmailInboxState::Ready(
-                (0..60)
-                    .map(|index| GmailMessageSummary {
-                        id: format!("message-{index}"),
-                        from: format!("Sender {index}"),
-                        subject: format!("Message {index}"),
-                        date: "Today".into(),
-                        snippet: "Scrollable email preview".into(),
-                        unread: index % 2 == 0,
-                        important: false,
-                        starred: false,
-                        category: Some("Updates".into()),
-                    })
-                    .collect(),
-            ));
-            cx.notify();
-        });
-        vcx.run_until_parked();
-
-        let before = panel.read_with(vcx, |panel, _| panel.gmail_scroll.offset().y);
-        let inbox = vcx
-            .debug_bounds("gmail-inbox")
-            .expect("Email inbox painted");
-        assert!(
-            vcx.debug_bounds("gmail-chat").is_some(),
-            "Email panel paints the Chat with email action"
-        );
-        vcx.simulate_event(gpui::ScrollWheelEvent {
-            position: inbox.center(),
-            // Negative Y moves downward from the inbox's initial top position.
-            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -3.0)),
-            modifiers: gpui::Modifiers::default(),
-            touch_phase: gpui::TouchPhase::Moved,
-        });
-        vcx.run_until_parked();
-        let after = panel.read_with(vcx, |panel, _| panel.gmail_scroll.offset().y);
-        assert_ne!(after, before, "wheel input must move the Email inbox");
-        let scrollbar = vcx
-            .debug_bounds("gmail-scrollbar")
-            .expect("an overflowing Email inbox paints a scrollbar");
-        assert_eq!(scrollbar.size.width, px(4.0));
     }
 
     #[gpui::test]
@@ -7212,6 +6649,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                         routes: vec![unavailable, route("gpt-5.6-sol", "openai-api-key")],
                     },
                     cx,
@@ -7221,6 +6659,74 @@ mod tests {
                     &["openai-api:gpt-5.6-sol"],
                     "an unavailable Luna route must not reach the visible picker"
                 );
+            });
+        });
+    }
+
+    #[test]
+    fn account_label_follows_the_serving_credential_not_the_first_route() {
+        // A Claude model lists its API key route before its OAuth route.
+        let routes = vec![
+            route("claude-opus-5-5", "claude-api"),
+            route("claude-opus-5-5", "claude-oauth"),
+        ];
+        // Without a daemon report, OAuth wins like the daemon's auto rule.
+        assert_eq!(
+            auth_method_for_model(Some("claude-opus-5-5"), &routes).as_deref(),
+            Some("oauth")
+        );
+        // An unavailable OAuth route does not serve the session.
+        let mut no_login = routes.clone();
+        no_login[1].available = false;
+        assert_eq!(
+            auth_method_for_model(Some("claude-opus-5-5"), &no_login).as_deref(),
+            Some("api key")
+        );
+        assert_eq!(human_auth_method("oauth"), "oauth");
+        assert_eq!(human_auth_method("api_key"), "api key");
+        assert_eq!(human_auth_method("claude-api"), "api key");
+    }
+
+    #[gpui::test]
+    fn runtime_info_auth_method_overrides_route_guessing(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+
+        workspace.update(vcx, |workspace, cx| {
+            let panel = workspace.test_panel(0).expect("panel exists");
+            panel.update(cx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::RuntimeInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("Claude".into()),
+                        model: Some("claude-opus-5-5".into()),
+                        reasoning_effort: None,
+                        auth_method: Some("api_key".into()),
+                        routes: vec![
+                            route("claude-opus-5-5", "claude-api"),
+                            route("claude-opus-5-5", "claude-oauth"),
+                        ],
+                    },
+                    cx,
+                );
+                assert_eq!(panel.auth_method.as_deref(), Some("api key"));
+                // A same-model credential switch reported by the daemon.
+                panel.apply(
+                    &ApiEvent::ModelInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("Claude".into()),
+                        model: Some("claude-opus-5-5".into()),
+                        reasoning_effort: None,
+                        auth_method: Some("oauth".into()),
+                    },
+                    cx,
+                );
+                assert_eq!(panel.auth_method.as_deref(), Some("oauth"));
             });
         });
     }
@@ -7367,7 +6873,7 @@ mod tests {
         let scrollbar_before = vcx
             .debug_bounds("transcript-scrollbar")
             .expect("an overflowing transcript paints a scrollbar");
-        assert_eq!(scrollbar_before.size.width, px(4.0));
+        assert_eq!(scrollbar_before.size.width, px(3.0));
         assert!(scrollbar_before.size.height >= px(28.0));
 
         // A real discrete upward wheel event over the transcript. Unlike a
@@ -7414,7 +6920,7 @@ mod tests {
         let scrollbar_after = vcx
             .debug_bounds("transcript-scrollbar")
             .expect("the scrollbar remains visible after scrolling");
-        assert_eq!(scrollbar_after.size.width, px(4.0));
+        assert_eq!(scrollbar_after.size.width, px(3.0));
         let chip = vcx
             .debug_bounds("jump-to-latest")
             .expect("the catch-up chip paints once detached");
@@ -8265,6 +7771,7 @@ mod tests {
                         session_id: "session-a".into(),
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
+                        auth_method: None,
                         routes: vec![jcode_sdk::ModelRouteInfo {
                             usage: None,
                             model: "gpt-5.6-sol".into(),
@@ -8299,6 +7806,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                     },
                     cx,
                 );
@@ -8313,6 +7821,7 @@ mod tests {
                         provider: Some("anthropic".into()),
                         model: Some("claude-fable-5".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                     },
                     cx,
                 );
@@ -8340,9 +7849,9 @@ mod tests {
             .expect("identity tabs paint");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
-        // Identity lives in folder tabs on the input, status in the bar below.
-        assert!(identity.bottom() <= input.top() + gpui::px(1.));
-        assert!(input.bottom() <= bounds.top());
+        // Identity pills sit below the input, status in the bar below them.
+        assert!(identity.top() >= input.bottom());
+        assert!(identity.bottom() <= bounds.top() + gpui::px(1.));
         assert!(status.right() <= bounds.right());
         assert!(vcx.debug_bounds("panel-status-pulse").is_none());
     }
@@ -8792,6 +8301,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
+                        auth_method: None,
                         routes: vec![
                             route("claude-fable-5", "anthropic-api-key"),
                             route("gpt-5.6-sol", "openai-oauth"),
@@ -8912,17 +8422,6 @@ mod tests {
                 "composer focus retained"
             )
         });
-    }
-
-    #[test]
-    fn model_logos_follow_routes_then_fall_back_to_model_families() {
-        assert_eq!(
-            model_logo_provider("custom-model", "openai-oauth"),
-            "openai"
-        );
-        assert_eq!(model_logo_provider("claude-fable-5", ""), "anthropic-api");
-        assert_eq!(model_logo_provider("gemini-3-pro", ""), "gemini");
-        assert_eq!(model_logo_provider("private-model", "private"), "private");
     }
 
     #[test]

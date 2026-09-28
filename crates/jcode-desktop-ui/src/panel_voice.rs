@@ -1,5 +1,6 @@
 //! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
+use gpui::FutureExt as _;
 use jcode_base::voice::{self, NariEvent, NariRecording, VoiceError};
 use jcode_base::voice_intent::{self, SessionCandidate, VoiceIntent};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +22,8 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
 
 #[path = "panel_voice_overlay.rs"]
 mod overlay;
+#[path = "panel_voice_tag.rs"]
+pub(crate) mod tag;
 
 #[cfg(test)]
 #[path = "panel_global_voice_tests.rs"]
@@ -93,6 +96,18 @@ enum Phase {
     Routing,
 }
 
+impl Phase {
+    fn label(self) -> &'static str {
+        match self {
+            Phase::Idle => "idle",
+            Phase::Checking => "connecting",
+            Phase::Recording => "recording",
+            Phase::Transcribing => "transcribing",
+            Phase::Routing => "routing",
+        }
+    }
+}
+
 /// Ephemeral routing evidence. Never included in persisted panel snapshots.
 #[derive(Clone)]
 pub(crate) struct VoiceTrace {
@@ -131,6 +146,48 @@ pub(super) struct VoiceState {
     trace: Option<VoiceTrace>,
     trace_expanded: bool,
     trace_preview: bool,
+    /// Why stop was requested, for the end-of-recording log. `None` at the
+    /// end means the recording ended on its own (duration cap or provider).
+    stop_reason: Option<&'static str>,
+    /// Loudest sampled microphone level, logged to tell silence from speech.
+    peak: f32,
+    /// The end of this attempt was already logged.
+    end_logged: bool,
+}
+
+/// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
+fn voice_log(message: std::fmt::Arguments) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    eprintln!(
+        "[unix {}.{:03}] voice: {message}",
+        now.as_secs(),
+        now.subsec_millis()
+    );
+}
+
+impl VoiceState {
+    /// Every recording end is logged exactly once, as normal or ABNORMAL.
+    fn log_end(&mut self, normal: bool, outcome: &str, chars: Option<usize>) {
+        if std::mem::replace(&mut self.end_logged, true) {
+            return;
+        }
+        let audio = self
+            .audio
+            .or_else(|| self.started.map(|started| started.elapsed()))
+            .map_or("-".into(), |audio| format!("{:.1}s", audio.as_secs_f32()));
+        voice_log(format_args!(
+            "ended {}: {outcome} (phase={}, stop={}, audio={audio}, peak={:.3}, chars={}, {}{})",
+            if normal { "normal" } else { "ABNORMAL" },
+            self.phase.label(),
+            self.stop_reason.unwrap_or("none"),
+            self.peak,
+            chars.map_or("-".into(), |chars| chars.to_string()),
+            if self.hold_capture { "hold" } else { "toggle" },
+            if self.global_capture { ", global" } else { "" },
+        ));
+    }
 }
 
 pub(crate) struct VoiceSessionRequested(pub jcode_sdk::SessionInfo, pub String);
@@ -141,6 +198,9 @@ impl gpui::EventEmitter<VoiceActionRequested> for Panel {}
 
 impl Drop for VoiceState {
     fn drop(&mut self) {
+        if self.phase != Phase::Idle {
+            self.log_end(false, "panel dropped (chat closed or Desktop reload)", None);
+        }
         self.canceled.store(true, Ordering::SeqCst);
         if let Some(recording) = self.recording.take() {
             // NariRecording signals cancellation without joining the native worker.
@@ -185,7 +245,23 @@ fn global_pill_error(error: &str) -> String {
     } else if error.contains("Navigation unavailable") {
         "Jev → Quick action · Kept in draft".into()
     } else {
-        error.to_string()
+        short_voice_status(error)
+    }
+}
+
+/// Short, pill-sized wording for a voice failure. Full errors stay in logs.
+pub(crate) fn short_voice_status(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "Transcription timed out".into()
+    } else if lower.starts_with("no speech") {
+        "No speech detected".into()
+    } else if lower.contains("not configured") {
+        "Voice not configured".into()
+    } else if error.chars().count() > 40 {
+        "Voice failed".into()
+    } else {
+        error.trim_end_matches('.').to_string()
     }
 }
 
@@ -249,7 +325,7 @@ impl Panel {
                 .into(),
         );
         self.input
-            .update(cx, |input, cx| input.append_dictation(text, cx));
+            .update(cx, |input, cx| input.append_dictation(&tag::wrap(text), cx));
         cx.notify();
     }
 
@@ -270,14 +346,15 @@ impl Panel {
     }
 
     pub(crate) fn supports_voice(&self) -> bool {
+        // Transcription runs on this computer and only the text is sent, so
+        // SSH-hosted chats (including Jcode Cloud) take voice like local ones.
         (!self.session_id.contains("://")
             || self.is_pending_session()
-            || self.session_id.starts_with("preview://"))
+            || self.session_id.starts_with("preview://")
+            || crate::harness::remote_host(&self.session_id).is_some())
             && self.terminal.is_none()
             && self.code_file.is_none()
             && !self.is_side_document()
-            && self.gmail_inbox.is_none()
-            && self.gmail_message.is_none()
             && self.todoist.is_none()
             && self.orchestration.is_none()
     }
@@ -315,10 +392,11 @@ impl Panel {
     pub(crate) fn cancel_global_voice(
         &mut self,
         attempt: &Arc<AtomicBool>,
+        reason: &'static str,
         cx: &mut Context<Self>,
     ) {
         if Arc::ptr_eq(attempt, &self.voice.canceled) && self.voice.global_capture {
-            self.cancel_voice(cx);
+            self.cancel_voice(false, reason, cx);
         }
     }
 
@@ -355,8 +433,10 @@ impl Panel {
             return;
         }
         match self.voice.phase {
-            Phase::Checking => self.cancel_voice(cx),
-            Phase::Recording => self.stop_voice(cx),
+            Phase::Checking => {
+                self.cancel_voice(false, "key released before the microphone was ready", cx)
+            }
+            Phase::Recording => self.stop_voice("key released", cx),
             Phase::Idle | Phase::Transcribing | Phase::Routing => {}
         }
     }
@@ -367,17 +447,31 @@ impl Panel {
         }
         match self.voice.phase {
             Phase::Idle => self.start_voice(cx),
-            Phase::Recording => self.stop_voice(cx),
-            Phase::Checking | Phase::Transcribing | Phase::Routing => self.cancel_voice(cx),
+            Phase::Recording => self.stop_voice("voice toggled off", cx),
+            Phase::Checking => {
+                self.cancel_voice(false, "voice toggled again while connecting", cx)
+            }
+            Phase::Transcribing | Phase::Routing => self.cancel_voice(
+                false,
+                "voice toggled again while transcribing (text discarded)",
+                cx,
+            ),
         }
     }
 
-    fn cancel_voice(&mut self, cx: &mut Context<Self>) {
+    /// `normal` marks an intentional user cancel. Everything else is logged
+    /// as ABNORMAL so unexpected stops can be found and fixed.
+    fn cancel_voice(&mut self, normal: bool, reason: &'static str, cx: &mut Context<Self>) {
+        if self.voice.phase != Phase::Idle {
+            self.voice.log_end(normal, &format!("canceled: {reason}"), None);
+        }
         self.reset_voice_attempt();
         cx.notify();
     }
 
     fn reset_voice_attempt(&mut self) {
+        // Ending paths log explicitly. Only an unlogged drop reports itself.
+        self.voice.phase = Phase::Idle;
         // Session configuration belongs to the panel, not an individual capture.
         let sessions = self.voice.sessions.take();
         let navigation = self.voice.navigation.take();
@@ -434,6 +528,11 @@ impl Panel {
         }
         match result {
             Ok(recording) => {
+                voice_log(format_args!(
+                    "recording started ({}{})",
+                    if self.voice.hold_capture { "hold" } else { "toggle" },
+                    if self.voice.global_capture { ", global" } else { "" },
+                ));
                 jcode_base::voice::timing::mark("ui shows recording");
                 if self.voice.global_capture {
                     eprintln!("global voice: recording started");
@@ -444,6 +543,8 @@ impl Panel {
                 self.tick_voice(cx);
             }
             Err(error) => {
+                self.voice
+                    .log_end(false, &format!("failed to start: {error:?}"), None);
                 if self.voice.global_capture {
                     eprintln!("global voice: recording failed to start: {error}");
                 }
@@ -456,18 +557,39 @@ impl Panel {
     }
 
     fn tick_voice(&mut self, cx: &mut Context<Self>) {
+        const METER: Duration = Duration::from_millis(50);
         let attempt = self.voice.canceled.clone();
         self.voice.timer = Some(cx.spawn(async move |this, cx| {
+            let mut last_level = Instant::now();
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(50))
-                    .await;
+                // Wake as soon as the recording publishes an event (the final
+                // transcript above all), not on the next meter tick.
+                let ready = this
+                    .read_with(cx, |panel, _| {
+                        panel
+                            .voice
+                            .recording
+                            .as_ref()
+                            .map(NariRecording::event_ready)
+                    })
+                    .ok()
+                    .flatten();
+                match ready {
+                    Some(ready) => {
+                        let _ = ready.with_timeout(METER, cx.background_executor()).await;
+                    }
+                    None => cx.background_executor().timer(METER).await,
+                }
+                let sample_level = last_level.elapsed() >= METER;
+                if sample_level {
+                    last_level = Instant::now();
+                }
                 let keep_ticking = this
                     .update(cx, |panel, cx| {
                         if !Arc::ptr_eq(&attempt, &panel.voice.canceled) || !panel.voice_active() {
                             return false;
                         }
-                        if panel.voice.phase == Phase::Recording {
+                        if sample_level && panel.voice.phase == Phase::Recording {
                             let level = panel
                                 .voice
                                 .recording
@@ -475,6 +597,7 @@ impl Panel {
                                 .map_or(0., NariRecording::audio_level);
                             panel.voice.levels.rotate_left(1);
                             panel.voice.levels[23] = level;
+                            panel.voice.peak = panel.voice.peak.max(level);
                         }
                         // Drain a bounded batch so a fast provider cannot monopolize the UI.
                         for _ in 0..64 {
@@ -508,6 +631,7 @@ impl Panel {
                                     return false;
                                 }
                             }
+                            voice_log(format_args!("worker exited without a result"));
                             panel.finish_voice(Err(VoiceError::CaptureFailed), cx);
                             return false;
                         }
@@ -535,17 +659,43 @@ impl Panel {
         }
     }
 
-    fn stop_voice(&mut self, cx: &mut Context<Self>) {
+    fn stop_voice(&mut self, reason: &'static str, cx: &mut Context<Self>) {
         let Some(recording) = self.voice.recording.as_ref() else {
             return;
         };
+        jcode_base::voice::timing::release();
         recording.stop();
+        self.voice.stop_reason = Some(reason);
         self.voice.audio = self.voice.started.map(|started| started.elapsed());
+        voice_log(format_args!(
+            "stop requested: {reason} after {:.1}s",
+            self.voice.audio.unwrap_or_default().as_secs_f32()
+        ));
         self.voice.phase = Phase::Transcribing;
         cx.notify();
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
+        jcode_base::voice::timing::mark("ui received final transcript");
+        match &result {
+            Ok(text) if text.trim().is_empty() => self.voice.log_end(
+                self.voice.stop_reason.is_some(),
+                "no speech in transcript (silence or filtered prompt echo)",
+                Some(0),
+            ),
+            Ok(text) if self.voice.stop_reason.is_some() => {
+                self.voice
+                    .log_end(true, "transcribed", Some(text.chars().count()))
+            }
+            Ok(text) => self.voice.log_end(
+                false,
+                "recording ended without a stop request (5 minute cap or provider)",
+                Some(text.chars().count()),
+            ),
+            Err(error) => self
+                .voice
+                .log_end(false, &format!("error: {error:?}"), None),
+        }
         self.voice.hold_capture = false;
         self.voice.phase = Phase::Idle;
         let audio = self
@@ -578,7 +728,7 @@ impl Panel {
                     return;
                 }
                 self.input.update(cx, |input, cx| {
-                    input.append_dictation(&text, cx);
+                    input.append_dictation(&tag::wrap(&text), cx);
                 });
                 self.voice.error = None;
             }
@@ -621,12 +771,12 @@ impl Panel {
                 text.chars().count()
             );
             self.input
-                .update(cx, |input, cx| input.append_dictation(&text, cx));
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(&text), cx));
             self.voice.phase = Phase::Idle;
             self.voice.error = None;
             cx.notify();
         } else {
-            self.cancel_global_voice(attempt, cx);
+            self.cancel_global_voice(attempt, "session check denied the transcript", cx);
         }
     }
 
@@ -640,7 +790,8 @@ impl Panel {
         // Focused holds show the sent prompt in the transcript. Only the
         // unfocused OS pill needs a confirmation label.
         self.voice.decision = self.voice.global_capture.then(|| "Sent to agent".into());
-        self.submit_or_queue(text.trim().to_string(), Vec::new(), false, cx);
+        self.submit_or_queue(tag::wrap(&text), Vec::new(), false, cx);
+        jcode_base::voice::timing::mark("ui sent transcript");
         cx.notify();
     }
 
@@ -769,7 +920,7 @@ impl Panel {
             // Send only this utterance, never text or attachments already in the composer.
             // Send ASAP like Enter: an active turn is steered, not queued behind.
             self.voice.decision = Some("Jev chose: Coding agent · Sent now".into());
-            self.submit_or_queue(text, Vec::new(), false, cx);
+            self.submit_or_queue(tag::wrap(&text), Vec::new(), false, cx);
         } else if let Some(action) = quick_action {
             self.voice.decision = Some("Jev chose: Quick action · Navigation".into());
             cx.emit(VoiceActionRequested(action, text));
@@ -779,7 +930,7 @@ impl Panel {
             cx.emit(VoiceSessionRequested(session, text));
         } else {
             self.input
-                .update(cx, |input, cx| input.append_dictation(&text, cx));
+                .update(cx, |input, cx| input.append_dictation(&tag::wrap(&text), cx));
         }
         cx.notify();
     }
@@ -835,7 +986,8 @@ impl Panel {
     /// Footer status text. Active work is shown by the transcript activity
     /// indicator instead, so the footer does not duplicate it.
     pub(super) fn render_voice_status(&self, status: String) -> Option<gpui::AnyElement> {
-        if self.activity_active() {
+        // Idle "Ready" is noise. Only surface states worth reading.
+        if self.activity_active() || status == "Ready" {
             return None;
         }
         Some(
@@ -873,11 +1025,66 @@ impl Panel {
         };
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
-        let size = super::composer::TAB_HEIGHT;
+        let size = VOICE_BUTTON_SIZE;
         let keycap_color = if active {
             theme.BG.opacity(0.8)
         } else {
             theme.TEXT_FAINT
+        };
+        // Idle, the button alternates between the microphone and its
+        // shortcut instead of showing both side by side. While voice is
+        // active, or with reduced motion, it holds the microphone.
+        let alternate = !active
+            && !cx.reduce_motion()
+            && !crate::config::get().appearance.reduce_motion;
+        let microphone = div()
+            .debug_selector(|| "voice-microphone-icon".into())
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/microphone.svg") as &'static [u8])
+                    .text_color(icon_color)
+                    .size(px(12.)),
+            );
+        let shortcut = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(voice_shortcut_keycap(keycap_color.into(), &theme));
+        let (microphone, shortcut) = if alternate {
+            (
+                gpui::AnimationExt::with_animation(
+                    microphone,
+                    "voice-microphone-swap",
+                    gpui::Animation::new(VOICE_SWAP_CYCLE).repeat().with_max_fps(30.),
+                    |el, t| {
+                        let (opacity, offset) = voice_swap_frame(t, false);
+                        el.opacity(opacity).top(px(offset)).bottom(px(-offset))
+                    },
+                )
+                .into_any_element(),
+                gpui::AnimationExt::with_animation(
+                    shortcut,
+                    "voice-shortcut-swap",
+                    gpui::Animation::new(VOICE_SWAP_CYCLE).repeat().with_max_fps(30.),
+                    |el, t| {
+                        let (opacity, offset) = voice_swap_frame(t, true);
+                        el.opacity(opacity).top(px(offset)).bottom(px(-offset))
+                    },
+                )
+                .into_any_element(),
+            )
+        } else {
+            (
+                microphone.into_any_element(),
+                shortcut.opacity(0.).into_any_element(),
+            )
         };
         let button = div()
             .id("voice-toggle")
@@ -885,12 +1092,13 @@ impl Panel {
             .relative()
             .flex_none()
             .h(px(size))
-            .pl(px(8.))
-            .pr(px(9.))
-            .gap(px(6.))
+            .min_w(px(size))
+            .px(px(5.5))
             .rounded_full()
+            .overflow_hidden()
             .flex()
             .items_center()
+            .justify_center()
             .cursor_pointer()
             .bg(if active {
                 theme.ACCENT
@@ -907,26 +1115,55 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
+            // Invisible keycap sizes the pill so both faces fit.
             .child(
                 div()
-                    .debug_selector(|| "voice-microphone-icon".into())
-                    .flex_none()
-                    .size(px(12.))
-                    .child(
-                        gpui::svg()
-                            .data(include_bytes!("../../../assets/icons/microphone.svg")
-                                as &'static [u8])
-                            .text_color(icon_color)
-                            .size(px(12.)),
-                    ),
+                    .invisible()
+                    .child(voice_shortcut_keycap(keycap_color.into(), &theme)),
             )
-            .child(voice_shortcut_keycap(keycap_color.into(), &theme));
+            .child(microphone)
+            .child(shortcut);
         div()
             .flex_none()
             .h(px(size))
             .child(button)
             .into_any_element()
     }
+}
+
+/// Height (and minimum width) of the in-box voice button.
+pub(super) const VOICE_BUTTON_SIZE: f32 = 26.;
+/// One full microphone, shortcut, microphone cycle.
+const VOICE_SWAP_CYCLE: Duration = Duration::from_millis(7000);
+
+/// Opacity and vertical offset for one face of the voice button at cycle
+/// progress `t`. The microphone holds for most of the first half, then the
+/// shortcut rises in while the microphone rises out, and back again.
+fn voice_swap_frame(t: f32, shortcut: bool) -> (f32, f32) {
+    const FADE: f32 = 0.07;
+    const RISE: f32 = 6.;
+    let ease = |x: f32| {
+        let x = x.clamp(0., 1.);
+        x * x * (3. - 2. * x)
+    };
+    // 0 shows the microphone, 1 the shortcut.
+    let (mix, rising) = if t < 0.5 - FADE {
+        (0., true)
+    } else if t < 0.5 {
+        (ease((t - (0.5 - FADE)) / FADE), true)
+    } else if t < 1. - FADE {
+        (1., false)
+    } else {
+        (1. - ease((t - (1. - FADE)) / FADE), false)
+    };
+    let visible = if shortcut { mix } else { 1. - mix };
+    // Faces enter from below and leave upward.
+    let offset = if shortcut == rising {
+        (1. - visible) * RISE
+    } else {
+        -(1. - visible) * RISE
+    };
+    (visible, offset)
 }
 
 #[cfg(test)]
@@ -979,7 +1216,7 @@ mod tests {
             assert_eq!(trace.usage.unwrap().input_tokens, 1200);
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "typed work\nmaybe switch somewhere"
+                format!("typed work\n{}", tag::wrap("maybe switch somewhere"))
             );
             // A duplicate completion cannot replace the evidence or append again.
             panel.finish_voice_report(&attempt, Err(anyhow::anyhow!("late failure")), cx);
@@ -987,7 +1224,7 @@ mod tests {
                 panel.voice.trace.as_ref().unwrap().answers[0].probability,
                 0.91
             );
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             assert!(panel.voice.trace.is_none());
             panel.finish_voice_report(
                 &attempt,
@@ -1001,7 +1238,7 @@ mod tests {
             assert!(panel.voice.trace.is_none());
             assert_eq!(
                 panel.input.read(cx).content.as_ref(),
-                "typed work\nmaybe switch somewhere"
+                format!("typed work\n{}", tag::wrap("maybe switch somewhere"))
             );
         });
     }
@@ -1034,7 +1271,7 @@ mod tests {
                     .unwrap()
                     .contains("provider unavailable")
             );
-            assert_eq!(panel.input.read(cx).content.as_ref(), "keep this");
+            assert_eq!(panel.input.read(cx).content.as_ref(), tag::wrap("keep this"));
         });
     }
 
@@ -1063,7 +1300,7 @@ mod tests {
         });
         assert!(
             matches!(commands.try_recv(), Ok(Command::Send { session_id, content, images })
-            if session_id == "voice-agent" && content == "debug this failure" && images.is_empty())
+            if session_id == "voice-agent" && *content == tag::wrap("debug this failure") && images.is_empty())
         );
         assert!(
             commands.try_recv().is_err(),
@@ -1104,7 +1341,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("voice-pending-prompt").is_none());
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "fix the flaky test")
+            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if *content == tag::wrap("fix the flaky test"))
         );
     }
 
@@ -1123,7 +1360,7 @@ mod tests {
         // Sent while still running, never held for the turn to finish. The
         // harness delivers a Send during an active turn as an urgent steer.
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "then add tests")
+            matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if *content == tag::wrap("then add tests"))
         );
     }
 
@@ -1223,7 +1460,7 @@ mod tests {
                 panel
                     .items
                     .iter()
-                    .any(|item| matches!(item, Item::User(text) if text == "fix the bug"))
+                    .any(|item| matches!(item, Item::User(text) if text == &tag::wrap("fix the bug")))
             );
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
@@ -1292,7 +1529,7 @@ mod tests {
                 panel.voice.sessions = Some(Vec::new());
                 let before = panel.items.len();
                 panel.resolve_voice_for_test("spoken words", result, cx);
-                assert_eq!(panel.input.read(cx).content.as_ref(), "typed\nspoken words");
+                assert_eq!(panel.input.read(cx).content.as_ref(), format!("typed\n{}", tag::wrap("spoken words")));
                 assert_eq!(panel.items.len(), before);
                 assert!(!panel.voice_active());
                 assert!(panel.voice.live_transcript.is_empty());
@@ -1307,7 +1544,7 @@ mod tests {
             panel.voice.phase = Phase::Routing;
             panel.voice.live_transcript = "discard".into();
             let attempt = panel.voice.canceled.clone();
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             panel.finish_voice_routing(&attempt, Ok(VoiceIntent::CodingAgent), cx);
             assert!(panel.input.read(cx).content.is_empty());
             assert!(panel.items.is_empty());
@@ -1386,7 +1623,7 @@ mod tests {
                 .update(cx, |input, cx| input.set_content("keep".into(), cx));
             panel.apply_voice_event(NariEvent::Transcript("discard me".into()), cx);
             let token = panel.voice.canceled.clone();
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             assert!(token.load(Ordering::SeqCst));
             assert!(panel.voice.live_transcript.is_empty());
             assert_eq!(panel.input.read(cx).content.as_ref(), "keep");
@@ -1397,7 +1634,13 @@ mod tests {
     fn voice_only_targets_chat_composers(cx: &mut gpui::TestAppContext) {
         let panel = cx.new(|cx| Panel::new_preview(PreviewState::Empty, cx));
         panel.update(cx, |panel, cx| {
-            for id in ["session_chat", "startup://draft", "startup://draft/next"] {
+            for id in [
+                "session_chat",
+                "startup://draft",
+                "startup://draft/next",
+                "ssh://jcode-cloud/session_remote",
+                "ssh://devbox/session_remote",
+            ] {
                 panel.session_id = id.into();
                 assert!(panel.supports_voice(), "{id}");
             }
@@ -1502,30 +1745,53 @@ mod tests {
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
                 let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
-                // The microphone is a round button detached above the input.
+                // The voice button sits inside the input box, at its right.
                 assert!(
-                    button.left() >= input.left() && button.right() <= input.right(),
+                    button.left() >= input.left()
+                        && button.right() <= input.right()
+                        && button.top() >= input.top()
+                        && button.bottom() <= input.bottom(),
                     "voice at {width}: {button:?} outside {input:?}"
                 );
                 assert!(
-                    button.bottom() < input.top(),
-                    "voice is detached from the input"
+                    input.right() - button.right() < px(16.),
+                    "voice hugs the input's right edge"
                 );
+                assert_eq!(button.size.height, px(VOICE_BUTTON_SIZE));
+                // Microphone and keybinding share one slot and alternate,
+                // rather than sitting side by side.
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert_eq!(icon.size.width, px(12.));
-                assert_eq!(button.size.height, px(crate::panel::composer::TAB_HEIGHT));
-                // The keybinding sits inside the pill, right of the icon.
-                assert!(icon.right() <= shortcut.left());
-                assert!(shortcut.right() <= button.right());
+                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
+                assert!(
+                    icon.right() > shortcut.left() && shortcut.right() > icon.left(),
+                    "faces overlap in one slot: {icon:?} {shortcut:?}"
+                );
                 if phase == Phase::Idle {
-                    let status = vcx.debug_bounds("voice-ready-status").unwrap();
                     assert!(
-                        status.top() >= input.bottom(),
-                        "status sits in the bottom bar"
+                        vcx.debug_bounds("voice-ready-status").is_none(),
+                        "idle Ready status is hidden"
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn voice_button_alternates_microphone_and_shortcut() {
+        // Mostly one face at a time, with a brief crossfade at each swap.
+        let (mic, _) = voice_swap_frame(0.1, false);
+        let (key, _) = voice_swap_frame(0.1, true);
+        assert_eq!((mic, key), (1., 0.));
+        let (mic, _) = voice_swap_frame(0.7, false);
+        let (key, _) = voice_swap_frame(0.7, true);
+        assert_eq!((mic, key), (0., 1.));
+        for t in [0., 0.2, 0.45, 0.47, 0.5, 0.8, 0.95, 0.99] {
+            let (mic, _) = voice_swap_frame(t, false);
+            let (key, _) = voice_swap_frame(t, true);
+            assert!((mic + key - 1.).abs() < 1e-5, "t={t}");
+        }
+        // The cycle loops seamlessly.
+        assert_eq!(voice_swap_frame(0., false), voice_swap_frame(1., false));
     }
 
     #[gpui::test]
@@ -1566,7 +1832,7 @@ mod tests {
             if phase == Phase::Recording {
                 assert!(vcx.debug_bounds("voice-cancel").is_none());
                 assert!(vcx.debug_bounds("voice-stop").is_some());
-                panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+                panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
                 continue;
             }
             let cancel = vcx
@@ -1623,7 +1889,7 @@ mod tests {
                     .items
                     .iter()
                     .skip(items)
-                    .any(|item| matches!(item, Item::User(text) if text == "dictated words")),
+                    .any(|item| matches!(item, Item::User(text) if text == &tag::wrap("dictated words"))),
                 "voice sends only the trimmed utterance"
             );
             let items = panel.items.len();
@@ -1654,7 +1920,7 @@ mod tests {
             panel
                 .input
                 .update(cx, |input, cx| input.set_content("keep me".into(), cx));
-            panel.cancel_voice(cx);
+            panel.cancel_voice(true, "cancel button", cx);
             assert!(token.load(Ordering::SeqCst));
             assert!(!Arc::ptr_eq(&token, &panel.voice.canceled));
             assert_eq!(panel.input.read(cx).snapshot().content, "keep me");

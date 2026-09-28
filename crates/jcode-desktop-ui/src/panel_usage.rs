@@ -233,21 +233,27 @@ fn metered_source_key(provider: Option<&str>, auth: Option<&str>) -> Option<Stri
 }
 
 /// Never substitute another credential's limits (e.g. ChatGPT for an API key).
-fn active_limits<'a>(
+fn active_account<'a>(
     accounts: &'a [Account],
     provider: Option<&str>,
     auth: Option<&str>,
-) -> Option<&'a [UsageLimit]> {
+) -> Option<&'a Account> {
     let provider = provider?;
     // Runtime identity arrives asynchronously. Ambiguous auth is not OAuth.
     if auth.is_none() && matches!(provider, "openai" | "anthropic" | "gemini") {
         return None;
     }
     let id = crate::accounts::credential_id(provider, auth);
-    accounts
-        .iter()
-        .find(|account| account.id == id)
-        .and_then(Account::active_limits)
+    accounts.iter().find(|account| account.id == id)
+}
+
+#[cfg(test)]
+fn active_limits<'a>(
+    accounts: &'a [Account],
+    provider: Option<&str>,
+    auth: Option<&str>,
+) -> Option<&'a [UsageLimit]> {
+    active_account(accounts, provider, auth).and_then(Account::active_limits)
 }
 
 impl Panel {
@@ -279,6 +285,43 @@ impl Panel {
         Some((total, turns))
     }
 
+    /// Context window ring plus percentage. Sits in the composer's bottom row
+    /// right after the credential method pill.
+    pub(super) fn render_context_meter(&self) -> Option<gpui::AnyElement> {
+        if self.model.is_none() && self.provider.is_none() {
+            return None;
+        }
+        let theme = Theme::global();
+        let window = self.model.as_deref().and_then(context_window_for_model);
+        let used = self.context_tokens;
+        let percent = used
+            .zip(window)
+            .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
+        // Unknown usage shows only the empty ring, never a placeholder dash.
+        let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
+        let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
+            .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
+            .unwrap_or_else(|| "Context usage is not reported yet.".into());
+        Some(
+            div()
+                .id("panel-context-meter")
+                .debug_selector(|| "panel-context-meter".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1()
+                .h(px(22.))
+                .px_1()
+                .text_size(px(10.5))
+                .font_family(theme.FONT_MONO)
+                .text_color(theme.TEXT_DIM)
+                .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
+                .child(context_ring(percent))
+                .children(label)
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_usage_meters(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
         if self.model.is_none() && self.provider.is_none() {
             return None;
@@ -292,30 +335,6 @@ impl Panel {
             .gap_2()
             .flex_nowrap()
             .overflow_hidden();
-        let window = self.model.as_deref().and_then(context_window_for_model);
-        let used = self.context_tokens;
-        let percent = used
-            .zip(window)
-            .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
-        // Unknown usage shows only the empty ring, never a placeholder dash.
-        let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
-        let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
-            .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
-            .unwrap_or_else(|| "Context usage is not reported yet.".into());
-        row = row.child(
-            div()
-                .id("panel-context-meter")
-                .debug_selector(|| "panel-context-meter".into())
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap_1()
-                .h(px(22.))
-                .text_color(theme.TEXT_DIM)
-                .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
-                .child(context_ring(percent))
-                .children(label),
-        );
         if let Some((cost, turns)) = self.session_api_cost() {
             let detail = format!(
                 "{}: estimated API spend for this session, priced from {turns} reported response{} at list rates. Not a bill.",
@@ -342,9 +361,9 @@ impl Panel {
             return Some(row);
         }
         // Local account snapshots cannot describe credentials on a remote host.
-        let limits = if crate::harness::remote_host(&self.session_id).is_none() {
+        let account = if crate::harness::remote_host(&self.session_id).is_none() {
             cx.try_global::<StatusAccounts>().and_then(|snapshot| {
-                active_limits(
+                active_account(
                     &snapshot.0,
                     self.provider.as_deref(),
                     self.auth_method.as_deref(),
@@ -353,6 +372,26 @@ impl Panel {
         } else {
             None
         };
+        let limits = account.and_then(Account::active_limits);
+        // A subscription login whose quota fetch failed says so rather than
+        // silently omitting its meters.
+        if limits.is_none_or(<[UsageLimit]>::is_empty)
+            && let Some(reason) = account
+                .and_then(Account::active_report)
+                .and_then(crate::accounts::UsageReport::usage_error)
+        {
+            let detail = format!(
+                "{}: usage limits unavailable because {reason}.",
+                account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
+            );
+            row = row.child(meter(
+                "panel-limits-unavailable".into(),
+                "Limits unavailable".into(),
+                None,
+                detail,
+            ));
+            return Some(row);
+        }
         if let Some(limits) = limits.filter(|limits| !limits.is_empty()) {
             for (index, limit) in limits.iter().enumerate() {
                 let percent = limit
@@ -529,10 +568,14 @@ mod tests {
         vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
         vcx.run_until_parked();
         let context = vcx.debug_bounds("panel-context-meter").unwrap();
+        let login = vcx.debug_bounds("panel-login").unwrap();
         assert!(vcx.debug_bounds("panel-model").unwrap().size.width > px(20.));
+        // The context ring rides in the composer's pill row, after the method.
+        assert!(login.right() <= context.left());
+        assert!((f32::from(context.center().y - login.center().y)).abs() < 1.);
         for selector in ["panel-limit-0", "panel-limit-1"] {
             let limit = vcx.debug_bounds(selector).unwrap();
-            assert_eq!(context.center().y, limit.center().y);
+            assert!(limit.top() >= context.bottom(), "limits stay in the footer");
             assert!(limit.right() <= px(640.));
         }
         workspace.update(vcx, |workspace, cx| {
@@ -566,6 +609,35 @@ mod tests {
         assert!(vcx.debug_bounds("panel-api-cost").is_some());
         assert!(vcx.debug_bounds("panel-limits-unavailable").is_none());
         assert!(vcx.debug_bounds("panel-context-ring").is_some());
+    }
+
+    #[gpui::test]
+    fn throttled_claude_oauth_quota_says_limits_are_unavailable(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"claude","status":"available","auth_kind":"OAuth"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude) (j***5@gmail.com)","limits":[],"error":"Usage API error (429 Too Many Requests): {}"}]}"#,
+            );
+            cx.set_global(StatusAccounts(accounts));
+        });
+        let (_, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("claude-session", cx);
+            workspace.test_panel(0).unwrap().update(cx, |panel, _| {
+                panel.provider = Some("anthropic".into());
+                panel.auth_method = Some("oauth".into());
+                panel.model = Some("claude-opus-4-5".into());
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("panel-limits-unavailable").is_some());
+        assert!(vcx.debug_bounds("panel-limit-0").is_none());
     }
 
     #[test]

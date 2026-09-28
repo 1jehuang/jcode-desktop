@@ -422,8 +422,10 @@ pub(super) fn pure_black() -> Theme {
     let mut theme = Palette {
         bg: 0x000000,
         panel: 0x000000,
-        raised: 0x0f0f0f,
-        border: 0x262626,
+        // Recessed chrome and inactive panes: the minimum lift (10/255) that
+        // still distinguishes pane focus, so the window reads as black.
+        raised: 0x0a0a0a,
+        border: 0x1c1c1c,
         text: 0xd9d9d9,
         muted: 0xa0a0a0,
         accent: 0xd9d9d9,
@@ -436,18 +438,24 @@ pub(super) fn pure_black() -> Theme {
         warn: 0xe3b96f,
     }
     .theme();
+    let alpha = |color: u32, opacity: u32| rgba_c((color << 8) | opacity);
     theme.PANEL_BORDER_FOCUS = rgb_c(0x7a7a7a);
-    theme.ACCENT_DIM = rgb_c(0x1f1f1f);
-    theme.USER_BG = rgb_c(0x1a1a1a);
+    theme.ACCENT_DIM = rgb_c(0x141414);
+    theme.USER_BG = rgb_c(0x121212);
     theme.PROMPT_TINT_STRENGTH = 0.0;
     theme.TEXT_USER = rgb_c(0xf5f5f5);
     theme.HEADING = rgb_c(0xf5f5f5);
     theme.INPUT_BG = rgb_c(0x000000);
-    theme.INPUT_BORDER = rgb_c(0x2e2e2e);
-    theme.TOOL_BG = rgb_c(0x0a0a0a);
-    theme.CODE_BG = rgb_c(0x0a0a0a);
-    theme.CODE_HEADER_BG = rgb_c(0x121212);
-    theme.INLINE_CODE_BG = rgb_c(0x1c1c1c);
+    theme.INPUT_BORDER = rgb_c(0x262626);
+    theme.TOOL_BG = rgb_c(0x050505);
+    theme.CODE_BG = rgb_c(0x050505);
+    theme.CODE_HEADER_BG = rgb_c(0x0b0b0b);
+    theme.INLINE_CODE_BG = rgb_c(0x161616);
+    theme.QUOTE_BG = alpha(0xffffff, 0x0a);
+    theme.TABLE_STRIPE = alpha(0xffffff, 0x07);
+    theme.REASONING_BG = alpha(0xffffff, 0x05);
+    theme.ERROR_BG = alpha(0xf28b8b, 0x0d);
+    theme.MINIMAP_TRACK = alpha(0xffffff, 0x05);
     theme.MINIMAP_BG = rgba_c(0x000000e6);
     theme.LINK = rgb_c(0x7ab7ff);
     theme.SELECTION = rgba_c(0x3a83f75c);

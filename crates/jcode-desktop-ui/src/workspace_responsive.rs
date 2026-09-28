@@ -3,19 +3,18 @@ use super::*;
 
 const COMPACT_BREAKPOINT: f32 = 1100.0;
 pub(super) const SINGLE_PANEL_BREAKPOINT: f32 = 1100.0;
-const RAIL_WIDTH: f32 = 48.0;
 
 pub(super) fn is_compact(width: f32) -> bool {
     width < COMPACT_BREAKPOINT
 }
 
+/// Compact windows reserve no sidebar column at all. Sessions get the full
+/// width, and the sidebar opens as an overlay from the tab row's menu button.
 pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
-    if !visible {
-        0.0
-    } else if compact {
-        RAIL_WIDTH
-    } else {
+    if visible && !compact {
         SIDEBAR_WIDTH
+    } else {
+        0.0
     }
 }
 
@@ -25,134 +24,57 @@ pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
 /// uses entrance-only motion. Every reopen starts a fresh bounded entrance.
 pub(super) type VisibilityMotion = jcode_desktop_motion::MenuEntrance;
 
-struct RailTooltip(gpui::SharedString);
-
-impl Render for RailTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(Theme::global().PANEL_BG)
-            .border_1()
-            .border_color(Theme::global().PANEL_BORDER)
-            .text_size(px(12.0))
-            .text_color(Theme::global().TEXT)
-            .child(self.0.clone())
-    }
-}
-
 impl Workspace {
-    pub(super) fn render_compact_navigation(
-        &mut self,
-        fullscreen: bool,
+    /// The only compact sidebar affordance: a pill in the tab row where the
+    /// FPS readout normally sits. Workspaces stay reachable through the
+    /// numbered tab groups, so no extra column is spent on them.
+    pub(super) fn render_compact_menu_button(
+        &self,
+        left: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let button = |id: &'static str, label: &'static str, title: &'static str| {
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .size(px(36.0))
-                .flex_none()
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .text_size(px(17.0))
-                .text_color(Theme::global().TEXT_DIM)
-                .hover(|el| {
-                    el.bg(Theme::global().PANEL_BG)
-                        .text_color(Theme::global().TEXT)
-                })
-                .tooltip(move |_, cx| cx.new(|_| RailTooltip(title.into())).into())
-                .child(label)
-        };
-        let mut rail = div()
-            .debug_selector(|| "compact-sidebar".into())
-            .w(px(RAIL_WIDTH))
-            .h_full()
-            .flex_none()
+        div()
+            .id("compact-sidebar-toggle")
+            .debug_selector(|| "compact-sidebar-toggle".into())
+            .absolute()
+            .left(px(left + 4.0))
+            .top_0()
+            .size(px(28.0))
             .flex()
-            .flex_col()
             .items_center()
-            .pt(px(if cfg!(target_os = "macos") && !fullscreen {
-                TITLEBAR_HEIGHT
-            } else {
-                10.0
-            }))
-            .gap(px(6.0))
-            .child(
-                button("compact-sidebar-toggle", "☰", "Open sidebar").on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .text_size(px(15.0))
+            .text_color(Theme::global().TEXT_DIM)
+            .occlude()
+            .tooltip(|_, cx| {
+                cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
+                    .into()
+            })
+            .hover(|el| {
+                el.bg(Theme::global().PANEL_BG)
+                    .text_color(Theme::global().TEXT)
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if this.show_sidebar {
                         this.compact_sidebar_open = !this.compact_sidebar_open;
-                        window.focus(&this.focus_handle, cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child(
-                button("compact-new-session", "+", "New session").on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        this.new_panel(&NewPanel, window, cx);
-                        cx.stop_propagation();
-                    }),
-                ),
-            )
-            .child(
-                div()
-                    .w(px(20.0))
-                    .h(px(1.0))
-                    .my_2()
-                    .bg(Theme::global().PANEL_BORDER),
-            );
-        for row in 0..STRIP_COUNT {
-            let selected = row == self.active_row;
-            rail = rail.child(
-                div()
-                    .id(("compact-workspace", row))
-                    .debug_selector(move || format!("compact-workspace-{row}"))
-                    .size(px(32.0))
-                    .flex_none()
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_size(px(12.0))
-                    .text_color(if selected {
-                        Theme::global().TEXT
                     } else {
-                        Theme::global().TEXT_DIM
-                    })
-                    .when(selected, |el| {
-                        el.bg(Theme::global().PANEL_BG)
-                            .border_1()
-                            .border_color(Theme::global().PANEL_BORDER)
-                    })
-                    .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.compact_sidebar_open = false;
-                            let position = this.active_position_in_row();
-                            this.select_row(row, position);
-                            this.focus_active(window, cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| RailTooltip(format!("Workspace {}", row + 1).into()))
-                            .into()
-                    })
-                    .child((row + 1).to_string()),
-            );
-        }
-        rail.into_any_element()
+                        // Restores a sidebar hidden with Ctrl+B or its hide
+                        // button. Wide windows reset the drawer flag on render.
+                        this.show_sidebar = true;
+                        this.compact_sidebar_open = true;
+                    }
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                }),
+            )
+            .child("☰")
+            .into_any_element()
     }
 
     pub(super) fn render_compact_sidebar_overlay(
@@ -311,16 +233,15 @@ mod tests {
             assert!(panel.bottom() <= px(height));
             if is_compact(width) {
                 assert!(vcx.debug_bounds("sidebar").is_none());
-                assert_eq!(
-                    vcx.debug_bounds("compact-sidebar").unwrap().size.width,
-                    px(RAIL_WIDTH)
-                );
+                assert!(vcx.debug_bounds("compact-sidebar-toggle").is_some());
+                assert_eq!(canvas.left(), px(0.0));
+                assert_eq!(canvas.right(), px(width));
                 assert!((panel.size.width - canvas.size.width).abs() < px(2.0));
                 if let Some(other) = vcx.debug_bounds("panel-0") {
                     assert!(other.right() <= canvas.left() + px(1.0));
                 }
             } else {
-                assert!(vcx.debug_bounds("compact-sidebar").is_none());
+                assert!(vcx.debug_bounds("compact-sidebar-toggle").is_none());
                 assert_eq!(
                     vcx.debug_bounds("sidebar").unwrap().size.width,
                     px(SIDEBAR_WIDTH)
@@ -366,6 +287,45 @@ mod tests {
                 w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
                 "Input restored"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn sidebar_hide_and_show_buttons_round_trip(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Hide", cx);
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        // Wide window: the sidebar button hides it, the tab-row pill restores it.
+        vcx.simulate_window_resize(handle, gpui::size(px(1440.), px(800.)));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        click(vcx, "sidebar-hide");
+        assert!(vcx.debug_bounds("sidebar").is_none());
+        assert!(!workspace.read_with(vcx, |w, _| w.show_sidebar));
+        click(vcx, "compact-sidebar-toggle");
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        assert!(vcx.debug_bounds("compact-sidebar-toggle").is_none());
+        // Compact window: the same button only dismisses the drawer. Snap the
+        // drawer so the click lands on its settled position.
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
+        vcx.simulate_window_resize(handle, gpui::size(px(640.), px(600.)));
+        vcx.run_until_parked();
+        click(vcx, "compact-sidebar-toggle");
+        assert!(workspace.read_with(vcx, |w, _| w.compact_sidebar_open));
+        click(vcx, "sidebar-hide");
+        workspace.read_with(vcx, |w, _| {
+            assert!(!w.compact_sidebar_open);
+            assert!(w.show_sidebar);
         });
     }
 
@@ -431,7 +391,8 @@ mod tests {
                 );
             });
         }
-        // Explicitly hiding the sidebar remains respected across resizing.
+        // Explicitly hiding the sidebar remains respected across resizing,
+        // with the menu pill left as the mouse path to bring it back.
         workspace.update(vcx, |w, cx| {
             w.show_sidebar = false;
             cx.notify();
@@ -440,7 +401,8 @@ mod tests {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
             vcx.run_until_parked();
             assert!(vcx.debug_bounds("sidebar").is_none());
-            assert!(vcx.debug_bounds("compact-sidebar").is_none());
+            assert!(vcx.debug_bounds("compact-sidebar-overlay").is_none());
+            assert!(vcx.debug_bounds("compact-sidebar-toggle").is_some());
         }
     }
 }

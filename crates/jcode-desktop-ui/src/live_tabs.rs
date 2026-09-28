@@ -7,7 +7,11 @@ const TAB_FLOAT_GAP: f32 = 4.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_HEIGHT: f32 = FOLDER_CONTENT_INSET - TAB_FLOAT_GAP;
 pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
+/// Compact windows swap the FPS readout for a sidebar menu button.
+const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
+/// Pointer route to the next workspace, beside the new-session plus.
+const TAB_NEXT_WORKSPACE_WIDTH: f32 = 40.0;
 const TAB_CLOSE_WIDTH: f32 = 40.0;
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
@@ -21,6 +25,7 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
             + 8.0
             + TAB_STATUS_WIDTH
             + TAB_NEW_WIDTH
+            + TAB_NEXT_WORKSPACE_WIDTH
             + TAB_CLOSE_WIDTH
             + 64.0
 }
@@ -207,12 +212,42 @@ impl TabLayout {
             .chain(std::iter::once(selected))
     }
 
+    /// A hovered tab rises above every other tab, including the focused one,
+    /// so it can be inspected without changing focus.
+    fn hover_paint_order(count: usize, selected: usize, hovered: Option<usize>) -> Vec<usize> {
+        let mut order: Vec<_> = Self::paint_order(count, selected).collect();
+        if let Some(hovered) = hovered.filter(|&hovered| hovered < count) {
+            order.retain(|&i| i != hovered);
+            order.push(hovered);
+        }
+        order
+    }
+
+    /// Pop a hovered tab out: full height and at least the focused tab's width.
+    /// It grows only rightward (shifting left at the track's end), so the
+    /// pointer that hovered it always stays inside and hover cannot flicker.
+    fn pop_out(tab: TabGeometry, focused_width: f32, available: f32) -> TabGeometry {
+        let width = tab.width.max(focused_width).max(160.0).min(available);
+        TabGeometry {
+            left: tab.left.min(available - width).max(0.0),
+            width,
+            height: TAB_HEIGHT,
+        }
+    }
+
     /// Keep labels, status dots, and click targets out of the overlapping lip.
     fn exposed(tabs: &[TabGeometry], position: usize, selected: usize) -> (f32, f32) {
+        let order: Vec<_> = Self::paint_order(tabs.len(), selected).collect();
+        Self::exposed_in(tabs, position, &order)
+    }
+
+    fn exposed_in(tabs: &[TabGeometry], position: usize, order: &[usize]) -> (f32, f32) {
         let tab = tabs[position];
         let mut left = tab.left;
         let mut right = tab.left + tab.width;
-        for other in Self::paint_order(tabs.len(), selected)
+        for other in order
+            .iter()
+            .copied()
             .skip_while(|&i| i != position)
             .skip(1)
             .map(|i| tabs[i])
@@ -262,6 +297,9 @@ pub(super) struct TabMotion {
     available: Option<f32>,
     pub(super) hit_targets: Vec<(usize, f32)>,
     pub(super) header_offset: f32,
+    pub(super) version_width: f32,
+    /// Motion key of the tab under the pointer, popped out for inspection.
+    hovered: Option<u64>,
 }
 
 impl TabMotion {
@@ -329,11 +367,159 @@ impl Render for TabTooltip {
             .child(self.0.clone())
     }
 }
+impl Workspace {
+    /// Workspace a pointer "next" click lands on: the next occupied workspace
+    /// below (wrapping), or a fresh adjacent one when nothing else is open.
+    pub(super) fn next_workspace_row(&self) -> usize {
+        let occupied = |row: usize| {
+            self.row_indices(row)
+                .any(|index| !self.slots[index].closing)
+        };
+        (1..STRIP_COUNT)
+            .map(|step| (self.active_row + step) % STRIP_COUNT)
+            .find(|&row| occupied(row))
+            .unwrap_or((self.active_row + 1) % STRIP_COUNT)
+    }
+
+    /// Rename and close pills for a hovered tab. They float over the title's
+    /// faded end, so they never take width away from the title.
+    fn render_tab_actions(
+        &self,
+        index: usize,
+        can_rename: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let pill = |el: gpui::Stateful<gpui::Div>| {
+            el.flex_none()
+                .size(px(20.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .text_color(Theme::global().TEXT_DIM)
+                .cursor_pointer()
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                    cx.stop_propagation();
+                    window.prevent_default();
+                })
+        };
+        let mut actions = Vec::new();
+        if can_rename {
+            actions.push(
+                pill(div().id("rename-session-button"))
+                    .debug_selector(|| "rename-session-button".into())
+                    .hover(|style| {
+                        style
+                            .bg(Theme::global().PANEL_BG)
+                            .text_color(Theme::global().TEXT)
+                    })
+                    .tooltip(|_, cx| cx.new(|_| TabTooltip("Rename session (F2)".into())).into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.rename_session(&RenameSession, window, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .data(include_bytes!("../../../assets/icons/pencil.svg"))
+                            .size(px(12.0))
+                            .text_color(Theme::global().TEXT_DIM),
+                    )
+                    .into_any_element(),
+            );
+        }
+        actions.push(
+            pill(div().id(("close-session-button", index)))
+                .debug_selector(move || format!("close-session-button-{index}"))
+                .text_size(px(16.0))
+                .hover(|style| {
+                    style
+                        .bg(Theme::global().ERROR_BG)
+                        .text_color(Theme::global().ERROR)
+                })
+                .tooltip(|_, cx| {
+                    cx.new(|_| {
+                        TabTooltip(if cfg!(target_os = "macos") {
+                            "Close tab (⌘Q)".into()
+                        } else {
+                            "Close tab (Super+Q)".into()
+                        })
+                    })
+                    .into()
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.set_active(index, cx);
+                    this.close_panel(&ClosePanel, window, cx);
+                }))
+                .child("×")
+                .into_any_element(),
+        );
+        actions
+    }
+
+    fn render_next_workspace_button(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let target = self.next_workspace_row();
+        let accent = Theme::global().workspace_accent(target);
+        let shortcut = if cfg!(target_os = "macos") {
+            "⌘J / ⌘K"
+        } else {
+            "Super+J / Super+K"
+        };
+        let tooltip: gpui::SharedString =
+            format!("Go to workspace {} ({shortcut})", target + 1).into();
+        div()
+            .debug_selector(|| "tab-next-workspace-slot".into())
+            .absolute()
+            .right(px(TAB_CLOSE_WIDTH + TAB_NEW_WIDTH))
+            .top_0()
+            .w(px(TAB_NEXT_WORKSPACE_WIDTH))
+            .h(px(TAB_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("tab-next-workspace")
+                    .debug_selector(|| "tab-next-workspace".into())
+                    .h(px(22.0))
+                    .px(px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .rounded_full()
+                    .bg(accent.opacity(0.12))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(accent)
+                    .cursor_pointer()
+                    .occlude()
+                    .hover(move |el| el.bg(accent.opacity(0.26)))
+                    .tooltip(move |_, cx| cx.new(|_| TabTooltip(tooltip.clone())).into())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                            // Pointer route: coach the Super+J/K shortcut.
+                            this.missed("focus_up_down", cx);
+                            let row = this.next_workspace_row();
+                            this.overview = false;
+                            this.overview_progress.set(0.0, Instant::now());
+                            this.switch_row_animated(row, window, cx);
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().text_size(px(10.0)).child("↓"))
+                    .child((target + 1).to_string()),
+            )
+    }
+}
 
 impl Workspace {
     pub(super) fn render_workspace_bar(
         &mut self,
         canvas_width: f32,
+        menu_button: bool,
         coach_progress: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -349,7 +535,17 @@ impl Workspace {
         };
         // Session navigation takes priority over secondary build metadata.
         // Keep enough room for a useful selected tab before showing the chip.
-        let tab_budget = canvas_width - right - TAB_STATUS_WIDTH - TAB_NEW_WIDTH - TAB_CLOSE_WIDTH;
+        let status_width = if menu_button {
+            TAB_MENU_WIDTH
+        } else {
+            TAB_STATUS_WIDTH
+        };
+        let tab_budget = canvas_width
+            - right
+            - status_width
+            - TAB_NEW_WIDTH
+            - TAB_NEXT_WORKSPACE_WIDTH
+            - TAB_CLOSE_WIDTH;
         let version_width = version_header_width(tab_budget);
         let can_rename = self.rename_target(cx).is_some();
         let mut entries = Vec::new();
@@ -376,21 +572,41 @@ impl Workspace {
             .unwrap_or(0);
         let available = (canvas_width
             - right
-            - TAB_STATUS_WIDTH
+            - status_width
             - TAB_NEW_WIDTH
+            - TAB_NEXT_WORKSPACE_WIDTH
             - TAB_CLOSE_WIDTH
             - version_width)
             .max(0.0);
         let rows: Vec<_> = entries.iter().map(|(_, row, _)| *row).collect();
         let layout = TabLayout::grouped(available, &rows, selected);
-        let targets: Vec<_> = entries
+        let keys: Vec<u64> = entries
+            .iter()
+            .map(|(index, row, _)| {
+                index
+                    .map(|index| self.slots[index].panel.entity_id().as_u64())
+                    .unwrap_or(u64::MAX - *row as u64)
+            })
+            .collect();
+        // The hovered tab pops out over its neighbours. Layout (hit targets,
+        // coach space) still uses the resting geometry.
+        let hovered = self
+            .live_tabs
+            .hovered
+            .and_then(|key| keys.iter().position(|k| *k == key))
+            .filter(|&position| position != selected && entries[position].0.is_some());
+        let focused_width = layout.get(selected).map_or(0.0, |tab| tab.width);
+        let targets: Vec<_> = keys
             .iter()
             .enumerate()
-            .map(|(position, (index, row, _))| {
-                let key = index
-                    .map(|index| self.slots[index].panel.entity_id().as_u64())
-                    .unwrap_or(u64::MAX - *row as u64);
-                (key, layout[position])
+            .map(|(position, key)| {
+                let tab = layout[position];
+                let tab = if Some(position) == hovered {
+                    TabLayout::pop_out(tab, focused_width, available)
+                } else {
+                    tab
+                };
+                (*key, tab)
             })
             .collect();
         // Never chase camera coordinates or clipped-panel widths. Focus only
@@ -415,7 +631,7 @@ impl Workspace {
                     self.render_coach_chip(
                         hint,
                         coach_progress,
-                        version_width + TAB_STATUS_WIDTH + left,
+                        version_width + status_width + left,
                         cx,
                     )
                 })
@@ -425,27 +641,33 @@ impl Workspace {
             .debug_selector(|| "live-session-tabs".into())
             .absolute()
             .top_0()
-            .left(px(version_width + TAB_STATUS_WIDTH))
-            .right(px(TAB_NEW_WIDTH + TAB_CLOSE_WIDTH))
+            .left(px(version_width + status_width))
+            .right(px(TAB_NEW_WIDTH
+                + TAB_NEXT_WORKSPACE_WIDTH
+                + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
-        self.live_tabs.header_offset = version_width + TAB_STATUS_WIDTH;
+        self.live_tabs.header_offset = version_width + status_width;
+        self.live_tabs.version_width = version_width;
         self.live_tabs.hit_targets.clear();
-        for position in TabLayout::paint_order(entries.len(), selected) {
+        let paint_order = TabLayout::hover_paint_order(entries.len(), selected, hovered);
+        for &position in &paint_order {
             let (index, row, _) = entries[position];
             let focused = position == selected;
-            let compact = row != self.active_row;
+            let popped = Some(position) == hovered;
+            let compact = row != self.active_row && !popped;
+            let key = keys[position];
             let accent = Theme::global().workspace_accent(row);
             let background = Theme::global()
                 .panel_background(focused)
                 .blend(accent.opacity(if focused { 0.16 } else { 0.05 }));
             let current = geometry[position];
-            let (exposed_left, visible) = TabLayout::exposed(&geometry, position, selected);
+            let (exposed_left, visible) = TabLayout::exposed_in(&geometry, position, &paint_order);
             if let Some(index) = index {
                 let x = exposed_left + visible / 2.0;
                 self.live_tabs.hit_targets.push((index, x));
             }
             let padding = (visible / 12.0).min(6.0);
-            let (title, emoji, activity) = match index {
+            let (title, emoji, ring, outline) = match index {
                 Some(index) => {
                     let panel = self.slots[index].panel.read(cx);
                     (
@@ -453,11 +675,27 @@ impl Workspace {
                         jcode_core::id::extract_session_name(&panel.session_id)
                             .map(jcode_core::id::session_icon)
                             .unwrap_or("💫"),
-                        panel.tab_activity(),
+                        panel.tab_ring(),
+                        Some(panel.tab_outline()),
                     )
                 }
-                None => ("Empty workspace".into(), "📁", None),
+                None => ("Empty workspace".into(), "📁", None, None),
             };
+            let tab_bg = match ring {
+                Some(ring) => background.blend(ring.tint()),
+                None => background,
+            };
+            let hover_bg = Theme::global().PANEL_BG.blend(accent.opacity(0.20));
+            // Fade toward the tab fill instead of an ellipsis, so long titles
+            // use the whole tab and trail off softly at the right edge.
+            let fade = |bg: gpui::Rgba| {
+                gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(gpui::Rgba { a: 0., ..bg }, 0.),
+                    gpui::linear_color_stop(bg, 1.),
+                )
+            };
+            let show_actions = index.is_some() && visible >= 88.0;
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
@@ -482,16 +720,7 @@ impl Workspace {
                         .items_center()
                         .justify_center()
                         .text_size(px((visible - 2.0 - 2.0 * padding).clamp(1.0, 14.0)))
-                        .child(match activity {
-                            Some(activity) => div()
-                                .debug_selector(move || {
-                                    format!("live-session-tab-{}-working-emoji", index.unwrap())
-                                })
-                                .size_full()
-                                .child(activity)
-                                .into_any_element(),
-                            None => div().child(emoji).into_any_element(),
-                        }),
+                        .child(emoji),
                 )
                 .when(!compact && (focused || visible >= 52.0), |el| {
                     el.child(
@@ -500,94 +729,48 @@ impl Workspace {
                                 Some(index) => format!("live-session-tab-{index}-title"),
                                 None => "live-session-empty-tab-title".into(),
                             })
+                            .relative()
+                            .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(title.clone()),
-                    )
-                    .when(focused && can_rename && visible >= 88.0, |el| {
-                        el.child(
-                            div()
-                                .id("rename-session-button")
-                                .debug_selector(|| "rename-session-button".into())
-                                .flex_none()
-                                .size(px(20.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .text_size(px(14.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .opacity(0.0)
-                                .group_hover("live-session-tab", |style| style.opacity(1.0))
-                                .hover(|style| {
-                                    style
-                                        .bg(Theme::global().PANEL_BG)
-                                        .text_color(Theme::global().TEXT)
-                                })
-                                .cursor_pointer()
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| TabTooltip("Rename session (F2)".into())).into()
-                                })
-                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.rename_session(&RenameSession, window, cx);
-                                }))
-                                .child(
-                                    gpui::svg()
-                                        .data(include_bytes!("../../../assets/icons/pencil.svg"))
-                                        .size(px(12.0))
-                                        .text_color(Theme::global().TEXT_DIM),
-                                ),
-                        )
-                    })
-                    .when(index.is_some() && visible >= 88.0, |el| {
-                        let index = index.unwrap();
-                        el.child(
-                            div()
-                                .id(("close-session-button", index))
-                                .debug_selector(move || format!("close-session-button-{index}"))
-                                .flex_none()
-                                .size(px(20.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .text_size(px(16.0))
-                                .text_color(Theme::global().TEXT_DIM)
-                                .opacity(0.0)
-                                .group_hover("live-session-tab", |style| style.opacity(1.0))
-                                .hover(|style| {
-                                    style
-                                        .bg(Theme::global().ERROR_BG)
-                                        .text_color(Theme::global().ERROR)
-                                })
-                                .cursor_pointer()
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| {
-                                        TabTooltip(if cfg!(target_os = "macos") {
-                                            "Close tab (⌘Q)".into()
-                                        } else {
-                                            "Close tab (Super+Q)".into()
-                                        })
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(title.clone())
+                            .child(
+                                div()
+                                    .debug_selector(move || match index {
+                                        Some(index) => format!("live-session-tab-{index}-fade"),
+                                        None => "live-session-empty-tab-fade".into(),
                                     })
-                                    .into()
-                                })
-                                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.set_active(index, cx);
-                                    this.close_panel(&ClosePanel, window, cx);
-                                }))
-                                .child("×"),
-                        )
-                    })
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .right_0()
+                                    .w(px(20.0))
+                                    .bg(fade(tab_bg))
+                                    .group_hover("live-session-tab", move |style| {
+                                        style.bg(fade(hover_bg))
+                                    }),
+                            ),
+                    )
+                })
+                // Actions float over the faded end of the title on hover, so
+                // they never reserve width the title could be using.
+                .when(!compact && show_actions, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(padding))
+                            .flex()
+                            .items_center()
+                            .opacity(0.0)
+                            .group_hover("live-session-tab", |style| style.opacity(1.0))
+                            .child(div().h_full().w(px(16.0)).bg(fade(hover_bg)))
+                            .child(div().h_full().flex().items_center().bg(hover_bg).children(
+                                self.render_tab_actions(index.unwrap(), focused && can_rename, cx),
+                            )),
+                    )
                 });
             tabs = tabs.child(
                 div()
@@ -612,14 +795,17 @@ impl Workspace {
                     // Use this single outline on every edge. An extra accent
                     // stripe makes the top heavier and squares off the corners.
                     .border(px((current.width / 2.0).min(1.0)))
-                    .border_color(if focused {
-                        accent
-                    } else {
-                        accent.opacity(0.35)
+                    .border_color(match ring {
+                        // The ring paints the outline itself. Hide the static
+                        // border so progress reads as filling, not overlaying.
+                        Some(_) => accent.opacity(0.0),
+                        None if focused => accent,
+                        None => accent.opacity(0.35),
                     })
-                    .bg(background)
+                    .bg(tab_bg)
                     .text_size(px(11.0))
                     .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
+                    .when(popped, |el| el.shadow_md())
                     .text_color(if focused {
                         Theme::global().TEXT
                     } else {
@@ -627,6 +813,21 @@ impl Workspace {
                     })
                     .occlude()
                     .cursor_pointer()
+                    .when(index.is_some(), |el| {
+                        el.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            let next = if *hovered {
+                                Some(key)
+                            } else if this.live_tabs.hovered == Some(key) {
+                                None
+                            } else {
+                                return;
+                            };
+                            if this.live_tabs.hovered != next {
+                                this.live_tabs.hovered = next;
+                                cx.notify();
+                            }
+                        }))
+                    })
                     .tooltip({
                         let title: gpui::SharedString =
                             format!("Workspace {} · {title}", row + 1).into();
@@ -642,6 +843,16 @@ impl Workspace {
                         }))
                     })
                     .child(text)
+                    .when_some(outline.filter(|_| ring.is_some()), |el, outline| {
+                        let index = index.unwrap();
+                        el.child(
+                            div()
+                                .debug_selector(move || format!("live-session-tab-{index}-ring"))
+                                .absolute()
+                                .inset_0()
+                                .child(outline),
+                        )
+                    })
                     .when_some(index, |el, index| {
                         el.on_mouse_down(
                             gpui::MouseButton::Left,
@@ -725,31 +936,38 @@ impl Workspace {
             .left_0()
             .right(px(right))
             .h(px(FOLDER_CONTENT_INSET))
-            .child(
-                div()
-                    .debug_selector(|| "fps-counter-slot".into())
-                    .absolute()
-                    .left(px(version_width))
-                    .top_0()
-                    .w(px(TAB_STATUS_WIDTH))
-                    .h(px(TAB_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .pl_2()
-                    .child(
+            .map(|el| {
+                if menu_button {
+                    el.child(self.render_compact_menu_button(version_width, cx))
+                } else {
+                    el.child(
                         div()
-                            .debug_selector(|| "fps-counter".into())
-                            .font_family(Theme::global().FONT_MONO)
-                            .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(fps),
-                    ),
-            )
+                            .debug_selector(|| "fps-counter-slot".into())
+                            .absolute()
+                            .left(px(version_width))
+                            .top_0()
+                            .w(px(TAB_STATUS_WIDTH))
+                            .h(px(TAB_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .pl_2()
+                            .child(
+                                div()
+                                    .debug_selector(|| "fps-counter".into())
+                                    .font_family(Theme::global().FONT_MONO)
+                                    .text_size(px(10.0))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .child(fps),
+                            ),
+                    )
+                }
+            })
             .child(tabs)
             .when(version_width > 0.0, |el| {
                 el.child(self.render_version_header(version_width, cx))
             })
             .children(coach_chip)
+            .child(self.render_next_workspace_button(cx))
             .child(
                 div()
                     .id("tab-new-session")
@@ -841,6 +1059,38 @@ mod tests {
     use super::*;
 
     gpui::actions!(jcode_desktop_host, [CloseWindow]);
+
+    #[gpui::test]
+    fn next_workspace_pill_reaches_the_next_occupied_workspace_by_mouse(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("first", cx);
+            w.active_row = 2;
+            w.push_test_panel("third", cx);
+            w.active_row = 0;
+            w.active = 0;
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        for width in [1440., 800., 480.] {
+            vcx.simulate_window_resize(handle, gpui::size(px(width), px(600.)));
+            vcx.run_until_parked();
+            let next = vcx.debug_bounds("tab-next-workspace").unwrap();
+            let plus = vcx.debug_bounds("tab-new-session").unwrap();
+            let tabs = vcx.debug_bounds("live-session-tabs").unwrap();
+            assert!(tabs.right() <= next.left(), "width={width}");
+            assert!(next.right() <= plus.left(), "width={width}");
+        }
+        // Skips empty workspace 2 and lands on workspace 3, then wraps back.
+        for expected in [2, 0] {
+            let next = vcx.debug_bounds("tab-next-workspace").unwrap();
+            vcx.simulate_click(next.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), expected);
+        }
+    }
 
     #[gpui::test]
     fn tab_close_window_is_separate_from_new_session_and_dispatches_host_action(
@@ -1077,6 +1327,8 @@ mod tests {
             vcx.run_until_parked();
             for selected in [4, 8, 0, 7, 3, 2, 6, 5, 1] {
                 workspace.update(vcx, |w, cx| {
+                    // Measure resting layout, not a tab popped out under the pointer.
+                    w.live_tabs.hovered = None;
                     w.live_tabs.settle();
                     cx.notify();
                 });
@@ -1123,6 +1375,13 @@ mod tests {
                     .1;
                 vcx.simulate_click(
                     gpui::point(track.left() + px(x), track.bottom() - px(12.0)),
+                    gpui::Modifiers::default(),
+                );
+                vcx.run_until_parked();
+                // Leave the tab row so the next pass measures resting geometry.
+                vcx.simulate_mouse_move(
+                    gpui::point(px(5.0), px(600.0)),
+                    None,
                     gpui::Modifiers::default(),
                 );
                 vcx.run_until_parked();
@@ -1232,7 +1491,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn live_tabs_animate_the_working_emoji_without_shifting_the_title(
+    fn live_tabs_ring_the_outline_while_working_and_keep_the_emoji_still(
         cx: &mut gpui::TestAppContext,
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
@@ -1272,12 +1531,16 @@ mod tests {
                 cx.notify();
             });
             vcx.run_until_parked();
-            assert_eq!(
-                vcx.debug_bounds("live-session-tab-0-working-emoji")
-                    .is_some(),
-                active,
-                "status {status}",
-            );
+            // Live turns paint the outline ring. Quiet states never animate,
+            // and the emoji itself never animates in any state.
+            let quiet = matches!(status, "idle" | "attached" | "connected");
+            if active || quiet {
+                assert_eq!(
+                    vcx.debug_bounds("live-session-tab-0-ring").is_some(),
+                    active,
+                    "status {status}",
+                );
+            }
             assert!(vcx.debug_bounds("live-session-tab-1-spinner").is_none());
             assert!(vcx.debug_bounds("panel-session-title").is_none());
             // Active sessions also show an inline transcript status.
@@ -1288,10 +1551,7 @@ mod tests {
             );
             let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
             assert!(vcx.debug_bounds("live-session-tab-0-spinner").is_none());
-            assert!(
-                vcx.debug_bounds("live-session-tab-1-working-emoji")
-                    .is_none()
-            );
+            assert!(vcx.debug_bounds("live-session-tab-1-ring").is_none());
             let emoji = vcx.debug_bounds("live-session-tab-0-emoji").unwrap();
             assert!(emoji.right() <= title.left());
             assert_eq!(
@@ -1314,6 +1574,26 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn hovered_tab_pops_out_on_top_without_leaving_the_pointer() {
+        let order = TabLayout::hover_paint_order(4, 1, Some(3));
+        assert_eq!(order.last(), Some(&3), "hovered tab paints above focus");
+        assert_eq!(order.len(), 4);
+        assert_eq!(TabLayout::hover_paint_order(4, 1, None).last(), Some(&1));
+        for available in [100.0, 400.0, 1200.0] {
+            for left in [0.0, 50.0, available - 40.0] {
+                let rest = TabGeometry { left, width: 40.0, height: TAB_HEIGHT - 4.0 };
+                let pop = TabLayout::pop_out(rest, 208.0, available);
+                assert_eq!(pop.height, TAB_HEIGHT);
+                assert!(pop.width >= rest.width);
+                assert!(pop.left >= 0.0 && pop.left + pop.width <= available + 0.001);
+                // Every point of the resting tab stays covered by the popped tab.
+                assert!(pop.left <= rest.left + 0.001);
+                assert!(pop.left + pop.width >= rest.left + rest.width - 0.001);
             }
         }
     }
@@ -1507,12 +1787,12 @@ mod tests {
                     w.resolve_camera_target(1200.0);
                     w.camera_x[0] = w.camera_target[0];
                     let before_camera = w.camera_target[0];
-                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                     w.live_tabs.settle();
                     let closed_id = w.slots[initial].panel.entity_id().as_u64();
                     w.close_panel(&ClosePanel, window, cx);
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                     assert_eq!(w.slots.len(), 5, "surface is still fading");
                     assert_eq!(w.live_tabs.tabs.len(), 4);
                     assert!(!w.live_tabs.tabs.contains_key(&closed_id));
@@ -1534,7 +1814,7 @@ mod tests {
                         cx,
                     );
                     w.resolve_camera_target(1200.0);
-                    let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                    let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                     assert_eq!(w.slots.len(), 4);
                     assert_eq!(w.camera_target[0], camera, "no second camera move");
                     for (id, tab) in &w.live_tabs.tabs {
@@ -1566,7 +1846,7 @@ mod tests {
         vcx.update(|window, cx| {
             workspace.update(cx, |w, cx| {
                 w.close_panel(&ClosePanel, window, cx);
-                let _ = w.render_workspace_bar(1200.0, 0.0, window, cx);
+                let _ = w.render_workspace_bar(1200.0, false, 0.0, window, cx);
                 assert_eq!(w.slots.len(), 1);
                 assert!(w.live_tabs.hit_targets.is_empty());
                 assert_eq!(w.live_tabs.tabs.len(), 1);

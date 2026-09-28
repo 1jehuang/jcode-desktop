@@ -35,7 +35,7 @@ impl Workspace {
             if harness::screenshot_mode() {
                 return;
             }
-            let Ok(executable) = std::env::current_exe() else {
+            let Ok(executable) = crate::platform::self_executable() else {
                 eprintln!("fork: cannot locate the desktop executable");
                 return;
             };

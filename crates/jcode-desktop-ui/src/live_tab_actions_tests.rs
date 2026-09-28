@@ -16,7 +16,10 @@ fn title_actions_fit_and_rename_does_not_select_or_close(cx: &mut gpui::TestAppC
         let title = vcx.debug_bounds("live-session-tab-0-title").unwrap();
         let rename = vcx.debug_bounds("rename-session-button").unwrap();
         let close = vcx.debug_bounds("close-session-button-0").unwrap();
-        assert!(title.right() <= rename.left());
+        // Actions float over the title's faded end instead of reserving
+        // width, so the title reaches the tab's right padding.
+        assert!(title.right() >= rename.left());
+        assert!(title.right() <= tab.right());
         assert!(rename.right() <= close.left());
         assert!(close.right() <= tab.right());
         vcx.update(|window, cx| window.simulate_mouse_move(tab.center(), cx));

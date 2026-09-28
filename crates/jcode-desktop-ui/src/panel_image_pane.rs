@@ -28,8 +28,16 @@ impl Panel {
         cx.notify();
     }
 
-    /// Icon-only toggle: the footer never shows an image count.
-    pub(super) fn render_image_pane_toggle(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// Icon-only toggle: the footer never shows an image count, and the
+    /// toggle only appears once the transcript has images to browse.
+    pub(super) fn render_image_pane_toggle(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let has_images = self.items.iter().any(|item| matches!(item, Item::Image(_)));
+        if !has_images && !self.image_pane_open {
+            return None;
+        }
         let theme = Theme::global();
         let color = if self.image_pane_open {
             theme.TEXT
@@ -63,6 +71,7 @@ impl Panel {
                 cx.stop_propagation();
             }))
             .into_any_element()
+            .into()
     }
 
     pub(super) fn render_image_pane_link(

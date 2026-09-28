@@ -24,9 +24,12 @@ const SURFACE_WIDTH: f32 = 264.;
 const SURFACE_HEIGHT: f32 = 44.;
 /// Gap between the pill surface and the bottom of the usable display area.
 const BOTTOM_MARGIN: f32 = 14.;
+/// Live states keep a stable width so the pill does not jitter while the
+/// status text changes. Results hug their text like a true pill.
 const PILL_WIDTH: f32 = 160.;
 const PILL_MAX_WIDTH: f32 = SURFACE_WIDTH - 16.;
-const PILL_HEIGHT: f32 = 28.;
+const PILL_HEIGHT: f32 = 32.;
+const PILL_PAD_X: f32 = 14.;
 const BAR_WIDTH: f32 = 2.;
 const BAR_GAP: f32 = 1.;
 
@@ -236,6 +239,7 @@ impl VoiceOverlay {
 impl Render for VoiceOverlay {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global();
+        let decided = self.snapshot.decided;
         div()
             .size_full()
             .flex()
@@ -245,10 +249,10 @@ impl Render for VoiceOverlay {
                 div()
                     .id("global-voice-overlay")
                     .debug_selector(|| "global-voice-overlay".into())
-                    .min_w(px(PILL_WIDTH))
+                    .when(!decided, |el| el.min_w(px(PILL_WIDTH)))
                     .max_w(px(PILL_MAX_WIDTH))
                     .h(px(PILL_HEIGHT))
-                    .px(px(12.))
+                    .px(px(PILL_PAD_X))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -256,22 +260,24 @@ impl Render for VoiceOverlay {
                     .gap(px(8.))
                     .rounded_full()
                     .border_1()
-                    .border_color(theme.ACCENT.opacity(0.25))
+                    .border_color(theme.ACCENT.opacity(if decided { 0.35 } else { 0.25 }))
                     .bg(theme.PANEL_BG)
+                    // The 44px surface leaves 6px around the pill, so a larger
+                    // shadow would be clipped into a visible hard edge.
                     .shadow_md()
                     .text_color(theme.TEXT)
-                    .text_size(px(11.))
+                    .text_size(px(12.))
                     // Retain the status even while the waveform is visible.
                     .child(
                         div()
                             .debug_selector(|| "global-voice-status".into())
                             .min_w_0()
                             .flex_shrink(1.)
-                            .line_height(px(14.))
+                            .line_height(px(16.))
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .text_color(if self.snapshot.decided {
+                            .text_color(if decided {
                                 theme.TEXT
                             } else {
                                 theme.TEXT_DIM
@@ -410,14 +416,19 @@ mod tests {
             ("Transcribing…", None),
             ("Jev is choosing…", None),
             ("Jev → Previous session", None),
+            ("No speech detected", None),
+            ("Transcription timed out", None),
             ("Voice error: microphone unavailable", None),
         ] {
+            let decided = title.starts_with("Jev →")
+                || title.starts_with("No speech")
+                || title.ends_with("timed out");
             overlay.update(vcx, |overlay, cx| {
                 overlay.set_snapshot(
                     Snapshot {
                         title: title.into(),
                         levels,
-                        decided: title.starts_with("Jev →"),
+                        decided,
                     },
                     cx,
                 );
@@ -425,7 +436,15 @@ mod tests {
             vcx.run_until_parked();
             let pill = vcx.debug_bounds("global-voice-overlay").unwrap();
             assert_eq!(pill.size.height, px(PILL_HEIGHT));
-            assert!(pill.size.width >= px(PILL_WIDTH) && pill.size.width <= px(PILL_MAX_WIDTH));
+            assert!(pill.size.width <= px(PILL_MAX_WIDTH));
+            if decided {
+                // Results hug their text: no dead space beyond the padding.
+                let status = vcx.debug_bounds("global-voice-status").unwrap();
+                assert!(pill.right() - status.right() <= px(PILL_PAD_X + 1.));
+                assert!(status.left() - pill.left() <= px(PILL_PAD_X + 1.));
+            } else {
+                assert!(pill.size.width >= px(PILL_WIDTH));
+            }
             assert_eq!(
                 pill.center(),
                 gpui::point(px(SURFACE_WIDTH / 2.), px(SURFACE_HEIGHT / 2.))

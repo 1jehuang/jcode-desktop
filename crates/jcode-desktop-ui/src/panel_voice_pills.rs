@@ -286,7 +286,7 @@ impl Panel {
                         })
                         .px_2()
                         .py(px(2.))
-                        .rounded_md()
+                        .rounded_full()
                         .bg(background)
                         .text_color(if pill.winner {
                             theme.TEXT_USER
@@ -330,12 +330,12 @@ impl Panel {
             .debug_selector(|| "voice-overlay".into())
             .max_w((viewport.width - px(24.)).max(px(1.)).min(px(420.)))
             .min_w_0()
-            .px_2()
-            .py(px(6.))
+            .px(px(10.))
+            .py(px(8.))
             .flex()
             .flex_col()
             .gap(px(4.))
-            .rounded_lg()
+            .rounded_xl()
             .bg(theme.PANEL_BG)
             .shadow_md()
             .text_color(theme.TEXT)
@@ -371,9 +371,16 @@ impl Panel {
                             .id("voice-trace-expand")
                             .debug_selector(|| "voice-trace-expand".into())
                             .flex_shrink_0()
+                            .px(px(8.))
+                            .h(px(18.))
+                            .flex()
+                            .items_center()
+                            .rounded_full()
+                            .bg(theme.ACCENT_DIM.opacity(0.5))
                             .cursor_pointer()
+                            .text_size(px(10.))
                             .text_color(theme.TEXT_DIM)
-                            .hover(|el| el.text_color(theme.TEXT))
+                            .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                             .on_click(cx.listener(|panel, _, _, cx| {
                                 panel.voice.trace_expanded = !panel.voice.trace_expanded;
                                 cx.notify();
@@ -399,7 +406,7 @@ impl Panel {
                             .text_color(theme.TEXT_DIM)
                             .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                             .on_click(cx.listener(|panel, _, _, cx| {
-                                panel.cancel_voice(cx);
+                                panel.cancel_voice(true, "cancel button", cx);
                                 cx.stop_propagation();
                             }))
                             .child("×"),
@@ -412,7 +419,7 @@ impl Panel {
                         .min_w_0()
                         .truncate()
                         .text_size(px(10.))
-                        .child(error),
+                        .child(super::global_pill_error(&error)),
                 )
             })
             .child(ranking)
@@ -597,7 +604,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         for (width, height) in [(240., 320.), (480., 600.), (1440., 1000.)] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
-            panel.update(vcx, |panel, cx| panel.cancel_voice(cx));
+            panel.update(vcx, |panel, cx| panel.cancel_voice(true, "test", cx));
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
             for state in [
