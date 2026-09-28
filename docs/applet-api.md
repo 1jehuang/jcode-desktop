@@ -59,6 +59,20 @@ flowchart LR
 
 ## Placements
 
+Applets are primarily attached to tool calls. Reach for these two forms first:
+
+1. **Tool call cards** (`inline` + `tool_call` anchor). The card replaces the
+   generic row for a tool call and shows what the call did, such as the email
+   that was sent or the CRM row that changed. Claim calls with the manifest's
+   `tool_cards`.
+2. **Inline cards in the chat** (`inline` + `after_message` or `end`). Use these
+   when there's something to show in the conversation without a matching tool
+   call.
+
+The other placements below are supported, but they're for the less common
+cases: persistent tools (`panel`), ambient status (`sidebar`, `overlay`),
+input helpers (`composer`) and work with no UI (`background`).
+
 | Placement | Use | Status |
 | --- | --- | --- |
 | `panel` | First-class tiled panel, like the Gmail inbox | Implemented (`applet://<instance>` panels, restored after reload) |
