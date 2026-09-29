@@ -5,6 +5,12 @@ Alt+Shift+5: python3 /path/to/jcode-desktop/scripts/onboarding-desktop.py
 Each invocation opens a new production window, not a mock or screenshot fixture.
 Close that window to stop its private runtime/browser and discard its profile.
 Sign-in is real. Any credentials you explicitly enter belong only to this profile.
+
+By default the profile mirrors what first-run Desktop would find on THIS machine:
+other tools' logins are copied with every secret redacted (so detection and the
+import list are real, but nothing can refresh or spend your real tokens), and
+recent transcripts from other harnesses are linked read-only for the preview.
+Pass --blank to rehearse a machine with no other tools installed.
 """
 import argparse
 import ctypes
@@ -12,6 +18,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -32,12 +39,106 @@ DISPLAY_ENV = (
     "XDG_SESSION_TYPE", "XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID",
     "LIBGL_ALWAYS_SOFTWARE",
 )
+# Other tools' login files, relative to home, exactly where Jcode's detectors
+# look for them. Mirrored under $JCODE_HOME/external, which is where the
+# detectors resolve home when JCODE_HOME is set.
+LOGIN_FILES = (
+    ".claude/.credentials.json",
+    ".codex/auth.json",
+    ".gemini/oauth_creds.json",
+    ".copilot/config.json",
+    ".config/github-copilot/hosts.json",
+    ".config/github-copilot/apps.json",
+    ".config/cursor/auth.json",
+    ".local/share/opencode/auth.json",
+    ".pi/agent/auth.json",
+    ".hermes/auth.json",
+    ".openclaw/agent/auth.json",
+)
+# Transcript roots the onboarding preview samples, with their file extension.
+TRANSCRIPT_DIRS = (
+    (".claude/projects", ".jsonl"),
+    (".codex/sessions", ".jsonl"),
+    (".cursor/projects", ".jsonl"),
+    (".pi/agent/sessions", ".jsonl"),
+    (".jcode/sessions", ".json"),
+)
+# Matches the sampler's per-harness scan, so the preview sees the same files.
+TRANSCRIPTS_PER_HARNESS = 40
+REDACTED = "jcode-onboarding-rehearsal-redacted"
+# Values under these keys are secrets. Structure, provider names, expiry
+# numbers and types stay, so detection behaves exactly as it would for real.
+SECRET_KEY = re.compile(
+    r"token|secret|key|access|refresh|password|credential|cookie|session|auth(?!_mode|_type)",
+    re.IGNORECASE,
+)
 
 
 def private_directory(path):
     meta = path.lstat()
     if not stat.S_ISDIR(meta.st_mode) or meta.st_uid != os.getuid() or meta.st_mode & 0o077:
         raise RuntimeError(f"expected an owned private directory (0700): {path}")
+
+
+def redact(value, key=""):
+    """Blank every secret while keeping the shape detectors inspect."""
+    if isinstance(value, dict):
+        return {k: redact(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v, key) for v in value]
+    if isinstance(value, str) and value and SECRET_KEY.search(key):
+        return REDACTED
+    return value
+
+
+def mirror_logins(real_home, external):
+    """Copy other tools' logins, secrets redacted. Returns what was mirrored."""
+    mirrored = []
+    for relative in LOGIN_FILES:
+        source = real_home / relative
+        if not source.is_file() or source.is_symlink():
+            continue
+        try:
+            data = json.loads(source.read_text() or "{}")
+        except (OSError, ValueError):
+            # Unparseable files cannot be redacted safely, so never copy them.
+            continue
+        target = external / relative
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as out:
+            json.dump(redact(data), out)
+        mirrored.append(relative)
+    return mirrored
+
+
+def mirror_transcripts(real_home, external, limit=TRANSCRIPTS_PER_HARNESS):
+    """Link each harness's most recent transcripts read-only for the preview.
+
+    Only individual files are linked, preserving their relative paths (Cursor
+    subagent filtering depends on them). Nothing in the profile writes there.
+    """
+    linked = 0
+    for relative, extension in TRANSCRIPT_DIRS:
+        root = real_home / relative
+        if not root.is_dir():
+            continue
+        found = []
+        for directory, _, names in os.walk(root):
+            for name in names:
+                if name.endswith(extension):
+                    path = Path(directory) / name
+                    try:
+                        found.append((path.stat().st_mtime, path))
+                    except OSError:
+                        pass
+        found.sort(reverse=True)
+        for _, path in found[:limit]:
+            target = external / relative / path.relative_to(root)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target.symlink_to(path)
+            linked += 1
+    return linked
 
 
 def desktop_binary(explicit=None):
@@ -102,12 +203,15 @@ def isolated_environment(root, source):
         "LANG": env.get("LANG", "C.UTF-8"),
         "JCODE_NO_TELEMETRY": "1",
         "JCODE_WAKE_MODE": "external",
+        # Mirrored logins are redacted placeholders. Desktop reports what it
+        # would import instead of storing them.
+        "JCODE_ONBOARDING_REHEARSAL": "1",
         "BROWSER": str(root / "bin/xdg-open"),
     })
     return env
 
 
-def prepare_profile(root, source, companion):
+def prepare_profile(root, source, companion, blank=False):
     private_directory(root)
     (root / ".onboarding-profile").write_text("jcode-real-onboarding-v1\n")
     for name in ("home", "config", "cache", "data", "state", "runtime", "jcode", "bin", "browser"):
@@ -115,6 +219,13 @@ def prepare_profile(root, source, companion):
     # Share executables only, never ~/.jcode, account files, sessions or settings.
     (root / "bin/jcode").symlink_to(companion)
     env = isolated_environment(root, source)
+    real_home = Path(source.get("HOME", ""))
+    if not blank and real_home.is_absolute() and real_home.is_dir():
+        # What a first run on this machine would find, without real secrets.
+        external = root / "jcode/external"
+        external.mkdir(mode=0o700)
+        mirror_logins(real_home, external)
+        mirror_transcripts(real_home, external)
     # GPUI's production open_url uses xdg-open first. Never route authentication
     # to the user's normal browser, its cookies, or the session portal.
     opener = root / "bin/xdg-open"
@@ -249,7 +360,7 @@ def supervise(root, binary, timeout):
             shutil.rmtree(root)
 
 
-def open_onboarding(timeout=30.0, binary=None, source=None, jcode_binary=None):
+def open_onboarding(timeout=30.0, binary=None, source=None, jcode_binary=None, blank=False):
     if not math.isfinite(timeout) or not 0 < timeout <= 120:
         raise ValueError("timeout must be greater than 0 and at most 120 seconds")
     if not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"):
@@ -271,7 +382,7 @@ def open_onboarding(timeout=30.0, binary=None, source=None, jcode_binary=None):
     root = Path(tempfile.mkdtemp(prefix="jcode-onboarding-", dir=parent))
     worker = None
     try:
-        env = prepare_profile(root, source, companion)
+        env = prepare_profile(root, source, companion, blank)
         worker = subprocess.Popen(
             [sys.executable, str(SCRIPT), "--supervise", str(root), "--binary", str(binary),
              "--timeout", str(timeout)],
@@ -308,6 +419,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--binary", type=Path, help="production Desktop binary (default: newest local build)")
     parser.add_argument("--jcode-binary", type=Path, help="explicit production Jcode companion for source development")
+    parser.add_argument("--blank", action="store_true",
+                        help="rehearse a machine with no other tools (no mirrored logins or transcripts)")
     parser.add_argument("--supervise", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--open-url", nargs=2, metavar=("PROFILE", "URL"), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -322,7 +435,8 @@ def main(argv=None):
             return 0
         if args.supervise:
             return supervise(args.supervise, args.binary, args.timeout)
-        print(json.dumps(open_onboarding(args.timeout, args.binary, jcode_binary=args.jcode_binary)))
+        print(json.dumps(open_onboarding(args.timeout, args.binary, jcode_binary=args.jcode_binary,
+                                         blank=args.blank)))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({"ok": False, "error": str(error)}), file=sys.stderr)

@@ -21,6 +21,61 @@ SPEC.loader.exec_module(launcher)
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_mirrored_logins_keep_shape_but_never_real_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, external = Path(tmp, "home"), Path(tmp, "external")
+            codex = home / ".codex/auth.json"
+            codex.parent.mkdir(parents=True)
+            codex.write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {
+                "access_token": "REAL-A", "refresh_token": "REAL-R", "account_id": "acct"}}))
+            pi = home / ".pi/agent/auth.json"
+            pi.parent.mkdir(parents=True)
+            pi.write_text(json.dumps({"anthropic": {
+                "type": "oauth", "access": "REAL-A", "refresh": "REAL-R", "expires": 5}}))
+            broken = home / ".gemini/oauth_creds.json"
+            broken.parent.mkdir(parents=True)
+            broken.write_text("REAL-not-json")
+            mirrored = launcher.mirror_logins(home, external)
+            self.assertEqual(sorted(mirrored), [".codex/auth.json", ".pi/agent/auth.json"])
+            for relative in mirrored:
+                text = (external / relative).read_text()
+                self.assertNotIn("REAL", text)
+                self.assertEqual((external / relative).stat().st_mode & 0o777, 0o600)
+            copied = json.loads((external / ".pi/agent/auth.json").read_text())
+            self.assertEqual(copied["anthropic"]["type"], "oauth")
+            self.assertEqual(copied["anthropic"]["expires"], 5)
+            self.assertEqual(copied["anthropic"]["access"], launcher.REDACTED)
+            self.assertEqual(json.loads(codex.read_text())["tokens"]["access_token"], "REAL-A")
+            self.assertFalse((external / ".gemini").exists(), "unparseable files are never copied")
+
+    def test_mirrored_transcripts_are_recent_links_with_paths_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, external = Path(tmp, "home"), Path(tmp, "external")
+            project = home / ".claude/projects/app"
+            project.mkdir(parents=True)
+            for n in range(3):
+                path = project / f"{n}.jsonl"
+                path.write_text("{}\n")
+                os.utime(path, (n, n))
+            (project / "notes.txt").write_text("skip")
+            self.assertEqual(launcher.mirror_transcripts(home, external, limit=2), 2)
+            links = sorted(p.name for p in (external / ".claude/projects/app").iterdir())
+            self.assertEqual(links, ["1.jsonl", "2.jsonl"])
+            link = external / ".claude/projects/app/2.jsonl"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), (project / "2.jsonl").resolve())
+
+    def test_blank_profile_mirrors_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp, "realhome")
+            (home / ".codex").mkdir(parents=True)
+            (home / ".codex/auth.json").write_text("{}")
+            for blank, expected in ((True, False), (False, True)):
+                root = Path(tmp, f"profile-{blank}")
+                root.mkdir(mode=0o700)
+                launcher.prepare_profile(root, {"HOME": str(home)}, Path("/bin/true"), blank)
+                self.assertEqual((root / "jcode/external/.codex/auth.json").exists(), expected)
+
     def test_allowlist_excludes_credentials_config_socket_and_fixture_overrides(self):
         root = Path("/private/profile")
         source = {key: "sensitive-parent-value" for key in (

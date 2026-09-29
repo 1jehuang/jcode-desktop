@@ -98,17 +98,34 @@ fn chunks(text: &str) -> Vec<String> {
 
 /// Drive `panel` through `script` until the returned task is dropped.
 pub(crate) fn run(panel: Entity<Panel>, script: Vec<SampleTurn>, cx: &mut App) -> gpui::Task<()> {
+    run_showcase(panel, vec![(None, script)], cx)
+}
+
+/// Replay each `(title, script)` in turn, looping over the whole showcase.
+/// A title renames the panel for its script, e.g. "From Claude Code".
+pub(crate) fn run_showcase(
+    panel: Entity<Panel>,
+    showcase: Vec<(Option<String>, Vec<SampleTurn>)>,
+    cx: &mut App,
+) -> gpui::Task<()> {
     // Weak, so closing onboarding drops the panel and ends the loop.
     let panel = panel.downgrade();
     cx.spawn(async move |cx| {
-        if script.is_empty() {
+        let showcase: Vec<_> = showcase
+            .into_iter()
+            .filter(|(_, script)| !script.is_empty())
+            .collect();
+        if showcase.is_empty() {
             return;
         }
         let executor = cx.background_executor().clone();
         let sleep = |duration| executor.timer(duration);
-        loop {
+        for (title, script) in showcase.iter().cycle() {
             let session = panel
                 .update(cx, |panel, cx| {
+                    if let Some(title) = title {
+                        panel.title = title.clone().into();
+                    }
                     panel.items.clear();
                     panel.transcript_measurements.dirty = true;
                     cx.notify();
@@ -118,7 +135,7 @@ pub(crate) fn run(panel: Entity<Panel>, script: Vec<SampleTurn>, cx: &mut App) -
             let Some(session_id) = session else { return };
             let mut in_turn = false;
             let mut call = 0usize;
-            for turn in &script {
+            for turn in script {
                 let alive = match turn {
                     SampleTurn::User(text) => {
                         // The first prompt appears at once so the panel is never blank.
