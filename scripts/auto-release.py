@@ -34,6 +34,7 @@ INPUT_FILES = (
     "scripts/verify-macos-package.sh", "scripts/verify-release-package.py",
     "scripts/prepare-public-release.py", "scripts/publish-public-release.py",
     "scripts/auto-release.py", "scripts/fast-linker", "scripts/rustc-wrapper",
+    "scripts/rustc-parallel-frontend",
 )
 QUIET_SECONDS = 30 * 60
 MAX_BATCH_SECONDS = 2 * 60 * 60

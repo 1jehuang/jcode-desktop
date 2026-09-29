@@ -34,6 +34,19 @@ class ReleaseTargetTests(unittest.TestCase):
         self.assertIn("name: desktop-${{ matrix.platform }}-${{ matrix.arch }}", workflow)
         self.assertIn("arch: ${{ matrix.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}", workflow)
 
+    def test_windows_disables_posix_rustc_wrapper_before_building(self):
+        config = (ROOT / ".cargo/config.toml").read_text()
+        wrapper = re.search(r'^rustc-wrapper = "([^"]+)"', config, re.M)
+        if wrapper is None:
+            return
+        self.assertTrue((ROOT / wrapper.group(1)).is_file())
+        workflow = (ROOT / ".github/workflows/cross-platform-release.yml").read_text()
+        disable = workflow.index("Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_BUILD_RUSTC_WRAPPER='")
+        step = workflow.rfind("- name:", 0, disable)
+        self.assertIn("if: matrix.platform == 'windows'", workflow[step:disable])
+        self.assertLess(disable, workflow.index("run: ./jcode-desktop/scripts/package-windows.ps1"))
+        self.assertIn(wrapper.group(1), (ROOT / "scripts/auto-release.py").read_text())
+
     def test_macos_keeps_both_universal_slices(self):
         workflow = (ROOT / ".github/workflows/macos-beta.yml").read_text()
         self.assertIn("targets: aarch64-apple-darwin,x86_64-apple-darwin", workflow)

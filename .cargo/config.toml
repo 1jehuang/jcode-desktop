@@ -1,7 +1,16 @@
-# Developers with sccache can opt in with
-# `RUSTC_WRAPPER=scripts/rustc-wrapper cargo build`. Keeping a POSIX wrapper in
-# the repository-wide `[build]` table prevents Cargo from starting at all on
-# native Windows.
+# Every Cargo command in this checkout (Ctrl+R, the launcher, agents, tests,
+# rust-analyzer) compiles local unoptimized crates with rustc's parallel
+# front-end. The wrapper threads only this workspace and path dependencies
+# such as the sibling Jcode crates, and passes registry/git dependencies,
+# optimized builds, and compiler probes through unchanged. Unlike a workspace
+# wrapper it does not alter crate metadata, so hot-reload ABI identity and
+# cached artifacts are the same with or without it.
+#
+# The wrapper is a POSIX shell script. Native Windows builds disable it with
+# CARGO_BUILD_RUSTC_WRAPPER="" (set by the Windows CI jobs). Set
+# JCODE_PARALLEL_FRONTEND=0 to keep the wrapper but skip the extra threads.
+[build]
+rustc-wrapper = "scripts/rustc-parallel-frontend"
 
 # mold is substantially faster than the system linker for this large GPUI
 # dependency graph. This setting is Linux-only, so macOS packaging is intact.
