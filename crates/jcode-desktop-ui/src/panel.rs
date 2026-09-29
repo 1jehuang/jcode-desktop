@@ -4058,7 +4058,12 @@ impl Render for Panel {
             }
         }
         self.input.update(cx, |input, cx| {
-            input.set_spacious(fresh_session || self.startup_layout.is_some(), cx);
+            // Two rows only while the transcript leaves room for them.
+            let startup_spacious = self
+                .startup_layout
+                .as_ref()
+                .is_some_and(|layout| !layout.compact);
+            input.set_spacious(fresh_session || startup_spacious, cx);
             input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
         });
         let row_count_changed = row_count != self.transcript_row_count;

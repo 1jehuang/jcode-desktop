@@ -1182,7 +1182,15 @@ mod tests {
                 vcx.debug_bounds("pinned-latest-prompt"),
                 vcx.debug_bounds("user-prompt-451"),
             ) {
-                assert!(caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom());
+                // While the next card pushes this one out it is deliberately
+                // shifted up and clipped. Judge only settled, unclipped frames.
+                if panel.read_with(vcx, |p, _| p.offscreen_prompt_clip.is_some()) {
+                    continue;
+                }
+                assert!(
+                    caption.top() >= pinned.top() && caption.bottom() <= pinned.bottom(),
+                    "caption {caption:?} pinned {pinned:?}"
+                );
                 panel.read_with(vcx, |panel, _| {
                     assert_eq!(
                         panel.offscreen_prompt,

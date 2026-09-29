@@ -312,3 +312,39 @@ fn startup_each_native_submission_paints_the_newest_row(cx: &mut gpui::TestAppCo
         );
     }
 }
+
+#[gpui::test]
+fn startup_composer_shrinks_to_one_row_once_transcript_fills_space(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+    vcx.run_until_parked();
+    vcx.simulate_input("Short question");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    let spacious = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        spacious.size.height >= px(crate::input::SPACIOUS_MIN_HEIGHT),
+        "short transcript should keep the two-row composer"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.streaming_text = (0..40)
+            .map(|i| format!("Response paragraph {i}\n\n"))
+            .collect();
+        cx.notify();
+    });
+    for _ in 0..4 {
+        vcx.run_until_parked();
+    }
+    let compact = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        compact.size.height < spacious.size.height - px(10.),
+        "full transcript should shrink the composer: {compact:?} vs {spacious:?}"
+    );
+    assert!(panel.read_with(vcx, |panel, _| panel
+        .startup_layout
+        .as_ref()
+        .is_some_and(|layout| layout.compact)));
+}

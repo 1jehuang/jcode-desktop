@@ -11,6 +11,11 @@ pub struct StartupLayout {
     pub(super) committed: bool,
     pub messages_height: f32,
     preview: bool,
+    /// Set once the transcript fills the space above the composer. The
+    /// two-row welcome editor then shrinks to a single row. Sticky, so the
+    /// freed height can not flip it back and forth.
+    #[serde(default)]
+    pub(super) compact: bool,
 }
 
 pub(super) fn input_marker(
@@ -87,17 +92,21 @@ impl Panel {
                                 committed: false,
                                 messages_height: f32::from(input.top() - body.top()),
                                 preview: true,
+                                compact: false,
                             });
                         } else if let Some(layout) = &mut panel.startup_layout {
                             let available = f32::from(body.size.height - input.size.height).max(0.);
+                            let wanted = measured_content + TRANSCRIPT_BOTTOM_GAP;
+                            if !layout.compact && wanted >= available {
+                                layout.compact = true;
+                                cx.notify();
+                            }
                             let floor = (layout.input_top
                                 - f32::from(body.top() - panel_bounds.top()))
                             .max(0.);
                             // messages_height includes the non-scrolling gap,
                             // while the list's measurements contain rows only.
-                            let height = floor
-                                .max(measured_content + TRANSCRIPT_BOTTOM_GAP)
-                                .min(available);
+                            let height = floor.max(wanted).min(available);
                             if (height - layout.messages_height).abs() > 0.5 {
                                 layout.messages_height = height;
                                 cx.notify();
