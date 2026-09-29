@@ -575,7 +575,11 @@ mod tests {
         assert!((f32::from(context.center().y - login.center().y)).abs() < 1.);
         for selector in ["panel-limit-0", "panel-limit-1"] {
             let limit = vcx.debug_bounds(selector).unwrap();
-            assert!(limit.top() >= context.bottom(), "limits stay in the footer");
+            assert!(
+                (f32::from(limit.center().y - context.center().y)).abs() < 1.,
+                "limits share the composer pill row"
+            );
+            assert!(limit.left() >= context.right());
             assert!(limit.right() <= px(640.));
         }
         workspace.update(vcx, |workspace, cx| {

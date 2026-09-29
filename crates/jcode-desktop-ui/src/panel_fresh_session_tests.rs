@@ -162,10 +162,10 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
         let grown = vcx.debug_bounds("prompt-input").unwrap();
         assert!(grown.top() > initial.top());
         let meta = vcx.debug_bounds("panel-meta").unwrap();
-        // The pill row sits between the input and the footer.
+        // Status metadata rides in the pill row below the input.
         let tabs = vcx.debug_bounds("composer-tabs").unwrap();
         assert!(tabs.top() >= grown.bottom());
-        assert!((f32::from(tabs.bottom() - meta.top())).abs() < 1.);
+        assert!(meta.top() >= tabs.top() && meta.bottom() <= tabs.bottom() + px(1.));
         assert!(
             panel
                 .read_with(vcx, |panel, _| panel.transcript_list.is_scrolled_to_end())

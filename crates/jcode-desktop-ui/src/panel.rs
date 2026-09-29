@@ -4319,9 +4319,7 @@ impl Render for Panel {
             transcript
         };
 
-        let status_line = self.status_line();
         let theme = Theme::global();
-        let usage_meters = self.render_usage_meters(cx);
         // The tail may sit a few pixels below the fold mid-glide.
         let show_jump_chip = row_count > 0 && !self.transcript_end_visible && !self.tail_gliding();
 
@@ -4671,66 +4669,6 @@ impl Render for Panel {
                     )
                 },
             )
-            // Slim bottom bar under the composer's pill row: build info,
-            // usage limits and status. The context ring sits in the pills.
-            .children((!self.transcript_only).then(|| {
-                div()
-                    .debug_selector(|| "panel-meta".into())
-                    .flex_none()
-                    .min_h(px(22.))
-                    .min_w_0()
-                    .px_3()
-                    .pb_1()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_wrap()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(px(10.0))
-                    .font_family(Theme::global().FONT_MONO)
-                    .text_color(Theme::global().TEXT_FAINT)
-                    .child(
-                        div()
-                            .debug_selector(|| "panel-location".into())
-                            .flex_1()
-                            .min_w(px(60.))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .flex_nowrap()
-                            .overflow_hidden()
-                            .when(self.show_build_footer, |el| {
-                                el.child(
-                                    div()
-                                        .id("panel-build")
-                                        .debug_selector(|| "panel-build".into())
-                                        .tooltip(|_, cx| {
-                                            cx.new(|_| crate::build_info::BuildTooltip).into()
-                                        })
-                                        // Build metadata yields space to the path.
-                                        .flex_shrink_1()
-                                        .min_w(px(24.))
-                                        .truncate()
-                                        .child(crate::build_info::label()),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "panel-status".into())
-                            .flex_1()
-                            .min_w(px(120.))
-                            .flex()
-                            .justify_end()
-                            .items_center()
-                            .gap_2()
-                            .overflow_hidden()
-                            .children(usage_meters)
-                            .children(self.render_image_pane_toggle(cx))
-                            .children(self.render_voice_status(status_line)),
-                    )
-            }))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -7888,9 +7826,10 @@ mod tests {
             .expect("identity tabs paint");
         let status = vcx.debug_bounds("panel-status").expect("status paints");
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
-        // Identity pills sit below the input, status in the bar below them.
+        // Identity pills and status share one row directly below the input.
         assert!(identity.top() >= input.bottom());
-        assert!(identity.bottom() <= bounds.top() + gpui::px(1.));
+        assert!((f32::from(identity.center().y - bounds.center().y)).abs() < 1.);
+        assert!(identity.right() <= bounds.left() + gpui::px(1.));
         assert!(status.right() <= bounds.right());
         assert!(vcx.debug_bounds("panel-status-pulse").is_none());
     }

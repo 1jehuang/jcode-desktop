@@ -62,6 +62,51 @@ impl Panel {
                     location_label(dir)
                 }
             });
+        // Build info, usage limits and status share the pill row, so the
+        // panel needs no separate footer bar below the composer.
+        let status_line = self.status_line();
+        let meta = div()
+            .debug_selector(|| "panel-meta".into())
+            .flex_shrink(4.)
+            .min_w_0()
+            .h(px(TAB_HEIGHT))
+            .px_1()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .flex_nowrap()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_size(px(10.0))
+            .font_family(theme.FONT_MONO)
+            .text_color(theme.TEXT_FAINT)
+            .child(
+                div()
+                    .debug_selector(|| "panel-status".into())
+                    .min_w_0()
+                    .flex_shrink_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .overflow_hidden()
+                    .children(self.render_voice_status(status_line))
+                    .children(self.render_usage_meters(cx))
+                    .children(self.render_image_pane_toggle(cx)),
+            )
+            .when(self.show_build_footer, |el| {
+                el.child(
+                    div()
+                        .id("panel-build")
+                        .debug_selector(|| "panel-build".into())
+                        .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
+                        // Build metadata yields space to the identity pills.
+                        .flex_shrink_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(crate::build_info::label()),
+                )
+            });
         let pills = div()
             .debug_selector(|| "composer-tabs".into())
             .w_full()
@@ -133,6 +178,7 @@ impl Panel {
                     .justify_end()
                     .gap_1()
                     .overflow_hidden()
+                    .child(meta)
                     .children(self.render_publish_button(cx))
                     .children(remote_machine.map(|machine| {
                         // Remote sessions name their machine first, so a cloud

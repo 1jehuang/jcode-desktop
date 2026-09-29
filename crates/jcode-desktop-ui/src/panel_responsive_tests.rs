@@ -95,14 +95,14 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             });
             vcx.run_until_parked();
             let input = vcx.debug_bounds("prompt-input").unwrap();
-            let footer = vcx.debug_bounds("panel-meta").unwrap();
+            let footer = vcx.debug_bounds("composer-tabs").unwrap();
             assert!(
                 input.top() >= px(0.) && input.bottom() <= px(height),
                 "{width}x{height} fresh={fresh}: {input:?}"
             );
             assert!(input.left() >= px(0.) && input.right() <= px(width));
             assert!(footer.bottom() <= px(height));
-            for selector in ["panel-model", "panel-login", "panel-build"] {
+            for selector in ["panel-model", "panel-login"] {
                 let bounds = vcx.debug_bounds(selector).unwrap();
                 assert!(
                     bounds.left() >= footer.left() && bounds.right() <= footer.right(),
@@ -123,8 +123,8 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
             );
             let build = vcx.debug_bounds("panel-build").unwrap();
             assert!(
-                login.bottom() <= build.top(),
-                "build metadata sits in the footer below the identity pills: {login:?} {build:?} {input:?} {footer:?}"
+                login.right() <= build.left() && build.top() >= input.bottom(),
+                "build metadata shares the pill row after the identity pills: {login:?} {build:?} {input:?} {footer:?}"
             );
             panel.update(vcx, |panel, cx| {
                 panel.input.update(cx, |input, cx| {
