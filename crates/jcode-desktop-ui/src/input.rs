@@ -1700,8 +1700,8 @@ struct PrepaintState {
 
 /// Space kept between the caret and the example placeholder.
 const PLACEHOLDER_INDENT: Pixels = px(6.);
-/// Fresh-session composer height: two 16px lines plus its 16px padding.
-pub(crate) const SPACIOUS_MIN_HEIGHT: f32 = 84.;
+/// Fresh-session composer height: one 16px line plus its 16px padding.
+pub(crate) const SPACIOUS_MIN_HEIGHT: f32 = 58.;
 
 fn selection_quads(
     line: &PromptLayout,
@@ -2373,7 +2373,7 @@ impl Render for PromptInput {
                     .py_2()
                     .text_size(px(14.0))
                     .when(spacious, |el| {
-                        // Two lines of 16px text plus padding.
+                        // One line of 16px text plus padding.
                         el.min_h(px(SPACIOUS_MIN_HEIGHT)).px_4().py_4().text_size(px(16.0))
                     })
                     .when(self.trailing_inset > 0., |el| el.pr(px(self.trailing_inset)))
