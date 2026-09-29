@@ -4,13 +4,22 @@ use super::*;
 
 const DRAFT: &str = "Keep my unfinished prompt";
 
+/// The email flow is paused in the app but kept covered here.
 fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
+    setup_with_email(cx, true)
+}
+
+fn setup_with_email(
+    cx: &mut gpui::TestAppContext,
+    email: bool,
+) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
     cx.update(|cx| {
         crate::bind_workspace_keys(cx);
         crate::input::bind_keys(cx);
     });
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.account_sign_in.email = email;
         w.push_test_panel("account-onboarding-test", cx);
         w
     });
@@ -42,6 +51,7 @@ fn assert_draft_and_focus(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualT
 
 #[test]
 fn account_offer_is_optional_and_fixture_safe() {
+    assert!(!EMAIL_SIGN_IN, "email sign-in is paused");
     for handled in [false, true] {
         for connected in [false, true] {
             for fixture in [false, true] {
@@ -809,4 +819,39 @@ fn logins_split_into_in_jcode_and_importable(cx: &mut gpui::TestAppContext) {
     workspace.read_with(vcx, |w, _| {
         assert!(w.account_sign_in.selected_imports().is_empty())
     });
+}
+
+#[gpui::test]
+fn paused_email_shows_only_continue_and_typing_forwards_to_a_panel(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = setup_with_email(cx, false);
+    assert!(vcx.debug_bounds("account-sign-in-field").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-primary").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
+    workspace.read_with(vcx, |w, _| {
+        assert!(!w.account_sign_in.choices().contains(&Choice::Field));
+        assert!(!w.account_sign_in.can_dock());
+    });
+
+    vcx.simulate_input(" fix the sidebar");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        let w = workspace.read(cx);
+        assert!(!w.account_sign_in.visible);
+        let panel = w.slots[w.active].panel.read(cx);
+        assert_eq!(
+            panel.input.read(cx).content,
+            format!("{DRAFT} fix the sidebar")
+        );
+        assert!(panel.input_focus_handle(cx).is_focused(window));
+    });
+    assert!(vcx.debug_bounds("account-sign-in").is_none());
+}
+
+#[gpui::test]
+fn paused_email_continue_button_enters_workspace(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup_with_email(cx, false);
+    click(vcx, "account-sign-in-continue");
+    assert_draft_and_focus(&workspace, vcx);
 }

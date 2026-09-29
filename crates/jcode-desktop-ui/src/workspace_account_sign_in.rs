@@ -9,6 +9,8 @@ use std::sync::Arc;
 pub(super) struct State {
     pub visible: bool,
     connected: bool,
+    /// Offer the email sign-in field. Off while `EMAIL_SIGN_IN` is paused.
+    email: bool,
     stage: Stage,
     error: Option<String>,
     keyboard_choice: Option<usize>,
@@ -63,6 +65,10 @@ enum Choice {
 fn live() -> bool {
     !cfg!(test) && !harness::screenshot_mode()
 }
+
+/// Email sign-in is paused for now. The onboarding page only offers login
+/// imports, the theme picker and Continue. The flow stays for when it returns.
+const EMAIL_SIGN_IN: bool = false;
 
 /// Map a detected source's provider summary to a vendored logo id.
 fn candidate_logo(summary: &str) -> &'static str {
@@ -141,6 +147,7 @@ impl State {
             visible: preview
                 || should_offer(crate::config::account_sign_in_handled(), connected, fixture),
             connected,
+            email: EMAIL_SIGN_IN,
             docked: docked.then(|| Instant::now() - DOCK_DURATION),
             ..Self::default()
         }
@@ -157,7 +164,7 @@ impl State {
                 Choice::OpenGmail,
                 Choice::StartOver,
             ]),
-            _ if self.connected => {}
+            _ if self.connected || !self.email => {}
             _ => choices.extend([Choice::Field, Choice::Primary]),
         }
         choices.push(Choice::Continue);
@@ -195,7 +202,16 @@ impl State {
 
     /// Only the email and code steps have a field worth docking.
     fn can_dock(&self) -> bool {
-        !self.connected && !matches!(self.stage, Stage::Complete { .. })
+        self.email && !self.connected && !matches!(self.stage, Stage::Complete { .. })
+    }
+
+    /// The tab shrinks to a single Continue pill without the email field.
+    fn tab_width(&self) -> f32 {
+        if self.email || self.connected {
+            TAB_WIDTH
+        } else {
+            CONTINUE_TAB_WIDTH
+        }
     }
 
     fn primary_label(&self) -> &'static str {
@@ -225,6 +241,7 @@ impl Workspace {
         self.account_sign_in = State {
             visible: true,
             connected: self.account_sign_in.connected,
+            email: self.account_sign_in.email,
             import_task: self.account_sign_in.import_task.take(),
             ..State::default()
         };
@@ -371,6 +388,35 @@ impl Workspace {
             }));
         }
         self.finish_account_sign_in(window, cx);
+    }
+
+    /// Typing on the page means "let me start": continue into the workspace
+    /// and carry the keystrokes into a real session's composer.
+    fn continue_account_sign_in_typing(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.continue_account_sign_in(window, cx);
+        let usable = self.slots.get(self.active).is_some_and(|slot| {
+            let panel = slot.panel.read(cx);
+            panel.preview_state.is_none() && !panel.is_default_directory() && !panel.is_machines()
+        });
+        if !usable {
+            self.open_new_session(cx);
+        }
+        let Some(panel) = self.slots.get(self.active).map(|slot| slot.panel.clone()) else {
+            return;
+        };
+        let input = panel.read(cx).input.clone();
+        input.update(cx, |input, cx| {
+            let content = format!("{}{text}", input.content);
+            input.set_content(content, cx);
+        });
+        let focus = panel.read(cx).input_focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
     }
 
     fn activate_account_choice(
@@ -724,6 +770,9 @@ impl Workspace {
 
     pub(super) fn render_account_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let connected = self.account_sign_in.connected;
+        if !self.account_sign_in.email && !connected {
+            return div();
+        }
         div()
             .flex()
             .flex_col()
@@ -834,7 +883,7 @@ impl Workspace {
                         this.activate_account_choice(choice, window, cx);
                     }
                     _ if !typing
-                        && this.account_sign_in.can_dock()
+                        && (this.account_sign_in.can_dock() || !this.account_sign_in.email)
                         && !event.keystroke.modifiers.control
                         && !event.keystroke.modifiers.platform
                         && !event.keystroke.modifiers.alt
@@ -847,6 +896,11 @@ impl Workspace {
                         // Typing anywhere means "let me type": dock the tab over
                         // the demo composer and keep the keystroke.
                         let text = event.keystroke.key_char.clone().unwrap_or_default();
+                        if !this.account_sign_in.email {
+                            this.continue_account_sign_in_typing(text, window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                         let input = this.ensure_account_input(cx);
                         input.update(cx, |input, cx| {
                             let content = format!("{}{text}", input.content);
@@ -1068,9 +1122,10 @@ impl Workspace {
             .as_ref()
             .and_then(|panel| panel.read(cx).input.read(cx).voice_bounds());
         let progress = self.account_dock_progress(window, cx);
+        let tab_width = self.account_sign_in.tab_width();
         let geometry = measured.get().map(|right| {
             let (width, height) = (f32::from(right.size.width), f32::from(right.size.height));
-            let tab_w = TAB_WIDTH.min(width - 16.0).max(0.0);
+            let tab_w = tab_width.min(width - 16.0).max(0.0);
             let rest = (
                 width - tab_w,
                 height - TAB_BOTTOM - TAB_HEIGHT,
@@ -1106,7 +1161,7 @@ impl Workspace {
                 None => el
                     .right_0()
                     .bottom(px(TAB_BOTTOM))
-                    .w(px(TAB_WIDTH))
+                    .w(px(tab_width))
                     .h(px(TAB_HEIGHT)),
             });
         let notes = self.account_onboarding_notes(cx).map(|notes| {
@@ -1117,7 +1172,7 @@ impl Workspace {
                     .bottom(px(height - top + 8.0)),
                 None => el
                     .right(px(8.0))
-                    .w(px(TAB_WIDTH - 16.0))
+                    .w(px(tab_width - 16.0))
                     .bottom(px(TAB_BOTTOM + TAB_HEIGHT + 8.0)),
             })
         });
@@ -1155,10 +1210,12 @@ impl Workspace {
                     // "let me type", so the sign-in tab takes its place.
                     .capture_any_mouse_down(cx.listener(
                         move |this, event: &gpui::MouseDownEvent, window, cx| {
-                            if this.account_sign_in.can_dock()
-                                && composer.is_some_and(|bounds| bounds.contains(&event.position))
-                            {
-                                this.focus_account_input(window, cx);
+                            if composer.is_some_and(|bounds| bounds.contains(&event.position)) {
+                                if !this.account_sign_in.email {
+                                    this.continue_account_sign_in_typing(String::new(), window, cx);
+                                } else if this.account_sign_in.can_dock() {
+                                    this.focus_account_input(window, cx);
+                                }
                             }
                             cx.stop_propagation();
                         },
@@ -1200,6 +1257,9 @@ impl Workspace {
             _ => None,
         };
         let complete = signed_in.is_some();
+        if !state.email && !complete {
+            return self.account_onboarding_continue_tab(continue_focused, cx);
+        }
         // The flush right corners round off as the tab leaves the edge.
         let edge_radius = px(COMPOSER_RADIUS * progress);
         let mut tab = div()
@@ -1291,6 +1351,62 @@ impl Workspace {
         )
     }
 
+    /// Without email sign-in the tab is one filled Continue pill.
+    fn account_onboarding_continue_tab(
+        &self,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::global();
+        div()
+            .id("account-sign-in-panel")
+            .debug_selector(|| "account-sign-in-panel".into())
+            .flex()
+            .items_center()
+            .pl(px(6.0))
+            .pr(px(10.0))
+            .rounded_l(px(TAB_HEIGHT / 2.0))
+            .border_1()
+            .border_r_0()
+            .border_color(theme.PANEL_BORDER)
+            .bg(theme.BG)
+            .shadow_md()
+            .occlude()
+            .child(
+                div()
+                    .id("account-sign-in-continue")
+                    .debug_selector(|| "account-sign-in-continue".into())
+                    .flex_1()
+                    .h(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if focused {
+                        theme.TEXT
+                    } else {
+                        gpui::transparent_black().into()
+                    })
+                    .bg(theme.ACCENT)
+                    .text_color(theme.BG)
+                    .text_size(px(13.0))
+                    .cursor_pointer()
+                    .hover(|el| el.opacity(0.9))
+                    .child("Continue")
+                    .child(
+                        gpui::svg()
+                            .data(include_bytes!("../../../assets/icons/arrow-right.svg"))
+                            .size(px(14.0))
+                            .text_color(theme.BG),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx)),
+                    ),
+            )
+    }
+
     /// Code-sent hint, mailbox shortcuts and errors, floating above the tab.
     fn account_onboarding_notes(
         &self,
@@ -1376,6 +1492,7 @@ impl Workspace {
 }
 
 const TAB_WIDTH: f32 = 380.0;
+const CONTINUE_TAB_WIDTH: f32 = 168.0;
 const TAB_HEIGHT: f32 = 46.0;
 const TAB_BOTTOM: f32 = 28.0;
 /// Matches the chat composer's near-pill corners.
