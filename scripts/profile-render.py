@@ -58,7 +58,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--binary', type=Path, default=Path('target/debug/jcode-desktop'))
     parser.add_argument('--seconds', type=float, default=8)
-    parser.add_argument('--uncached-panels', action='store_true', help='same-binary offline control without the panel cache')
+    parser.add_argument('--uncached-panels', action='store_true', help='same-binary offline control without GPUI view retention')
     parser.add_argument('--scalar-inline', action='store_true', help='same-binary offline control without bulk inline prose scanning')
     parser.add_argument('--scenario', choices=('overview', 'focus-switch', 'overview-after-resize'), default='overview')
     parser.add_argument('--stale-hidden-animations', action='store_true', help='same-binary offline control retaining hidden animation flags')
@@ -76,7 +76,8 @@ def main():
     env['VK_DRIVER_FILES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
     env['JCODE_DESKTOP_SCREENSHOT_PANELS'] = str(args.panels)
     if args.uncached_panels:
-        env['JCODE_DESKTOP_SCREENSHOT_UNCACHED_PANELS'] = '1'
+        # Panels are retained views now, not a Desktop-side cache.
+        env['GPUI_VIEW_RETENTION'] = '0'
     if args.scalar_inline:
         env['JCODE_DESKTOP_SCREENSHOT_SCALAR_INLINE'] = '1'
     if args.stale_hidden_animations:
