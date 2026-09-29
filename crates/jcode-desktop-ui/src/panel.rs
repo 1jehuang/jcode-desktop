@@ -3511,6 +3511,35 @@ impl Panel {
                                 &call_id,
                                 *done || error.is_some(),
                             ))
+                            .when(
+                                !*done && error.is_none() && self.has_running_tool(),
+                                |el| {
+                                    el.child(
+                                        div()
+                                            .id(("tool-background", index))
+                                            .debug_selector(|| "tool-background".into())
+                                            .flex_none()
+                                            .px_2()
+                                            .py(px(2.0))
+                                            .rounded_full()
+                                            .bg(Theme::global().INLINE_CODE_BG)
+                                            .hover(|style| {
+                                                style.bg(Theme::global().TOOL_BORDER)
+                                            })
+                                            .cursor_pointer()
+                                            .text_size(px(10.0))
+                                            .line_height(px(14.0))
+                                            .text_color(Theme::global().TEXT_FAINT)
+                                            .on_click(cx.listener(
+                                                |this, _event, _window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.background_running_tool(cx);
+                                                },
+                                            ))
+                                            .child("Background  Alt+B"),
+                                    )
+                                },
+                            )
                             // The token pill is the sole expansion control,
                             // including while a tool is still running.
                             .when(has_detail, |el| {
@@ -4313,6 +4342,11 @@ impl Render for Panel {
             .on_action(cx.listener(|panel, _: &shortcuts::JumpToLatest, _, cx| {
                 panel.jump_to_latest(cx);
             }))
+            .on_action(
+                cx.listener(|panel, _: &shortcuts::BackgroundRunningTool, _, cx| {
+                    panel.background_running_tool_if_any(cx);
+                }),
+            )
             .on_action(
                 cx.listener(|panel, _: &shortcuts::JumpToLatestIfEmpty, _, cx| {
                     panel.jump_to_latest_if_empty(cx);

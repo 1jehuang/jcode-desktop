@@ -195,6 +195,10 @@ pub enum Command {
     Cancel {
         session_id: String,
     },
+    /// Move the running tool call to the background (the TUI's Alt+B).
+    BackgroundTool {
+        session_id: String,
+    },
     Fork {
         session_id: String,
     },
@@ -243,6 +247,7 @@ enum SessionCommand {
         images: Vec<(String, String)>,
     },
     Cancel,
+    BackgroundTool,
     Fork,
     SetModel(String),
     Operation(SessionOperation),
@@ -705,6 +710,11 @@ fn run_with_transports(
             Command::Cancel { session_id } => {
                 if let Some(worker) = workers.get(&session_id) {
                     let _ = worker.send(SessionCommand::Cancel);
+                }
+            }
+            Command::BackgroundTool { session_id } => {
+                if let Some(worker) = workers.get(&session_id) {
+                    let _ = worker.send(SessionCommand::BackgroundTool);
                 }
             }
             Command::SetModel { session_id, model } => {
@@ -1811,6 +1821,9 @@ fn session_worker_with_connector(
                     SessionCommand::Cancel => {
                         recovery.supersede();
                         let _ = client.cancel(real_id);
+                    }
+                    SessionCommand::BackgroundTool => {
+                        let _ = client.background_tool(real_id);
                     }
                     SessionCommand::Fork => match client.fork_session(real_id) {
                         Ok(session) => {

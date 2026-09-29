@@ -93,6 +93,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-f", MoveWordRight, Some("PromptInput")),
         KeyBinding::new("ctrl-b", MoveWordLeft, Some("PromptInput")),
         KeyBinding::new("ctrl-f", MoveWordRight, Some("PromptInput")),
+    ]);
+    // Must follow the composer's Alt+B/Ctrl+B word motions: later bindings win
+    // at equal context depth, and the handler falls through when idle.
+    cx.bind_keys(crate::panel::shortcuts::background_tool_bindings());
+    cx.bind_keys([
         KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("PromptInput")),
         KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("PromptInput")),
         KeyBinding::new("alt-shift-left", SelectWordLeft, Some("PromptInput")),
