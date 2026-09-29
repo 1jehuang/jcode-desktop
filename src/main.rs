@@ -58,6 +58,27 @@ fn rebuild_ui(force: bool) -> anyhow::Result<()> {
     if force {
         command.arg("--lib");
     }
+    // Unoptimized iteration hosts compile workspace crates with rustc's
+    // parallel front-end. jcode-desktop-ui is one ~135k-line crate whose
+    // opt-level 0 build is dominated by single-threaded type/borrow checking.
+    // A full re-check measured 20.5 s -> 3.9 s with -Zthreads=8. Dependencies
+    // are not wrapped, so their cached artifacts stay valid.
+    //
+    // Cargo hashes the workspace wrapper path into each workspace crate's
+    // metadata, so the plugin must be built with exactly the wrapper this host
+    // was built with (or none). Otherwise jcode-desktop-api types would get
+    // different crate identities on each side of the ABI. The wrapper records
+    // its own path as a compile-time marker for this. JCODE_PARALLEL_FRONTEND=0
+    // disables only the extra threads, never the wrapper, so it cannot split
+    // the ABI.
+    match option_env!("JCODE_RUSTC_WORKSPACE_WRAPPER") {
+        Some(wrapper) => {
+            command.env("RUSTC_WORKSPACE_WRAPPER", wrapper);
+        }
+        None => {
+            command.env_remove("RUSTC_WORKSPACE_WRAPPER");
+        }
+    }
     // A release UI build saturates every core. At equal priority it starved
     // this very process's UI thread, so the app visibly lagged while its own
     // reload compiled. Children inherit the lowered priority.

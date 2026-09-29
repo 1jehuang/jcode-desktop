@@ -1,0 +1,71 @@
+#!/bin/sh
+# rustc workspace wrapper: enable rustc's parallel front-end (-Zthreads) for
+# unoptimized compiles of workspace crates.
+#
+# Cargo invokes this as `rustc-parallel-frontend <rustc> <args...>` for
+# workspace members only (RUSTC_WORKSPACE_WRAPPER / build.rustc-workspace-wrapper),
+# so registry and git dependencies keep their normal, cached builds.
+#
+# Why: the big workspace crates spend most of their opt-level 0 compile in the
+# single-threaded front-end (type/borrow checking). Measured on a 16-thread
+# machine, a full re-check of one crate: jcode-desktop-ui 20.5s -> 3.9s,
+# jcode-base 29.3s -> 8.8s, jcode-app-core 25.7s -> 8.9s, for ~0.1 GiB more RSS.
+#
+# -Z flags are nightly-only, so RUSTC_BOOTSTRAP=1 is set for these invocations
+# only. Optimized compiles (release/publish builds) and non-compile calls such
+# as `rustc -vV` pass through untouched.
+#
+# Controls:
+#   JCODE_PARALLEL_FRONTEND=0        pass everything through unchanged
+#   JCODE_FRONTEND_THREADS=<n>       thread count (default: min(8, CPUs))
+
+rustc="$1"
+shift
+
+# Cargo folds the workspace wrapper (including its exact path) into each
+# workspace crate's metadata hash, so wrapped and unwrapped builds produce
+# distinct crate identities. Crates can read this marker via option_env! to
+# rebuild with the identical wrapper (Jcode Desktop uses it to keep
+# hot-reloaded UI builds ABI-identical to the host).
+export JCODE_RUSTC_WORKSPACE_WRAPPER="$0"
+
+case "${JCODE_PARALLEL_FRONTEND:-auto}" in
+  0|false|no|off) exec "$rustc" "$@" ;;
+esac
+
+compile=false
+optimized=false
+explicit_threads=false
+expect_codegen=false
+for arg in "$@"; do
+  if [ "$expect_codegen" = true ]; then
+    expect_codegen=false
+    case "$arg" in
+      opt-level=0) ;;
+      opt-level=*) optimized=true ;;
+    esac
+    continue
+  fi
+  case "$arg" in
+    --crate-name) compile=true ;;
+    -C) expect_codegen=true ;;
+    -Copt-level=0) ;;
+    -Copt-level=*) optimized=true ;;
+    -Zthreads=*|-Z\ threads=*) explicit_threads=true ;;
+  esac
+done
+
+if [ "$compile" != true ] || [ "$optimized" = true ] || [ "$explicit_threads" = true ]; then
+  exec "$rustc" "$@"
+fi
+
+threads="${JCODE_FRONTEND_THREADS:-}"
+if [ -z "$threads" ]; then
+  cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)
+  threads=$(( cpus < 8 ? cpus : 8 ))
+fi
+case "$threads" in
+  ''|*[!0-9]*|0) exec "$rustc" "$@" ;;
+esac
+
+RUSTC_BOOTSTRAP=1 exec "$rustc" "$@" "-Zthreads=$threads"
