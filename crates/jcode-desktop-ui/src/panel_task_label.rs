@@ -4,7 +4,7 @@
 //! Only painted labels arm a tick. Hidden cards stop after at most one tick.
 use std::time::Duration;
 
-use gpui::{Context, Render, Task, Window, canvas, div, prelude::*};
+use gpui::{App, Context, Render, Task, Window, canvas, div, prelude::*};
 use unicode_segmentation::UnicodeSegmentation;
 
 const TICK: Duration = Duration::from_millis(24);
@@ -83,6 +83,21 @@ impl TypeInLabel {
         }
     }
 
+    /// Whether `set_text(text)` would change anything. Checked while drawing,
+    /// where an update counts as a change for retained views.
+    pub(super) fn shows(&self, text: &str) -> bool {
+        self.reveal.text == text
+    }
+
+    /// Whether painting this label needs to start its reveal ticker.
+    fn needs_arm(&self, cx: &App) -> bool {
+        if cx.reduce_motion() || crate::config::get().appearance.reduce_motion {
+            self.tick.is_some() || self.reveal.active()
+        } else {
+            self.tick.is_none() && self.reveal.active()
+        }
+    }
+
     fn arm(&mut self, cx: &mut Context<Self>) {
         if cx.reduce_motion() || crate::config::get().appearance.reduce_motion {
             self.tick = None;
@@ -123,8 +138,11 @@ impl Render for TypeInLabel {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
-                        if bounds.intersects(&window.content_mask().bounds) {
-                            let _ = label.update(cx, |label, cx| label.arm(cx));
+                        if bounds.intersects(&window.content_mask().bounds)
+                            && let Some(label) = label.upgrade()
+                            && label.read(cx).needs_arm(cx)
+                        {
+                            label.update(cx, |label, cx| label.arm(cx));
                         }
                     },
                 )

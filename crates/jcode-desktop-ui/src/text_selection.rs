@@ -5,8 +5,10 @@
 //! leaves in a transcript while each leaf retains its own styling and links.
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     ops::Range,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -60,6 +62,20 @@ struct LeafGeometry {
     prefix_len: usize,
 }
 
+/// Where the leaves were painted on the last frame. Paint records it here,
+/// outside the entity, so painting does not count as a change to the selection:
+/// GPUI retains views between frames and builds again a view whose entities
+/// were updated while the window drew.
+#[derive(Default)]
+struct PaintedGeometry {
+    leaves: HashMap<SharedString, LeafGeometry>,
+    surface_bounds: Option<Bounds<Pixels>>,
+    /// Painted bounds of the last selected visual line, in window space.
+    tail_bounds: Option<Bounds<Pixels>>,
+    /// Visible union of every painted selected line, in window space.
+    selection_bounds: Option<Bounds<Pixels>>,
+}
+
 /// Selection and focus shared by the selectable leaves in one transcript.
 pub struct TextSelection {
     focus_handle: FocusHandle,
@@ -67,15 +83,10 @@ pub struct TextSelection {
     selecting: bool,
     document: Vec<(SharedString, SharedString)>,
     document_index: HashMap<SharedString, usize>,
-    geometry: HashMap<SharedString, LeafGeometry>,
-    surface_bounds: Option<Bounds<Pixels>>,
+    painted: Rc<RefCell<PaintedGeometry>>,
     cross_head: Option<Endpoint>,
     pointer: Option<Point<Pixels>>,
     last_scroll: Option<Instant>,
-    /// Painted bounds of the last selected visual line, in window space.
-    tail_bounds: Option<Bounds<Pixels>>,
-    /// Visible union of every painted selected line, in window space.
-    selection_bounds: Option<Bounds<Pixels>>,
     /// A brief confirmation beside the text that was just copied.
     copied: Option<Copied>,
 }
@@ -96,13 +107,10 @@ impl TextSelection {
             selecting: false,
             document: Vec::new(),
             document_index: HashMap::new(),
-            geometry: HashMap::new(),
-            surface_bounds: None,
+            painted: Rc::default(),
             cross_head: None,
             pointer: None,
             last_scroll: None,
-            tail_bounds: None,
-            selection_bounds: None,
             copied: None,
         }
     }
@@ -324,20 +332,21 @@ impl TextSelection {
     }
 
     fn register_geometry(
-        &mut self,
+        &self,
         key: SharedString,
         bounds: Bounds<Pixels>,
         layout: TextLayout,
         prefix_len: usize,
     ) {
-        let bounds = self
+        let mut painted = self.painted.borrow_mut();
+        let bounds = painted
             .surface_bounds
             .map_or(bounds, |surface| bounds.intersect(&surface));
         if self.document_index.contains_key(&key)
             && bounds.size.width > px(0.)
             && bounds.size.height > px(0.)
         {
-            self.geometry.insert(
+            painted.leaves.insert(
                 key,
                 LeafGeometry {
                     bounds,
@@ -353,8 +362,10 @@ impl TextSelection {
     /// painting/measurement order, decides what is selected between endpoints.
     fn drag_at(&mut self, position: Point<Pixels>) -> bool {
         self.pointer = Some(position);
-        let target = self
-            .geometry
+        let painted = self.painted.clone();
+        let painted = painted.borrow();
+        let target = painted
+            .leaves
             .iter()
             .min_by(|(left_key, left), (right_key, right)| {
                 let distance = |bounds: &Bounds<Pixels>| {
@@ -451,8 +462,11 @@ impl TextSelection {
         }
         self.cross_head = None;
         self.copied = None;
-        self.tail_bounds = None;
-        self.selection_bounds = None;
+        {
+            let mut painted = self.painted.borrow_mut();
+            painted.tail_bounds = None;
+            painted.selection_bounds = None;
+        }
         let (range, reversed, mode) = match click_count {
             1 if shift => {
                 if let Some(previous) = self.selection.as_ref().filter(|item| item.key == key) {
@@ -589,7 +603,10 @@ pub(crate) fn selectable_with_prefix(
     let copied = {
         let selection = model.read(cx);
         (selection.copied_visible() && selection.tail_key() == Some(&key))
-            .then(|| selection.selection_bounds.or(selection.tail_bounds))
+            .then(|| {
+                let painted = selection.painted.borrow();
+                painted.selection_bounds.or(painted.tail_bounds)
+            })
             .flatten()
             .map(copied_pill)
     };
@@ -654,33 +671,29 @@ pub(crate) fn selectable_with_prefix(
                             .map(|(line, _, _)| line.intersect(&mask))
                             .filter(|line| line.size.width > px(0.) && line.size.height > px(0.))
                             .reduce(|a, b| a.union(&b));
+                        let selection = model.read(cx);
+                        let mut painted = selection.painted.borrow_mut();
                         if let Some(visible) = visible {
-                            model.update(cx, |selection, _| {
-                                selection.selection_bounds = Some(
-                                    selection
-                                        .selection_bounds
-                                        .map_or(visible, |bounds| bounds.union(&visible)),
-                                );
-                            });
+                            painted.selection_bounds = Some(
+                                painted
+                                    .selection_bounds
+                                    .map_or(visible, |bounds| bounds.union(&visible)),
+                            );
                         }
                         if let Some((last, _, row_end)) = lines.last() {
                             let mut last = *last;
                             last.size.width = (*row_end - last.left()).max(last.size.width);
-                            model.update(cx, |selection, _| {
-                                if selection.tail_key() == Some(&key) {
-                                    selection.tail_bounds = Some(last);
-                                }
-                            });
+                            if selection.tail_key() == Some(&key) {
+                                painted.tail_bounds = Some(last);
+                            }
                         }
                     }
-                    model.update(cx, |selection, _| {
-                        selection.register_geometry(
-                            key.clone(),
-                            bounds.intersect(&window.content_mask().bounds),
-                            layout.clone(),
-                            prefix_len,
-                        );
-                    });
+                    model.read(cx).register_geometry(
+                        key.clone(),
+                        bounds.intersect(&window.content_mask().bounds),
+                        layout.clone(),
+                        prefix_len,
+                    );
                     let moved = model.clone();
                     let moved_key = key.clone();
                     let moved_layout = layout.clone();
@@ -791,12 +804,14 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
     canvas(
         |_, _, _| (),
         move |bounds, _, window, cx| {
-            model.update(cx, |selection, _| {
-                selection.geometry.clear();
-                selection.surface_bounds = Some(bounds);
+            {
+                let selection = model.read(cx);
+                let mut painted = selection.painted.borrow_mut();
+                painted.leaves.clear();
+                painted.surface_bounds = Some(bounds);
                 // Leaves repaint after the surface and rebuild the union.
-                selection.selection_bounds = None;
-            });
+                painted.selection_bounds = None;
+            }
             let moved = model.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                 if !phase.capture() || !moved.read(cx).document_drag() {
@@ -824,11 +839,12 @@ pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> 
                     released.update(cx, |selection, cx| {
                         // A fast drag may finish before its last move is delivered.
                         // A release outside the transcript keeps the last head.
-                        if selection
+                        let inside = selection
+                            .painted
+                            .borrow()
                             .surface_bounds
-                            .is_some_and(|surface| surface.contains(&event.position))
-                            && selection.drag_at(event.position)
-                        {
+                            .is_some_and(|surface| surface.contains(&event.position));
+                        if inside && selection.drag_at(event.position) {
                             cx.notify();
                         }
                         selection.finish_and_copy(cx);

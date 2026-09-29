@@ -259,6 +259,41 @@ impl Perimeter {
         if span <= 0.05 {
             return;
         }
+        // Tessellating the full-length track and the progress fill is the
+        // costly part of painting the ring, and both repeat unchanged from
+        // frame to frame while the comet orbits. Tessellate them once, at
+        // the origin, and move them into place. Comet segments are a few
+        // pixels long and at a new phase every frame, so they are built
+        // fresh.
+        if span < CACHED_STROKE_MIN {
+            if let Some(path) = self.tessellate(from, to, width) {
+                window.paint_path(path, color);
+            }
+            return;
+        }
+        let key = StrokeKey::new(self, from, to, width);
+        let path = STROKES.with_borrow_mut(|cache| {
+            if let Some(path) = cache.get(&key) {
+                return path.clone();
+            }
+            let origin = Perimeter {
+                origin: point(px(0.), px(0.)),
+                ..*self
+            };
+            let path = origin.tessellate(from, to, width);
+            if cache.len() >= STROKE_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, path.clone());
+            path
+        });
+        if let Some(path) = path {
+            window.paint_path(translated(path, self.origin), color);
+        }
+    }
+
+    fn tessellate(&self, from: f32, to: f32, width: f32) -> Option<gpui::Path<Pixels>> {
+        let span = to - from;
         // About one vertex per pixel keeps the rounded corners smooth.
         let steps = (span.ceil() as usize).clamp(2, 800);
         let mut path = gpui::PathBuilder::stroke(px(width));
@@ -270,9 +305,44 @@ impl Perimeter {
                 path.line_to(p);
             }
         }
-        if let Ok(path) = path.build() {
-            window.paint_path(path, color);
-        }
+        path.build().ok()
+    }
+}
+
+/// Strokes shorter than this are cheap to build and rarely repeat.
+const CACHED_STROKE_MIN: f32 = 24.0;
+/// Long strokes kept per thread: a track and a fill per tab size and
+/// progress step.
+const STROKE_CACHE_LIMIT: usize = 256;
+
+fn translated(mut path: gpui::Path<Pixels>, by: Point<Pixels>) -> gpui::Path<Pixels> {
+    path.bounds.origin = path.bounds.origin + by;
+    for vertex in &mut path.vertices {
+        vertex.xy_position = vertex.xy_position + by;
+    }
+    path
+}
+
+thread_local! {
+    static STROKES: std::cell::RefCell<std::collections::HashMap<StrokeKey, Option<gpui::Path<Pixels>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// A stroke along a perimeter, in hundredths of a pixel.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct StrokeKey([i32; 6]);
+
+impl StrokeKey {
+    fn new(perimeter: &Perimeter, from: f32, to: f32, width: f32) -> Self {
+        let q = |v: f32| (v * 100.0).round() as i32;
+        Self([
+            q(perimeter.w),
+            q(perimeter.h),
+            q(perimeter.r),
+            q(from.rem_euclid(perimeter.len())),
+            q(to - from),
+            q(width),
+        ])
     }
 }
 
@@ -399,6 +469,23 @@ impl Render for TabOutline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translated_stroke_matches_one_built_in_place() {
+        let at = |x: f32, y: f32| Perimeter::new(point(px(x), px(y)), 120.0, 28.0, 0.75).unwrap();
+        let placed = at(37.5, 212.25);
+        let direct = placed.tessellate(0.0, placed.len(), STROKE).unwrap();
+        let moved = translated(
+            at(0.0, 0.0).tessellate(0.0, placed.len(), STROKE).unwrap(),
+            point(px(37.5), px(212.25)),
+        );
+        assert_eq!(direct.bounds, moved.bounds);
+        assert_eq!(direct.vertices.len(), moved.vertices.len());
+        for (a, b) in direct.vertices.iter().zip(&moved.vertices) {
+            assert!((f32::from(a.xy_position.x) - f32::from(b.xy_position.x)).abs() < 0.01);
+            assert!((f32::from(a.xy_position.y) - f32::from(b.xy_position.y)).abs() < 0.01);
+        }
+    }
 
     #[test]
     fn perimeter_starts_at_top_center_and_runs_clockwise() {

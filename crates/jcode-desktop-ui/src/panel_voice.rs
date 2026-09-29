@@ -153,9 +153,10 @@ pub(super) struct VoiceState {
     peak: f32,
     /// The end of this attempt was already logged.
     end_logged: bool,
-    /// Phase origin and pending wake for the idle microphone/shortcut swap.
-    swap_epoch: Option<Instant>,
-    swap_tick: Option<Task<()>>,
+    /// The idle microphone/shortcut swap, animating in its own view.
+    swap: Option<Entity<VoiceSwap>>,
+    /// The colors last handed to `swap`.
+    swap_colors: Option<(gpui::Hsla, gpui::Hsla)>,
 }
 
 /// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
@@ -1037,60 +1038,39 @@ impl Panel {
         // Idle, the button alternates between the microphone and its
         // shortcut instead of showing both side by side. While voice is
         // active, or with reduced motion, it holds the microphone.
-        let alternate = !active
-            && !cx.reduce_motion()
-            && !crate::config::get().appearance.reduce_motion;
-        let microphone = div()
-            .debug_selector(|| "voice-microphone-icon".into())
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                gpui::svg()
-                    .data(include_bytes!("../../../assets/icons/microphone.svg") as &'static [u8])
-                    .text_color(icon_color)
-                    .size(px(12.)),
-            );
-        let shortcut = div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(voice_shortcut_keycap(keycap_color.into(), &theme));
-        let (microphone, shortcut) = if alternate {
-            // A repeating GPUI animation would notify this whole panel at
-            // 30 Hz forever, re-rendering the transcript and composer and
-            // competing with keystrokes, although the faces only move during
-            // two short crossfades per cycle. Sleep through the holds.
-            let now = cx.background_executor().now();
-            let epoch = *self.voice.swap_epoch.get_or_insert(now);
-            let cycle = VOICE_SWAP_CYCLE.as_secs_f32();
-            let t = (now.saturating_duration_since(epoch).as_secs_f32() / cycle).fract();
-            self.schedule_voice_swap(VOICE_SWAP_CYCLE.mul_f32(voice_swap_idle(t)), cx);
-            let (mic_opacity, mic_offset) = voice_swap_frame(t, false);
-            let (key_opacity, key_offset) = voice_swap_frame(t, true);
-            (
-                microphone
-                    .opacity(mic_opacity)
-                    .top(px(mic_offset))
-                    .bottom(px(-mic_offset))
-                    .into_any_element(),
-                shortcut
-                    .opacity(key_opacity)
-                    .top(px(key_offset))
-                    .bottom(px(-key_offset))
-                    .into_any_element(),
-            )
+        let alternate =
+            !active && !cx.reduce_motion() && !crate::config::get().appearance.reduce_motion;
+        let faces = if alternate {
+            // The faces crossfade in their own small view, so each animation
+            // frame redraws only this button. Notifying the panel would
+            // rebuild the transcript and composer and everything observing
+            // the panel, 30 times a second during every crossfade.
+            let swap = self
+                .voice
+                .swap
+                .get_or_insert_with(|| cx.new(VoiceSwap::new))
+                .clone();
+            // Compare against the colors last handed over, not by reading the
+            // swap view: a view that reads another is built again whenever
+            // that one is updated.
+            let colors = (icon_color.into(), keycap_color.into());
+            if self.voice.swap_colors != Some(colors) {
+                self.voice.swap_colors = Some(colors);
+                swap.update(cx, |swap, cx| {
+                    swap.colors = Some(colors);
+                    cx.notify();
+                });
+            }
+            swap.into_any_element()
         } else {
-            self.voice.swap_epoch = None;
-            self.voice.swap_tick = None;
-            (
-                microphone.into_any_element(),
-                shortcut.opacity(0.).into_any_element(),
-            )
+            self.voice.swap = None;
+            self.voice.swap_colors = None;
+            div()
+                .absolute()
+                .inset_0()
+                .child(voice_microphone_face(icon_color.into()))
+                .child(voice_shortcut_face(keycap_color.into()).opacity(0.))
+                .into_any_element()
         };
         let button = div()
             .id("voice-toggle")
@@ -1127,8 +1107,7 @@ impl Panel {
                     .invisible()
                     .child(voice_shortcut_keycap(keycap_color.into(), &theme)),
             )
-            .child(microphone)
-            .child(shortcut);
+            .child(faces);
         div()
             .flex_none()
             .h(px(size))
@@ -1146,24 +1125,98 @@ const VOICE_SWAP_FRAME: Duration = Duration::from_nanos(33_333_334);
 /// Portion of each half cycle spent crossfading.
 const VOICE_SWAP_FADE: f32 = 0.07;
 
-impl Panel {
-    /// Repaint the voice button after `idle` (a hold), or on the next shared
-    /// animation tick while its faces are moving.
-    fn schedule_voice_swap(&mut self, idle: Duration, cx: &mut Context<Self>) {
-        if self.voice.swap_tick.is_some() {
-            return;
-        }
-        self.voice.swap_tick = Some(cx.spawn(async move |this, cx| {
-            if idle > VOICE_SWAP_FRAME {
-                cx.background_executor().timer(idle).await;
-            } else {
-                crate::animation_clock::next_tick(cx.background_executor(), VOICE_SWAP_FRAME).await;
+fn voice_microphone_face(color: gpui::Hsla) -> gpui::Div {
+    div()
+        .debug_selector(|| "voice-microphone-icon".into())
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            gpui::svg()
+                .data(include_bytes!("../../../assets/icons/microphone.svg") as &'static [u8])
+                .text_color(color)
+                .size(px(12.)),
+        )
+}
+
+fn voice_shortcut_face(color: gpui::Hsla) -> gpui::Div {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(voice_shortcut_keycap(color, &Theme::global()))
+}
+
+/// The voice button's two faces, alternating on their own clock, so a
+/// crossfade frame redraws only this view. The panel passes the colors.
+pub(super) struct VoiceSwap {
+    epoch: Instant,
+    _clock: Task<()>,
+    colors: Option<(gpui::Hsla, gpui::Hsla)>,
+}
+
+impl VoiceSwap {
+    pub(super) fn new(cx: &mut Context<Self>) -> Self {
+        let epoch = cx.background_executor().now();
+        let id = cx.entity_id();
+        // The clock sleeps through the holds and ticks while the faces move.
+        // It only notifies this view by id: updating it would count as a
+        // change for the panel around it, and build that again every tick.
+        let clock = cx.spawn(async move |this, cx| {
+            loop {
+                let now = cx.background_executor().now();
+                let t = voice_swap_phase(epoch, now);
+                let idle = VOICE_SWAP_CYCLE.mul_f32(voice_swap_idle(t));
+                if idle > VOICE_SWAP_FRAME {
+                    cx.background_executor().timer(idle).await;
+                } else {
+                    crate::animation_clock::next_tick(cx.background_executor(), VOICE_SWAP_FRAME)
+                        .await;
+                }
+                if this.upgrade().is_none() {
+                    break;
+                }
+                cx.update(|cx| cx.notify(id));
             }
-            let _ = this.update(cx, |panel, cx| {
-                panel.voice.swap_tick = None;
-                cx.notify();
-            });
-        }));
+        });
+        Self {
+            epoch,
+            _clock: clock,
+            colors: None,
+        }
+    }
+}
+
+/// Where in the swap cycle `now` falls, from 0 to 1.
+fn voice_swap_phase(epoch: Instant, now: Instant) -> f32 {
+    (now.saturating_duration_since(epoch).as_secs_f32() / VOICE_SWAP_CYCLE.as_secs_f32()).fract()
+}
+
+impl Render for VoiceSwap {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = voice_swap_phase(self.epoch, cx.background_executor().now());
+        let (mic_opacity, mic_offset) = voice_swap_frame(t, false);
+        let (key_opacity, key_offset) = voice_swap_frame(t, true);
+        let (icon, keycap) = self.colors.unwrap_or_default();
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                voice_microphone_face(icon)
+                    .opacity(mic_opacity)
+                    .top(px(mic_offset))
+                    .bottom(px(-mic_offset)),
+            )
+            .child(
+                voice_shortcut_face(keycap)
+                    .opacity(key_opacity)
+                    .top(px(key_offset))
+                    .bottom(px(-key_offset)),
+            )
     }
 }
 

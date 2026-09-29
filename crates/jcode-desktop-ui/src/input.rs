@@ -213,7 +213,11 @@ pub struct PromptInput {
     chrome: bool,
     /// Cycle example prompts behind an empty chat composer.
     example_prompts: bool,
-    motion: MotionState,
+    /// Shared with paint and the ticker, outside the entity, so that caret
+    /// and placeholder frames do not count as changes to this input: GPUI
+    /// retains views between frames and builds again a view whose entities
+    /// were updated.
+    motion: std::rc::Rc<std::cell::RefCell<MotionState>>,
 }
 
 /// Placeholder typewriter and caret motion. Never snapshotted.
@@ -549,7 +553,7 @@ impl PromptInput {
             trailing_inset: 0.,
             chrome: true,
             example_prompts: false,
-            motion: MotionState::default(),
+            motion: Default::default(),
         }
     }
 
@@ -569,8 +573,9 @@ impl PromptInput {
             return (self.placeholder.clone(), None, false);
         }
         let reduced = motion_reduced(cx);
-        let elapsed = now.saturating_duration_since(self.motion.epoch);
-        let (shown, live) = motion::placeholder_at(elapsed, self.motion.seed, reduced);
+        let state = self.motion.borrow();
+        let elapsed = now.saturating_duration_since(state.epoch);
+        let (shown, live) = motion::placeholder_at(elapsed, state.seed, reduced);
         let full = motion::EXAMPLE_PROMPTS
             .iter()
             .copied()
@@ -1887,31 +1892,24 @@ impl Element for TextElement {
         );
         let focused = self.input.read(cx).focus_handle.is_focused(window);
         let reduced = motion_reduced(cx);
-        let (cursor_pos, caret_alpha, caret_next, caret_gliding) =
-            self.input.update(cx, |input, _| {
+        let (cursor_pos, caret_alpha, caret_next, caret_gliding) = {
+                let input = self.input.read(cx);
+                let mut state = input.motion.borrow_mut();
+                let state = &mut *state;
                 let key = (input.content.clone(), cursor);
                 let mut edited = false;
-                if input.motion.key.as_ref() != Some(&key) {
-                    edited = input
-                        .motion
-                        .key
-                        .as_ref()
-                        .is_some_and(|(old, _)| *old != key.0);
-                    if key.0.is_empty()
-                        && input
-                            .motion
-                            .key
-                            .as_ref()
-                            .is_some_and(|(old, _)| !old.is_empty())
+                if state.key.as_ref() != Some(&key) {
+                    edited = state.key.as_ref().is_some_and(|(old, _)| *old != key.0);
+                    if key.0.is_empty() && state.key.as_ref().is_some_and(|(old, _)| !old.is_empty())
                     {
                         // Emptying the composer starts a fresh example.
-                        input.motion.seed = input.motion.seed.wrapping_add(1);
+                        state.seed = state.seed.wrapping_add(1);
                     }
-                    input.motion.key = Some(key);
-                    input.motion.epoch = now;
+                    state.key = Some(key);
+                    state.epoch = now;
                 }
-                let glide = input
-                    .motion
+                let epoch = state.epoch;
+                let glide = state
                     .glide
                     .get_or_insert_with(|| motion::Glide::new(target, now));
                 if edited {
@@ -1924,14 +1922,14 @@ impl Element for TextElement {
                 }
                 let (position, gliding) = glide.position(now);
                 let (alpha, next) =
-                    motion::caret_alpha(now.saturating_duration_since(input.motion.epoch), reduced);
+                    motion::caret_alpha(now.saturating_duration_since(epoch), reduced);
                 (
                     position,
                     alpha,
                     next.filter(|_| focused),
                     focused && gliding,
                 )
-            });
+            };
         if caret_gliding {
             // The 33ms ticker is too coarse for a 55ms glide. Draw every frame.
             window.request_animation_frame();
@@ -1941,8 +1939,7 @@ impl Element for TextElement {
         } else {
             caret_next
         };
-        self.input
-            .update(cx, |input, _| input.motion.next = motion_next);
+        self.input.read(cx).motion.borrow_mut().next = motion_next;
         let (selection, cursor) = if selected_range.is_empty() {
             let mut color = to_hsla(Theme::global().CURSOR);
             color.a *= caret_alpha;
@@ -2038,38 +2035,46 @@ impl Element for TextElement {
             }
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
-            if input.motion.next.is_some() && input.motion.ticker.is_none() {
+            let needs_ticker = {
+                let state = input.motion.borrow();
+                state.next.is_some() && state.ticker.is_none()
+            };
+            if needs_ticker {
                 // One bounded ticker drives placeholder typing and caret
-                // breathing. It sleeps through the solid caret phase, since
-                // each wake re-renders the whole chat panel, and exits as soon
-                // as motion settles.
-                input.motion.ticker = Some(_cx.spawn(async move |this, cx| {
+                // breathing. It sleeps through the solid caret phase and exits
+                // as soon as motion settles. It notifies this input by id and
+                // never updates it, so the panel reading the input is not
+                // built again for a caret frame.
+                let shared = input.motion.clone();
+                let id = _cx.entity_id();
+                let weak = _cx.entity().downgrade();
+                let ticker = _cx.spawn(async move |_, cx| {
                     loop {
-                        let idle = this
-                            .read_with(cx, |input, _| input.motion.next)
-                            .ok()
-                            .flatten()
-                            .unwrap_or(Duration::ZERO);
+                        let idle = shared.borrow().next.unwrap_or(Duration::ZERO);
                         if idle > motion::TICK {
                             cx.background_executor().timer(idle - motion::TICK).await;
                         }
                         crate::animation_clock::next_tick(cx.background_executor(), motion::TICK)
                             .await;
-                        let keep = this
-                            .update(cx, |input, cx| {
-                                if input.motion.next.take().is_none() {
-                                    input.motion.ticker = None;
-                                    return false;
-                                }
-                                cx.notify();
+                        if weak.upgrade().is_none() {
+                            break;
+                        }
+                        let keep = {
+                            let mut state = shared.borrow_mut();
+                            if state.next.take().is_none() {
+                                state.ticker = None;
+                                false
+                            } else {
                                 true
-                            })
-                            .unwrap_or(false);
+                            }
+                        };
                         if !keep {
                             break;
                         }
+                        cx.update(|cx| cx.notify(id));
                     }
-                }));
+                });
+                input.motion.borrow_mut().ticker = Some(ticker);
             }
             if input.visual_line_count != prepaint.visual_line_count {
                 // Layout used the previous height this frame. Retry revealing the
@@ -2085,6 +2090,8 @@ impl Element for TextElement {
 
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        crate::workspace::panel_cache_tests::record_render(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
         let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
         let spacious = self.spacious

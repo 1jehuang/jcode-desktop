@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import random
 import select
+import signal
 import statistics
 import subprocess
 import sys
@@ -123,8 +124,23 @@ def summarize(frames, before, after):
         input_max_ms=maximum('input_max_ms'),
         wake_lag_max_ms=maximum('ui_wake_lag_ms'),
         cpu_percent=cpu / elapsed * 100 if elapsed else None,
+        # The UI thread alone. Process CPU is dominated by the software
+        # rasterizer on Xvfb, which runs on the GPU on a real display.
+        main_thread_cpu_percent=(
+            (after['main_thread_ticks'] - before['main_thread_ticks'])
+            / os.sysconf('SC_CLK_TCK') / elapsed * 100
+            if elapsed and 'main_thread_ticks' in after else None
+        ),
         rss_mb=after['rss_kb'] / 1024,
     )
+
+
+def process_sample(pid):
+    """`profile-live`'s process sample, plus the UI (main) thread's own CPU."""
+    sample = profile.process_sample(pid)
+    stat = Path(f'/proc/{pid}/task/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+    sample['main_thread_ticks'] = int(stat[11]) + int(stat[12])
+    return sample
 
 
 def median_of(runs, key):
@@ -144,6 +160,10 @@ class App:
         env['JCODE_DESKTOP_SCREENSHOT_PANELS'] = str(panels)
         env['JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT'] = transcript
         env['GPUI_VIEW_RETENTION'] = '1' if retention else '0'
+        # Pass through tracing switches for investigations.
+        for name in ('GPUI_TRACE_NOTIFY', 'GPUI_TRACE_RENDERS', 'GPUI_TRACE_WRITES', 'GPUI_TRACE_UPDATES', 'RUST_BACKTRACE'):
+            if name in os.environ:
+                env[name] = os.environ[name]
         env['JCODE_DESKTOP_CONFIG'] = str(root / 'desktop.toml')
         (root / 'desktop.toml').write_text('[appearance]\nlayout_mode = "normal"\n'
                                            '[workspace]\ncoaching_hints = false\n')
@@ -191,7 +211,7 @@ class App:
     def _wait_rendered(self, panels):
         state = self.root / 'state'
         widths = 'widths=' + ','.join([f'{1 / panels:.2f}'] * panels)
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 180
         while not state.exists() or widths not in state.read_text():
             if self.app.poll() is not None or time.monotonic() > deadline:
                 raise RuntimeError(f'App failed to render, see {self.root / "app.log"}')
@@ -209,13 +229,21 @@ class App:
         except (OSError, StopIteration, json.JSONDecodeError):
             return None
 
-    def measure(self, capture, keys, seconds):
+    def measure(self, capture, keys, seconds, profile_to=None):
         """Plays `keys` in a loop for `seconds` while sampling frame timing."""
         control = self.root / 'runtime/jcode-desktop-profile.json'
         control.write_text(json.dumps(dict(capture_id=capture,
                                            until_unix_ms=int((time.time() + seconds + 4) * 1000))))
         time.sleep(1.2)
-        before = profile.process_sample(self.app.pid)
+        sampler = None
+        if profile_to:
+            # A CPU profile of the app over exactly the measured window.
+            sampler = subprocess.Popen(
+                ['samply', 'record', '--save-only', '--no-open', '--rate', '2000',
+                 '-o', str(profile_to), '-p', str(self.app.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+        before = process_sample(self.app.pid)
         started = time.monotonic()
         actions, states = 0, set()
         while time.monotonic() - started < seconds:
@@ -234,8 +262,12 @@ class App:
                 if nav:
                     states.add((nav['active_row'], nav['focused_slot'], nav['overview'],
                                 sum(len(row['panels']) for row in nav['rows'])))
-        after = profile.process_sample(self.app.pid)
+        after = process_sample(self.app.pid)
         control.unlink(missing_ok=True)
+        if sampler:
+            # samply ignores --duration when attached; it stops and saves on SIGINT.
+            sampler.send_signal(signal.SIGINT)
+            sampler.wait(timeout=120)
         time.sleep(0.3)
         source = self.root / f'runtime/jcode-desktop-profile-{self.app.pid}-{capture}.jsonl'
         if not source.exists():
@@ -268,7 +300,7 @@ def compare(current, baseline, tolerance):
         if not base:
             continue
         # Lower is better for these; FPS is higher-is-better.
-        for metric in ('draw_mean_ms', 'cpu_percent'):
+        for metric in ('draw_mean_ms', 'main_thread_cpu_percent'):
             now, then = result.get(metric), base.get(metric)
             if now is not None and then and now > then * (1 + tolerance) and now - then > 0.5:
                 worse.append(f'{key} {metric}: {then:.2f} -> {now:.2f}')
@@ -293,6 +325,8 @@ def main():
     parser.add_argument('--baseline', type=Path, help='summary.json of an earlier run to compare against')
     parser.add_argument('--tolerance', type=float, default=0.15,
                         help='fraction a metric may worsen against the baseline before failing')
+    parser.add_argument('--profile', action='store_true',
+                        help='record a samply CPU profile of each measured scenario (needs samply)')
     args = parser.parse_args()
     if args.seconds < 3 or args.repeats < 1:
         parser.error('need at least 3 seconds and one repeat')
@@ -323,34 +357,36 @@ def main():
                     for scenario in group:
                         keys = scenario_keys(scenario, random.Random(args.seed))
                         key = f'{scenario}/retention-{"on" if retention else "off"}'
-                        result = app.measure(scenario.replace('-', ''), keys, args.seconds)
+                        profile_to = root / f'{key.replace("/", "-")}-{repeat}.json.gz' if args.profile else None
+                        result = app.measure(scenario.replace('-', ''), keys, args.seconds, profile_to)
                         runs.setdefault(key, []).append(result)
                         print(f'{key:32s} run {repeat + 1}: '
                               f'fps={result["animation_fps"] or 0:6.1f} '
                               f'draw={result["draw_mean_ms"] or 0:6.2f}ms '
                               f'p95max={result["draw_p95_max_ms"] or 0:6.2f}ms '
-                              f'cpu={result["cpu_percent"]:5.1f}% actions={result["actions"]}',
+                              f'ui={result["main_thread_cpu_percent"] or 0:5.1f}% all={result["cpu_percent"]:5.1f}% actions={result["actions"]}',
                               flush=True)
                         time.sleep(1)
                 finally:
                     app.close()
 
     metrics = ('animation_fps', 'draws_per_second', 'draw_mean_ms', 'draw_p95_max_ms', 'draw_max_ms',
-               'input_max_ms', 'cpu_percent', 'rss_mb')
+               'input_max_ms', 'main_thread_cpu_percent', 'cpu_percent', 'rss_mb')
     summary = {key: {m: median_of(results, m) for m in metrics} | {'runs': len(results)}
                for key, results in runs.items()}
     (root / 'runs.json').write_text(json.dumps(runs, indent=2) + '\n')
     (root / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
 
     print(f'\nMedians of {args.repeats} run(s), {args.seconds:g}s each. Load at start: {meta["loadavg"]}')
-    print(f'{"scenario":32s} {"fps":>7s} {"draw ms":>8s} {"p95 max":>8s} {"max ms":>8s} {"cpu %":>7s} {"rss MB":>7s}')
+    print(f'{"scenario":32s} {"fps":>7s} {"draw ms":>8s} {"p95 max":>8s} {"max ms":>8s} {"ui cpu%":>8s} {"all cpu%":>8s} {"rss MB":>7s}')
     def cell(value, width, digits):
         return f'{value:{width}.{digits}f}' if value is not None else ' ' * (width - 1) + '-'
     for key in sorted(summary):
         s = summary[key]
         print(f'{key:32s} {cell(s["animation_fps"], 7, 1)} {cell(s["draw_mean_ms"], 8, 2)} '
               f'{cell(s["draw_p95_max_ms"], 8, 2)} {cell(s["draw_max_ms"], 8, 2)} '
-              f'{cell(s["cpu_percent"], 7, 1)} {cell(s["rss_mb"], 7, 0)}')
+              f'{cell(s["main_thread_cpu_percent"], 8, 1)} {cell(s["cpu_percent"], 8, 1)} '
+              f'{cell(s["rss_mb"], 7, 0)}')
 
     if args.baseline:
         worse = compare(summary, json.loads(args.baseline.read_text()), args.tolerance)

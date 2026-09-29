@@ -135,15 +135,55 @@ fn typing_pauses_do_not_repaint_the_panel_while_the_caret_is_solid(cx: &mut gpui
         "solid caret repainted the panel {} times between keystrokes",
         count(&panel) - before
     );
-    // Breathing still animates afterwards.
+    // Breathing still animates afterwards, in the composer alone: the panel
+    // around it is drawn from the last frame.
+    let input = panel.read_with(vcx, |panel, _| panel.input.clone());
     let before = count(&panel);
+    let input_before = count_id(input.entity_id());
     for _ in 0..30 {
         vcx.executor()
             .advance_clock(std::time::Duration::from_millis(34));
         vcx.run_until_parked();
     }
     assert!(
-        count(&panel) > before + 10,
+        count_id(input.entity_id()) > input_before + 10,
         "caret breathing must keep animating"
     );
+    assert!(
+        count(&panel) - before <= 1,
+        "caret breathing rebuilt the panel {} times",
+        count(&panel) - before
+    );
+}
+
+fn count_id(id: gpui::EntityId) -> usize {
+    RENDERS.with_borrow(|renders| renders.get(&id).copied().unwrap_or(0))
+}
+
+#[gpui::test]
+fn focus_moves_and_new_panels_do_not_rerender_other_panels(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        for name in ["p0", "p1", "p2", "p3"] {
+            workspace.push_test_panel(name, cx);
+        }
+        workspace
+    });
+    let panels: Vec<_> = (0..4)
+        .map(|i| workspace.read_with(vcx, |w, _| w.test_panel(i).unwrap()))
+        .collect();
+    vcx.run_until_parked();
+    for _ in 0..3 {
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+    }
+    let before: Vec<_> = panels.iter().map(count).collect();
+    workspace.update_in(vcx, |w, window, cx| w.focus_left(&FocusLeft, window, cx));
+    vcx.run_until_parked();
+    let after: Vec<_> = panels.iter().map(count).collect();
+    assert_eq!(after, before, "moving focus must reuse every panel's render");
+    workspace.update(vcx, |w, cx| w.push_test_panel("p4", cx));
+    vcx.run_until_parked();
+    let after: Vec<_> = panels.iter().map(count).collect();
+    assert_eq!(after, before, "opening a panel must not rebuild the others");
 }

@@ -5264,7 +5264,9 @@ fn render_pinned_todo_summary(
     let summary = pinned_todo_summary(payload);
     let task = pinned_todo_label(payload, &summary);
 
-    label.update(cx, |label, cx| label.set_text(task, cx));
+    if !label.read(cx).shows(&task) {
+        label.update(cx, |label, cx| label.set_text(task, cx));
+    }
 
     div()
         .debug_selector(|| "pinned-todo-summary".into())

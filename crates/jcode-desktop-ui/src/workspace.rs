@@ -4096,7 +4096,20 @@ impl Workspace {
     /// A one-line snapshot of the strip layout. Written to the path in
     /// `JCODE_DESKTOP_STATE` on every render so an automated check can observe
     /// what the running window is actually doing.
-    fn dump_state(&self, window: &Window, cx: &App) {
+    fn dump_state(&self, window: &Window, cx: &mut Context<Self>) {
+        if self.launch.var("JCODE_DESKTOP_STATE").is_none() {
+            return;
+        }
+        // Written after the frame, outside rendering: reading every panel's
+        // input here would make this view depend on all of them, and draw it
+        // again whenever any caret blinks.
+        let workspace = cx.entity().downgrade();
+        window.defer(cx, move |window, cx| {
+            let _ = workspace.read_with(cx, |workspace, cx| workspace.write_state(window, cx));
+        });
+    }
+
+    fn write_state(&self, window: &Window, cx: &App) {
         let Some(path) = self.launch.var("JCODE_DESKTOP_STATE").map(str::to_owned) else {
             return;
         };
@@ -4141,10 +4154,20 @@ impl Workspace {
             self.layout_mode, self.sidebar_view
         );
         let navigation = self.navigation_state(window, cx);
-        let _ = std::fs::write(
-            path,
-            format!("{line}\n{coach}\n{appearance}{suffix}\nnavigation={navigation}\n"),
-        );
+        let contents = format!("{line}\n{coach}\n{appearance}{suffix}\nnavigation={navigation}\n");
+        // Frames mostly repeat the last state. Skipping identical writes keeps
+        // the file syscalls out of the frame loop the harness is measuring.
+        thread_local! {
+            static LAST: std::cell::RefCell<(String, String)> = Default::default();
+        }
+        LAST.with_borrow_mut(|last| {
+            if last.0 == path && last.1 == contents {
+                return;
+            }
+            if std::fs::write(&path, &contents).is_ok() {
+                *last = (path, contents);
+            }
+        });
     }
 
     /// Strip rendering normally advances these values. Overview and completed
@@ -4410,25 +4433,15 @@ impl Workspace {
                 } else if slot.panel.read(cx).is_pending_session() {
                     self.render_pending_session(index, cx)
                 } else {
-                    // Unrelated workspace chrome updates must not rebuild every
-                    // visible transcript. GPUI invalidates this definite-size
-                    // cache on panel/descendant notify, bounds, style or refresh.
-                    static UNCACHED_FIXTURE: std::sync::LazyLock<bool> =
-                        std::sync::LazyLock::new(|| {
-                            (harness::screenshot_mode() || cfg!(test))
-                                && std::env::var("JCODE_DESKTOP_SCREENSHOT_UNCACHED_PANELS")
-                                    .as_deref()
-                                    == Ok("1")
-                        });
-                    if *UNCACHED_FIXTURE {
-                        // Same-binary performance control, offline fixtures only.
-                        slot.panel.clone().into_any_element()
-                    } else {
-                        slot.panel
-                            .clone()
-                            .cached(gpui::StyleRefinement::default().size_full())
-                            .into_any_element()
-                    }
+                    // GPUI retains every view: a panel is drawn again from the
+                    // last frame while nothing it read changed, and when only
+                    // the panel changed, the workspace around it is drawn from
+                    // the last frame with the panel built again in its place.
+                    // A `.cached` view would opt out of the latter.
+                    div()
+                        .size_full()
+                        .child(slot.panel.clone())
+                        .into_any_element()
                 });
             if focused {
                 active_surface = Some(surface);
