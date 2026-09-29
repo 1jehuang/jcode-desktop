@@ -32,7 +32,7 @@ fn navigation_without_mounted_focus(cx: &mut gpui::TestAppContext) {
         ] {
             vcx.update(|window, cx| {
                 if missing_focus {
-                    window.blur();
+                    window.blur(cx);
                 } else {
                     // A removed picker/composer can leave a live FocusHandle
                     // that no longer has a node in the rendered dispatch tree.
@@ -72,7 +72,7 @@ fn navigation_fallback_respects_keymap_overrides(cx: &mut gpui::TestAppContext) 
     });
     let (workspace, vcx) =
         cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
-    vcx.update(|window, _| window.blur());
+    vcx.update(|window, cx| window.blur(cx));
     vcx.simulate_keystrokes("super-j");
     workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 0));
     vcx.simulate_keystrokes("ctrl-alt-v");
@@ -86,7 +86,7 @@ fn navigation_survives_root_replacement(cx: &mut gpui::TestAppContext) {
         cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
     let mut old_roots = Vec::new();
     for _ in 0..3 {
-        vcx.update(|window, _| window.blur());
+        vcx.update(|window, cx| window.blur(cx));
         vcx.simulate_keystrokes("super-j");
         vcx.run_until_parked();
         workspace.read_with(vcx, |workspace, _| assert_eq!(workspace.active_row, 1));

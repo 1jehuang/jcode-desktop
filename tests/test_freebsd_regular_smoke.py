@@ -14,14 +14,11 @@ smoke.TREE = ast.parse(smoke.SOURCE)
 
 
 class NormalReleaseSmokeTests(smoke.RecoverySmokeTests):
-    def test_dependency_overlay_before_build_and_verified_after(self):
+    def test_pinned_gpui_builds_without_a_dependency_overlay(self):
         source = smoke.WORKFLOW.read_text()
-        self.assertEqual(source.count("scripts/prepare-freebsd-gpui.py"), 2)
-        prepare, verify = [source.index(line) for line in source.splitlines()
-                           if "scripts/prepare-freebsd-gpui.py" in line]
+        self.assertNotIn("prepare-freebsd-gpui.py", source)
         build = source.index("bash jcode-desktop/scripts/package-freebsd.sh")
-        self.assertLess(prepare, build)
-        self.assertLess(build, verify)
-        self.assertIn("--verify-only", source[verify:])
+        self.assertLess(build, source.index("git -C jcode-desktop diff HEAD --exit-code"))
         self.assertIn('export CARGO_HOME="$HOME/.cargo-freebsd-release"', source)
-        self.assertEqual(source.count("git -C jcode-desktop diff HEAD --exit-code"), 2)
+        manifest = (ROOT / "Cargo.toml").read_text()
+        self.assertIn('git = "https://github.com/1jehuang/gpui"', manifest)

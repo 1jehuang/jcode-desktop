@@ -436,14 +436,19 @@ impl Panel {
                 // Constrain only the overlay, never either card's layout.
                 let clip = offscreen.and_then(|_| visible?.next_prompt_top.map(|(_, top)| top));
                 cx.defer(move |cx| {
-                    let _ = panel.update(cx, |panel, cx| {
-                        if panel.offscreen_prompt != offscreen
-                            || panel.offscreen_prompt_clip != clip
-                        {
-                            panel.offscreen_prompt = offscreen;
-                            panel.offscreen_prompt_clip = clip;
-                            cx.notify();
-                        }
+                    // Read first: an update counts as a change for retained views.
+                    let Some(entity) = panel.upgrade() else {
+                        return;
+                    };
+                    let current = entity.read(cx);
+                    if current.offscreen_prompt == offscreen && current.offscreen_prompt_clip == clip
+                    {
+                        return;
+                    }
+                    entity.update(cx, |panel, cx| {
+                        panel.offscreen_prompt = offscreen;
+                        panel.offscreen_prompt_clip = clip;
+                        cx.notify();
                     });
                 });
             },

@@ -449,6 +449,10 @@ impl TerminalPanel {
         window.focus(&self.focus, cx);
     }
 
+    pub(crate) fn surface_focused(&self) -> bool {
+        self.surface_focused
+    }
+
     pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.surface_focused != focused {
             self.surface_focused = focused;

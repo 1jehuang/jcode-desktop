@@ -501,7 +501,7 @@ impl Render for Preview {
             }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    window.blur();
+                    window.blur(cx);
                     cx.stop_propagation();
                     return;
                 }

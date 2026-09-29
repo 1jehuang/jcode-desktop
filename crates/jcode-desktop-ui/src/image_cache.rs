@@ -268,9 +268,17 @@ mod paint_trace_tests {
             vcx.run_until_parked();
             // A parked foreground executor does not mean decoding has finished.
             // Await the already-started shared asset, then paint its result.
-            let _ = vcx
-                .update(|_, cx| cx.fetch_asset::<DesktopImageDecoder>(image).0)
-                .await;
+            for _ in 0..1000 {
+                if vcx
+                    .update(|_, cx| cx.fetch_asset::<DesktopImageDecoder>(image))
+                    .is_some()
+                {
+                    break;
+                }
+                vcx.executor().allow_parking();
+                vcx.run_until_parked();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             view.update(vcx, |_, cx| cx.notify());
             vcx.run_until_parked();
         }
@@ -483,6 +491,19 @@ mod paint_trace_tests {
 mod tests {
     use super::*;
 
+    /// Waits for a shared decode to finish; `fetch_asset` only polls.
+    fn fetch(cx: &mut gpui::TestAppContext, image: &Arc<Image>) -> Arc<gpui::RenderImage> {
+        for _ in 0..1000 {
+            if let Some(result) = cx.update(|cx| cx.fetch_asset::<DesktopImageDecoder>(image)) {
+                return result.expect("image decodes");
+            }
+            cx.executor().allow_parking();
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("image did not decode");
+    }
+
     #[gpui::test]
     async fn encoded_images_do_not_alias_across_surfaces_or_reload(cx: &mut gpui::TestAppContext) {
         fn png(pixel: [u8; 4]) -> Vec<u8> {
@@ -496,23 +517,16 @@ mod tests {
         let attachment = encoded(gpui::ImageFormat::Png, bytes.clone());
         let transcript = encoded(gpui::ImageFormat::Png, png([10, 220, 90, 255]));
         assert_ne!(attachment.id, transcript.id);
-        let first = cx
-            .update(|cx| cx.fetch_asset::<DesktopImageDecoder>(&attachment).0)
-            .await
-            .unwrap();
-        let second = cx
-            .update(|cx| cx.fetch_asset::<DesktopImageDecoder>(&transcript).0)
-            .await
-            .unwrap();
+        let first = fetch(cx, &attachment);
+        let second = fetch(cx, &transcript);
         assert_ne!(first.id, second.id);
         assert_eq!(&first.as_bytes(0).unwrap()[..4], &[60, 20, 240, 255]);
         assert_eq!(&second.as_bytes(0).unwrap()[..4], &[90, 220, 10, 255]);
         // Reconstructing after submission/reload reuses the correct cached
         // pixels rather than restarting a library-local source counter.
         let restored = encoded(gpui::ImageFormat::Png, bytes);
-        let (task, is_first) = cx.update(|cx| cx.fetch_asset::<DesktopImageDecoder>(&restored));
-        assert!(!is_first);
-        assert_eq!(task.await.unwrap().id, first.id);
+        let cached = cx.update(|cx| cx.fetch_asset::<DesktopImageDecoder>(&restored));
+        assert_eq!(cached.unwrap().unwrap().id, first.id);
     }
 
     #[gpui::test]

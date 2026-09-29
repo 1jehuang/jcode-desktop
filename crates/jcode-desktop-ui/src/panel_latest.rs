@@ -47,11 +47,16 @@ impl Panel {
                 // or previous-layout metrics are used to decide visibility.
                 let visible = visible.replace(false) || row_count == 0;
                 cx.defer(move |cx| {
-                    let _ = panel.update(cx, |panel, cx| {
-                        if panel.transcript_end_visible != visible {
-                            panel.transcript_end_visible = visible;
-                            cx.notify();
-                        }
+                    // Read first: an update counts as a change for retained views.
+                    let Some(entity) = panel.upgrade() else {
+                        return;
+                    };
+                    if entity.read(cx).transcript_end_visible == visible {
+                        return;
+                    }
+                    entity.update(cx, |panel, cx| {
+                        panel.transcript_end_visible = visible;
+                        cx.notify();
                     });
                 });
             },

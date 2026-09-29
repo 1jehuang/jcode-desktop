@@ -204,7 +204,7 @@ mod tests {
                 assert_eq!(input.snapshot(), snapshot);
 
                 input.attach_image(image(), cx);
-                window.blur();
+                window.blur(cx);
                 assert!(input.render_paste_preview(window).is_none());
                 assert!(input.attachment_preview.is_none());
             })

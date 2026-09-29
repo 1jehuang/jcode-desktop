@@ -889,7 +889,7 @@ mod tests {
                     .panel
                     .update(cx, |panel, _| panel.set_voice_checking_for_test());
             });
-            window.blur();
+            window.blur(cx);
             let action = cx.build_action("workspace::ToggleVoice", None).unwrap();
             // Match the stable host's fallback when no rendered focus target
             // has this action. The root workspace is a real tab stop.

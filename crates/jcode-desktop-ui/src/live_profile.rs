@@ -233,6 +233,7 @@ mod tests {
         let histogram = || hdrhistogram::Histogram::<u64>::new(3).unwrap();
         let mut before = (
             FrameDurationSnapshot {
+                dirty_to_present_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
                 draw_duration_histogram: histogram(),
                 present_interval_histogram: histogram(),
             },

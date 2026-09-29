@@ -56,9 +56,8 @@ jobs:
           ref: 14df6c06499ae5a865518b959a4a6582f5f13f95 # Desktop 0.4.0 runtime: jcode master with applet types, accounts and restart-all support
           path: jcode
           submodules: recursive
-      - name: Test FreeBSD dependency preparation and graphical gate contracts
+      - name: Test FreeBSD graphical gate contracts
         run: |
-          python3 -m unittest discover -s jcode-desktop/scripts -p test_prepare_freebsd_gpui.py -v
           python3 -m unittest discover -s jcode-desktop/tests -p test_freebsd_regular_smoke.py -v
       # Match the adjacent CLI's native FreeBSD VM. A Linux cross-build cannot
       # establish that the FreeBSD graphics/PTY/IPC dependencies work together.
@@ -87,16 +86,12 @@ jobs:
             uname -a
             cargo --version
             rustc --version
-            # Keep the reviewed dependency-only overlay in a fresh private home.
-            # Never patch shared Cargo caches or tagged application sources.
+            # The pinned GPUI fork builds on FreeBSD as is, so no dependency
+            # overlay is needed. Tagged sources must stay unmodified.
             git config --global --add safe.directory "$PWD/jcode-desktop"
             git config --global --add safe.directory "$PWD/jcode"
             export CARGO_HOME="$HOME/.cargo-freebsd-release"
-            python3 jcode-desktop/scripts/prepare-freebsd-gpui.py --desktop-root "$PWD/jcode-desktop" --cargo-home "$CARGO_HOME"
-            git -C jcode-desktop diff HEAD --exit-code
-            git -C jcode diff HEAD --exit-code
             bash jcode-desktop/scripts/package-freebsd.sh
-            python3 jcode-desktop/scripts/prepare-freebsd-gpui.py --desktop-root "$PWD/jcode-desktop" --cargo-home "$CARGO_HOME" --verify-only
             git -C jcode-desktop diff HEAD --exit-code
             git -C jcode diff HEAD --exit-code
             cd jcode-desktop

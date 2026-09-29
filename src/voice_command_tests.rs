@@ -41,7 +41,7 @@ fn named_voice_dispatch_targets_current_window_and_current_root(cx: &mut gpui::T
         })
     });
     first_cx.run_until_parked();
-    first_cx.update(|window, _| window.blur());
+    first_cx.update(|window, cx| window.blur(cx));
     first_cx.cx.update(|cx| {
         dispatch_ui_action(handle, "host_voice_test::VoiceRequest", cx).unwrap();
         assert!(dispatch_ui_action(handle, "missing_ui::VoiceRequest", cx).is_err());

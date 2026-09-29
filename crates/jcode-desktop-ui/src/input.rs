@@ -579,6 +579,16 @@ impl PromptInput {
         (SharedString::new_static(shown), Some(full), live)
     }
 
+    /// Whether `set_spacious` or `set_trailing_inset` with these values would
+    /// change anything. Checked before updating while a frame is drawn.
+    pub(crate) fn needs_layout_update(&self, spacious: bool, trailing_inset: f32) -> bool {
+        self.spacious != spacious || self.trailing_inset != trailing_inset
+    }
+
+    pub(crate) fn has_voice_preview(&self) -> bool {
+        self.voice_preview.is_some()
+    }
+
     pub(crate) fn set_spacious(&mut self, spacious: bool, cx: &mut Context<Self>) {
         if self.spacious != spacious {
             self.spacious = spacious;

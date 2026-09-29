@@ -3676,7 +3676,18 @@ impl Panel {
         }
     }
 
-    /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
+    /// Whether `set_surface_focused(focused)` or the one-shot build footer would
+    /// change anything. Callers drawing a frame check this first, since GPUI
+    /// counts any update made while drawing as a change to the views reading it.
+    pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
+        self.show_build_footer
+            || self.surface_focused != focused
+            || self
+                .terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.read(cx).surface_focused() != focused)
+    }
+
     pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.surface_focused != focused {
             self.surface_focused = focused;
@@ -3687,6 +3698,7 @@ impl Panel {
         }
     }
 
+    /// Opt-in workspace diagnostics for real-PTY terminal acceptance checks.
     pub fn terminal_debug_snapshot(&self, cx: &App) -> Option<serde_json::Value> {
         self.terminal
             .as_ref()
@@ -4086,15 +4098,20 @@ impl Render for Panel {
                 layout.committed = true;
             }
         }
-        self.input.update(cx, |input, cx| {
-            // Two rows only while the transcript leaves room for them.
-            let startup_spacious = self
-                .startup_layout
-                .as_ref()
-                .is_some_and(|layout| !layout.compact);
-            input.set_spacious(fresh_session || startup_spacious, cx);
-            input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
-        });
+        let startup_spacious = self
+            .startup_layout
+            .as_ref()
+            .is_some_and(|layout| !layout.compact);
+        if self.input.read(cx).needs_layout_update(
+            fresh_session || startup_spacious,
+            composer::VOICE_TRAILING_SPACE,
+        ) {
+            self.input.update(cx, |input, cx| {
+                // Two rows only while the transcript leaves room for them.
+                input.set_spacious(fresh_session || startup_spacious, cx);
+                input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
+            });
+        }
         let row_count_changed = row_count != self.transcript_row_count;
         if row_count_changed {
             if row_count > self.transcript_row_count {

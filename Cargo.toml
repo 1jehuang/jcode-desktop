@@ -12,21 +12,18 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6", features = ["profiler"] }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bc538def4545534201bbfcac4e95ac34ea6501b6" }
+# GPUI comes from Jcode's fork of gpui-fast, which adds retained-mode drawing to
+# upstream GPUI. Its `fast/` modules also carry what Desktop needs: the element
+# arena shared with the hot-reloaded UI library, list height hints kept on resize,
+# and native pinch pan. Every GPUI crate comes from this one revision.
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "fdcc2676043596c370b14c1000ade6bd397f670e", features = ["profiler"] }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "fdcc2676043596c370b14c1000ade6bd397f670e" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
-[patch."https://github.com/zed-industries/zed"]
-# Host and loaded UI share GPUI's element-arena context through this pinned API.
-gpui = { git = "https://github.com/1jehuang/zed", rev = "b1c1a162e53d90492c0b1663440c93c5c15fc42c", version = "=0.2.2" }
-# Preserve native pinch translation. Its upstream GPUI dependency resolves to
-# the same patched instance above, so platform event types remain shared.
-gpui_linux = { git = "https://github.com/1jehuang/zed", rev = "a659883259f2b490714b58e3ab6ff05d26d08a3a" }
-
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance used by host and UI.
-gpui = { git = "https://github.com/1jehuang/zed", rev = "b1c1a162e53d90492c0b1663440c93c5c15fc42c", version = "=0.2.2" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "fdcc2676043596c370b14c1000ade6bd397f670e" }
 
 [package]
 name = "jcode-desktop"

@@ -4324,13 +4324,17 @@ impl Workspace {
             let slot = &self.slots[index];
             let focused = index == self.active;
             // Match the selected pane, even when a menu temporarily owns keyboard focus.
-            slot.panel.update(cx, |panel, cx| {
-                if panel.show_build_footer {
-                    panel.show_build_footer = false;
-                    cx.notify();
-                }
-                panel.set_surface_focused(focused, cx);
-            });
+            // Update only on a real change: GPUI retains views between frames and
+            // treats any update while drawing as a change to what they read.
+            if slot.panel.read(cx).needs_surface_update(focused, cx) {
+                slot.panel.update(cx, |panel, cx| {
+                    if panel.show_build_footer {
+                        panel.show_build_footer = false;
+                        cx.notify();
+                    }
+                    panel.set_surface_focused(focused, cx);
+                });
+            }
             let surface_hitboxes = panel_hitboxes.clone();
             let left = panel_left + order_offset;
             let top = FOLDER_CONTENT_INSET.min(panel_h / 2.0);

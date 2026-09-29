@@ -277,7 +277,7 @@ mod tests {
         vcx.simulate_input("keep my draft");
         for detached in [false, true] {
             if detached {
-                vcx.update(|window, _| window.blur());
+                vcx.update(|window, cx| window.blur(cx));
             }
             for chord in [
                 "super-j",

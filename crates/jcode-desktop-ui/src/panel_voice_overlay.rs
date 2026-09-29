@@ -17,8 +17,10 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         // Streaming words never resize, move, or replace the draft editor.
-        self.input
-            .update(cx, |input, cx| input.set_voice_preview(None, cx));
+        if self.input.read(cx).has_voice_preview() {
+            self.input
+                .update(cx, |input, cx| input.set_voice_preview(None, cx));
+        }
         // A global hold's status is shown by the OS pill while this window is
         // unfocused. Never show a second, in-panel copy at the same time.
         if self.voice.global_capture && !window.is_window_active() {

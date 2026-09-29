@@ -83,34 +83,51 @@ impl Panel {
                 let measured_content =
                     f32::from(viewport.size.height + list.max_offset_for_scrollbar().y);
                 cx.defer(move |cx| {
-                    let _ = panel.update(cx, |panel, cx| {
-                        if fresh {
-                            // Remember without notifying: this measurement does
-                            // not change the already correct welcome frame.
-                            panel.startup_layout = Some(StartupLayout {
-                                input_top: f32::from(input.top() - panel_bounds.top()),
-                                committed: false,
-                                messages_height: f32::from(input.top() - body.top()),
-                                preview: true,
-                                compact: false,
-                            });
-                        } else if let Some(layout) = &mut panel.startup_layout {
-                            let available = f32::from(body.size.height - input.size.height).max(0.);
-                            let wanted = measured_content + TRANSCRIPT_BOTTOM_GAP;
-                            if !layout.compact && wanted >= available {
-                                layout.compact = true;
-                                cx.notify();
-                            }
-                            let floor = (layout.input_top
-                                - f32::from(body.top() - panel_bounds.top()))
-                            .max(0.);
-                            // messages_height includes the non-scrolling gap,
-                            // while the list's measurements contain rows only.
-                            let height = floor.max(wanted).min(available);
-                            if (height - layout.messages_height).abs() > 0.5 {
-                                layout.messages_height = height;
-                                cx.notify();
-                            }
+                    // Work out the new layout from a read, and update only when it
+                    // differs: an update counts as a change for retained views.
+                    let Some(entity) = panel.upgrade() else {
+                        return;
+                    };
+                    let current = entity.read(cx).startup_layout.clone();
+                    let (next, notify) = if fresh {
+                        // Remember without notifying: this measurement does
+                        // not change the already correct welcome frame.
+                        let next = StartupLayout {
+                            input_top: f32::from(input.top() - panel_bounds.top()),
+                            committed: false,
+                            messages_height: f32::from(input.top() - body.top()),
+                            preview: true,
+                            compact: false,
+                        };
+                        (Some(next), false)
+                    } else if let Some(mut layout) = current.clone() {
+                        let mut notify = false;
+                        let available = f32::from(body.size.height - input.size.height).max(0.);
+                        let wanted = measured_content + TRANSCRIPT_BOTTOM_GAP;
+                        if !layout.compact && wanted >= available {
+                            layout.compact = true;
+                            notify = true;
+                        }
+                        let floor =
+                            (layout.input_top - f32::from(body.top() - panel_bounds.top())).max(0.);
+                        // messages_height includes the non-scrolling gap,
+                        // while the list's measurements contain rows only.
+                        let height = floor.max(wanted).min(available);
+                        if (height - layout.messages_height).abs() > 0.5 {
+                            layout.messages_height = height;
+                            notify = true;
+                        }
+                        (Some(layout), notify)
+                    } else {
+                        return;
+                    };
+                    if next == current {
+                        return;
+                    }
+                    entity.update(cx, |panel, cx| {
+                        panel.startup_layout = next;
+                        if notify {
+                            cx.notify();
                         }
                     });
                 });

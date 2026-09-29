@@ -264,15 +264,22 @@ impl ReloadManager {
             .map(|(schema, bytes)| (*schema, bytes.as_slice()))
             .unwrap_or((0, &[]));
         let result = window
-            .update(cx, |_, window, cx| unsafe {
-                (api.activate)(
-                    window as *mut Window as *mut _,
-                    cx as *mut App as *mut _,
-                    &host_api,
-                    bytes.as_ptr(),
-                    bytes.len(),
-                    schema,
-                )
+            .update(cx, |_, window, cx| {
+                let result = unsafe {
+                    (api.activate)(
+                        window as *mut Window as *mut _,
+                        cx as *mut App as *mut _,
+                        &host_api,
+                        bytes.as_ptr(),
+                        bytes.len(),
+                        schema,
+                    )
+                };
+                // GPUI retains views between frames and replays what they drew.
+                // Draw the next frame from scratch so nothing the previous UI
+                // generation recorded is replayed under the new one.
+                window.refresh();
+                result
             })
             .context("update host window while activating UI")?;
         match result {

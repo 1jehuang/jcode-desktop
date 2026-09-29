@@ -268,8 +268,6 @@ def main(argv=None):
         if policy.git("rev-parse", "HEAD") != sha:
             raise ValueError("Check out the reviewed release source before running preflight tests")
         subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], cwd=ROOT, check=True)
-        subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "scripts",
-                        "-p", "test_prepare_freebsd_gpui.py", "-v"], cwd=ROOT, check=True)
         # Lightweight tag creation is atomic. Existing refs cause a safe error.
         # Both GITHUB_TOKEN and PAT are supported by monitor's discovery window.
         github.api("git/refs", {"ref": f"refs/tags/{tag}", "sha": sha})

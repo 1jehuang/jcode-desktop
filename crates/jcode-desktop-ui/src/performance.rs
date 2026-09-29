@@ -353,6 +353,7 @@ mod tests {
         let mut historical_present = hdrhistogram::Histogram::<u64>::new(3).unwrap();
         historical_present.record(100_000_000).unwrap();
         let frame_baseline = FrameDurationSnapshot {
+            dirty_to_present_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
             draw_duration_histogram: historical_draw,
             present_interval_histogram: historical_present,
         };
@@ -419,6 +420,7 @@ mod tests {
             Instant::now().elapsed().as_nanos()
         ));
         let frame = FrameDurationSnapshot {
+            dirty_to_present_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
             draw_duration_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
             present_interval_histogram: hdrhistogram::Histogram::<u64>::new(3).unwrap(),
         };

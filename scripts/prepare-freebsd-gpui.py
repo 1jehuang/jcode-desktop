@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Prepare a fresh Cargo home for the pinned GPUI FreeBSD compatibility fix.
 
+Only for rebuilding releases pinned to the 1jehuang/zed GPUI fork (0.4.0 and
+earlier, as the recovery workflows do). Current Desktop pins 1jehuang/gpui,
+which builds on FreeBSD without this overlay.
+
 Run on FreeBSD before the unchanged, tagged package-freebsd.sh. Export CARGO_HOME
 to the same --cargo-home path for packaging. The path must not exist, including
 on retries. No shared Cargo cache or Desktop source/lockfile is modified.
