@@ -109,6 +109,115 @@ impl DiffReview {
     }
 }
 
+/// One visible row of the lazygit-style file tree.
+#[derive(Debug, PartialEq)]
+struct TreeRow {
+    depth: usize,
+    label: String,
+    /// Collapse key for directory rows.
+    dir: Option<String>,
+    /// Index into the review's files for file rows.
+    file: Option<usize>,
+}
+
+#[derive(Default)]
+struct TreeNode {
+    dirs: std::collections::BTreeMap<String, TreeNode>,
+    files: Vec<(String, usize)>,
+}
+
+/// Builds the visible tree: the shared directory prefix becomes a root label,
+/// single-child directory chains are compressed, and directories sort first.
+fn tree_rows(files: &[FileDiff], collapsed: &HashSet<String>) -> (String, Vec<TreeRow>) {
+    let split: Vec<Vec<&str>> = files
+        .iter()
+        .map(|file| file.path.split('/').filter(|p| !p.is_empty()).collect())
+        .collect();
+    let mut prefix = split
+        .first()
+        .map(|parts| parts[..parts.len().saturating_sub(1)].to_vec())
+        .unwrap_or_default();
+    for parts in &split {
+        let dirs = &parts[..parts.len().saturating_sub(1)];
+        let shared = prefix.iter().zip(dirs).take_while(|(a, b)| a == b).count();
+        prefix.truncate(shared);
+    }
+    let mut root = TreeNode::default();
+    for (index, parts) in split.iter().enumerate() {
+        let rest = &parts[prefix.len()..];
+        let Some((name, dirs)) = rest.split_last() else {
+            continue;
+        };
+        let mut node = &mut root;
+        for dir in dirs {
+            node = node.dirs.entry((*dir).to_owned()).or_default();
+        }
+        node.files.push(((*name).to_owned(), index));
+    }
+    fn flatten(
+        node: &TreeNode,
+        base: &str,
+        depth: usize,
+        collapsed: &HashSet<String>,
+        rows: &mut Vec<TreeRow>,
+    ) {
+        for (name, mut child) in &node.dirs {
+            let mut label = name.clone();
+            let mut full = if base.is_empty() {
+                name.clone()
+            } else {
+                format!("{base}/{name}")
+            };
+            while child.files.is_empty() && child.dirs.len() == 1 {
+                let (next, grandchild) = child.dirs.iter().next().unwrap();
+                label = format!("{label}/{next}");
+                full = format!("{full}/{next}");
+                child = grandchild;
+            }
+            rows.push(TreeRow {
+                depth,
+                label,
+                dir: Some(full.clone()),
+                file: None,
+            });
+            if !collapsed.contains(&full) {
+                flatten(child, &full, depth + 1, collapsed, rows);
+            }
+        }
+        let mut files: Vec<_> = node.files.iter().collect();
+        files.sort();
+        for (name, index) in files {
+            rows.push(TreeRow {
+                depth,
+                label: name.clone(),
+                dir: None,
+                file: Some(*index),
+            });
+        }
+    }
+    let mut rows = Vec::new();
+    flatten(&root, "", 0, collapsed, &mut rows);
+    let absolute = files.iter().all(|file| file.path.starts_with('/'));
+    let mut label = format!("{}{}", if absolute { "/" } else { "" }, prefix.join("/"));
+    if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
+        let home = home.trim_end_matches('/');
+        if !home.is_empty() && (label == home || label.starts_with(&format!("{home}/"))) {
+            label = format!("~{}", &label[home.len()..]);
+        }
+    }
+    (label, rows)
+}
+
+fn status_letter(kind: &str) -> (&'static str, gpui::Rgba) {
+    let theme = Theme::global();
+    match kind {
+        "Added" => ("A", theme.OK),
+        "Deleted" => ("D", theme.ERROR),
+        "Renamed" => ("R", theme.ACCENT),
+        _ => ("M", theme.WARN),
+    }
+}
+
 fn counts(file: &FileDiff) -> gpui::Div {
     div()
         .flex()
@@ -423,91 +532,104 @@ impl Panel {
         let review = self.diff_review.as_ref()?;
         let file = &review.files[review.selected];
         let theme = Theme::global();
+        let (root_label, rows) = tree_rows(&review.files, &review.collapsed);
+        let mono = theme.FONT_MONO.clone();
         let mut tree = div()
             .id("diff-tree-scroll")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .py_2();
-        let mut entries: Vec<_> = review.files.iter().enumerate().collect();
-        entries.sort_by(|a, b| a.1.path.cmp(&b.1.path));
-        let mut seen = HashSet::new();
-        for (index, entry) in entries {
-            let parts: Vec<_> = entry
-                .path
-                .split('/')
-                .filter(|part| !part.is_empty())
-                .collect();
-            let mut hidden = false;
-            for depth in 0..parts.len().saturating_sub(1) {
-                let path = parts[..=depth].join("/");
-                if seen.insert(path.clone()) {
-                    let collapsed = review.collapsed.contains(&path);
-                    let selector = format!("diff-directory-{path}");
-                    tree = tree.child(
-                        div()
-                            .id(SharedString::from(format!("diff-dir-{path}")))
-                            .debug_selector(move || selector.clone().into())
-                            .pl(px(10. + depth as f32 * 12.))
-                            .pr_2()
-                            .py_1()
-                            .text_size(px(11.))
-                            .text_color(theme.TEXT_DIM)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.QUOTE_BG))
-                            .child(format!(
-                                "{} {}",
-                                if collapsed { "▸" } else { "▾" },
-                                parts[depth]
-                            ))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    if let Some(review) = &mut this.diff_review {
-                                        if !review.collapsed.remove(&path) {
-                                            review.collapsed.insert(path.clone());
-                                        }
+            .py_1()
+            .font_family(mono.clone())
+            .text_size(px(12.))
+            .line_height(px(22.));
+        let base = usize::from(!root_label.is_empty());
+        if !root_label.is_empty() {
+            tree = tree.child(
+                div()
+                    .px_2()
+                    .truncate()
+                    .text_color(theme.TEXT_DIM)
+                    .child(root_label),
+            );
+        }
+        for row in rows {
+            let indent = px(8. + (row.depth + base) as f32 * 14.);
+            if let Some(path) = row.dir {
+                let collapsed = review.collapsed.contains(&path);
+                let selector = format!("diff-directory-{path}");
+                tree = tree.child(
+                    div()
+                        .id(SharedString::from(format!("diff-dir-{path}")))
+                        .debug_selector(move || selector.clone().into())
+                        .mx_1()
+                        .pl(indent)
+                        .pr_2()
+                        .rounded_full()
+                        .flex()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.QUOTE_BG))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(10.))
+                                .text_color(theme.TEXT_FAINT)
+                                .child(if collapsed { "▸" } else { "▾" }),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.TEXT_DIM)
+                                .child(row.label),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                if let Some(review) = &mut this.diff_review {
+                                    if !review.collapsed.remove(&path) {
+                                        review.collapsed.insert(path.clone());
                                     }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }),
-                            ),
-                    );
-                }
-                if review.collapsed.contains(&parts[..=depth].join("/")) {
-                    hidden = true;
-                    break;
-                }
-            }
-            if hidden {
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        ),
+                );
                 continue;
             }
+            let Some(index) = row.file else { continue };
+            let entry = &review.files[index];
+            let (letter, color) = status_letter(&entry.kind);
+            let selected = index == review.selected;
             tree = tree.child(
                 div()
                     .id(("diff-tree-file", index))
                     .debug_selector(move || format!("diff-tree-file-{index}").into())
-                    .pl(px(12. + parts.len().saturating_sub(1) as f32 * 12.))
+                    .mx_1()
+                    .pl(indent)
                     .pr_2()
-                    .py_1p5()
+                    .rounded_full()
                     .flex()
-                    .gap_2()
+                    .gap_1p5()
                     .items_center()
-                    .text_size(px(11.))
                     .cursor_pointer()
-                    .when(index == review.selected, |s| s.bg(theme.ACCENT_DIM))
-                    .hover(|s| s.bg(theme.QUOTE_BG))
+                    .when(selected, |s| s.bg(theme.ACCENT_DIM))
+                    .when(!selected, |s| s.hover(|s| s.bg(theme.QUOTE_BG)))
+                    .child(div().flex_none().w(px(10.)).text_color(color).child(letter))
                     .child(
                         div()
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_color(theme.TEXT)
-                            .child(parts.last().copied().unwrap_or(&entry.path).to_owned()),
-                    )
-                    .child(
-                        div()
-                            .text_color(theme.TEXT_FAINT)
-                            .child(entry.kind.chars().next().unwrap_or('M').to_string()),
+                            .text_color(if selected {
+                                theme.TEXT
+                            } else {
+                                theme.CODE_TEXT
+                            })
+                            .when(selected, |s| s.font_weight(FontWeight::MEDIUM))
+                            .child(row.label),
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -521,6 +643,7 @@ impl Panel {
                     ),
             );
         }
+        let position = format!("{} of {}", review.selected + 1, review.files.len());
         let panel = cx.entity().downgrade();
         let diff_list = list(review.scroll.clone(), move |index, _, cx| {
             let Some(panel) = panel.upgrade() else {
@@ -576,10 +699,14 @@ impl Panel {
                         this.close_diff_review(window, cx); cx.stop_propagation();
                     }))))
             .child(div().flex_1().min_h_0().flex()
-                .child(div().debug_selector(|| "diff-file-tree".into()).w(relative(0.25)).min_w(px(110.)).max_w(px(240.))
-                    .flex_none().flex().flex_col().border_r_1().border_color(theme.CODE_BORDER).bg(theme.HEADER_BG)
-                    .child(div().p_2().text_size(px(10.)).text_color(theme.TEXT_DIM).child(format!("FILES IN THIS TOOL · {}", review.files.len())))
-                    .child(tree))
+                .child(div().debug_selector(|| "diff-file-tree".into()).w(relative(0.25)).min_w(px(160.)).max_w(px(300.))
+                    .flex_none().flex().flex_col().m_2().mr_0().rounded_xl().border_1().border_color(theme.CODE_BORDER).bg(theme.CODE_BG).overflow_hidden()
+                    .child(div().flex_none().flex().items_center().gap_2().px_3().pt_2().pb_1()
+                        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.TEXT).child("Files"))
+                        .child(div().text_size(px(11.)).text_color(theme.TEXT_FAINT).child(review.files.len().to_string())))
+                    .child(tree)
+                    .child(div().flex_none().flex().justify_end().px_3().py_1p5().font_family(mono)
+                        .text_size(px(11.)).text_color(theme.TEXT_FAINT).child(position)))
                 .child(div().min_w_0().flex_1().flex().flex_col()
                     .when(review.rich.is_none(), |el| el.child(div().flex_none().p_3().flex().flex_col().gap_2().border_b_1().border_color(theme.CODE_BORDER)
                         .child(div().debug_selector(|| "diff-selected-path".into()).text_size(px(12.)).font_family(theme.FONT_MONO).text_color(theme.TEXT).child(file.path.clone()))
@@ -898,6 +1025,38 @@ mod tests {
         vcx.simulate_keystrokes("escape");
         vcx.run_until_parked();
         assert!(panel.read_with(vcx, |panel, _| panel.diff_review.is_none()));
+    }
+
+    #[test]
+    fn tree_rows_strip_shared_prefix_and_compress_chains() {
+        let file = |path: &str| FileDiff {
+            path: path.into(),
+            previous_path: None,
+            kind: "Modified".into(),
+            lines: Vec::new(),
+        };
+        let files = vec![
+            file("/repo/crates/api/src/requests.rs"),
+            file("/repo/crates/api/src/tests/coverage.rs"),
+            file("/repo/sdk/ts/src/client.ts"),
+        ];
+        let (root, rows) = tree_rows(&files, &HashSet::new());
+        assert!(root.ends_with("/repo"));
+        let labels: Vec<_> = rows.iter().map(|r| (r.depth, r.label.as_str())).collect();
+        assert_eq!(
+            labels,
+            vec![
+                (0, "crates/api/src"),
+                (1, "tests"),
+                (2, "coverage.rs"),
+                (1, "requests.rs"),
+                (0, "sdk/ts/src"),
+                (1, "client.ts"),
+            ]
+        );
+        let collapsed = HashSet::from(["crates/api/src".to_owned()]);
+        let (_, rows) = tree_rows(&files, &collapsed);
+        assert_eq!(rows.len(), 3);
     }
 
     #[gpui::test]
