@@ -115,13 +115,11 @@ fn spawn_voice_window() -> bool {
 /// Keep this host's hot-reload choice. Never forward launch or voice flags.
 #[cfg(target_os = "linux")]
 fn spawn_args(own: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    // Its own process: the hold flag and working directory must not be
-    // forwarded to, and dropped by, a shared single-panel host.
-    let mut args: Vec<std::ffi::OsString> = vec![
-        "--single-panel".into(),
-        "--new-process".into(),
-        SPAWNED_HOLD_FLAG.into(),
-    ];
+    // Joins the shared single-panel host. The hold flag and working directory
+    // travel with the forwarded per-window launch, so every voice window runs
+    // (and hot reloads) in one process instead of accumulating stale hosts.
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["--single-panel".into(), SPAWNED_HOLD_FLAG.into()];
     args.extend(own.filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"));
     args
 }
@@ -221,7 +219,9 @@ impl Workspace {
             crate::config::get().voice.global_devices.len()
         );
         let mut listener = listener;
-        if std::env::args_os().any(|arg| arg == SPAWNED_HOLD_FLAG) {
+        // Per-window launch, not process args: voice windows join the shared
+        // single-panel host, whose process args belong to its first window.
+        if self.launch.args.iter().any(|arg| arg == SPAWNED_HOLD_FLAG) {
             // Shift+Copilot opened this window. Record the hold that is
             // still down, so the opener's key-up finishes this transcript.
             listener.adopt_held_key();
@@ -681,7 +681,6 @@ mod spawn_tests {
             spawn_args(own.into_iter()),
             [
                 "--single-panel",
-                "--new-process",
                 SPAWNED_HOLD_FLAG,
                 "--hot-reload"
             ]

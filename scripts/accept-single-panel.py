@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Accept isolated (--new-process) single-panel windows on private Xvfb.
+"""Accept a single-panel window beside normal and no-sidebar instances on private Xvfb.
 
-Default single-panel launches share one host; see accept-shared-single-panel.py.
+Multiple single-panel windows share one host; see accept-shared-single-panel.py.
 
 Never builds, reloads, connects to a daemon, or sends input to the live desktop.
 The new output directory retains screenshots, state snapshots, logs and results.
@@ -199,12 +199,11 @@ def main():
             protected = {}
             # The workspace shortcut must create the main window even when
             # standalone/sidebar-free windows already exist.
-            for name, mode in (("single-a", ["--single-panel", "--new-process"]),
-                               ("single-b", ["--single-panel", "--new-process"]),
+            for name, mode in (("single", ["--single-panel"]),
                                ("no-sidebar", ["--no-sidebar"]), ("normal", [])):
                 child_env = dict(env, JCODE_DESKTOP_STATE=str(root / (name + ".state")))
                 process = spawn(name, [str(binary), "--no-hot-reload", *mode], child_env)
-                suffix = f"-single-panel-{process.pid}" if name.startswith("single") else (
+                suffix = "-single-panel" if name == "single" else (
                     "-no-sidebar" if name == "no-sidebar" else "")
                 path = root / "runtime" / ("jcode-desktop" + suffix + ".sock")
                 wait_for(lambda: socket_ready(path), name + " socket", processes)
@@ -227,15 +226,15 @@ def main():
                 protected[name] = invariant(state)
                 report["instances"][name] = {"pid": process.pid, "window": ids[0],
                                              "socket": path.name, "state": state}
-            assert len({app["process"].pid for app in apps.values()}) == 4
-            assert len({app["window"] for app in apps.values()}) == 4
-            assert len({app["inode"] for app in apps.values()}) == 4
-            report["checks"].append("four independent PIDs, native windows and listening sockets")
+            assert len({app["process"].pid for app in apps.values()}) == 3
+            assert len({app["window"] for app in apps.values()}) == 3
+            assert len({app["inode"] for app in apps.values()}) == 3
+            report["checks"].append("three independent PIDs, native windows and listening sockets")
             report["checks"].append("default launch opens workspace with auxiliary windows already running")
             # Exercise the same no-mode launch used by the workspace shortcut.
             # A secondary process must exit, focus the original workspace, and
             # leave every existing window, socket and workspace intact.
-            for previous in ("single-a", "single-b", "no-sidebar", "normal"):
+            for previous in ("single", "no-sidebar", "normal"):
                 focus(previous)
                 secondary = subprocess.run([str(binary), "--no-hot-reload"], env=env,
                                            cwd=root, capture_output=True, text=True, timeout=10)
@@ -244,7 +243,7 @@ def main():
                          "default launch focuses workspace from " + previous, processes)
                 unchanged(protected)
                 report["checks"].append("default launch refocuses existing workspace from " + previous)
-            for name in ("single-a", "single-b"):
+            for name in ("single",):
                 focus(name)
                 for key in WORKSPACE_KEYS:
                     native("key", "--clearmodifiers", key)
@@ -256,22 +255,20 @@ def main():
                 subprocess.run(["import", "-window", apps[name]["window"],
                                 "png:" + str(output / (name + ".png"))], env=env, check=True, timeout=20)
                 report["checks"].append({"window": name, "disabled_workspace_keys": WORKSPACE_KEYS})
-            focus("single-a")
-            native("key", "--clearmodifiers", "super+q")
-            closing = apps["single-a"]
-            wait_for(lambda: closing["process"].poll() is not None, "Super+Q process exit",
-                     [app["process"] for name, app in apps.items() if name != "single-a"])
-            assert closing["process"].returncode == 0, closing["process"].returncode
-            assert not windows(closing["process"].pid), "closed window is still visible"
-            del apps["single-a"]
-            del protected["single-a"]
-            unchanged(protected)
-            focus("single-b")
+            focus("single")
             native("key", "--clearmodifiers", "ctrl+b")
             time.sleep(.2)
-            assert_single(get_state("single-b"))
+            assert_single(get_state("single"))
+            native("key", "--clearmodifiers", "super+q")
+            closing = apps["single"]
+            wait_for(lambda: closing["process"].poll() is not None, "Super+Q host exit",
+                     [app["process"] for name, app in apps.items() if name != "single"])
+            assert closing["process"].returncode == 0, closing["process"].returncode
+            assert not windows(closing["process"].pid), "closed window is still visible"
+            del apps["single"]
+            del protected["single"]
             unchanged(protected)
-            report["checks"].append("Super+Q closes only its standalone process/window; all other instances preserved")
+            report["checks"].append("Super+Q closes the standalone window and its host; all other instances preserved")
             assert not closing["socket"].exists(), "closed standalone socket was not removed"
             report["checks"].append("closed standalone socket removed")
             report["passed"] = True
@@ -295,7 +292,7 @@ def main():
                 shutil.copy2(path, output / path.name)
             shutil.copytree(root / "logs", output / "app-logs", dirs_exist_ok=True)
             (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
-    print("PASS: independent standalone windows. Evidence: " + str(output))
+    print("PASS: standalone window beside workspace instances. Evidence: " + str(output))
 
 
 if __name__ == "__main__":

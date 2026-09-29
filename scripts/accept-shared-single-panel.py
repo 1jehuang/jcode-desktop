@@ -151,11 +151,14 @@ def main():
                 resume_open.append('"resume_open":true' in text.replace(" ", ""))
             report["resume_open_by_window"] = resume_open
 
-            isolated = launch("isolated", ["--single-panel", "--new-process"])
-            wait_for(lambda: len(windows(isolated.pid)) == 1, "isolated window", processes)
-            assert isolated.pid != host.pid
-            assert (root / "runtime" / f"jcode-desktop-single-panel-{isolated.pid}.sock").exists()
-            report["checks"].append("--new-process keeps a separate PID and per-PID socket")
+            # Legacy shortcuts may still pass --new-process. It is ignored:
+            # the window joins the shared host instead of a stray process.
+            legacy = launch("legacy", ["--single-panel", "--new-process"])
+            processes.remove(legacy)
+            assert legacy.wait(timeout=20) == 0, "legacy --new-process launch did not forward"
+            wait_for(lambda: len(windows(host.pid)) == args.windows + 1, "legacy window", [host])
+            assert not list((root / "runtime").glob("jcode-desktop-single-panel-*.sock"))
+            report["checks"].append("--new-process is ignored and joins the shared host")
 
             for index, window in enumerate(ids[:2]):
                 subprocess.run(["import", "-window", window, "png:" + str(output / f"shared-{index}.png")],
@@ -165,7 +168,7 @@ def main():
             first = ids[0]
             native("windowactivate", "--sync", first)
             native("key", "--clearmodifiers", "super+q")
-            wait_for(lambda: len(windows(host.pid)) == args.windows - 1, "one window closed", [host])
+            wait_for(lambda: len(windows(host.pid)) == args.windows, "one window closed", [host])
             assert host.poll() is None, "shared host exited with windows still open"
             assert socket_ready(shared_socket), "shared socket went away"
             report["checks"].append("Super+Q closes one shared window; host and other windows keep running")
@@ -174,7 +177,7 @@ def main():
             late = launch("shared-late", ["--single-panel"])
             processes.remove(late)
             assert late.wait(timeout=15) == 0
-            wait_for(lambda: len(windows(host.pid)) == args.windows, "late window", [host])
+            wait_for(lambda: len(windows(host.pid)) == args.windows + 1, "late window", [host])
             report["checks"].append("launch after a close joins the same host")
 
             # Keep closing until no window remains.

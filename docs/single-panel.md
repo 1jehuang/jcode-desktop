@@ -16,13 +16,12 @@ that host. Later launches forward their arguments (`--resume`,
 keeps its own launch settings, chat, and state. Sharing one GPU context, one UI
 library, and one runtime saves roughly 60 to 150 MiB for every extra window.
 
-```sh
-jcode-desktop --single-panel --new-process
-```
-
-`--new-process` opts out and starts an isolated process, as every
-single-panel launch did before. Use it to test a risky UI build without
-affecting the other windows, or to isolate a window that is doing heavy work.
+`--new-process` used to start an isolated host per window. It is now accepted
+for existing shortcuts but ignored. Isolated hosts accumulated for days, never
+received Ctrl+R hot reloads from the shared host, and could not be reached by
+`desktop_selfdev`, so fixes silently failed to land in them. Voice windows
+opened by Shift+Copilot also join the shared host. Use the private Xvfb
+harnesses to try a risky UI build instead.
 
 This is different from `--no-sidebar` (also called `--workspace`), which keeps
 the workspace and its navigation while initially hiding the sidebar. Normal
@@ -75,17 +74,16 @@ python3 scripts/verify-resume-panel.py target/resume-panel.png \
 - **Ctrl+R** and `/update` in a source hot-reload build rebuild the shared host
   once and reload **every** single-panel window, preserving each chat. The
   reload is all or nothing: if any window rejects the new UI, every window is
-  restored to the previous one. An isolated `--new-process` window reloads
-  alone. `--single-panel --reload-ui` and
+  restored to the previous one. `desktop_selfdev` reaches this host as
+  `instance: single-panel`. `--single-panel --reload-ui` and
   `--single-panel --toggle-voice` are rejected because they cannot identify
   which existing standalone window to target.
 - Existing workspace shortcuts for sidebar toggling, overview, creating or
   moving panels, changing strips, and panel widths are disabled. This mode
   cannot be converted into a workspace with a keyboard shortcut.
 
-On Unix, the shared host owns `$XDG_RUNTIME_DIR/jcode-desktop-single-panel.sock`
-and an isolated `--new-process` window owns
-`jcode-desktop-single-panel-<pid>.sock`. Normal and no-sidebar instances retain
+On Unix, the shared host owns `$XDG_RUNTIME_DIR/jcode-desktop-single-panel.sock`.
+Normal and no-sidebar instances retain
 `jcode-desktop.sock` and `jcode-desktop-no-sidebar.sock`. Sockets are removed
 when their process closes normally. Do not use the normal instance socket to
 control an unrelated standalone window.
@@ -93,7 +91,7 @@ control an unrelated standalone window.
 Trade-offs of sharing: a crash or a hung UI thread affects every single-panel
 window at once (chat history is safe in the Jcode server, unsent drafts are
 not), and one very busy window can make the others less responsive. Use
-`--new-process` when that isolation matters.
+a normal or `--no-sidebar` window when that isolation matters.
 
 ## Shared host acceptance
 
@@ -103,16 +101,17 @@ python3 scripts/accept-shared-single-panel.py target/accept-shared-single-panel 
 ```
 
 It opens several single-panel windows on a private Xvfb, checks they share one
-PID and socket while each keeps its own state file, that `--new-process` stays
-separate, that Super+Q closes one window without stopping the host, that a
+PID and socket while each keeps its own state file, that a legacy
+`--new-process` launch joins the same host, that Super+Q closes one window
+without stopping the host, that a
 later launch joins the same host, and that the host exits and removes its
 socket after the last window closes. It records the host's PSS after each
 window in `results.json`.
 
-## Isolated acceptance
+## Beside workspace instances
 
-This covers `--new-process` windows. Use an already-built host containing the
-current linked UI:
+This checks a single-panel window beside normal and `--no-sidebar` instances.
+Use an already-built host containing the current linked UI:
 
 ```sh
 python3 scripts/accept-single-panel.py target/accept-single-panel \

@@ -143,13 +143,10 @@ mod tests {
             socket_path(&["--single-panel".into()]),
             parent.join(format!("{prefix}jcode-desktop-single-panel.sock"))
         );
-        // An isolated window still owns a per-process socket.
+        // `--new-process` is ignored: the window still reloads with the host.
         assert_eq!(
             socket_path(&["--single-panel".into(), "--new-process".into()]),
-            parent.join(format!(
-                "{prefix}jcode-desktop-single-panel-{}.sock",
-                std::process::id()
-            ))
+            parent.join(format!("{prefix}jcode-desktop-single-panel.sock"))
         );
     }
 

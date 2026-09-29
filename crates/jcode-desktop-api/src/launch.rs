@@ -49,18 +49,14 @@ impl LaunchMode {
         }
     }
 
-    /// Single-panel windows share one host process unless `--new-process`
-    /// asks for an isolated one. The shared host owns a stable socket name
-    /// that later launches forward their own window request to.
+    /// Single-panel windows always share one host process. The shared host
+    /// owns a stable socket name that later launches forward their own window
+    /// request to. `--new-process` is accepted for old shortcuts but ignored:
+    /// isolated hosts piled up, never received hot reloads and could not be
+    /// reached by self-development tooling.
     pub fn shared_single_panel(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> bool {
-        let mut single_panel = false;
-        for arg in args {
-            if arg.as_ref() == "--new-process" {
-                return false;
-            }
-            single_panel |= arg.as_ref() == "--single-panel" || arg.as_ref() == "--resume";
-        }
-        single_panel
+        args.into_iter()
+            .any(|arg| arg.as_ref() == "--single-panel" || arg.as_ref() == "--resume")
     }
 
     /// Instance socket identity for a launch, including the shared host.
@@ -142,14 +138,15 @@ mod tests {
     }
 
     #[test]
-    fn single_panel_windows_share_a_host_unless_isolated() {
+    fn single_panel_windows_always_share_a_host() {
         assert!(LaunchMode::shared_single_panel(["--single-panel"]));
         assert!(LaunchMode::shared_single_panel(["--resume"]));
-        assert!(!LaunchMode::shared_single_panel([
+        // `--new-process` is ignored rather than spawning an isolated host.
+        assert!(LaunchMode::shared_single_panel([
             "--single-panel",
             "--new-process"
         ]));
-        assert!(!LaunchMode::shared_single_panel([
+        assert!(LaunchMode::shared_single_panel([
             "--new-process",
             "--single-panel"
         ]));
@@ -161,7 +158,7 @@ mod tests {
         );
         assert_eq!(
             LaunchMode::instance_name_for_args(["--single-panel", "--new-process"], 7).as_deref(),
-            Some("single-panel-7")
+            Some(SHARED_SINGLE_PANEL)
         );
         assert_eq!(
             LaunchMode::instance_name_for_args(["--workspace"], 7).as_deref(),
