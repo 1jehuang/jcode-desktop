@@ -853,6 +853,107 @@ else:
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The bundled GitHub applet claims GitHub MCP server calls and renders
+    /// them as tool cards from the call's own JSON output, never from bash.
+    #[test]
+    fn bundled_github_applet_renders_mcp_tool_cards() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../applets/github");
+        let applet = discover(dir.parent().unwrap())
+            .into_iter()
+            .find(|a| a.id == "github")
+            .expect("bundled github applet");
+        let runtime = Runtime::default();
+        runtime.start(&applet).unwrap();
+        let wait = |what: &str, check: &dyn Fn(&Runtime) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while std::time::Instant::now() < deadline {
+                runtime.pump();
+                if check(&runtime) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("timed out waiting for {what}");
+        };
+        wait("register", &|r| {
+            r.host.borrow().manifest("github").is_some()
+        });
+        {
+            let host = runtime.host.borrow();
+            assert_eq!(
+                host.tool_card_claims("mcp__github__pull_request_read", None),
+                vec!["github"]
+            );
+            assert!(host.tool_card_claims("bash", None).is_empty());
+        }
+
+        let pr = json!({
+            "number": 7, "title": "Add pills", "state": "open", "draft": false,
+            "merged": false, "body": "**Hi**", "html_url": "https://github.com/acme/app/pull/7",
+            "user": {"login": "ana"}, "head": {"ref": "pills"}, "base": {"ref": "main"},
+            "additions": 3, "deletions": 1, "changed_files": 1, "mergeable_state": "clean",
+            "labels": [{"name": "ui"}]
+        });
+        let issues = json!({"issues": [
+            {"number": 9, "title": "Crash on start", "state": "OPEN",
+             "html_url": "https://github.com/acme/app/issues/9", "user": {"login": "bo"}}
+        ], "totalCount": 1});
+        let calls = [
+            (
+                "c-pr",
+                "pull_request_read",
+                json!({"method": "get", "owner": "acme", "repo": "app", "pullNumber": 7}),
+                pr.to_string(),
+            ),
+            (
+                "c-list",
+                "list_issues",
+                json!({"owner": "acme", "repo": "app"}),
+                issues.to_string(),
+            ),
+        ];
+        for (call_id, tool, input, output) in &calls {
+            runtime.notify_tool_call(jcode_applet_types::HostMessage::ToolCall {
+                session_id: "sess".into(),
+                call_id: (*call_id).into(),
+                tool: format!("mcp__github__{tool}"),
+                input: input.clone(),
+                output: Some(output.clone()),
+                error: None,
+                done: true,
+            });
+        }
+        let doc = |r: &Runtime, call: &str| {
+            r.host
+                .borrow()
+                .tool_card("sess", call)
+                .map(|m| serde_json::to_string(&m.instance.document).unwrap())
+                .unwrap_or_default()
+        };
+        wait("pr card", &|r| doc(r, "c-pr").contains("Add pills"));
+        wait("list card", &|r| {
+            doc(r, "c-list").contains("Crash on start")
+        });
+        let card = doc(&runtime, "c-pr");
+        for expected in [
+            "acme/app#7",
+            "pills → main",
+            "Open on GitHub",
+            "+3 −1 in 1 files",
+        ] {
+            assert!(card.contains(expected), "card lacks {expected}: {card}");
+        }
+        let host = runtime.host.borrow();
+        for call in ["c-pr", "c-list"] {
+            let mounted = host.tool_card("sess", call).unwrap();
+            assert!(
+                mounted.last_error.is_none(),
+                "provider documents must validate: {:?}",
+                mounted.last_error
+            );
+        }
+    }
+
     /// The bundled Sheets applet claims `mcp__sheets__*` calls and renders them
     /// as tool cards that pass host validation. A fake `gog` stands in for
     /// Google, so this runs offline.
@@ -901,7 +1002,9 @@ else:
             }
             panic!("timed out waiting for {what}");
         };
-        wait("register", &|r| r.host.borrow().manifest("sheets").is_some());
+        wait("register", &|r| {
+            r.host.borrow().manifest("sheets").is_some()
+        });
         assert_eq!(
             runtime
                 .host
@@ -931,7 +1034,12 @@ else:
         };
         wait("table card", &|r| doc(r).contains("Rhys Oxenham"));
         let card = doc(&runtime);
-        for expected in ["Jcode CRM · Contacts", "\"table\"", "Open in Sheets", "Accounts"] {
+        for expected in [
+            "Jcode CRM · Contacts",
+            "\"table\"",
+            "Open in Sheets",
+            "Accounts",
+        ] {
             assert!(card.contains(expected), "card lacks {expected}: {card}");
         }
         let host = runtime.host.borrow();

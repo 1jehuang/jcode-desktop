@@ -23,8 +23,8 @@ scripts/install-applet.sh gmail
 ```
 
 This copies the applet to `~/.jcode/applets/gmail`. Desktop starts it on launch (or on the next
-Ctrl+R) and adds a **Gmail** pill to the sidebar launcher row. The first launch asks you to approve
-its capabilities: `open_url`, `start_chat`.
+Ctrl+R). Open it with Super+Shift+G. The first launch asks you to approve its capabilities:
+`open_url`, `start_chat`.
 
 ## Test
 

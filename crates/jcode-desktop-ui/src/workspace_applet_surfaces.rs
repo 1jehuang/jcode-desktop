@@ -1,12 +1,11 @@
 //! Workspace placements for applets beyond panels and transcripts: the
-//! sidebar section with manifest launcher pills, corner overlays, the
+//! sidebar section for sidebar-placed cards, corner overlays, the
 //! capability consent prompt, applet toasts, and the applet settings list.
 use super::applets::SHOWCASE_ID;
 use super::*;
 use gpui::{ElementId, FontWeight};
 use jcode_applet_types::{
     Capability, Placement,
-    manifest::Trigger,
     placement::{Corner, Scope},
 };
 
@@ -45,33 +44,16 @@ impl Workspace {
             .collect()
     }
 
-    /// Launcher pills for manifests with a sidebar trigger, then compact
-    /// cards for sidebar-placed instances. `None` when there is nothing.
+    /// Compact cards for sidebar-placed instances. Manifest sidebar launchers
+    /// are not shown as pills: applets open from shortcuts and commands, not a
+    /// row of app names in the sidebar. `None` when there is nothing.
     pub(super) fn render_sidebar_applets(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let theme = Theme::global();
-        let launchers: Vec<(String, usize, String)> = cx
-            .try_global::<crate::applet_runtime::Runtime>()
-            .map(|runtime| {
-                let host = runtime.host.borrow();
-                host.launchers()
-                    .into_iter()
-                    .filter(|(_, _, launcher)| matches!(launcher.trigger, Trigger::Sidebar))
-                    .map(|(applet, index, _)| {
-                        let title = host
-                            .manifest(&applet)
-                            .map(|manifest| manifest.title.clone())
-                            .unwrap_or_else(|| applet.clone());
-                        (applet, index, title)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let instances = self.visible_applets(|p| matches!(p, Placement::Sidebar), cx);
-        if launchers.is_empty() && instances.is_empty() {
+        if instances.is_empty() {
             return None;
         }
         let selection = self.applet_selection(cx);
@@ -86,33 +68,6 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_2();
-        if !launchers.is_empty() {
-            let mut row = div().flex().flex_wrap().gap_1();
-            for (applet, index, title) in launchers {
-                let id = format!("applet-launcher:{applet}:{index}");
-                row = row.child(
-                    div()
-                        .id(ElementId::Name(id.into()))
-                        .debug_selector(|| "applet-launcher".into())
-                        .h(px(24.0))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .rounded_full()
-                        .cursor_pointer()
-                        .bg(theme.TOOL_BG)
-                        .text_size(px(11.0))
-                        .text_color(theme.TEXT_DIM)
-                        .hover(|el| el.bg(theme.PANEL_BG).text_color(theme.TEXT))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.fire_applet_launcher(&applet, index, window, cx);
-                        }))
-                        .child(title),
-                );
-            }
-            section = section.child(row);
-        }
         for instance in instances {
             if let Some(card) = crate::applet_surface::card(&instance, true, &selection, window, cx)
             {
@@ -398,7 +353,7 @@ impl Workspace {
                     .when(decided, |el| {
                         el.child(
                             div()
-                                .id(ElementId::Name(format!("applet-revoke:{id}").into()))
+                                .id(gpui::ElementId::Name(format!("applet-revoke:{id}").into()))
                                 .px_2()
                                 .rounded_full()
                                 .cursor_pointer()

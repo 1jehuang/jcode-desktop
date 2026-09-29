@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 
+import tool_cards
+
 APPLET_ID = os.environ.get("JCODE_APPLET_ID", "github")
 SCHEMA = os.environ.get("JCODE_APPLET_SCHEMA", "jcode.applet/1")
 REFRESH_SECONDS = 300
@@ -246,6 +248,7 @@ class App:
         self.confirm_close: str | None = None
         self._viewer: str | None = None
         self.lock = threading.RLock()
+        self.cards = tool_cards.Cards(send, APPLET_ID)
 
     def viewer(self) -> str:
         """The signed-in GitHub login, looked up once."""
@@ -544,7 +547,14 @@ class App:
 
     def handle(self, message: dict) -> None:
         kind = message.get("type")
-        if kind == "launch":
+        instance = str(message.get("instance") or "")
+        if kind == "tool_call":
+            self.cards.tool_call(message)
+        elif kind == "resync" and self.cards.owns(instance):
+            self.cards.mount(instance)
+        elif kind == "closed" and self.cards.owns(instance):
+            self.cards.closed(instance)
+        elif kind == "launch":
             with self.lock:
                 self.instance = message["instance"]
                 self.detail_url = None
@@ -646,6 +656,8 @@ MANIFEST = {
         {"trigger": "command", "label": "GitHub: issues and pull requests",
          "placement": {"kind": "panel", "open": "split"}},
     ],
+    # Cards for the GitHub MCP server's tool calls in chat transcripts.
+    "tool_cards": tool_cards.claims(),
     "capabilities": ["open_url", "clipboard", "start_chat"],
 }
 
