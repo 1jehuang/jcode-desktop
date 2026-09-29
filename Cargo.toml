@@ -77,6 +77,13 @@ debug = "line-tables-only"
 incremental = true
 codegen-units = 256
 
+# Non-workspace crates (registry, git, and the sibling Jcode path crates) carry
+# no debug info. Panic backtraces still resolve Desktop frames with line
+# numbers, while every rebuild writes and links far less DWARF. Measured on a
+# one-file UI edit: 10.7 s -> 4.6 s and ~0.8 GiB less linker RSS.
+[profile.dev.package."*"]
+debug = 0
+
 # Runtime-hot dependencies, selected from live `perf` profiles of the running
 # development app. Layout (taffy), GPUI itself, text shaping (cosmic-text,
 # swash, harfrust, zeno), the Wayland/Calloop event loop, and the renderer

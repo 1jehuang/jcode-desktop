@@ -50,6 +50,14 @@ fn rebuild_ui(force: bool) -> anyhow::Result<()> {
     // can give shared GPUI event types different Rust TypeIds, so native mouse
     // events silently fail their downcast across the plugin boundary.
     command.args(["build", "-p", "jcode-desktop", "-p", "jcode-desktop-ui"]);
+    // A hot reload only loads the UI cdylib, so relinking the host executable
+    // is wasted work (about 2.5 s and ~2 GiB of linker RSS per Ctrl+R).
+    // `--lib` keeps both packages selected, so feature resolution and GPUI
+    // TypeIds stay identical to the host's. Startup still builds both so a
+    // fresh launch picks up host changes.
+    if force {
+        command.arg("--lib");
+    }
     // A release UI build saturates every core. At equal priority it starved
     // this very process's UI thread, so the app visibly lagged while its own
     // reload compiled. Children inherit the lowered priority.
