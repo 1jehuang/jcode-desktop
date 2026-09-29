@@ -2455,6 +2455,10 @@ impl Panel {
                 self.streaming_text.push_str(text);
             }
             ApiEvent::ReasoningDelta { text, .. } => {
+                // Thinking that resumes after answer text is a new phase. Settle
+                // the text first so the thought paints below it instead of
+                // merging into the earlier thinking block above the text.
+                self.flush_streaming();
                 self.streaming_reasoning.push_str(text);
             }
             ApiEvent::ReasoningDone { .. } => {
@@ -6555,6 +6559,75 @@ mod tests {
             (4, Item::Reasoning(text))
                 if text == "first thought\n\nsecond thought\n\nlive thought"
         ));
+    }
+
+    #[gpui::test]
+    fn reasoning_after_streamed_text_starts_a_new_block_below_it(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("session-a", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(0))
+            .unwrap();
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            let session_id = "session-a".to_string();
+            for event in [
+                ApiEvent::ReasoningDelta {
+                    session_id: session_id.clone(),
+                    text: "first thought".into(),
+                },
+                ApiEvent::TextDelta {
+                    session_id: session_id.clone(),
+                    text: "partial answer".into(),
+                    message_id: None,
+                },
+                ApiEvent::ReasoningDelta {
+                    session_id: session_id.clone(),
+                    text: "second thought".into(),
+                },
+            ] {
+                panel.apply(&event, cx);
+            }
+            // While live, the new thought paints after the text, not above it.
+            let rows = panel.transcript_render_rows();
+            let kinds: Vec<_> = rows
+                .iter()
+                .map(|row| match &row.source {
+                    TranscriptRowSource::Settled(index) => &panel.items[*index],
+                    TranscriptRowSource::Owned(item) => item.as_ref(),
+                })
+                .map(|item| match item {
+                    Item::Reasoning(text) => format!("thinking:{text}"),
+                    Item::Assistant(text) => format!("text:{text}"),
+                    _ => "other".into(),
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    "thinking:first thought",
+                    "text:partial answer",
+                    "thinking:second thought"
+                ]
+            );
+
+            panel.apply(
+                &ApiEvent::ReasoningDone {
+                    session_id: session_id.clone(),
+                    duration_secs: None,
+                },
+                cx,
+            );
+            assert!(matches!(
+                panel.items.as_slice(),
+                [Item::Reasoning(a), Item::Assistant(b), Item::Reasoning(c)]
+                    if a == "first thought" && b == "partial answer" && c == "second thought"
+            ));
+        });
     }
 
     #[test]
