@@ -4,6 +4,9 @@ use super::*;
 
 const DRAFT: &str = "Keep my unfinished prompt";
 
+/// The active theme is process-wide, so tests that change it take turns.
+static THEME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The email flow is paused in the app but kept covered here.
 fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
     setup_with_email(cx, true)
@@ -284,6 +287,7 @@ fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppCont
 fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
     cx: &mut gpui::TestAppContext,
 ) {
+    let _theme = THEME.lock().unwrap_or_else(|e| e.into_inner());
     let (workspace, vcx) = setup(cx);
     let original = Theme::active_preset();
     let target = crate::theme::ThemePreset::ALL
@@ -306,7 +310,8 @@ fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
 }
 
 #[gpui::test]
-fn theme_hover_previews_until_a_theme_is_clicked(cx: &mut gpui::TestAppContext) {
+fn theme_hover_previews_before_and_after_a_click(cx: &mut gpui::TestAppContext) {
+    let _theme = THEME.lock().unwrap_or_else(|e| e.into_inner());
     let (workspace, vcx) = setup(cx);
     let original = Theme::active_preset();
     let all = crate::theme::ThemePreset::ALL;
@@ -329,10 +334,20 @@ fn theme_hover_previews_until_a_theme_is_clicked(cx: &mut gpui::TestAppContext) 
     hover(vcx, others[0]);
     assert_eq!(
         Theme::active_preset(),
-        all[others[1]],
-        "a click locks the choice"
+        all[others[0]],
+        "hover still previews after a click"
     );
-    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.theme_picked));
+    let heading = vcx.debug_bounds("account-sign-in-brand").unwrap();
+    vcx.simulate_mouse_move(heading.center(), None, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert_eq!(
+        Theme::active_preset(),
+        all[others[1]],
+        "leaving the swatches returns to the clicked theme"
+    );
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.account_sign_in.theme_picked, Some(all[others[1]]))
+    });
     Theme::select(original);
 }
 
@@ -822,15 +837,16 @@ fn logins_split_into_in_jcode_and_importable(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn paused_email_shows_only_continue_and_typing_forwards_to_a_panel(
-    cx: &mut gpui::TestAppContext,
-) {
+fn paused_email_shows_only_continue_and_typing_forwards_to_a_panel(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup_with_email(cx, false);
     assert!(vcx.debug_bounds("account-sign-in-field").is_none());
     assert!(vcx.debug_bounds("account-sign-in-primary").is_none());
-    assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-continue").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-panel").is_none());
+    assert!(vcx.debug_bounds("panel-build").is_none());
     workspace.read_with(vcx, |w, _| {
         assert!(!w.account_sign_in.choices().contains(&Choice::Field));
+        assert!(!w.account_sign_in.choices().contains(&Choice::Continue));
         assert!(!w.account_sign_in.can_dock());
     });
 
@@ -850,8 +866,11 @@ fn paused_email_shows_only_continue_and_typing_forwards_to_a_panel(
 }
 
 #[gpui::test]
-fn paused_email_continue_button_enters_workspace(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx) = setup_with_email(cx, false);
-    click(vcx, "account-sign-in-continue");
-    assert_draft_and_focus(&workspace, vcx);
+fn paused_email_enter_and_escape_enter_workspace(cx: &mut gpui::TestAppContext) {
+    for key in ["enter", "escape"] {
+        let (workspace, vcx) = setup_with_email(cx, false);
+        vcx.simulate_keystrokes(key);
+        vcx.run_until_parked();
+        assert_draft_and_focus(&workspace, vcx);
+    }
 }

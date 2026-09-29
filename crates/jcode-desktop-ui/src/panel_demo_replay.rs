@@ -65,6 +65,8 @@ impl Panel {
             cx,
         );
         panel.demo = true;
+        // Onboarding shows the conversation, not build metadata.
+        panel.show_build_footer = false;
         panel.history_loaded = true;
         panel.items.clear();
         panel.streaming_text.clear();

@@ -28,8 +28,9 @@ pub(super) struct State {
     detect_task: Option<gpui::Task<()>>,
     /// Outlives the page so Continue can close immediately while importing.
     import_task: Option<gpui::Task<()>>,
-    /// Hovering a swatch previews it until the user clicks one.
-    theme_picked: bool,
+    /// The clicked theme. Hovering other swatches still previews them, and
+    /// leaving the grid returns to this one.
+    theme_picked: Option<ThemePreset>,
     /// Live chat replay behind Continue. Dropped with the page.
     demo: Option<Demo>,
     /// When the sign-in tab left the right edge for the demo composer.
@@ -167,7 +168,9 @@ impl State {
             _ if self.connected || !self.email => {}
             _ => choices.extend([Choice::Field, Choice::Primary]),
         }
-        choices.push(Choice::Continue);
+        if self.shows_tab() {
+            choices.push(Choice::Continue);
+        }
         choices
     }
 
@@ -205,13 +208,10 @@ impl State {
         self.email && !self.connected && !matches!(self.stage, Stage::Complete { .. })
     }
 
-    /// The tab shrinks to a single Continue pill without the email field.
-    fn tab_width(&self) -> f32 {
-        if self.email || self.connected {
-            TAB_WIDTH
-        } else {
-            CONTINUE_TAB_WIDTH
-        }
+    /// Without email sign-in there is nothing to put in the tab. Typing,
+    /// Enter or Escape continue instead.
+    fn shows_tab(&self) -> bool {
+        self.email || self.connected
     }
 
     fn primary_label(&self) -> &'static str {
@@ -300,12 +300,17 @@ impl Workspace {
     }
 
     fn pick_account_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
-        self.account_sign_in.theme_picked = true;
+        self.account_sign_in.theme_picked = Some(preset);
         self.select_theme(preset, cx);
     }
 
     fn hover_account_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
-        if !self.account_sign_in.theme_picked {
+        self.select_theme(preset, cx);
+    }
+
+    /// Back to the clicked theme once the pointer leaves the swatches.
+    fn restore_account_theme(&mut self, cx: &mut Context<Self>) {
+        if let Some(preset) = self.account_sign_in.theme_picked {
             self.select_theme(preset, cx);
         }
     }
@@ -444,6 +449,7 @@ impl Workspace {
                 "Could not save the welcome preference. Sign-in may be offered next launch.".into();
         }
         self.account_sign_in.visible = false;
+        self.restore_account_theme(cx);
         self.account_sign_in.task = None;
         self.account_sign_in.detect_task = None;
         self.account_sign_in.demo = None;
@@ -826,19 +832,26 @@ impl Workspace {
         let info = div()
             .id("account-sign-in-card")
             .debug_selector(|| "account-sign-in-card".into())
-            .flex_1()
+            // The left column keeps its natural width (never more than half),
+            // so the live transcript gets whatever space remains.
+            .when(narrow, |el| el.flex_1())
+            .when(!narrow, |el| {
+                el.flex_none()
+                    .w(px(LEFT_COLUMN_WIDTH))
+                    .max_w(gpui::relative(0.5))
+            })
             .min_w(px(0.0))
             .min_h(px(0.0))
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .items_center()
-            .px(px(if narrow { 24.0 } else { 56.0 }))
+            .px(px(if narrow { 24.0 } else { LEFT_COLUMN_PADDING }))
             .py(px(if narrow { 28.0 } else { 56.0 }))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(520.0))
+                    .max_w(px(LEFT_CONTENT_WIDTH))
                     .flex()
                     .flex_col()
                     .gap(px(32.0))
@@ -1058,7 +1071,13 @@ impl Workspace {
         let theme = Theme::global();
         let active = Theme::active_preset();
         let mut grid = div()
+            .id("account-theme-grid")
             .debug_selector(|| "account-theme-grid".into())
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    this.restore_account_theme(cx);
+                }
+            }))
             .flex()
             .flex_wrap()
             .gap_3()
@@ -1122,7 +1141,8 @@ impl Workspace {
             .as_ref()
             .and_then(|panel| panel.read(cx).input.read(cx).voice_bounds());
         let progress = self.account_dock_progress(window, cx);
-        let tab_width = self.account_sign_in.tab_width();
+        let tab_width = TAB_WIDTH;
+        let shows_tab = self.account_sign_in.shows_tab();
         let geometry = measured.get().map(|right| {
             let (width, height) = (f32::from(right.size.width), f32::from(right.size.height));
             let tab_w = tab_width.min(width - 16.0).max(0.0);
@@ -1151,19 +1171,20 @@ impl Workspace {
                 height,
             )
         });
-        let tab = self
-            .account_onboarding_tab(progress, cx)
-            .absolute()
-            .map(|el| match geometry {
-                Some((left, top, width, height, _)) => {
-                    el.left(px(left)).top(px(top)).w(px(width)).h(px(height))
-                }
-                None => el
-                    .right_0()
-                    .bottom(px(TAB_BOTTOM))
-                    .w(px(tab_width))
-                    .h(px(TAB_HEIGHT)),
-            });
+        let tab = shows_tab.then(|| {
+            self.account_onboarding_tab(progress, cx)
+                .absolute()
+                .map(|el| match geometry {
+                    Some((left, top, width, height, _)) => {
+                        el.left(px(left)).top(px(top)).w(px(width)).h(px(height))
+                    }
+                    None => el
+                        .right_0()
+                        .bottom(px(TAB_BOTTOM))
+                        .w(px(tab_width))
+                        .h(px(TAB_HEIGHT)),
+                })
+        });
         let notes = self.account_onboarding_notes(cx).map(|notes| {
             notes.absolute().map(|el| match geometry {
                 Some((left, top, width, _, height)) => el
@@ -1200,11 +1221,13 @@ impl Workspace {
                     .debug_selector(|| "account-sign-in-demo".into())
                     .flex_1()
                     .min_h(px(0.0))
-                    .p(px(if narrow { 8.0 } else { 20.0 }))
+                    .p(px(if narrow { 4.0 } else { 8.0 }))
                     .pb(px(if narrow {
-                        8.0
-                    } else {
+                        4.0
+                    } else if shows_tab {
                         TAB_BOTTOM + TAB_HEIGHT + 16.0
+                    } else {
+                        8.0
                     }))
                     // The demo is read-only. Reaching for its composer means
                     // "let me type", so the sign-in tab takes its place.
@@ -1223,7 +1246,7 @@ impl Workspace {
                     .children(demo),
             )
             .children(notes)
-            .child(tab)
+            .children(tab)
     }
 
     /// 0 at the right edge, 1 over the demo composer. Keeps drawing frames
@@ -1257,9 +1280,6 @@ impl Workspace {
             _ => None,
         };
         let complete = signed_in.is_some();
-        if !state.email && !complete {
-            return self.account_onboarding_continue_tab(continue_focused, cx);
-        }
         // The flush right corners round off as the tab leaves the edge.
         let edge_radius = px(COMPOSER_RADIUS * progress);
         let mut tab = div()
@@ -1351,62 +1371,6 @@ impl Workspace {
         )
     }
 
-    /// Without email sign-in the tab is one filled Continue pill.
-    fn account_onboarding_continue_tab(
-        &self,
-        focused: bool,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let theme = Theme::global();
-        div()
-            .id("account-sign-in-panel")
-            .debug_selector(|| "account-sign-in-panel".into())
-            .flex()
-            .items_center()
-            .pl(px(6.0))
-            .pr(px(10.0))
-            .rounded_l(px(TAB_HEIGHT / 2.0))
-            .border_1()
-            .border_r_0()
-            .border_color(theme.PANEL_BORDER)
-            .bg(theme.BG)
-            .shadow_md()
-            .occlude()
-            .child(
-                div()
-                    .id("account-sign-in-continue")
-                    .debug_selector(|| "account-sign-in-continue".into())
-                    .flex_1()
-                    .h(px(32.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if focused {
-                        theme.TEXT
-                    } else {
-                        gpui::transparent_black().into()
-                    })
-                    .bg(theme.ACCENT)
-                    .text_color(theme.BG)
-                    .text_size(px(13.0))
-                    .cursor_pointer()
-                    .hover(|el| el.opacity(0.9))
-                    .child("Continue")
-                    .child(
-                        gpui::svg()
-                            .data(include_bytes!("../../../assets/icons/arrow-right.svg"))
-                            .size(px(14.0))
-                            .text_color(theme.BG),
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.continue_account_sign_in(window, cx)),
-                    ),
-            )
-    }
-
     /// Code-sent hint, mailbox shortcuts and errors, floating above the tab.
     fn account_onboarding_notes(
         &self,
@@ -1492,7 +1456,10 @@ impl Workspace {
 }
 
 const TAB_WIDTH: f32 = 380.0;
-const CONTINUE_TAB_WIDTH: f32 = 168.0;
+/// Five theme swatches per row, plus the grid's focus outline.
+const LEFT_CONTENT_WIDTH: f32 = 512.0;
+const LEFT_COLUMN_PADDING: f32 = 48.0;
+const LEFT_COLUMN_WIDTH: f32 = LEFT_CONTENT_WIDTH + 2.0 * LEFT_COLUMN_PADDING;
 const TAB_HEIGHT: f32 = 46.0;
 const TAB_BOTTOM: f32 = 28.0;
 /// Matches the chat composer's near-pill corners.
