@@ -1,5 +1,45 @@
 ## What's new
 
+### Jcode Desktop 0.4.0
+
+Applets, a multi-account workspace, and a smoother composer
+
+#### Themes
+
+- Applets: sandboxed custom UI that agents and bundled integrations can place inline, in panels, as overlays, or as tool call cards.
+- Accounts become a first-class workspace, with every login, its limits and usage, auto-switch ordering, and banked resets in one place.
+- A redesigned composer, sidebar, and model picker built from pills, with smoother streaming text and less UI-thread work.
+
+#### Highlights
+
+- Bundled Gmail, GitHub issues and pull requests, and Google Sheets applets, plus native cards for Gmail and GitHub MCP tool calls.
+- Account rows show limits, usage, and names. Drag logins between Auto-switch and Manual, test them live, add more OAuth accounts, and redeem banked resets.
+- Model picker with maker logos, auth pills, and typo-tolerant ranked search. The method pill switches providers inline.
+- Jcode Cloud sessions use your local model, logins, and voice, and show where they run.
+- Onboarding with inline email sign-in that continues into a real panel, a wider live demo, and theme preview on hover.
+
+#### Improvements
+
+- Composer pills sit below the input with an in-box voice button. Space on an empty composer jumps to the latest message.
+- Sidebar with live and past labels, a project dock, full-width headers, and a section menu beside the sidebar.
+- Tabs show a color-coded todo progress ring and fade long titles. A next-workspace pill supports mouse navigation.
+- Resume picker searches transcripts by keyword and surfaces crashed sessions.
+- Streamed text reveals whole words and glides onto new lines instead of jumping.
+- `/save [label]` and `/unsave` name sessions. Voice holds reach a focused Jcode CLI session, and every voice status is a pill.
+- Stored transcripts paint immediately while the runtime attaches. Daemon-reported KV cache misses appear in the transcript.
+
+#### Fixes
+
+- Much less UI-thread work while typing, from catalog rebroadcasts, and from decorative animations.
+- Runtime info backlogs coalesce instead of growing update queues to gigabytes.
+- Global voice holds survive kernel key-event drops during UI stalls and in-place host rebuilds.
+- Stable list scrollbars across resizes, and markdown hard line breaks and paragraph spacing render correctly.
+- macOS auto-update is validated from every published build.
+
+Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
+
+## Previous releases
+
 ### Jcode Desktop 0.3.3
 
 Voice everywhere, a redesigned first launch, and a project-aware sidebar
@@ -65,10 +105,6 @@ Clearer navigation and richer session feedback
 
 - Reliable jump-to-latest behavior.
 - Development builds retain the intended release version, such as `0.3.0-dev.12`, instead of turning the Git commit count into a misleading patch number.
-
-Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
-
-## Previous releases
 
 ### Jcode Desktop 0.2.1
 
