@@ -236,7 +236,8 @@ mod tests {
         let (workspace, vcx) = cx.add_window_view(|_, cx| fixture(cx));
         vcx.run_until_parked();
         let bounds = vcx.debug_bounds("sidebar-session-1").unwrap();
-        let start = gpui::point(bounds.right() - px(50.), bounds.center().y);
+        // Press on the title, clear of the row's pin and close controls.
+        let start = gpui::point(bounds.center().x + px(20.), bounds.center().y);
         let end = start - gpui::point(px(80.), px(0.));
         vcx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
         workspace.read_with(vcx, |w, _| {

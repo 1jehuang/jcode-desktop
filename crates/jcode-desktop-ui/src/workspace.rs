@@ -128,6 +128,9 @@ mod usage_reset;
 #[path = "workspace_rename.rs"]
 mod rename;
 
+#[path = "workspace_pin.rs"]
+mod pin;
+
 #[path = "workspace_default_directory.rs"]
 mod default_directory;
 #[cfg(test)]
@@ -5703,6 +5706,8 @@ impl Workspace {
                             let (agent_total, agent_working) = row.agents;
                             let under_checkout = checkout_rows[row.project];
                             let close_id = session.session_id.clone();
+                            let pin_id = session.session_id.clone();
+                            let pinned = session.saved;
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let selection_order = selection_order.clone();
@@ -5821,6 +5826,46 @@ impl Workspace {
                                                         .child(spinner),
                                                 )
                                             })
+                                            // Pinning is /save: pinned sessions sort to the top.
+                                            // Visible when pinned, otherwise only on hover.
+                                            .child(
+                                                div()
+                                                    .id(("sidebar-pin", sidebar_index))
+                                                    .debug_selector(move || format!("sidebar-pin-{sidebar_index}"))
+                                                    .flex_none()
+                                                    .size(px(18.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .rounded_full()
+                                                    .cursor_pointer()
+                                                    .when(!pinned, |el| {
+                                                        el.opacity(0.0).group_hover("sidebar-session-row", |style| style.opacity(1.0))
+                                                    })
+                                                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                    .tooltip(move |_, cx| {
+                                                        cx.new(|_| remotes::HeaderTooltip(
+                                                            if pinned { "Unpin session" } else { "Pin session" }.into(),
+                                                        ))
+                                                        .into()
+                                                    })
+                                                    .child(
+                                                        gpui::svg()
+                                                            .data(include_bytes!("../../../assets/icons/pin.svg").as_slice())
+                                                            .size(px(11.0))
+                                                            .text_color(if pinned {
+                                                                Theme::global().ACCENT
+                                                            } else {
+                                                                Theme::global().TEXT_DIM
+                                                            }),
+                                                    )
+                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                        window.prevent_default();
+                                                        cx.stop_propagation();
+                                                        this.sidebar_gesture = None;
+                                                        this.set_session_pinned(&pin_id, !pinned, cx);
+                                                    })),
+                                            )
                                             // Last child: the hover close sits at the row's far right.
                                             .when(is_open, |row| row.child(
                                                 div().id(("sidebar-close", sidebar_index))

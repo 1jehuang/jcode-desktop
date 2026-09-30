@@ -210,6 +210,13 @@ pub enum Command {
         session_id: String,
         operation: SessionOperation,
     },
+    /// Pin (bookmark) or unpin a session from the sidebar, open or not. Open
+    /// sessions reuse their worker; history rows use a short-lived connection
+    /// so pinning never leaves a closed session attached.
+    SetSessionSaved {
+        session_id: String,
+        saved: bool,
+    },
     /// Internal handoff from the asynchronous creator back to the bridge loop.
     CreatedInternal {
         session: SessionInfo,
@@ -750,6 +757,21 @@ fn run_with_transports(
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
+            }
+            Command::SetSessionSaved { session_id, saved } => {
+                let operation = SessionCommand::Operation(SessionOperation::SetSaved(saved, None));
+                let delivered = workers
+                    .get(&session_id)
+                    .is_some_and(|worker| worker.send(operation).is_ok());
+                if !delivered {
+                    workers.remove(&session_id);
+                    let updates = updates.clone();
+                    let transports = transports.clone();
+                    std::thread::Builder::new()
+                        .name("jcode-bridge-pin".into())
+                        .spawn(move || set_saved_detached(session_id, saved, updates, transports))
+                        .expect("spawn pin worker");
+                }
             }
             Command::Fork { session_id } => {
                 send_to_session_worker(
@@ -1534,6 +1556,45 @@ fn session_worker(
         initial_client,
         transport::RemoteTransports::default(),
     );
+}
+
+/// Pin or unpin a session that has no live panel. The daemon applies saves to
+/// the connection's attached session, so attach briefly, save, and detach
+/// again: pinning history must not leave it resident or owned by Desktop.
+fn set_saved_detached(
+    session_id: String,
+    saved: bool,
+    updates: UpdateSender,
+    transports: transport::RemoteTransports,
+) {
+    let result = (|| -> Result<(), String> {
+        let address = remote::SessionAddress::parse(&session_id)?;
+        let client = match &address.host {
+            Some(host) => transports.connect(host),
+            None => connect("pin"),
+        }
+        .map_err(|error| error.to_string())?;
+        let real_id = address.session_id.as_str();
+        client
+            .attach_session(real_id)
+            .map_err(|error| error.to_string())?;
+        let saved_result = client.set_session_saved(real_id, saved, None);
+        let _ = client.detach_session(real_id);
+        saved_result.map_err(|error| error.to_string())
+    })();
+    match result {
+        Ok(()) => {
+            let _ = updates.send(Update::SessionSaved {
+                session_id,
+                saved,
+                label: None,
+            });
+        }
+        Err(error) => {
+            let verb = if saved { "pin" } else { "unpin" };
+            let _ = updates.send(Update::Status(format!("Could not {verb} session: {error}")));
+        }
+    }
 }
 
 /// One session's dedicated API connection, including an adopted client's reconnect.
