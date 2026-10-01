@@ -59,6 +59,8 @@ mod sidebar_swarm;
 mod sidebar_workspaces;
 #[path = "sidebar_account.rs"]
 mod sidebar_account;
+#[path = "sidebar_working.rs"]
+mod sidebar_working;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
 
@@ -823,10 +825,12 @@ pub struct Workspace {
     sidebar_projects: sidebar_projects::State,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
-    sidebar_navigation_scroll: ScrollHandle,
-    live_tabs: live_tabs::TabMotion,
     /// Session row under the pointer. Hovering swaps its spinner for actions.
     sidebar_hovered_session: Option<String>,
+    /// Live "working for" timers, one per session that is mid-turn.
+    sidebar_working: sidebar_working::Timers,
+    sidebar_navigation_scroll: ScrollHandle,
+    live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
@@ -1110,9 +1114,10 @@ impl Workspace {
             sidebar_projects: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
+            sidebar_hovered_session: None,
+            sidebar_working: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
-            sidebar_hovered_session: None,
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gesture_last: None,
@@ -1457,9 +1462,10 @@ impl Workspace {
             sidebar_projects: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
+            sidebar_hovered_session: None,
+            sidebar_working: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
-            sidebar_hovered_session: None,
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gesture_last: None,
@@ -5218,6 +5224,18 @@ impl Workspace {
                 (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
+        let working = open_marks
+            .iter()
+            .filter(|(_, mark)| mark.is_some())
+            .map(|(id, _)| id.clone())
+            .chain(
+                self.daemon_running
+                    .keys()
+                    .filter(|id| !open_marks.contains_key(*id))
+                    .cloned(),
+            )
+            .collect::<HashSet<_>>();
+        self.sidebar_working.sync(&working, cx);
         let open_titles = self
             .slots
             .iter()
@@ -5696,7 +5714,14 @@ impl Workspace {
                             #[cfg(test)]
                             tests::SIDEBAR_TITLE_RENDERS.with(|count| count.set(count.get() + 1));
                             let directory = row.subdirectory.clone();
-                            let meta = sidebar_session_meta(session);
+                            // While a session works, its age gives way to a live
+                            // "working for" timer for the current turn.
+                            let working_timer = this.sidebar_working.get(&session.session_id);
+                            let meta = if working_timer.is_some() {
+                                sidebar_session_tokens(session)
+                            } else {
+                                sidebar_session_meta(session)
+                            };
                             let edits = session.edit_stats.as_ref().map(|stats| {
                                 sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
                             });
@@ -5726,15 +5751,13 @@ impl Workspace {
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
                             let selection_order = selection_order.clone();
-                            let session = session.clone();
-                            list = list.child(
                             let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
                             let working = activity.is_some();
                             let hover_id = session.session_id.clone();
+                            let session = session.clone();
+                            list = list.child(
                                 div()
                                     .id(("sidebar-session", sidebar_index))
-                                    .group("sidebar-session-row")
-                                    .debug_selector(move || {
                                     .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
                                         let current = this.sidebar_hovered_session.as_deref() == Some(hover_id.as_str());
                                         if *hovering && !current {
@@ -5745,6 +5768,8 @@ impl Workspace {
                                             cx.notify();
                                         }
                                     }))
+                                    .group("sidebar-session-row")
+                                    .debug_selector(move || {
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
@@ -5924,7 +5949,7 @@ impl Workspace {
                                                 )
                                             })
                                     )
-                                    .when(details.is_some() || edits.is_some(), |row| {
+                                    .when(details.is_some() || edits.is_some() || working_timer.is_some(), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
@@ -5934,7 +5959,24 @@ impl Workspace {
                                                 .min_w_0()
                                                 .text_size(px(9.0))
                                                 .text_color(Theme::global().TEXT_DIM)
-                                                .child(div().flex_1().min_w_0().truncate().children(details))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .flex()
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .when_some(working_timer, |line, timer| line.child(
+                                                            div()
+                                                                .flex_none()
+                                                                .debug_selector(move || format!("sidebar-working-{sidebar_index}"))
+                                                                .when(details.is_some(), |el| el.mr_1())
+                                                                .child(timer),
+                                                        ))
+                                                        .when_some(details.map(|d| if working { format!("· {d}") } else { d }), |line, details| {
+                                                            line.child(div().min_w_0().truncate().child(details))
+                                                        }),
+                                                )
                                                 .children(edits),
                                         )
                                     }),
@@ -8878,12 +8920,20 @@ fn format_estimated_tokens(tokens: u64) -> String {
         format!("{:.0}{} tok", scaled, UNITS[index].1)
     } else {
         format!("{:.1}{} tok", scaled, UNITS[index].1)
+    }
+}
+
 /// Opacity for a working session's sidebar title, a gentle cosine breath.
 fn sidebar_title_pulse(phase: f32) -> f32 {
     0.75 + 0.25 * (phase * std::f32::consts::TAU).cos()
 }
 
-    }
+/// Estimated token count alone, for rows whose age is replaced by a timer.
+fn sidebar_session_tokens(session: &jcode_sdk::SessionInfo) -> Option<String> {
+    session
+        .transcript_bytes
+        .filter(|bytes| *bytes > 0)
+        .map(|bytes| format_estimated_tokens(bytes / 4))
 }
 
 /// The TUI picker's per-session metadata line, from the fields the desktop
@@ -9841,6 +9891,9 @@ mod tests {
                 .position(|row| row.session_id == "background-run")
                 .unwrap()
         });
+        let spinner = |index: usize| format!("sidebar-session-spinner-{index}");
+        assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
+        assert!(vcx.debug_bounds(spinner(1 - row).leak()).is_none());
 
         // Idle rows give the title the full width: the spinner sits at the
         // far right and no hidden actions reserve space.
@@ -9849,6 +9902,8 @@ mod tests {
         let spin_bounds = vcx.debug_bounds(spinner(row).leak()).unwrap();
         let title = vcx.debug_bounds(format!("sidebar-session-title-{row}").leak()).unwrap();
         assert!(vcx.debug_bounds(format!("sidebar-pin-{row}").leak()).is_none());
+        assert!(vcx.debug_bounds(format!("sidebar-working-{row}").leak()).is_some());
+        assert!(vcx.debug_bounds(format!("sidebar-working-{}", 1 - row).leak()).is_none());
         assert!(title.right() <= spin_bounds.left());
         assert!(row_bounds.right() - spin_bounds.right() < px(crate::scrollbar::GUTTER + 12.0));
 
@@ -9860,9 +9915,6 @@ mod tests {
         vcx.simulate_mouse_move(gpui::point(px(2000.0), px(2000.0)), None, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
-        let spinner = |index: usize| format!("sidebar-session-spinner-{index}");
-        assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
-        assert!(vcx.debug_bounds(spinner(1 - row).leak()).is_none());
         let mark = workspace.read_with(vcx, |workspace, _| {
             workspace
                 .daemon_running_mark("background-run")
