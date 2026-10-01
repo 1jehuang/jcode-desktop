@@ -187,3 +187,42 @@ fn focus_moves_and_new_panels_do_not_rerender_other_panels(cx: &mut gpui::TestAp
     let after: Vec<_> = panels.iter().map(count).collect();
     assert_eq!(after, before, "opening a panel must not rebuild the others");
 }
+
+#[gpui::test]
+fn camera_pan_frames_skip_offscreen_panels(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        for name in ["p0", "p1", "p2", "p3"] {
+            workspace.push_test_panel(name, cx);
+        }
+        workspace
+    });
+    let panels: Vec<_> = (0..4)
+        .map(|i| workspace.read_with(vcx, |w, _| w.test_panel(i).unwrap()))
+        .collect();
+    vcx.run_until_parked();
+    for _ in 0..3 {
+        workspace.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+    }
+    let before: Vec<_> = panels.iter().map(count).collect();
+    for step in 0..10 {
+        workspace.update(vcx, |w, cx| {
+            let row = w.active_row;
+            w.camera_target[row] = step as f32 * 13.0;
+            w.camera_x[row] = step as f32 * 13.0;
+            w.camera_started[row] = None;
+            w.camera_dirty[row] = false;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+    }
+    let after: Vec<_> = panels.iter().map(count).collect();
+    // Moving the camera changes every panel's bounds, so on-screen panels
+    // are drawn again. Panels outside the viewport must not be built at all.
+    let untouched = before.iter().zip(&after).filter(|(b, a)| b == a).count();
+    assert!(
+        untouched >= 1,
+        "off-screen panels were rebuilt on every camera frame: {before:?} -> {after:?}"
+    );
+}

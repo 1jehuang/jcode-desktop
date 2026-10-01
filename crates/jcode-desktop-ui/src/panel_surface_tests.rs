@@ -55,9 +55,13 @@ fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestA
                 };
                 assert_eq!(canvas.left(), px(expected_left));
                 assert_eq!(canvas.right(), px(width - FOLDER_RIGHT_MARGIN));
-                let panels = ["panel-0", "panel-1", "panel-2"]
+                // Panels wholly outside the viewport are not drawn at all, so
+                // check the rendered ones. The focused panel is always drawn.
+                let ids = ["panel-0", "panel-1", "panel-2"];
+                assert!(vcx.debug_bounds(ids[focused]).is_some());
+                let panels = ids
                     .into_iter()
-                    .map(|id| vcx.debug_bounds(id).unwrap())
+                    .filter_map(|id| vcx.debug_bounds(id))
                     .collect::<Vec<_>>();
                 for panel in &panels {
                     let inset = FOLDER_CONTENT_INSET;

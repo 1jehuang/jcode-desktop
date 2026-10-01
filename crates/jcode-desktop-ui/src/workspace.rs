@@ -4330,10 +4330,11 @@ impl Workspace {
                     + GAP;
             order_offsets.push(progress * distance);
         }
+        let camera_x = self.map_camera_x.unwrap_or(self.camera_x[row]);
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_TOP))
-            .left(px(-self.map_camera_x.unwrap_or(self.camera_x[row])))
+            .left(px(-camera_x))
             .w(px(
                 animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
             ))
@@ -4369,6 +4370,14 @@ impl Workspace {
             let left = panel_left + order_offset;
             let top = FOLDER_CONTENT_INSET.min(panel_h / 2.0);
             panel_left += width + GAP;
+            // Skip panels entirely outside the viewport. Every camera frame
+            // moves each panel's bounds, which defeats view retention, so an
+            // off-screen panel would otherwise be rebuilt, laid out and
+            // prepainted on every animation frame only to be clipped. The
+            // focused panel always stays mounted so keyboard focus survives.
+            if !focused && !strip_panel_visible(left, width, camera_x, viewport_w) {
+                continue;
+            }
             let surface = div()
                 .id(("panel", index))
                 .absolute()
@@ -9062,6 +9071,13 @@ fn toggle_maximize(width: f32, restore: Option<f32>) -> (f32, Option<f32>) {
         None if width >= 1.0 => (DEFAULT_WIDTH, None),
         None => (1.0, Some(width)),
     }
+}
+
+/// Whether a strip panel spanning `left..left + width` (strip coordinates)
+/// overlaps the viewport when the strip is scrolled to `camera_x`.
+fn strip_panel_visible(left: f32, width: f32, camera_x: f32, viewport: f32) -> bool {
+    let start = left - camera_x;
+    start < viewport && start + width > 0.0
 }
 
 /// niri `center-focused-column "never"`: scroll the least amount that brings
