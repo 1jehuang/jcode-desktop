@@ -6,6 +6,19 @@ use super::*;
 use jcode_base::provider_catalog::load_env_value_from_env_or_config;
 use jcode_base::subscription_catalog as subscription;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+
+/// Whether the sidebar may show the account email. Off by default so a
+/// streamed or shared screen never reveals it.
+fn show_email_flag() -> &'static AtomicBool {
+    static FLAG: OnceLock<AtomicBool> = OnceLock::new();
+    FLAG.get_or_init(|| AtomicBool::new(crate::config::get().workspace.show_account_email))
+}
+
+pub(super) fn show_email() -> bool {
+    show_email_flag().load(Ordering::Relaxed)
+}
 
 /// The locally saved Jcode account. Only non-secret metadata is kept here.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,16 +62,10 @@ impl JcodeAccount {
         })
     }
 
-    fn title(&self) -> String {
+    fn title(&self, show_email: bool) -> String {
         match (&self.email, self.signed_in) {
-            // Only the name before the @, never the full address on screen.
-            (Some(email), true) => email
-                .split('@')
-                .next()
-                .filter(|name| !name.is_empty())
-                .unwrap_or("Jcode account")
-                .to_owned(),
-            (None, true) => "Jcode account".into(),
+            (Some(email), true) if show_email => email.clone(),
+            (_, true) => "Jcode account".into(),
             _ => "Sign in to Jcode".into(),
         }
     }
@@ -71,10 +78,10 @@ impl JcodeAccount {
         }
     }
 
-    fn initial(&self) -> String {
+    fn initial(&self, show_email: bool) -> String {
         self.email
             .as_deref()
-            .filter(|_| self.signed_in)
+            .filter(|_| self.signed_in && show_email)
             .and_then(|email| email.chars().next())
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_else(|| "J".into())
@@ -86,6 +93,7 @@ impl Workspace {
         let theme = Theme::global();
         let account = JcodeAccount::current();
         let signed_in = account.signed_in;
+        let show_email = show_email();
         let ink = if signed_in { theme.TEXT } else { theme.TEXT_DIM };
 
         div()
@@ -150,7 +158,7 @@ impl Workspace {
                             })
                             .text_size(px(11.0))
                             .text_color(ink)
-                            .child(account.initial()),
+                            .child(account.initial(show_email)),
                     )
                     .child(
                         div()
@@ -165,7 +173,7 @@ impl Workspace {
                                     .text_size(px(11.0))
                                     .line_height(px(14.0))
                                     .text_color(ink)
-                                    .child(account.title()),
+                                    .child(account.title(show_email)),
                             )
                             .child(
                                 div()
@@ -177,6 +185,43 @@ impl Workspace {
                                     .child(account.detail()),
                             ),
                     ),
+            )
+            .into_any_element()
+    }
+
+    /// Settings row: reveal the account email in the sidebar. Off by default.
+    pub(super) fn render_account_email_setting(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let enabled = show_email();
+        div()
+            .id("settings-show-account-email")
+            .debug_selector(|| "settings-show-account-email".into())
+            .flex_none()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .flex()
+            .justify_between()
+            .gap_2()
+            .cursor_pointer()
+            .bg(theme.PANEL_BG)
+            .hover(|el| el.bg(theme.TOOL_BG))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    let enabled = !show_email();
+                    if let Err(error) = crate::config::persist_show_account_email(enabled) {
+                        this.status = format!("Could not save account email setting: {error}");
+                    }
+                    show_email_flag().store(enabled, Ordering::Relaxed);
+                    cx.notify();
+                }),
+            )
+            .child("Show account email in sidebar")
+            .child(
+                div()
+                    .text_color(if enabled { theme.ACCENT } else { theme.TEXT_DIM })
+                    .child(if enabled { "On" } else { "Off" }),
             )
             .into_any_element()
     }
@@ -193,9 +238,23 @@ mod tests {
             email: Some("ada@example.com".into()),
             plan: Some("Pro"),
         };
-        assert_eq!(account.title(), "ada");
+        assert_eq!(account.title(true), "ada@example.com");
         assert_eq!(account.detail(), "Pro plan");
-        assert_eq!(account.initial(), "A");
+        assert_eq!(account.initial(true), "A");
+    }
+
+    #[test]
+    fn hidden_email_never_reaches_the_pill() {
+        let account = JcodeAccount {
+            signed_in: true,
+            email: Some("ada@example.com".into()),
+            plan: Some("Pro"),
+        };
+        assert_eq!(account.title(false), "Jcode account");
+        assert_eq!(account.initial(false), "J");
+        assert!(!crate::config::DesktopConfig::default()
+            .workspace
+            .show_account_email);
     }
 
     #[test]
@@ -205,8 +264,8 @@ mod tests {
             email: Some("stale@example.com".into()),
             plan: None,
         };
-        assert_eq!(account.title(), "Sign in to Jcode");
+        assert_eq!(account.title(true), "Sign in to Jcode");
         assert_eq!(account.detail(), "Not signed in");
-        assert_eq!(account.initial(), "J");
+        assert_eq!(account.initial(true), "J");
     }
 }

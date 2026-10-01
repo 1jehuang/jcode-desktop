@@ -75,6 +75,9 @@ pub struct WorkspaceConfig {
     pub showcase_keys: bool,
     pub coaching_hints: bool,
     pub session_refresh_seconds: u64,
+    /// Show the Jcode account email in the sidebar. Off so a shared or
+    /// streamed screen never leaks it.
+    pub show_account_email: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -125,6 +128,7 @@ impl Default for WorkspaceConfig {
             // slower reconciliation cadence keeps external sessions fresh
             // without continuously competing with UI work.
             session_refresh_seconds: 60,
+            show_account_email: false,
         }
     }
 }
@@ -439,6 +443,22 @@ pub fn persist_sounds_enabled(enabled: bool) -> std::io::Result<()> {
 
 #[cfg(test)]
 pub fn persist_sounds_enabled(_enabled: bool) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(test))]
+pub fn persist_show_account_email(show: bool) -> std::io::Result<()> {
+    persist_value_at(
+        &path(),
+        std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+        "workspace",
+        "show_account_email",
+        if show { "true" } else { "false" },
+    )
+}
+
+#[cfg(test)]
+pub fn persist_show_account_email(_show: bool) -> std::io::Result<()> {
     Ok(())
 }
 

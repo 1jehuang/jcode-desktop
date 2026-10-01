@@ -7162,6 +7162,7 @@ impl Workspace {
         let applet_settings = self.render_applet_settings(cx);
         settings
             .child(self.render_account_settings(cx))
+            .child(self.render_account_email_setting(cx))
             .child(self.render_sound_settings(cx))
             .children(applet_settings)
             .child(
