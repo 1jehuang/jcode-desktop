@@ -58,9 +58,6 @@ pub(super) fn render(
         .font_family(Theme::global().FONT_MONO)
         .text_size(px(9.))
         .tooltip(move |_, cx| cx.new(|_| EditTooltip(detail.clone())).into())
-        .when(approximate, |row| {
-            row.child(div().text_color(Theme::global().TEXT_DIM).child("≈"))
-        })
         .child(
             div()
                 .text_color(Theme::global().OK)
