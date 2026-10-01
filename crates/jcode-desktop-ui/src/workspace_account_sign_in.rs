@@ -245,7 +245,7 @@ fn network<T>(operation: impl std::future::Future<Output = T>) -> Result<T, Stri
 }
 
 impl Workspace {
-    fn open_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.account_sign_in = State {
             visible: true,
             connected: self.account_sign_in.connected,
