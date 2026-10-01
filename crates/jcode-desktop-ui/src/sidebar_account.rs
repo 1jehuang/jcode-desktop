@@ -51,7 +51,13 @@ impl JcodeAccount {
 
     fn title(&self) -> String {
         match (&self.email, self.signed_in) {
-            (Some(email), true) => email.clone(),
+            // Only the name before the @, never the full address on screen.
+            (Some(email), true) => email
+                .split('@')
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Jcode account")
+                .to_owned(),
             (None, true) => "Jcode account".into(),
             _ => "Sign in to Jcode".into(),
         }
@@ -187,7 +193,7 @@ mod tests {
             email: Some("ada@example.com".into()),
             plan: Some("Pro"),
         };
-        assert_eq!(account.title(), "ada@example.com");
+        assert_eq!(account.title(), "ada");
         assert_eq!(account.detail(), "Pro plan");
         assert_eq!(account.initial(), "A");
     }
