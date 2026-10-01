@@ -2,6 +2,7 @@
 //! a step is marked done when the flow proves it, the current step is
 //! expanded, and finished or upcoming steps collapse to one pill row.
 use super::*;
+use gpui::{Animation, AnimationExt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StepKind {
@@ -121,6 +122,39 @@ fn done_summary(kind: StepKind, state: &LoginState) -> &'static str {
         StepKind::EnterKey => "Key received",
         StepKind::SaveKey => "Saved",
     }
+}
+
+/// Indeterminate progress: a pill track with a segment sliding across it.
+/// GPUI's animation wrapper honors reduced motion.
+fn loading_bar() -> gpui::AnyElement {
+    let theme = Theme::global();
+    div()
+        .debug_selector(|| "login-loading-bar".into())
+        .relative()
+        .w_full()
+        .max_w(px(320.))
+        .h(px(4.))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(theme.ACCENT_DIM)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .w(relative(0.35))
+                .rounded_full()
+                .bg(theme.ACCENT)
+                .with_animation(
+                    "login-loading-slide",
+                    Animation::new(std::time::Duration::from_millis(1300))
+                        .repeat()
+                        .with_max_fps(60.0)
+                        .with_easing(gpui::ease_in_out),
+                    |segment, phase| segment.left(relative(-0.35 + 1.35 * phase)),
+                ),
+        )
+        .into_any_element()
 }
 
 /// Only reveal the manual code field when it is actually the way forward:
@@ -266,7 +300,13 @@ impl Panel {
         let status_line = |text: &'static str, busy: bool| {
             let line = div().text_color(theme.TEXT_DIM).child(text);
             if busy {
-                line.debug_selector(|| "login-busy".into())
+                div()
+                    .debug_selector(|| "login-busy".into())
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(line)
+                    .child(loading_bar())
                     .into_any_element()
             } else {
                 line.into_any_element()
@@ -400,7 +440,10 @@ impl Panel {
                 }
             }
             StepKind::Connect => {
-                body.push(status_line("Saving your credentials securely…", state.busy));
+                body.push(status_line(
+                    "Saving your credentials and testing the connection…",
+                    state.busy,
+                ));
             }
             StepKind::EnterKey => {
                 body.push(

@@ -394,4 +394,6 @@ fn sign_in_checklist_expands_only_the_current_step(cx: &mut gpui::TestAppContext
     assert!(vcx.debug_bounds("login-open-browser").is_none());
     assert!(vcx.debug_bounds("login-submit").is_none());
     assert!(vcx.debug_bounds("login-busy").is_some());
+    // Token exchange and the live provider test can take a while. Show motion.
+    assert!(vcx.debug_bounds("login-loading-bar").is_some());
 }
