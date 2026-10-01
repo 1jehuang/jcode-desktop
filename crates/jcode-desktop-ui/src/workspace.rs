@@ -57,6 +57,8 @@ mod sidebar_selection;
 mod sidebar_swarm;
 #[path = "sidebar_workspaces.rs"]
 mod sidebar_workspaces;
+#[path = "sidebar_account.rs"]
+mod sidebar_account;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
 
@@ -6402,6 +6404,7 @@ impl Workspace {
             .when(self.sidebar_view == SidebarView::Sessions, |el| {
                 el.children(self.render_sidebar_workspaces(cx))
             })
+            .child(self.render_sidebar_account(cx))
             .into_any_element()
     }
 
