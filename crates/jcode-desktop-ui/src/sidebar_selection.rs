@@ -169,6 +169,9 @@ mod interaction_tests {
             assert_eq!(w.sessions.len(), 4, "closing must preserve session history");
         });
         // The inline close must not bubble into the row and reopen the panel.
+        let row = vcx.debug_bounds("sidebar-session-0").unwrap();
+        vcx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        vcx.run_until_parked();
         let close = vcx.debug_bounds("sidebar-close-0").unwrap();
         vcx.simulate_click(close.center(), gpui::Modifiers::default());
         vcx.run_until_parked();

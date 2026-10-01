@@ -50,6 +50,9 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-session-1").is_some(), "history rows render");
 
         // The older session sits second; pin it from the sidebar.
+        let row = vcx.debug_bounds("sidebar-session-1").unwrap();
+        vcx.simulate_mouse_move(row.center(), None, gpui::Modifiers::none());
+        vcx.run_until_parked();
         let pin = vcx.debug_bounds("sidebar-pin-1").expect("pin button on history row");
         vcx.simulate_click(pin.center(), gpui::Modifiers::none());
         vcx.run_until_parked();

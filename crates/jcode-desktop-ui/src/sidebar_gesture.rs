@@ -296,6 +296,9 @@ mod tests {
     fn rendered_sidebar_close_button_does_not_start_a_row_gesture(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| fixture(cx));
         vcx.run_until_parked();
+        let row = vcx.debug_bounds("sidebar-session-1").unwrap().center();
+        vcx.simulate_mouse_move(row, None, Default::default());
+        vcx.run_until_parked();
         let close = vcx.debug_bounds("sidebar-close-1").unwrap().center();
         vcx.simulate_mouse_move(close, None, Default::default());
         vcx.simulate_click(close, Default::default());

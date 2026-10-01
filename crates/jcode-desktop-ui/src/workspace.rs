@@ -823,6 +823,8 @@ pub struct Workspace {
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
+    /// Session row under the pointer. Hovering swaps its spinner for actions.
+    sidebar_hovered_session: Option<String>,
     sidebar_roller: sidebar_roller::Roller,
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
@@ -1108,6 +1110,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
+            sidebar_hovered_session: None,
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gesture_last: None,
@@ -1454,6 +1457,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
+            sidebar_hovered_session: None,
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
             gesture_last: None,
@@ -5713,10 +5717,23 @@ impl Workspace {
                             let selection_order = selection_order.clone();
                             let session = session.clone();
                             list = list.child(
+                            let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
+                            let working = activity.is_some();
+                            let hover_id = session.session_id.clone();
                                 div()
                                     .id(("sidebar-session", sidebar_index))
                                     .group("sidebar-session-row")
                                     .debug_selector(move || {
+                                    .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
+                                        let current = this.sidebar_hovered_session.as_deref() == Some(hover_id.as_str());
+                                        if *hovering && !current {
+                                            this.sidebar_hovered_session = Some(hover_id.clone());
+                                            cx.notify();
+                                        } else if !*hovering && current {
+                                            this.sidebar_hovered_session = None;
+                                            cx.notify();
+                                        }
+                                    }))
                                         format!("sidebar-session-{sidebar_index}").into()
                                     })
                                     .ml_2()
@@ -5778,8 +5795,8 @@ impl Workspace {
                                                     .text_size(px(12.0))
                                                     .child(icon),
                                             )
-                                            .child(
-                                                div()
+                                            .child({
+                                                let title = div()
                                                     .flex_1()
                                                     .min_w_0()
                                                     .max_h(px(18.0))
@@ -5792,8 +5809,23 @@ impl Workspace {
                                                     })
                                                     .text_size(px(12.0))
                                                     .line_height(relative(1.5))
-                                                    .child(title),
-                                            )
+                                                    .child(title);
+                                                // A working session's title breathes in step
+                                                // with running tool rows.
+                                                if working {
+                                                    gpui::AnimationExt::with_animation(
+                                                        title,
+                                                        ("sidebar-title-pulse", sidebar_index),
+                                                        gpui::Animation::new(Duration::from_millis(1400))
+                                                            .repeat_synced()
+                                                            .with_max_fps(20.0),
+                                                        |title, phase| title.opacity(sidebar_title_pulse(phase)),
+                                                    )
+                                                    .into_any_element()
+                                                } else {
+                                                    title.into_any_element()
+                                                }
+                                            })
                                             .when(agent_total > 0, |row| row.child(
                                                 div()
                                                     .id(("sidebar-agents", sidebar_index))
@@ -5816,7 +5848,61 @@ impl Workspace {
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
                                                     .child(agent_total.to_string()),
                                             ))
-                                            .when_some(activity, |row, spinner| {
+                                            // Idle rows keep the pin visible when pinned. Hovering
+                                            // swaps any spinner for the pin and close actions, so the
+                                            // title can use the full width the rest of the time.
+                                            .when(hovered || (pinned && !working), |row| row
+                                                // Pinning is /save: pinned sessions sort to the top.
+                                                .child(
+                                                    div()
+                                                        .id(("sidebar-pin", sidebar_index))
+                                                        .debug_selector(move || format!("sidebar-pin-{sidebar_index}"))
+                                                        .flex_none()
+                                                        .size(px(18.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .rounded_full()
+                                                        .cursor_pointer()
+                                                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                        .tooltip(move |_, cx| {
+                                                            cx.new(|_| remotes::HeaderTooltip(
+                                                                if pinned { "Unpin session" } else { "Pin session" }.into(),
+                                                            ))
+                                                            .into()
+                                                        })
+                                                        .child(
+                                                            gpui::svg()
+                                                                .data(include_bytes!("../../../assets/icons/pin.svg").as_slice())
+                                                                .size(px(11.0))
+                                                                .text_color(if pinned {
+                                                                    Theme::global().ACCENT
+                                                                } else {
+                                                                    Theme::global().TEXT_DIM
+                                                                }),
+                                                        )
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                            window.prevent_default();
+                                                            cx.stop_propagation();
+                                                            this.sidebar_gesture = None;
+                                                            this.set_session_pinned(&pin_id, !pinned, cx);
+                                                        })),
+                                                )
+                                                // Last child: the hover close sits at the row's far right.
+                                                .when(is_open && hovered, |row| row.child(
+                                                    div().id(("sidebar-close", sidebar_index))
+                                                        .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
+                                                        .flex_none().px_1().cursor_pointer().child("×")
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                            window.prevent_default();
+                                                            cx.stop_propagation();
+                                                            this.sidebar_gesture = None;
+                                                            this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
+                                                        }))
+                                                ))
+                                            )
+                                            // Last child: the spinner sits at the row's far right.
+                                            .when_some(activity.filter(|_| !hovered), |row, spinner| {
                                                 row.child(
                                                     div()
                                                         .debug_selector(move || {
@@ -5826,60 +5912,6 @@ impl Workspace {
                                                         .child(spinner),
                                                 )
                                             })
-                                            // Pinning is /save: pinned sessions sort to the top.
-                                            // Visible when pinned, otherwise only on hover.
-                                            .child(
-                                                div()
-                                                    .id(("sidebar-pin", sidebar_index))
-                                                    .debug_selector(move || format!("sidebar-pin-{sidebar_index}"))
-                                                    .flex_none()
-                                                    .size(px(18.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .rounded_full()
-                                                    .cursor_pointer()
-                                                    .when(!pinned, |el| {
-                                                        el.opacity(0.0).group_hover("sidebar-session-row", |style| style.opacity(1.0))
-                                                    })
-                                                    .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                    .tooltip(move |_, cx| {
-                                                        cx.new(|_| remotes::HeaderTooltip(
-                                                            if pinned { "Unpin session" } else { "Pin session" }.into(),
-                                                        ))
-                                                        .into()
-                                                    })
-                                                    .child(
-                                                        gpui::svg()
-                                                            .data(include_bytes!("../../../assets/icons/pin.svg").as_slice())
-                                                            .size(px(11.0))
-                                                            .text_color(if pinned {
-                                                                Theme::global().ACCENT
-                                                            } else {
-                                                                Theme::global().TEXT_DIM
-                                                            }),
-                                                    )
-                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                        window.prevent_default();
-                                                        cx.stop_propagation();
-                                                        this.sidebar_gesture = None;
-                                                        this.set_session_pinned(&pin_id, !pinned, cx);
-                                                    })),
-                                            )
-                                            // Last child: the hover close sits at the row's far right.
-                                            .when(is_open, |row| row.child(
-                                                div().id(("sidebar-close", sidebar_index))
-                                                    .debug_selector(move || format!("sidebar-close-{sidebar_index}"))
-                                                    .flex_none().px_1().cursor_pointer().child("×")
-                                                    .opacity(0.0)
-                                                    .group_hover("sidebar-session-row", |style| style.opacity(1.0))
-                                                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
-                                                        window.prevent_default();
-                                                        cx.stop_propagation();
-                                                        this.sidebar_gesture = None;
-                                                        this.close_sidebar_sessions(vec![close_id.clone()], window, cx);
-                                                    }))
-                                            )),
                                     )
                                     .when(details.is_some() || edits.is_some(), |row| {
                                         row.child(
@@ -8834,6 +8866,11 @@ fn format_estimated_tokens(tokens: u64) -> String {
         format!("{:.0}{} tok", scaled, UNITS[index].1)
     } else {
         format!("{:.1}{} tok", scaled, UNITS[index].1)
+/// Opacity for a working session's sidebar title, a gentle cosine breath.
+fn sidebar_title_pulse(phase: f32) -> f32 {
+    0.75 + 0.25 * (phase * std::f32::consts::TAU).cos()
+}
+
     }
 }
 
@@ -9785,6 +9822,25 @@ mod tests {
                 .position(|row| row.session_id == "background-run")
                 .unwrap()
         });
+
+        // Idle rows give the title the full width: the spinner sits at the
+        // far right and no hidden actions reserve space.
+        let row_name = format!("sidebar-session-{row}");
+        let row_bounds = vcx.debug_bounds(row_name.clone().leak()).unwrap();
+        let spin_bounds = vcx.debug_bounds(spinner(row).leak()).unwrap();
+        let title = vcx.debug_bounds(format!("sidebar-session-title-{row}").leak()).unwrap();
+        assert!(vcx.debug_bounds(format!("sidebar-pin-{row}").leak()).is_none());
+        assert!(title.right() <= spin_bounds.left());
+        assert!(row_bounds.right() - spin_bounds.right() < px(crate::scrollbar::GUTTER + 12.0));
+
+        // Hovering swaps the spinner for the row actions.
+        vcx.simulate_mouse_move(row_bounds.center(), None, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds(spinner(row).leak()).is_none());
+        assert!(vcx.debug_bounds(format!("sidebar-pin-{row}").leak()).is_some());
+        vcx.simulate_mouse_move(gpui::point(px(2000.0), px(2000.0)), None, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
         let spinner = |index: usize| format!("sidebar-session-spinner-{index}");
         assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
         assert!(vcx.debug_bounds(spinner(1 - row).leak()).is_none());
