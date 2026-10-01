@@ -301,7 +301,13 @@ unsafe extern "C-unwind" fn activate(
                 != jcode_desktop_api::LaunchMode::SinglePanel
                 && (!fixture || std::env::var_os("JCODE_DESKTOP_SCREENSHOT_CHANGELOG").is_some());
             if changelog_enabled && changelog::should_open(snapshot_len != 0) {
-                workspace.open_changelog(&workspace::OpenChangelog, window, cx);
+                if snapshot_len != 0 {
+                    // A hot reload must never move the user. Offer the notes
+                    // beside the restored layout instead of jumping to them.
+                    workspace.open_changelog_in_background(cx);
+                } else {
+                    workspace.open_changelog(&workspace::OpenChangelog, window, cx);
+                }
             }
         });
         workspace::recovery::install(&workspace, window, app);

@@ -105,6 +105,57 @@ impl Workspace {
         self.focus_active(window, cx);
         cx.notify();
     }
+
+    /// Surface the notes after a hot reload without moving the user. The
+    /// notes panel is appended at the right end of the current row. Appending
+    /// shifts no slot index, so the focused panel, keyboard focus, widths and
+    /// camera are exactly as they were restored, and nothing on screen moves.
+    pub(crate) fn open_changelog_in_background(&mut self, cx: &mut Context<Self>) {
+        if self.single_panel
+            || self
+                .slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.read(cx).is_changelog())
+        {
+            return;
+        }
+        let panel = cx.new(|cx| {
+            Panel::new(
+                Panel::CHANGELOG_SESSION_ID.into(),
+                Some("Desktop changelog".into()),
+                None,
+                self.bridge.clone(),
+                cx,
+            )
+        });
+        let width = DEFAULT_WIDTH;
+        self.slots.push(Slot {
+            panel,
+            row: self.active_row,
+            width_fraction: width,
+            animated_width: AnimatedValue::new(
+                width,
+                transition::policy(Transition::PanelOpen).duration,
+            ),
+            order_offset: AnimatedValue::new(
+                0.0,
+                transition::policy(Transition::PanelOrder).duration,
+            ),
+            order_distance_fraction: width,
+            close_progress: AnimatedValue::new(
+                1.0,
+                transition::policy(Transition::PanelClose).duration,
+            ),
+            closing: false,
+            restore_fraction: None,
+        });
+        if self.slots.len() == 1 {
+            // Nothing to stay on: the notes are the only panel.
+            self.active = 0;
+            self.retarget_camera();
+        }
+        cx.notify();
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +317,81 @@ mod tests {
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, cx| {
             assert_eq!(w.slots[w.active].panel.read(cx).session_id, "draft-session");
+        });
+    }
+
+    #[gpui::test]
+    fn hot_reload_keeps_position_and_offers_notes_in_background(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            for name in ["a", "b", "c", "d"] {
+                w.push_test_panel(name, cx);
+            }
+            w.active_row = 1;
+            w.push_test_panel("row-1-a", cx);
+            w.push_test_panel("row-1-b", cx);
+            w.active_row = 0;
+            w
+        });
+        vcx.run_until_parked();
+        // Travel to the last panel of the first row and let the camera settle.
+        workspace.update_in(vcx, |w, window, cx| {
+            w.set_active(3, cx);
+            w.focus_active(window, cx);
+        });
+        for _ in 0..20 {
+            vcx.executor().advance_clock(Duration::from_millis(20));
+            workspace.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+        }
+        let before_bounds = vcx.debug_bounds("panel-3").unwrap();
+        let mut snapshot =
+            workspace.update_in(vcx, |w, window, cx| w.snapshot_for_reload(window, cx).unwrap());
+        assert_eq!(snapshot.active, 3);
+        let bytes = snapshot.encode().unwrap();
+        workspace.update_in(vcx, |w, window, cx| {
+            w.apply_snapshot(WorkspaceSnapshot::decode(&bytes).unwrap(), cx);
+            w.restore_focus(window, cx);
+            w.open_changelog_in_background(cx);
+        });
+        vcx.run_until_parked();
+        workspace.update_in(vcx, |w, window, cx| {
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "d");
+            assert_eq!(w.active_row, 0);
+            assert!(
+                w.slots[w.active]
+                    .panel
+                    .read(cx)
+                    .input_focus_handle(cx)
+                    .is_focused(window),
+                "keyboard focus stays on the panel the user was on"
+            );
+            assert!(w.slots.iter().any(|slot| slot.panel.read(cx).is_changelog()));
+        });
+        let after_bounds = vcx
+            .debug_bounds("panel-3")
+            .expect("the user's panel is still on screen");
+        assert!(
+            (f32::from(after_bounds.origin.x - before_bounds.origin.x)).abs() < 1.0,
+            "reload must not move the viewport: {before_bounds:?} -> {after_bounds:?}"
+        );
+
+        // A saved slot that restore drops (an old preview) must not shift
+        // the user onto a neighbouring panel.
+        snapshot.slots[0].panel.session_id = "preview://old-generation/1".into();
+        workspace.update_in(vcx, |w, window, cx| {
+            w.apply_snapshot(snapshot, cx);
+            w.restore_focus(window, cx);
+            assert_eq!(w.slots.len(), 5);
+            assert_eq!(w.slots[w.active].panel.read(cx).session_id, "d");
+            assert!(
+                w.slots[w.active]
+                    .panel
+                    .read(cx)
+                    .input_focus_handle(cx)
+                    .is_focused(window)
+            );
         });
     }
 

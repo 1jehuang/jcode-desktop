@@ -1621,7 +1621,12 @@ impl Workspace {
         self.sidebar_view = snapshot.sidebar_view;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
+        // Saved indices refer to the saved slot list. Some saved slots are
+        // dropped below, so translate every index to the restored slot that
+        // holds the same panel rather than whatever now sits at that index.
+        let mut restored_index: Vec<Option<usize>> = Vec::with_capacity(snapshot.slots.len());
         for saved in snapshot.slots {
+            restored_index.push(None);
             let mut panel_state = saved.panel;
             // Preview fixture IDs are never runtime sessions, including old snapshots.
             if panel_state.session_id.starts_with("preview://")
@@ -1767,6 +1772,7 @@ impl Workspace {
                     cx.notify();
                 });
             }
+            *restored_index.last_mut().expect("pushed for this slot") = Some(self.slots.len());
             self.slots.push(Slot {
                 panel,
                 row: saved.row,
@@ -1788,17 +1794,33 @@ impl Workspace {
                 restore_fraction: saved.restore_fraction,
             });
         }
-        self.active = snapshot.active.min(self.slots.len().saturating_sub(1));
+        let restored = |index: usize| restored_index.get(index).copied().flatten();
         self.active_row = snapshot.active_row;
+        // Stay on the saved panel. If it was not restorable, stay on the same
+        // row rather than jumping to the first panel of the workspace.
+        self.active = restored(snapshot.active)
+            .or_else(|| {
+                snapshot.row_focus[self.active_row].and_then(restored)
+            })
+            .or_else(|| {
+                self.slots
+                    .iter()
+                    .position(|slot| slot.row == self.active_row)
+            })
+            .unwrap_or(0);
         self.row_focus = snapshot.row_focus.map(|index| {
-            index.and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()))
+            index
+                .and_then(restored)
+                .map(|index| self.slots[index].panel.entity_id())
         });
         self.previous = snapshot
             .previous
-            .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
+            .and_then(restored)
+            .map(|index| self.slots[index].panel.entity_id());
         self.last_voice_chat = snapshot
             .last_voice_chat
-            .and_then(|index| self.slots.get(index).map(|slot| slot.panel.entity_id()));
+            .and_then(restored)
+            .map(|index| self.slots[index].panel.entity_id());
         self.camera_x = snapshot.camera_x;
         self.camera_target = snapshot.camera_target;
         self.camera_from = snapshot.camera_x;
@@ -1819,7 +1841,12 @@ impl Workspace {
         self.folder_picker_sets_default = snapshot.folder_picker_sets_default;
         self.folder_picker_dir = snapshot.folder_picker_dir;
         self.folder_picker_error = snapshot.folder_picker_error;
-        self.focus_restore = snapshot.focus;
+        self.focus_restore = match snapshot.focus {
+            FocusSnapshot::Panel(index) => restored(index)
+                .map(FocusSnapshot::Panel)
+                .unwrap_or(FocusSnapshot::Workspace),
+            focus => focus,
+        };
         if let Some(search_state) = snapshot.folder_search {
             let search = self.create_folder_search(cx);
             search.update(cx, |search, cx| search.restore(search_state, cx));
