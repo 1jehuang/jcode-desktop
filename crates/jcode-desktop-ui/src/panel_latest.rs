@@ -85,7 +85,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(400.)));
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..12)
+            *panel.items = (0..12)
                 .map(|n| Item::Assistant(format!("message {n}")))
                 .collect();
             panel.stick_to_bottom = false;
@@ -136,7 +136,7 @@ mod tests {
             )
         });
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..80)
+            *panel.items = (0..80)
                 .map(|n| Item::Assistant(format!("message {n}")))
                 .collect();
             panel.stick_to_bottom = false;
@@ -256,7 +256,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Assistant("Short reply".into())];
+            *panel.items = vec![Item::Assistant("Short reply".into())];
             panel.stick_to_bottom = false;
             cx.notify();
         });
@@ -267,7 +267,7 @@ mod tests {
         );
 
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..80)
+            *panel.items = (0..80)
                 .map(|n| Item::Assistant(format!("message {n}")))
                 .collect();
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
@@ -299,7 +299,7 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("jump-to-latest").is_some());
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Assistant("Short again".into())];
+            *panel.items = vec![Item::Assistant("Short again".into())];
             cx.notify();
         });
         vcx.run_until_parked();
@@ -332,7 +332,7 @@ mod tests {
         panel.update(vcx, |panel, cx| {
             // User prompts can fold to a short card. Use an unfolded assistant
             // reply so this fixture actually clips the last row's bottom.
-            panel.items = vec![Item::Assistant("A long reply paragraph.\n\n".repeat(1000))];
+            *panel.items = vec![Item::Assistant("A long reply paragraph.\n\n".repeat(1000))];
             panel.stick_to_bottom = false;
             panel.transcript_list.scroll_to(gpui::ListOffset::default());
             cx.notify();

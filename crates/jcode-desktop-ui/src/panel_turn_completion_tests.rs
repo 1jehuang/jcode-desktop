@@ -12,7 +12,7 @@ fn reconnect_turn_completion_reconciles_idle_and_active_history(cx: &mut gpui::T
     for active in [false, true] {
         panel.update(vcx, |panel, cx| {
             panel.history_loaded = true;
-            panel.items = vec![Item::User("hello".into())];
+            *panel.items = vec![Item::User("hello".into())];
             panel.streaming_text = "partial".into();
             panel.connection_phase = "streaming".into();
             panel.status = "lost: reconnecting".into();
@@ -65,7 +65,7 @@ fn reconnect_history_does_not_replay_previous_answer_over_a_new_turn(
     let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| {
         panel.history_loaded = true;
-        panel.items = vec![
+        *panel.items = vec![
             Item::Assistant("old answer".into()),
             Item::User("next".into()),
         ];

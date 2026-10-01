@@ -314,7 +314,7 @@ mod tests {
             .unwrap();
         vcx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                panel.items = (0..40)
+                *panel.items = (0..40)
                     .map(|i| Item::User(format!("earlier message {i}")))
                     .collect();
                 panel.items.push(Item::Image(fixture_image()));
@@ -479,7 +479,7 @@ mod tests {
             .unwrap();
         vcx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                panel.items = vec![Item::Image(fixture_image())];
+                *panel.items = vec![Item::Image(fixture_image())];
                 panel
                     .input
                     .update(cx, |input, cx| input.set_content("draft".into(), cx));
@@ -524,7 +524,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Image(fixture_image())];
+            *panel.items = vec![Item::Image(fixture_image())];
             cx.notify();
         });
         vcx.run_until_parked();

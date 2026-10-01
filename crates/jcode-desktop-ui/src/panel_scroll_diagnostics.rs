@@ -187,7 +187,7 @@ mod tests {
         });
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..30)
+            *panel.items = (0..30)
                 .map(|_| crate::panel::Item::Assistant("Long row\n\n".repeat(30)))
                 .collect();
             cx.notify();

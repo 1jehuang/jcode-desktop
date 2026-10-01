@@ -226,3 +226,45 @@ fn camera_pan_frames_skip_offscreen_panels(cx: &mut gpui::TestAppContext) {
         "off-screen panels were rebuilt on every camera frame: {before:?} -> {after:?}"
     );
 }
+
+#[gpui::test]
+fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("derived", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel
+            .items
+            .extend((0..50).map(|n| crate::panel::Item::Assistant(format!("message {n}"))));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let rows = |vcx: &mut gpui::VisualTestContext| {
+        panel.read_with(vcx, |panel, _| panel.test_transcript_rows_ptr())
+    };
+    let before = rows(vcx);
+    assert!(before.is_some());
+    // Panel rebuilt without a transcript change: rows are reused, not rebuilt.
+    for _ in 0..5 {
+        panel.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+    }
+    assert_eq!(rows(vcx), before, "unchanged transcript must reuse its rows");
+    panel.update(vcx, |panel, cx| {
+        panel
+            .items
+            .push(crate::panel::Item::Assistant("one more".into()));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert_ne!(rows(vcx), before, "a transcript change must rebuild its rows");
+    assert_eq!(
+        panel.read_with(vcx, |panel, _| panel.test_transcript_row_count()),
+        51
+    );
+}

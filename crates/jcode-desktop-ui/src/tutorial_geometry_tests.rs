@@ -148,7 +148,7 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
         workspace.slots[0].width_fraction = 1.0;
         workspace.slots[0].animated_width = AnimatedValue::new(1.0, transition::policy(Transition::PanelWidth).duration);
         workspace.slots[0].panel.update(cx, |panel, cx| {
-            panel.items = vec![
+            *panel.items = vec![
                 crate::panel::Item::User("Keep the previous prompt visible alongside the shortcut reference".into()),
                 crate::panel::Item::Tool {
                     call_id: "geometry-todo".into(), name: "todo".into(), input: "{}".into(),

@@ -225,7 +225,7 @@ fn settled_html_preview_keeps_its_instance_across_streaming_ancestor_changes(
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![Item::Assistant(format!("```html-preview\n{BODY}```"))];
+        *panel.items = vec![Item::Assistant(format!("```html-preview\n{BODY}```"))];
         panel.stick_to_bottom = false;
         panel
     });

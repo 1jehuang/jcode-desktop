@@ -155,7 +155,7 @@ mod tests {
         let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
             panel.animate_stream_in_tests = true;
-            panel.items = (0..60)
+            *panel.items = (0..60)
                 .map(|n| Item::Assistant(format!("History {n}")))
                 .collect();
             panel.apply(

@@ -600,7 +600,7 @@ mod tests {
             workspace.test_panel(0).unwrap().update(cx, |panel, cx| {
                 panel.provider = Some("anthropic".into());
                 panel.model = Some("claude-sonnet-4-5".into());
-                panel.items = vec![Item::ResponseStats(response_stats::ResponseStats {
+                *panel.items = vec![Item::ResponseStats(response_stats::ResponseStats {
                     input_tokens: Some(1_000_000),
                     output_tokens: Some(100_000),
                     ..Default::default()

@@ -469,7 +469,7 @@ mod tests {
                 panel.provider = Some("anthropic".into());
                 panel.auth_method = Some("oauth".into());
                 panel.working_dir = Some("/srv/projects/jcode".into());
-                panel.items = vec![Item::User("Hello".into())];
+                *panel.items = vec![Item::User("Hello".into())];
                 cx.notify();
             });
             vcx.run_until_parked();

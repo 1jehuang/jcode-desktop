@@ -13,7 +13,7 @@ fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTest
     });
     let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| {
-        panel.items = vec![
+        *panel.items = vec![
             Item::User("Compare these images".into()),
             Item::Image(fixture("first.png")),
             Item::Assistant("Another image follows".into()),
@@ -66,7 +66,7 @@ fn image_pane_button_only_appears_when_transcript_has_images(cx: &mut gpui::Test
     let (panel, vcx) = setup(cx);
     assert!(vcx.debug_bounds("panel-images").is_some());
     panel.update(vcx, |panel, cx| {
-        panel.items = vec![Item::User("No pictures here".into())];
+        *panel.items = vec![Item::User("No pictures here".into())];
         cx.notify();
     });
     vcx.run_until_parked();
@@ -235,7 +235,7 @@ fn image_pane_state_is_independent_between_session_panels(cx: &mut gpui::TestApp
     let second = workspace.update(vcx, |workspace, _| workspace.test_panel(1).unwrap());
     for panel in [&first, &second] {
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Image(fixture("one")), Item::Image(fixture("two"))];
+            *panel.items = vec![Item::Image(fixture("one")), Item::Image(fixture("two"))];
             cx.notify();
         });
     }
@@ -367,7 +367,7 @@ fn image_pane_missing_preview_does_not_open_lightbox(cx: &mut gpui::TestAppConte
     panel.update(vcx, |panel, cx| {
         let mut image = fixture("unavailable.png");
         image.preview = None;
-        panel.items = vec![Item::Image(image)];
+        *panel.items = vec![Item::Image(image)];
         cx.notify();
     });
     vcx.run_until_parked();
@@ -389,7 +389,7 @@ fn image_pane_narrow_and_wide_geometry_keeps_toggle_and_composer_visible(
         Panel::new("image-pane-responsive".into(), None, None, bridge, cx)
     });
     panel.update(vcx, |panel, cx| {
-        panel.items = vec![Item::Image(fixture("responsive.png"))];
+        *panel.items = vec![Item::Image(fixture("responsive.png"))];
         panel
             .input
             .update(cx, |input, cx| input.set_content(DRAFT.into(), cx));

@@ -83,7 +83,7 @@ fn narrow_short_panels_keep_composer_and_footer_controls_visible(cx: &mut gpui::
                 panel.provider = (!fresh).then(|| "openai".into());
                 panel.auth_method = (!fresh).then(|| "oauth".into());
                 panel.reasoning_effort = (!fresh).then(|| "high".into());
-                panel.items = if fresh {
+                *panel.items = if fresh {
                     vec![]
                 } else {
                     vec![Item::User("Hello".into())]

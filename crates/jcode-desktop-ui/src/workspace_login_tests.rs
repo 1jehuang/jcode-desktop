@@ -148,7 +148,7 @@ fn single_panel_footer_accounts_preserves_draft_conversation_and_bounds(
     workspace.update(vcx, |w, cx| {
         w.single_panel = true;
         source.update(cx, |panel, cx| {
-            panel.items = vec![
+            *panel.items = vec![
                 crate::panel::Item::User("Keep this conversation".into()),
                 crate::panel::Item::Assistant("And its response".into()),
             ];
@@ -160,7 +160,7 @@ fn single_panel_footer_accounts_preserves_draft_conversation_and_bounds(
     });
     vcx.run_until_parked();
     let before = source.read_with(vcx, |panel, cx| {
-        (panel.items.clone(), panel.input.read(cx).content.clone())
+        (panel.items.to_vec(), panel.input.read(cx).content.clone())
     });
     let layout = workspace.read_with(vcx, |w, _| {
         (w.active, w.active_row, w.slots[0].width_fraction)
@@ -179,7 +179,7 @@ fn single_panel_footer_accounts_preserves_draft_conversation_and_bounds(
         assert_eq!((w.active, w.active_row, w.slots[0].width_fraction), layout);
         let panel = source.read(cx);
         assert_eq!(
-            (panel.items.clone(), panel.input.read(cx).content.clone()),
+            (panel.items.to_vec(), panel.input.read(cx).content.clone()),
             before
         );
     });

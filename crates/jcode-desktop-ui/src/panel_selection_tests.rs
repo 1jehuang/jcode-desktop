@@ -11,7 +11,7 @@ fn transcript_drag_highlights_and_copies_text(cx: &mut gpui::TestAppContext) {
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![Item::Assistant("Select this transcript text".into())];
+        *panel.items = vec![Item::Assistant("Select this transcript text".into())];
         panel
     });
     vcx.run_until_parked();
@@ -66,7 +66,7 @@ fn transcript_selection_stops_after_release_outside_panel(cx: &mut gpui::TestApp
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![Item::Assistant("Select this transcript text".into())];
+        *panel.items = vec![Item::Assistant("Select this transcript text".into())];
         panel
     });
     vcx.run_until_parked();
@@ -161,7 +161,7 @@ fn tool_text_drag_copies_summary_output_and_error(cx: &mut gpui::TestAppContext)
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![Item::Tool {
+        *panel.items = vec![Item::Tool {
             call_id: "call".into(),
             name: "bash".into(),
             input: input.into(),
@@ -203,7 +203,7 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![Item::Todos(TodoCardPayload {
+        *panel.items = vec![Item::Todos(TodoCardPayload {
             todos: vec![TodoCardItem {
                 content: "Make βeta selectable".into(),
                 status: "pending".into(),
@@ -244,7 +244,7 @@ fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppCont
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![Item::BackgroundTask {
+        *panel.items = vec![Item::BackgroundTask {
             task_id: "task".into(),
             label: "Run tests".into(),
             summary: "All tests passed".into(),
@@ -372,7 +372,7 @@ fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpu
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![
+        *panel.items = vec![
             Item::User("Prompt βeta".into()),
             Item::Assistant("First paragraph.\n\nSecond paragraph.".into()),
             Item::Tool {
@@ -436,7 +436,7 @@ fn continuous_selection_includes_expanded_tool_output_and_code(cx: &mut gpui::Te
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = vec![
+        *panel.items = vec![
             Item::User("Check this".into()),
             Item::Tool {
                 call_id: "call".into(),
@@ -479,7 +479,7 @@ fn continuous_selection_retains_anchor_and_unmounted_intermediate_rows(
             crate::harness::spawn_inert(),
             cx,
         );
-        panel.items = (0..100)
+        *panel.items = (0..100)
             .map(|index| Item::Assistant(format!("Row {index} text")))
             .collect();
         panel.stick_to_bottom = false;

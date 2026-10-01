@@ -32,7 +32,7 @@ impl Panel {
 
     pub(super) fn transcript_snapshot(&self) -> TranscriptSnapshot {
         TranscriptSnapshot {
-            items: self.items.clone(),
+            items: self.items.to_vec(),
             streaming_text: self.streaming_text.clone(),
             streaming_reasoning: self.streaming_reasoning.clone(),
             history_loaded: self.history_loaded,
@@ -54,7 +54,7 @@ impl Panel {
                 || !snapshot.streaming_text.is_empty()
                 || !snapshot.streaming_reasoning.is_empty());
         self.expanded_tools = snapshot.expanded_tools;
-        self.items = snapshot.items;
+        *self.items = snapshot.items;
         for item in &mut self.items {
             if let Item::Image(image) = item {
                 // GPU/image-cache handles never cross the plugin boundary.
@@ -127,7 +127,7 @@ impl Panel {
         }
         let offset = prefix.len();
         prefix.append(&mut self.items);
-        self.items = prefix;
+        *self.items = prefix;
         for index in &mut self.pending_users {
             *index += offset;
         }

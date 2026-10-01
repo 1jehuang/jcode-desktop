@@ -39,7 +39,7 @@ impl Panel {
             "in_progress",
             "pending",
         ];
-        self.items = vec![
+        *self.items = vec![
             Item::User("Commit, push, release, and publish Jcode Desktop.".into()),
             Item::Todos(TodoCardPayload {
                 todos: STAGES

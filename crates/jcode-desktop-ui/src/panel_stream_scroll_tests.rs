@@ -14,7 +14,7 @@ fn streaming_chunks_preserve_touchpad_reading_position(cx: &mut gpui::TestAppCon
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
     panel.update(vcx, |panel, cx| {
-        panel.items = (0..30)
+        *panel.items = (0..30)
             .map(|n| Item::Assistant(format!("History {n}")))
             .collect();
         panel.apply(
@@ -84,7 +84,7 @@ fn streaming_reasoning_settlement_preserves_history_position(cx: &mut gpui::Test
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
     panel.update(vcx, |panel, cx| {
-        panel.items = (0..80)
+        *panel.items = (0..80)
             .map(|n| Item::Assistant(format!("History {n}")))
             .collect();
         panel.items.push(Item::Reasoning("First thought".into()));
@@ -147,7 +147,7 @@ fn upward_touchpad_between_chunk_and_paint_moves_from_visible_position(
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
     panel.update(vcx, |panel, cx| {
-        panel.items = vec![Item::Assistant("History paragraph.\n\n".repeat(80))];
+        *panel.items = vec![Item::Assistant("History paragraph.\n\n".repeat(80))];
         panel.apply(
             &ApiEvent::TextDelta {
                 message_id: None,
@@ -213,7 +213,7 @@ fn returning_to_bottom_resumes_following_streamed_output(cx: &mut gpui::TestAppC
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
     panel.update(vcx, |panel, cx| {
-        panel.items = (0..80)
+        *panel.items = (0..80)
             .map(|n| Item::Assistant(format!("History {n}")))
             .collect();
         cx.notify();
@@ -285,7 +285,7 @@ fn native_scrollbar_catch_up_resumes_following_streamed_output(cx: &mut gpui::Te
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..80)
+            *panel.items = (0..80)
                 .map(|n| Item::Assistant(format!("History {n}")))
                 .collect();
             cx.notify();

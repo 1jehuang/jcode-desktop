@@ -143,6 +143,88 @@ fn command_unavailable_message(input: &str) -> String {
     }
 }
 
+/// The transcript items, with a revision that advances on every mutable
+/// access. Rendering derives rows, selectable text and pinned chrome from the
+/// items; the revision lets it reuse them across frames that only move the
+/// panel (camera travel, resizes) instead of rehashing the whole history.
+/// Any `&mut` access counts as a change, so it can only over-invalidate.
+/// Revisions come from one process-wide counter, so a transcript that is
+/// replaced, taken or rebuilt never repeats a revision a cache has seen.
+#[derive(Debug, Clone)]
+pub struct Transcript {
+    items: Vec<Item>,
+    revision: u64,
+}
+
+fn next_transcript_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Default for Transcript {
+    fn default() -> Self {
+        Vec::new().into()
+    }
+}
+
+impl Transcript {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+impl std::ops::Deref for Transcript {
+    type Target = Vec<Item>;
+    fn deref(&self) -> &Vec<Item> {
+        &self.items
+    }
+}
+
+impl std::ops::DerefMut for Transcript {
+    fn deref_mut(&mut self) -> &mut Vec<Item> {
+        self.revision = next_transcript_revision();
+        &mut self.items
+    }
+}
+
+impl From<Vec<Item>> for Transcript {
+    fn from(items: Vec<Item>) -> Self {
+        Self {
+            items,
+            revision: next_transcript_revision(),
+        }
+    }
+}
+
+impl PartialEq<Vec<Item>> for Transcript {
+    fn eq(&self, other: &Vec<Item>) -> bool {
+        &self.items == other
+    }
+}
+
+impl PartialEq for Transcript {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+    }
+}
+
+impl<'a> IntoIterator for &'a Transcript {
+    type Item = &'a Item;
+    type IntoIter = std::slice::Iter<'a, Item>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Transcript {
+    type Item = &'a mut Item;
+    type IntoIter = std::slice::IterMut<'a, Item>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.revision = next_transcript_revision();
+        self.items.iter_mut()
+    }
+}
+
 /// One transcript entry, in display order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Item {
@@ -188,6 +270,25 @@ enum TranscriptRowSource {
     // variant out of every descriptor rebuilt during a frame. Only live text
     // and coalesced reasoning need owned storage.
     Owned(Box<Item>),
+}
+
+/// Everything a render derives from the transcript alone. Recomputing it
+/// walks and hashes the whole history, which dominated frames that merely
+/// move a panel, so it is reused while its key is unchanged.
+struct TranscriptDerived {
+    key: TranscriptDerivedKey,
+    rows: Arc<Vec<TranscriptRenderRow>>,
+    prompt_rows: Vec<(usize, usize)>,
+    latest_todo: Option<TodoCardPayload>,
+}
+
+#[derive(Clone, PartialEq)]
+struct TranscriptDerivedKey {
+    items_revision: u64,
+    applet_rows_version: u64,
+    /// Visible live text, reasoning, by pointer-free content hash.
+    streaming: u64,
+    expansions: u64,
 }
 
 #[derive(Clone)]
@@ -326,7 +427,7 @@ pub struct Panel {
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
     response_stats: response_stats::Tracker,
-    pub items: Vec<Item>,
+    pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
     streaming_text: String,
     streaming_reasoning: String,
@@ -418,6 +519,10 @@ pub struct Panel {
     applet_generation: (u64, usize),
     /// Unanchored transcript applets as `(item position, instance)`, in order.
     applet_rows: Vec<(usize, String)>,
+    /// Advances whenever `applet_rows` is replaced.
+    applet_rows_version: u64,
+    /// Transcript-derived data reused while its inputs are unchanged.
+    transcript_derived: Option<TranscriptDerived>,
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
@@ -783,7 +888,7 @@ impl Panel {
             pending_effort: None,
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
-            items: demo_items(),
+            items: demo_items().into(),
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
             } else {
@@ -859,6 +964,8 @@ impl Panel {
             applet_selection: cx.new(TextSelection::new),
             applet_generation: (u64::MAX, 0),
             applet_rows: Vec::new(),
+            applet_rows_version: 0,
+            transcript_derived: None,
             tool_started: HashMap::new(),
             tool_durations: HashMap::new(),
             terminal: None,
@@ -1993,14 +2100,17 @@ impl Panel {
                     "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
                     cx,
                 ),
-                "/publish" => self.items.push(match self.publish_checkout() {
-                    Some(_) => Item::Assistant(
-                        "Opened the publish tracker. Commit, push, release, and publish progress appears in its panel.".into(),
-                    ),
-                    None => Item::Error(
-                        "`/publish` is only available in Jcode Desktop self-development sessions.".into(),
-                    ),
-                }),
+                "/publish" => {
+                    let item = match self.publish_checkout() {
+                        Some(_) => Item::Assistant(
+                            "Opened the publish tracker. Commit, push, release, and publish progress appears in its panel.".into(),
+                        ),
+                        None => Item::Error(
+                            "`/publish` is only available in Jcode Desktop self-development sessions.".into(),
+                        ),
+                    };
+                    self.items.push(item);
+                }
                 "/commit-push" | "/commit-and-push" => self.submit_command_prompt(
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
@@ -2233,7 +2343,7 @@ impl Panel {
                     started.elapsed()
                 );
                 panel.provisional_items = items.len();
-                panel.items = items;
+                *panel.items = items;
                 panel.transcript_measurements.dirty = true;
                 if panel.startup_layout.as_ref().is_some_and(|l| !l.committed) {
                     panel.startup_layout = None;
@@ -2361,7 +2471,7 @@ impl Panel {
             .collect();
         items.append(&mut existing);
         self.image_pane_selected = None;
-        self.items = items;
+        *self.items = items;
         if self.pending_history_scroll.is_none() && self.stick_to_bottom {
             self.transcript_list.scroll_to_end();
         }
@@ -3012,6 +3122,92 @@ impl Panel {
         // Any card change (mount, patch, close) can change row heights.
         self.transcript_measurements.dirty = true;
         self.applet_rows = rows;
+        self.applet_rows_version = self.applet_rows_version.wrapping_add(1);
+    }
+
+    /// Rows, pinnable prompt rows and the latest todo snapshot, rebuilt only
+    /// when the transcript, live text, applet rows or disclosure state change.
+    /// The selectable text document is synced on the same schedule.
+    fn transcript_derived(&mut self, cx: &mut Context<Self>) -> &TranscriptDerived {
+        use std::hash::{Hash, Hasher};
+        let streaming = {
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            self.reasoning_reveal
+                .visible(&self.streaming_reasoning)
+                .hash(&mut state);
+            self.text_reveal.visible(&self.streaming_text).hash(&mut state);
+            state.finish()
+        };
+        let expansions = {
+            // Order-independent: both sets are small and unordered.
+            let mut sum = 0u64;
+            for entry in &self.expanded_prompts {
+                let mut state = std::collections::hash_map::DefaultHasher::new();
+                entry.hash(&mut state);
+                sum = sum.wrapping_add(state.finish());
+            }
+            for entry in &self.expanded_tools {
+                let mut state = std::collections::hash_map::DefaultHasher::new();
+                entry.hash(&mut state);
+                sum = sum.wrapping_add(state.finish().rotate_left(17));
+            }
+            sum ^ (self.expanded_prompts.len() as u64) << 32 ^ self.expanded_tools.len() as u64
+        };
+        let key = TranscriptDerivedKey {
+            items_revision: self.items.revision(),
+            applet_rows_version: self.applet_rows_version,
+            streaming,
+            expansions,
+        };
+        if self
+            .transcript_derived
+            .as_ref()
+            .is_none_or(|derived| derived.key != key)
+        {
+            let rows = Arc::new(self.transcript_render_rows());
+            if let Some(document) = self.transcript_text_document.sync(
+                &self.items,
+                &rows,
+                &self.expanded_prompts,
+                &self.expanded_tools,
+            ) {
+                self.transcript_selection
+                    .update(cx, |selection, _| selection.set_document(document));
+            }
+            let prompt_rows = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(row, entry)| match entry.source {
+                    TranscriptRowSource::Settled(index)
+                        if prompt::is_pinnable_prompt(&self.items[index]) =>
+                    {
+                        Some((row, index))
+                    }
+                    _ => None,
+                })
+                .collect();
+            self.transcript_derived = Some(TranscriptDerived {
+                key,
+                rows,
+                prompt_rows,
+                latest_todo: self.latest_todo_payload(),
+            });
+        }
+        self.transcript_derived.as_ref().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transcript_rows_ptr(&self) -> Option<usize> {
+        self.transcript_derived
+            .as_ref()
+            .map(|derived| Arc::as_ptr(&derived.rows) as usize)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_transcript_row_count(&self) -> usize {
+        self.transcript_derived
+            .as_ref()
+            .map_or(0, |derived| derived.rows.len())
     }
 
     fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
@@ -4052,37 +4248,18 @@ impl Render for Panel {
         // Todo state is persistent session chrome rather than transcript history.
         // Keep only the latest snapshot pinned above the scroller instead of
         // leaving stale cards interspersed through the conversation.
-        let latest_todo = self.latest_todo_payload();
+        let instant_motion = self.tick_stream_reveal(window, cx);
+        self.sync_applet_rows(cx);
+        let derived = self.transcript_derived(cx);
+        let rows = derived.rows.clone();
+        let prompt_rows = derived.prompt_rows.clone();
+        let latest_todo = derived.latest_todo.clone();
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
         let publish_tracker = self.render_publish_tracker(latest_todo.as_ref());
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
-        let instant_motion = self.tick_stream_reveal(window, cx);
-        self.sync_applet_rows(cx);
-        let rows = Arc::new(self.transcript_render_rows());
-        if let Some(document) = self.transcript_text_document.sync(
-            &self.items,
-            &rows,
-            &self.expanded_prompts,
-            &self.expanded_tools,
-        ) {
-            self.transcript_selection
-                .update(cx, |selection, _| selection.set_document(document));
-        }
-        let prompt_rows: Vec<(usize, usize)> = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(row, entry)| match entry.source {
-                TranscriptRowSource::Settled(index)
-                    if prompt::is_pinnable_prompt(&self.items[index]) =>
-                {
-                    Some((row, index))
-                }
-                _ => None,
-            })
-            .collect();
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
         let row_count = rows.len() + usize::from(self.activity_active());
@@ -6092,7 +6269,7 @@ mod tests {
             .expect("panel exists");
         for count in [100, 1_000, 10_000] {
             panel.update(vcx, |panel, cx| {
-                panel.items = (0..count)
+                *panel.items = (0..count)
                     .map(|index| {
                         let text = format!("Message {index}: **formatted** text and `inline code`.\n\nA second paragraph for layout.");
                         if index % 2 == 0 {
@@ -6226,7 +6403,7 @@ mod tests {
             .expect("panel exists");
 
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..1_000)
+            *panel.items = (0..1_000)
                 .map(|index| Item::Assistant(format!("message {index}")))
                 .collect();
             panel.stick_to_bottom = true;
@@ -6391,7 +6568,7 @@ mod tests {
         });
         let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
         panel.update(vcx, |panel, _| {
-            panel.items = vec![
+            *panel.items = vec![
                 Item::User("Question".into()),
                 Item::Reasoning("First α".into()),
                 Item::Todos(TodoCardPayload::default()),
@@ -6440,7 +6617,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, _| {
-            panel.items = vec![
+            *panel.items = vec![
                 Item::Reasoning("First row".into()),
                 Item::User("Question".into()),
                 Item::Reasoning("After a user".into()),
@@ -7197,7 +7374,7 @@ mod tests {
             (false, "failed", true),
         ] {
             panel.update(vcx, |panel, cx| {
-                panel.items = vec![Item::Tool {
+                *panel.items = vec![Item::Tool {
                     call_id: "token-visibility".into(),
                     name: "bash".into(),
                     input: r#"{"command":"true"}"#.into(),
@@ -7458,7 +7635,7 @@ mod tests {
             ),
         ] {
             panel.update(vcx, |panel, cx| {
-                panel.items = vec![Item::Tool {
+                *panel.items = vec![Item::Tool {
                     call_id: "inline-call".into(),
                     name: name.into(),
                     input: input.into(),
@@ -7584,7 +7761,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .expect("panel exists");
         panel.update(vcx, |panel, cx| {
-            panel.items = (0..2)
+            *panel.items = (0..2)
                 .map(|index| Item::Tool {
                     call_id: format!("call-{index}"),
                     name: "bash".into(),
@@ -7631,7 +7808,7 @@ mod tests {
             .expect("panel exists");
 
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Tool {
+            *panel.items = vec![Item::Tool {
                 call_id: "call-0".into(),
                 name: "bash".into(),
                 input: r#"{"command":"echo 0"}"#.into(),
@@ -7693,7 +7870,7 @@ mod tests {
         // The same items JCODE_DESKTOP_DEMO_TRANSCRIPT=1 seeds, minus the
         // env-var gate so the test is hermetic.
         panel.update(vcx, |panel, cx| {
-            panel.items = demo_item_fixtures();
+            *panel.items = demo_item_fixtures();
             assert!(panel.items.len() >= 6, "demo covers every item shape");
             cx.notify();
         });
@@ -7942,7 +8119,7 @@ mod tests {
 
         panel.update(vcx, |panel, cx| {
             panel.history_loaded = true;
-            panel.items = vec![Item::User("hello".into())];
+            *panel.items = vec![Item::User("hello".into())];
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
@@ -7965,7 +8142,7 @@ mod tests {
                 Some(Item::Assistant(text)) if text == "recovered response"
             ));
 
-            panel.items = vec![Item::User("next".into())];
+            *panel.items = vec![Item::User("next".into())];
             panel.streaming_text = "partial".into();
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None }, jcode_sdk::HistoryMessage {
@@ -7997,7 +8174,7 @@ mod tests {
         let panel = panel.expect("test panel exists");
 
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Tool {
+            *panel.items = vec![Item::Tool {
                 call_id: "read-1".into(),
                 name: "read".into(),
                 input: r#"{"file_path":"chart.png"}"#.into(),
@@ -8635,7 +8812,7 @@ Goals: []"#,
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .expect("panel exists");
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![
+            *panel.items = vec![
                 Item::User("Keep the task list compact".into()),
                 Item::Tool {
                     call_id: "todo-1".into(),
@@ -8730,7 +8907,7 @@ Goals: []"#,
         assert!(vcx.debug_bounds("pinned-todo-summary").is_some());
 
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Todos(TodoCardPayload {
+            *panel.items = vec![Item::Todos(TodoCardPayload {
                 todos: (0..12)
                     .map(|index| TodoCardItem {
                         content: format!("Task {index}"),

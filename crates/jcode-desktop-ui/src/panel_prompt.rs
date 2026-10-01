@@ -502,7 +502,7 @@ mod tests {
         for width in [600., 320.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
             panel.update(vcx, |panel, cx| {
-                panel.items = vec![Item::User(text.clone())];
+                *panel.items = vec![Item::User(text.clone())];
                 panel.expanded_prompts.clear();
                 panel.stick_to_bottom = false;
                 panel.transcript_list.scroll_to(gpui::ListOffset::default());
@@ -573,7 +573,7 @@ mod tests {
         for width in [900., 600., 320.] {
             vcx.simulate_window_resize(handle, gpui::size(px(width), px(800.)));
             panel.update(vcx, |panel, cx| {
-                panel.items = vec![Item::User(text.clone())];
+                *panel.items = vec![Item::User(text.clone())];
                 panel.expanded_prompts.clear();
                 cx.notify();
             });
@@ -840,7 +840,7 @@ mod tests {
                 "A **formatted** prompt that wraps naturally. ".repeat(12),
             ] {
                 panel.update(vcx, |panel, cx| {
-                    panel.items = vec![Item::User(text.clone())];
+                    *panel.items = vec![Item::User(text.clone())];
                     for n in 0..40 {
                         panel
                             .items
@@ -927,7 +927,7 @@ mod tests {
                 "A longer prompt with **formatted text** that should wrap naturally. ".repeat(5),
             ] {
                 panel.update(vcx, |panel, cx| {
-                    panel.items = vec![Item::User(text.clone())];
+                    *panel.items = vec![Item::User(text.clone())];
                     cx.notify();
                 });
                 vcx.run_until_parked();
@@ -985,7 +985,7 @@ mod tests {
                     ),
                 ] {
                     panel.update(vcx, |panel, cx| {
-                        panel.items = (1..count).map(|_| Item::User("Earlier".into())).collect();
+                        *panel.items = (1..count).map(|_| Item::User("Earlier".into())).collect();
                         panel.items.push(Item::User(text.clone()));
                         panel.stick_to_bottom = true;
                         panel.transcript_list.scroll_to_end();
@@ -1029,7 +1029,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(600.)));
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![
+            *panel.items = vec![
                 Item::User("Old prompt line\n\n".repeat(5)),
                 Item::Assistant("Short answer".into()),
                 Item::User("Newer prompt line\n\n".repeat(3)),
@@ -1382,7 +1382,7 @@ mod tests {
             )
         });
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::User("Keep the normal **prompt card**".into())];
+            *panel.items = vec![Item::User("Keep the normal **prompt card**".into())];
             cx.notify();
         });
         vcx.run_until_parked();
@@ -1442,7 +1442,7 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(600.), px(400.)));
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![
+            *panel.items = vec![
                 Item::User("Keep the prompt below the tasks".into()),
                 Item::Todos(serde_json::from_value(serde_json::json!({
                     "todos": [{"id":"one", "content":"Verify visibility", "status":"in_progress", "priority":"high"}]

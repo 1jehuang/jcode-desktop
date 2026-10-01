@@ -197,7 +197,7 @@ mod tests {
                 crate::harness::spawn_inert(),
                 cx,
             );
-            panel.items = vec![Item::Assistant("Select this text".into())];
+            *panel.items = vec![Item::Assistant("Select this text".into())];
             panel
         });
         vcx.run_until_parked();

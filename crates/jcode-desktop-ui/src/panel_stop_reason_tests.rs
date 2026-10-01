@@ -11,7 +11,7 @@ fn active_panel(cx: &mut Context<Panel>) -> Panel {
     panel.history_loaded = true;
     panel.status = "running".into();
     panel.connection_phase = "streaming".into();
-    panel.items = vec![
+    *panel.items = vec![
         Item::User("Continue the task".into()),
         Item::Assistant("Already received output".into()),
         Item::Tool {
@@ -297,7 +297,7 @@ fn idle_disconnect_does_not_insert_a_transcript_notice(cx: &mut gpui::TestAppCon
         );
         panel.history_loaded = true;
         panel.status = "idle".into();
-        panel.items = vec![Item::Assistant("Completed answer".into())];
+        *panel.items = vec![Item::Assistant("Completed answer".into())];
         panel
     });
     panel.update(vcx, |panel, cx| {

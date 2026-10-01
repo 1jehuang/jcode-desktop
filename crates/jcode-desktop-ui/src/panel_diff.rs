@@ -866,7 +866,7 @@ mod tests {
         });
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Tool {
+            *panel.items = vec![Item::Tool {
                 call_id: "balanced".into(), name: "edit".into(),
                 input: serde_json::json!({
                     "file_path": format!("src/{}/example.rs", "long-directory/".repeat(20)),
@@ -940,7 +940,7 @@ mod tests {
         });
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Tool {
+            *panel.items = vec![Item::Tool {
                 call_id: "large".into(), name: "write".into(),
                 input: serde_json::json!({"file_path": "src/large.rs", "content": (0..500).map(|n| format!("line {n}\n")).collect::<String>()}).to_string(),
                 output: String::new(), done: true, error: None,
@@ -1000,7 +1000,7 @@ mod tests {
         });
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
-            panel.items = fixture_items();
+            *panel.items = fixture_items();
             cx.notify();
         });
         vcx.run_until_parked();
@@ -1070,7 +1070,7 @@ mod tests {
         });
         let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
         panel.update(vcx, |panel, cx| {
-            panel.items = fixture_items();
+            *panel.items = fixture_items();
             panel.input.update(cx, |input, cx| {
                 input.set_content("keep my draft".into(), cx)
             });

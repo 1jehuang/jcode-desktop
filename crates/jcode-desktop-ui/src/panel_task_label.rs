@@ -302,7 +302,7 @@ mod tests {
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![
+            *panel.items = vec![
                 Item::User("Animate the current task".into()),
                 Item::Tool {
                     call_id: "label-todo".into(), name: "todo".into(), input: "{}".into(),
@@ -331,7 +331,7 @@ mod tests {
             assert!(label.tick.is_none());
         });
         panel.update(vcx, |panel, cx| {
-            panel.items = vec![Item::Tool {
+            *panel.items = vec![Item::Tool {
                 call_id: "completed-label-todo".into(),
                 name: "todo".into(),
                 input: "{}".into(),

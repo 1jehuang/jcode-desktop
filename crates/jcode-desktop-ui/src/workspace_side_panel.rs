@@ -758,7 +758,7 @@ mod tests {
         vcx.run_until_parked();
         let origin = vcx.update(|window, _| window.window_handle());
         let before = source.read_with(vcx, |panel, cx| {
-            (panel.items.clone(), panel.snapshot(cx).draft)
+            (panel.items.to_vec(), panel.snapshot(cx).draft)
         });
         let bounds = vcx.debug_bounds("single-panel-root").unwrap();
         let mut state = snapshot("First", false);
@@ -838,7 +838,7 @@ mod tests {
             assert_eq!(w.slots[0].panel, source);
             assert_eq!(
                 (
-                    source.read(cx).items.clone(),
+                    source.read(cx).items.to_vec(),
                     source.read(cx).snapshot(cx).draft
                 ),
                 before

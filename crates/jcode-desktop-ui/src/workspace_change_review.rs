@@ -174,7 +174,7 @@ mod tests {
         });
         let source = workspace.read_with(vcx, |workspace, _| workspace.slots[0].panel.clone());
         source.update(vcx, |panel, cx| {
-            panel.items = vec![crate::panel::Item::Tool {
+            *panel.items = vec![crate::panel::Item::Tool {
                 call_id: "edit".into(),
                 name: "write".into(),
                 input: serde_json::json!({"file_path":"src/example.rs","content":"new content\n"})

@@ -70,7 +70,7 @@ fn live_images_keep_batch_order_and_repeated_reads_but_deduplicate_replay(
     });
     let panel = workspace.update(vcx, |w, _| w.test_panel(0).unwrap());
     panel.update(vcx, |panel, _| {
-        panel.items = vec![tool("first"), Item::Assistant("After first read".into()), tool("second"), Item::User("pending".into())];
+        *panel.items = vec![tool("first"), Item::Assistant("After first read".into()), tool("second"), Item::User("pending".into())];
         panel.pending_users = [3].into();
         panel.accepted_users.insert(3, Instant::now());
         for _ in 0..2 {

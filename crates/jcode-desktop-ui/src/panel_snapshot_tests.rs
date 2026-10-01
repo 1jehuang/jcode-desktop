@@ -38,7 +38,7 @@ fn reload_snapshot_roundtrips_rich_transcript_without_checkpoint_payload(
     let (panel, vcx) = setup(cx);
     panel.update(vcx, |panel, cx| {
         panel.history_loaded = true;
-        panel.items = vec![
+        *panel.items = vec![
             Item::User("question".into()),
             Item::Image(image_preview::fixture_image()),
             Item::Reasoning("earlier reasoning".into()),
@@ -60,7 +60,7 @@ fn reload_snapshot_roundtrips_rich_transcript_without_checkpoint_payload(
             panel.snapshot(cx).transcript.is_none(),
             "periodic checkpoints stay lightweight"
         );
-        let expected = panel.items.clone();
+        let expected = panel.items.to_vec();
         let encoded = serde_json::to_vec(&panel.snapshot_for_reload(cx)).unwrap();
         let saved: PanelSnapshot = serde_json::from_slice(&encoded).unwrap();
         panel.items.clear();
@@ -91,7 +91,7 @@ fn restored_stream_survives_empty_and_behind_history_then_idle_clears_responding
     let (panel, vcx) = setup(cx);
     panel.update(vcx, |panel, cx| {
         panel.history_loaded = true;
-        panel.items = vec![
+        *panel.items = vec![
             Item::User("old".into()),
             Item::Assistant("old answer".into()),
             Item::User("current".into()),
@@ -126,7 +126,7 @@ fn reconnect_history_waits_for_idle_and_never_duplicates_buffered_delta(
     let (panel, vcx) = setup(cx);
     panel.update(vcx, |panel, cx| {
         panel.history_loaded = true;
-        panel.items = vec![Item::User("question".into())];
+        *panel.items = vec![Item::User("question".into())];
         panel.streaming_text = "part".into();
         panel.load_history(
             history(&[("user", "question"), ("assistant", "partial")]),
@@ -167,7 +167,7 @@ fn reconnect_recovery_respects_user_boundary_and_hydrates_newer_turns(
     let (panel, vcx) = setup(cx);
     panel.update(vcx, |panel, cx| {
         panel.history_loaded = true;
-        panel.items = vec![
+        *panel.items = vec![
             Item::User("old".into()),
             Item::Assistant("same prefix".into()),
             Item::User("new".into()),
@@ -220,7 +220,7 @@ fn reload_before_first_history_preserves_echo_and_stream_without_duplicates(
     let (panel, vcx) = setup(cx);
     panel.update(vcx, |panel, cx| {
         panel.history_loaded = false;
-        panel.items = vec![Item::User("new".into())];
+        *panel.items = vec![Item::User("new".into())];
         panel.streaming_text = "part".into();
         panel.expanded_tools.insert("tool-1".into());
         let saved =

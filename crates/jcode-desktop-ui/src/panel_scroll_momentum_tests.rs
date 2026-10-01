@@ -10,7 +10,7 @@ fn fixture(cx: &mut gpui::TestAppContext) -> (Entity<Panel>, &mut gpui::VisualTe
     });
     let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
     panel.update(vcx, |panel, cx| {
-        panel.items = (0..100)
+        *panel.items = (0..100)
             .map(|n| Item::Assistant(format!("Message {n}")))
             .collect();
         cx.notify();

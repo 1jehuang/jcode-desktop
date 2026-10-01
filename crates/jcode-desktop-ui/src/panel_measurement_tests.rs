@@ -55,7 +55,7 @@ fn new_panel(cx: &mut Context<Panel>) -> Panel {
         crate::harness::spawn_inert(),
         cx,
     );
-    panel.items = (0..100)
+    *panel.items = (0..100)
         .map(|index| Item::Assistant(format!("History {index}\n\nSecond paragraph.")))
         .collect();
     panel
@@ -193,7 +193,7 @@ fn width_change_remeasures_visible_rows_without_content_invalidation(
 ) {
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = new_panel(cx);
-        panel.items = vec![Item::Assistant(
+        *panel.items = vec![Item::Assistant(
             "A wrapping paragraph with several words. ".repeat(20),
         )];
         panel
