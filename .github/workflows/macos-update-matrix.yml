@@ -49,6 +49,16 @@ jobs:
                   | select(any(.assets[]; .name == "Jcode-macOS-universal.dmg"))
                   | .tag_name]')
           fi
+          # Builds at or above the advertised version (for example unpromoted
+          # betas) have nothing to update to. Testing them only adds noise.
+          tags=$(printf '%s' "$tags" | python3 -c '
+          import json, re, sys
+          def key(text):
+              major, minor, patch, beta = re.fullmatch(r"(?:desktop-v)?(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?", text).groups()
+              return (int(major), int(minor), int(patch), int(beta) if beta else float("inf"))
+          latest = key(sys.argv[1])
+          print(json.dumps([tag for tag in json.load(sys.stdin) if key(tag) < latest], separators=(",", ":")))
+          ' "$version")
           echo "Feed advertises $version (build $build)"
           echo "Testing: $tags"
           test "$tags" != "[]"
