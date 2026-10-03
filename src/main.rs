@@ -757,13 +757,17 @@ fn main() {
             // Make the linked generation interactive immediately. The current
             // checkout is built off the UI thread, then ReloadManager suspends
             // and resumes that live workspace so drafts survive the swap.
-            rebuild_and_reload(
-                manager.clone(),
-                rebuild_state.clone(),
-                false,
-                "startup",
-                cx,
-            );
+            // Opt-in only: launching should start the existing build, not
+            // compile. Ctrl+R remains the explicit rebuild path.
+            if env::var_os("JCODE_DESKTOP_STARTUP_REBUILD").is_some_and(|v| v == "1") {
+                rebuild_and_reload(
+                    manager.clone(),
+                    rebuild_state.clone(),
+                    false,
+                    "startup",
+                    cx,
+                );
+            }
         }
         cx.activate(true);
     });
