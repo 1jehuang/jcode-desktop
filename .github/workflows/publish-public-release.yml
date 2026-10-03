@@ -13,7 +13,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # Write is needed only to mirror the promoted feed to the legacy desktop-updates asset.
+  contents: write
   actions: write
 
 concurrency:
@@ -82,6 +83,34 @@ jobs:
               assert size == asset['size'], asset['name']
               print('Website download verified:', asset['name'], size, flush=True)
           PY
+      - name: Mirror the promoted public feed to the legacy update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 0.1.0-beta.10 to beta.23 read desktop-updates/appcast.xml. Mirror the
+          # live public feed (never a prerelease that skipped promotion), and
+          # only after every enclosure it references is anonymously downloadable.
+          curl --fail --silent --show-error --location --retry 3 \
+            https://jcode.sh/desktop/appcast.xml -o legacy-appcast.xml
+          python3 - legacy-appcast.xml <<'PY'
+          import sys, urllib.request, xml.etree.ElementTree as ET
+          enclosures = ET.parse(sys.argv[1]).findall("./channel/item/enclosure")
+          assert enclosures, "public appcast has no enclosures"
+          for enclosure in enclosures:
+              url = enclosure.get("url")
+              request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "JcodeReleaseVerifier/1.0"})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  assert response.status == 200, url
+              print("Legacy feed enclosure reachable:", url, flush=True)
+          PY
+          if ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create desktop-updates --repo "$GITHUB_REPOSITORY" \
+              --target main --prerelease --title "Jcode Desktop update feed" \
+              --notes "Machine-readable Sparkle update feed. Download the latest desktop release instead."
+          fi
+          cp legacy-appcast.xml appcast.xml
+          gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber appcast.xml
       - name: Trigger public macOS install and Gatekeeper acceptance
         env:
           GH_TOKEN: ${{ github.token }}

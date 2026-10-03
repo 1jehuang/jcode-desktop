@@ -380,13 +380,10 @@ jobs:
             --pattern 'Jcode-*.tar.gz' --pattern 'Jcode-*.deb' \
             --pattern 'SHA256SUMS*' --pattern appcast.xml
           python3 jcode-desktop/scripts/prepare-public-release.py artifacts "$GITHUB_REF_NAME" --manifest artifacts/latest.json
-          # Advance the update feed only after the full platform set passes.
-          if ! gh release view desktop-updates --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create desktop-updates --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --prerelease --title "Jcode Desktop update feed" \
-              --notes "Machine-readable Sparkle update feed. Download the latest desktop release instead."
-          fi
-          gh release upload desktop-updates --repo "$GITHUB_REPOSITORY" --clobber artifacts/appcast.xml
+          # The legacy desktop-updates feed (read by 0.1.0-beta.10 to beta.23)
+          # is advanced by publish-public-release.yml only after the public
+          # channel is promoted. Writing it here pointed old Macs at beta
+          # archives that are never published to jcode.sh, so every update 404d.
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --json tagName,isDraft,isPrerelease \
             --jq "(.tagName == \"$GITHUB_REF_NAME\" and .isDraft == true and .isPrerelease == $PRERELEASE)" | grep -qx true

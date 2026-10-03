@@ -210,6 +210,9 @@ class StableWorkflowTests(unittest.TestCase):
                     self.assertEqual(result.returncode == 0, failure is None, result.stderr)
                     edits = [c for c in calls if c.startswith("release edit ")]
                     self.assertEqual(len(edits), int(failure is None))
+                    # Betas are never promoted to jcode.sh, so the build workflow
+                    # must never point the legacy Sparkle feed at their archives.
+                    self.assertFalse(any(c.startswith("release upload desktop-updates ") for c in calls))
                     if edits:
                         self.assertIn(f"--draft=false --prerelease={str('-beta.' in tag).lower()}", edits[0])
                         self.assertTrue((artifacts / "latest.json").is_file())
