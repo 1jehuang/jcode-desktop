@@ -1494,8 +1494,27 @@ impl PromptInput {
         self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
     }
 
+    /// `range` ordered, inside `content`, and on character boundaries. Marked
+    /// and selected ranges can go stale when content changes outside the IME
+    /// (history recall, dictation, a session switch), so IME edits clamp them
+    /// rather than slicing with them blindly.
+    fn clamp_byte_range(&self, range: Range<usize>) -> Range<usize> {
+        let floor = |mut offset: usize| {
+            offset = offset.min(self.content.len());
+            while !self.content.is_char_boundary(offset) {
+                offset -= 1;
+            }
+            offset
+        };
+        let start = floor(range.start.min(range.end));
+        start..floor(range.start.max(range.end)).max(start)
+    }
+
+    /// Byte range for a platform UTF-16 range, always ordered and on character
+    /// boundaries so slicing `content` with it cannot panic.
     fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
+        let start = self.offset_from_utf16(range_utf16.start);
+        start..self.offset_from_utf16(range_utf16.end).max(start)
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
@@ -1530,6 +1549,19 @@ fn previous_word_boundary(text: &str, offset: usize) -> usize {
         .rev()
         .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
         .unwrap_or(0)
+}
+
+/// Byte offset of a UTF-16 offset within `text`, clamped to `text.len()`. An
+/// offset that splits a surrogate pair rounds down to the character start.
+fn utf16_to_byte_offset(text: &str, offset: usize) -> usize {
+    let mut utf16 = 0;
+    for (index, ch) in text.char_indices() {
+        if utf16 + ch.len_utf16() > offset {
+            return index;
+        }
+        utf16 += ch.len_utf16();
+    }
+    text.len()
 }
 
 fn next_word_boundary(text: &str, offset: usize) -> usize {
@@ -1597,7 +1629,8 @@ impl EntityInputHandler for PromptInput {
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+            .map(|range| self.clamp_byte_range(range))
+            .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
 
         self.undo.push(self.content.to_string());
         self.redo.clear();
@@ -1627,7 +1660,8 @@ impl EntityInputHandler for PromptInput {
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+            .map(|range| self.clamp_byte_range(range))
+            .unwrap_or_else(|| self.clamp_byte_range(self.selected_range.clone()));
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -1638,11 +1672,20 @@ impl EntityInputHandler for PromptInput {
         } else {
             self.marked_range = None;
         }
+        // The IME's selection is UTF-16 offsets into `new_text`, not into the
+        // whole document. Converting it against the document (as this once
+        // did) lands past the end or inside a multi-byte character as soon as
+        // CJK text precedes the composition, and the next slice panics. On
+        // macOS that panic aborts the app from inside `setMarkedText:` (#6).
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|selected| {
+                let start = utf16_to_byte_offset(new_text, selected.start);
+                let end = utf16_to_byte_offset(new_text, selected.end).max(start);
+                range.start + start..range.start + end
+            })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.selection_reversed = false;
 
         self.command_selection = 0;
         self.reveal_command(0);
@@ -1824,7 +1867,16 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
+        // Only underline a composition that actually lies in the shown text.
+        // A placeholder or stale range would otherwise underflow the run math.
+        let marked_range = input.marked_range.as_ref().filter(|marked| {
+            !input.content.is_empty()
+                && marked.start <= marked.end
+                && marked.end <= display_text.len()
+                && display_text.is_char_boundary(marked.start)
+                && display_text.is_char_boundary(marked.end)
+        });
+        let runs = if let Some(marked_range) = marked_range {
             vec![
                 TextRun {
                     len: marked_range.start,
@@ -2509,6 +2561,69 @@ mod tests {
             })
             .unwrap();
         window
+    }
+
+    #[gpui::test]
+    fn pinyin_composition_after_cjk_text_does_not_panic(cx: &mut TestAppContext) {
+        // Issue #6: macOS Pinyin marks "ni", "ni h", "ni hao" with a caret at
+        // the end of the composition, then commits the candidate. Earlier CJK
+        // text made the selection math slice inside a character and abort.
+        let window = input_window(cx);
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "你好，", window, cx);
+                for marked in ["n", "ni", "ni h", "ni hao"] {
+                    let caret = marked.encode_utf16().count();
+                    input.replace_and_mark_text_in_range(
+                        None,
+                        marked,
+                        Some(caret..caret),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(input.content.as_ref(), format!("你好，{marked}"));
+                    let start = "你好，".len();
+                    assert_eq!(input.marked_range, Some(start..start + marked.len()));
+                    assert_eq!(
+                        input.selected_range,
+                        start + marked.len()..start + marked.len()
+                    );
+                    assert_eq!(
+                        input.marked_text_range(window, cx),
+                        Some(3..3 + marked.encode_utf16().count())
+                    );
+                }
+                // A CJK composition with an out-of-range selection is clamped.
+                input.replace_and_mark_text_in_range(None, "你好", Some(1..9), window, cx);
+                assert_eq!(input.content.as_ref(), "你好，你好");
+                let start = "你好，".len();
+                assert_eq!(input.selected_range, start + 3..start + 6);
+                input.replace_text_in_range(None, "你好🚀", window, cx);
+                assert_eq!(input.content.as_ref(), "你好，你好🚀");
+                assert!(input.marked_range.is_none());
+                assert_eq!(
+                    input.selected_range,
+                    input.content.len()..input.content.len()
+                );
+
+                // Stale marked text and ranges that split characters or run
+                // past the end are clamped, never sliced blindly.
+                input.marked_range = Some(1..400);
+                input.replace_and_mark_text_in_range(None, "zh", Some(2..2), window, cx);
+                assert_eq!(input.content.as_ref(), "zh");
+                input.replace_text_in_range(Some(1..1000), "中", window, cx);
+                assert_eq!(input.content.as_ref(), "z中");
+                input.replace_text_in_range(Some(5..2), "文", window, cx);
+                assert_eq!(input.content.as_ref(), "z中文");
+                let mut actual = None;
+                assert_eq!(
+                    input.text_for_range(1..99, &mut actual, window, cx),
+                    Some("中文".into())
+                );
+                assert_eq!(actual, Some(1..3));
+            })
+            .unwrap();
+        cx.run_until_parked();
     }
 
     #[gpui::test]

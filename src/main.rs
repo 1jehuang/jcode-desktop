@@ -209,15 +209,46 @@ impl Render for HostFallback {
 /// it transparent lets the workspace background continue behind it, which is
 /// the unified look Finder, Safari, and Xcode use. The traffic lights are
 /// nudged down so they sit centered against the app's own header row.
+///
+/// Windows keeps the opaque system titlebar. GPUI on Windows treats a
+/// transparent titlebar as "the app draws its own caption", and Jcode's
+/// header has no caption buttons or drag region, so the window could not be
+/// moved, minimized, or maximized (#5).
 fn titlebar_options() -> TitlebarOptions {
     TitlebarOptions {
         title: Some("Jcode".into()),
-        appears_transparent: true,
+        appears_transparent: !cfg!(target_os = "windows"),
         traffic_light_position: Some(Point {
             x: px(16.0),
             y: px(16.0),
         }),
     }
+}
+
+/// Bounds for a new window of the launch size, centered on the primary
+/// display and shrunk to fit its usable area.
+///
+/// At high display scaling (250% on a 4K laptop panel) the default logical
+/// size is larger than the screen, which opened the window partly off-screen
+/// with its titlebar unreachable (#5).
+fn initial_window_bounds((width, height): (u32, u32), cx: &App) -> Bounds<gpui::Pixels> {
+    let wanted = size(px(width as f32), px(height as f32));
+    match cx.primary_display() {
+        Some(display) => fit_window_bounds(wanted, display.visible_bounds()),
+        None => Bounds::centered(None, wanted, cx),
+    }
+}
+
+/// `wanted` centered in `visible`, each side capped at 95% of the visible area.
+fn fit_window_bounds(
+    wanted: gpui::Size<gpui::Pixels>,
+    visible: Bounds<gpui::Pixels>,
+) -> Bounds<gpui::Pixels> {
+    let fitted = size(
+        wanted.width.min(visible.size.width * 0.95),
+        wanted.height.min(visible.size.height * 0.95),
+    );
+    Bounds::centered_at(visible.center(), fitted)
 }
 
 /// Bring the desktop window back, whatever the traffic lights did to it.
@@ -243,8 +274,10 @@ fn restore_window(
         }
     }
 
-    let (width, height) = LaunchMode::from_args(env::args_os()).initial_window_size();
-    let bounds = Bounds::centered(None, size(px(width as f32), px(height as f32)), cx);
+    let bounds = initial_window_bounds(
+        LaunchMode::from_args(env::args_os()).initial_window_size(),
+        cx,
+    );
     let replacement = cx.open_window(
         WindowOptions {
             app_id: Some(jcode_desktop_ui::APP_ID.into()),
@@ -421,8 +454,7 @@ fn open_shared_window(
     launch: jcode_desktop_api::WindowLaunch,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    let (width, height) = LaunchMode::SinglePanel.initial_window_size();
-    let bounds = Bounds::centered(None, size(px(width as f32), px(height as f32)), cx);
+    let bounds = initial_window_bounds(LaunchMode::SinglePanel.initial_window_size(), cx);
     let window = cx.open_window(
         WindowOptions {
             app_id: Some(jcode_desktop_ui::APP_ID.into()),
@@ -568,8 +600,7 @@ fn main() {
             KeyBinding::new("f6", RollbackUi, None),
         ]);
 
-        let (width, height) = launch_mode.initial_window_size();
-        let bounds = Bounds::centered(None, size(px(width as f32), px(height as f32)), cx);
+        let bounds = initial_window_bounds(launch_mode.initial_window_size(), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -804,6 +835,33 @@ fn dispatch_ui_action(
 #[cfg(test)]
 mod tests {
     use super::RebuildState;
+
+    #[test]
+    fn initial_window_fits_small_high_dpi_screens_and_keeps_its_size_on_large_ones() {
+        use gpui::{Bounds, point, px, size};
+        // 3840x2160 at 250% is a 1536x864 logical desktop, minus a taskbar.
+        let small = Bounds::new(point(px(0.), px(0.)), size(px(1536.), px(816.)));
+        let fitted = super::fit_window_bounds(size(px(1500.), px(950.)), small);
+        assert!(fitted.size.width <= small.size.width);
+        assert!(fitted.size.height <= small.size.height);
+        assert!(fitted.origin.x >= px(0.) && fitted.origin.y >= px(0.));
+        assert!(fitted.bottom_right().x <= small.bottom_right().x);
+        assert!(fitted.bottom_right().y <= small.bottom_right().y);
+        assert_eq!(fitted.center(), small.center());
+
+        let large = Bounds::new(point(px(100.), px(0.)), size(px(2560.), px(1400.)));
+        let kept = super::fit_window_bounds(size(px(1500.), px(950.)), large);
+        assert_eq!(kept.size, size(px(1500.), px(950.)));
+        assert_eq!(kept.center(), large.center());
+    }
+
+    #[test]
+    fn windows_keeps_the_native_titlebar_so_the_window_can_move_and_minimize() {
+        assert_eq!(
+            super::titlebar_options().appears_transparent,
+            !cfg!(target_os = "windows")
+        );
+    }
 
     #[test]
     fn voice_cli_flags_route_to_distinct_current_ui_actions() {
