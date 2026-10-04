@@ -143,6 +143,7 @@ impl ImageView {
 
 impl Render for ImageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("ImageView");
         div()
             .relative()
             .w(px(self.fit_size.0))

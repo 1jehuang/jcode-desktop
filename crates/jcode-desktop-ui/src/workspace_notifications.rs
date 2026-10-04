@@ -249,6 +249,7 @@ struct CoachDetails(learning::Hint);
 
 impl Render for CoachDetails {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("CoachDetails");
         let theme = Theme::global();
         div()
             .debug_selector(|| "coach-details".into())

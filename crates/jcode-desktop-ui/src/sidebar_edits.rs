@@ -19,6 +19,7 @@ struct EditTooltip(String);
 
 impl Render for EditTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("EditTooltip");
         div()
             .px_3()
             .py_2()

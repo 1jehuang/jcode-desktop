@@ -526,6 +526,10 @@ pub struct Panel {
     /// Live tool timing: start instants while running, final durations after.
     tool_started: HashMap<String, Instant>,
     tool_durations: HashMap<String, Duration>,
+    /// A running tool's breathing veil and clock, each a leaf view that
+    /// ticks on its own, so the transcript is not rebuilt 20 times a second
+    /// while a tool runs. Filled while the transcript renders.
+    running_tool_tickers: std::cell::RefCell<crate::pulse_text::Tickers>,
     terminal: Option<Entity<TerminalPanel>>,
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
     unfinished_session_opener: Option<SessionOpener>,
@@ -968,6 +972,7 @@ impl Panel {
             transcript_derived: None,
             tool_started: HashMap::new(),
             tool_durations: HashMap::new(),
+            running_tool_tickers: Default::default(),
             terminal: None,
             unfinished_work: None,
             unfinished_session_opener: None,
@@ -2614,6 +2619,11 @@ impl Panel {
                         self.tool_durations
                             .insert(call_id.clone(), started.elapsed());
                     }
+                    let running = &self.tool_started;
+                    self.running_tool_tickers.get_mut().retain(|key| {
+                        key.split_once(':')
+                            .is_some_and(|(_, call)| running.contains_key(call))
+                    });
                 } else {
                     self.arriving_tools.insert(call_id.clone(), Instant::now());
                     self.items.push(Item::Tool {
@@ -3311,6 +3321,7 @@ impl Panel {
         index: usize,
         call_id: &str,
         finished: bool,
+        cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let clock = div()
             .debug_selector(|| "tool-elapsed".into())
@@ -3327,17 +3338,18 @@ impl Panel {
             })
         } else {
             let started = *self.tool_started.get(call_id)?;
-            Some(
-                gpui::AnimationExt::with_animation(
-                    clock,
-                    ("tool-elapsed", index),
-                    gpui::Animation::new(Duration::from_secs(1))
-                        .repeat()
-                        .with_max_fps(2.0),
-                    move |clock, _| clock.child(format_tool_elapsed(started.elapsed())),
-                )
-                .into_any_element(),
-            )
+            let _ = index;
+            // Ticks in its own view: refreshing the clock must not rebuild
+            // the transcript around it.
+            let ticker = self.running_tool_tickers.borrow_mut().get(
+                &format!("clock:{call_id}"),
+                crate::pulse_text::Kind::Elapsed {
+                    since: started,
+                    format: format_tool_elapsed,
+                },
+                cx,
+            );
+            Some(clock.child(ticker).into_any_element())
         }
     }
 
@@ -3651,6 +3663,15 @@ impl Panel {
                 let has_detail = !detail.is_empty();
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
+                let running_veil = (!*done && error.is_none()).then(|| {
+                    gpui::AnyView::from(self.running_tool_tickers.borrow_mut().get(
+                        &format!("pulse:{call_id}"),
+                        crate::tool_icon::running_veil(
+                            Theme::global().panel_background(self.surface_focused),
+                        ),
+                        cx,
+                    ))
+                });
                 div()
                     .id(("tool", index))
                     .debug_selector(|| "tool-inline".into())
@@ -3710,6 +3731,7 @@ impl Panel {
                                 index,
                                 &call_id,
                                 *done || error.is_some(),
+                                cx,
                             ))
                             .when(
                                 !*done && error.is_none() && self.has_running_tool(),
@@ -3792,6 +3814,7 @@ impl Panel {
                             }),
                         *done,
                         error.is_some(),
+                        running_veil,
                     ))
                     .when(detail_visible && has_detail, |el| {
                         el.child(
@@ -3941,6 +3964,7 @@ fn append_reasoning(items: &mut Vec<Item>, text: String) {
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("Panel");
         if std::mem::take(&mut self.focus_pending) {
             self.focus_input(window, cx);
         }

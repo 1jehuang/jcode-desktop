@@ -75,6 +75,9 @@ pub(crate) struct TimedPreview {
     done: bool,
     header: PreviewHeader,
     last_frame: Instant,
+    /// The running header's breathing overlay, its own view so a pulse
+    /// frame does not rebuild this preview's diff rows.
+    running_veil: Option<gpui::Entity<crate::pulse_text::Ticker>>,
 }
 
 impl TimedPreview {
@@ -91,6 +94,7 @@ impl TimedPreview {
             done,
             header,
             last_frame: Instant::now(),
+            running_veil: None,
         };
         this.prepare_rows();
         this.timer.update(done, Duration::ZERO);
@@ -204,6 +208,7 @@ impl TimedPreview {
 
 impl Render for TimedPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("TimedPreview");
         let now = Instant::now();
         self.timer
             .update(self.done, now.saturating_duration_since(self.last_frame));
@@ -241,7 +246,7 @@ impl Render for TimedPreview {
             .min_w_0()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(self.render_header())
+            .child(self.render_header(cx))
             .when(open, |el| {
                 el.child(
                     div().h(px(2.)).w_full().bg(theme.CODE_HEADER_BG).child(

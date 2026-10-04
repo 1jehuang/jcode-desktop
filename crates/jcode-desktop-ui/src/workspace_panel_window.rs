@@ -178,6 +178,7 @@ impl PanelWindow {
 
 impl Render for PanelWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("PanelWindow");
         Theme::sync_window_background(window, &mut self.window_background);
         let theme = Theme::global();
         div()

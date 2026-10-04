@@ -64,6 +64,47 @@ def cadence_summary(frames):
     }
 
 
+def view_totals(frames):
+    """Per-view renders and render time summed over sampling windows, busiest first.
+
+    Samples from builds without render attribution simply contribute nothing."""
+    totals = {}
+    for frame in frames:
+        for name, renders, total_ms, max_ms in frame.get('views') or []:
+            entry = totals.setdefault(name, {'renders': 0, 'total_ms': 0.0, 'max_ms': 0.0})
+            entry['renders'] += renders
+            entry['total_ms'] += total_ms
+            entry['max_ms'] = max(entry['max_ms'], max_ms)
+    return dict(sorted(totals.items(), key=lambda item: -item[1]['total_ms']))
+
+
+def print_view_totals(totals, seconds):
+    if not totals:
+        print("No per-view render attribution in samples (older build).")
+        return
+    print(f"{'view':24s} {'renders/s':>10s} {'ms/s':>8s} {'mean ms':>8s} {'max ms':>8s}")
+    for name, entry in list(totals.items())[:15]:
+        print(f"{name:24s} {entry['renders'] / seconds:10.1f} {entry['total_ms'] / seconds:8.2f} "
+              f"{entry['total_ms'] / entry['renders']:8.2f} {entry['max_ms']:8.2f}")
+
+
+def cause_totals(frames):
+    """Wake/notify causes (bridge events, ticks) summed, most frequent first."""
+    totals = {}
+    for frame in frames:
+        for name, count in frame.get('causes') or []:
+            totals[name] = totals.get(name, 0) + count
+    return dict(sorted(totals.items(), key=lambda item: -item[1]))
+
+
+def print_cause_totals(totals, seconds):
+    if not totals:
+        return
+    print(f"{'wake cause':40s} {'per s':>8s}")
+    for name, count in list(totals.items())[:15]:
+        print(f"{name:40s} {count / seconds:8.1f}")
+
+
 def analyze(output):
     frames = [json.loads(line) for line in (output / "frames.jsonl").read_text().splitlines()]
     process = [json.loads(line) for line in (output / "process.jsonl").read_text().splitlines()]
@@ -94,6 +135,15 @@ def analyze(output):
         key = f"{sample.get('pid', 'unknown')}/{sample.get('window', 'unknown')}/{sample.get('sampler_id', 'legacy')}"
         groups.setdefault(key, []).append(sample)
     summary['cadence_by_sampler'] = {key: cadence_summary(samples) for key, samples in groups.items()}
+    # Every sampler in a process reads the same UI-thread table, so take the
+    # longest-running one instead of summing duplicates.
+    longest = max(groups.values(), key=len)
+    summary['views'] = view_totals(longest)
+    seconds = sum(s['interval_ms'] for s in longest) / 1000
+    print("Views rendered (render() time only; layout/paint is in draw time):")
+    print_view_totals(summary['views'], seconds or 1)
+    summary['causes'] = cause_totals(longest)
+    print_cause_totals(summary['causes'], seconds or 1)
     for key, cadence in summary['cadence_by_sampler'].items():
         print(f"Cadence {key}: {json.dumps(cadence)}")
         if cadence['animation_intervals'] < 30:

@@ -9,6 +9,7 @@ impl gpui::Global for StatusAccounts {}
 pub(crate) struct MeterTooltip(pub(crate) String);
 impl Render for MeterTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("MeterTooltip");
         let theme = Theme::global();
         div()
             .px_3()

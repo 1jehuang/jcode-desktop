@@ -6,6 +6,7 @@ use gpui::{prelude::*, *};
 struct TaskTooltip(String);
 impl Render for TaskTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("TaskTooltip");
         div()
             .max_w(px(420.0))
             .p_2()

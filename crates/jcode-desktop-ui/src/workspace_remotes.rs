@@ -43,6 +43,7 @@ pub(super) struct HeaderTooltip(pub gpui::SharedString);
 
 impl Render for HeaderTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("HeaderTooltip");
         div()
             .px_2()
             .py_1()

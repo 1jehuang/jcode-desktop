@@ -500,6 +500,7 @@ impl Element for TextElement {
 
 impl Render for LoginInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("LoginInput");
         div()
             .id("login-input")
             .key_context("LoginInput")

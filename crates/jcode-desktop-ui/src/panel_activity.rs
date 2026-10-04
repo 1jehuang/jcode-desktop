@@ -331,6 +331,7 @@ fn tessellated_circle(
 
 impl Render for Spinner {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("Spinner");
         let mut label = None;
         if let Some(panel) = self.panel.as_ref().and_then(|panel| panel.upgrade()) {
             let activity = panel.read(cx).orb_activity();
@@ -345,12 +346,6 @@ impl Render for Spinner {
             self.elapsed,
             crate::config::get().appearance.reduce_motion,
         );
-        let label_color = gpui::Rgba {
-            r: theme.TEXT_DIM.r + (theme.TEXT.r - theme.TEXT_DIM.r) * intensity,
-            g: theme.TEXT_DIM.g + (theme.TEXT.g - theme.TEXT_DIM.g) * intensity,
-            b: theme.TEXT_DIM.b + (theme.TEXT.b - theme.TEXT_DIM.b) * intensity,
-            a: theme.TEXT_DIM.a,
-        };
         let spinner = cx.entity().downgrade();
         let selector = if self.sidebar_mark {
             "panel-sidebar-mark"
@@ -400,14 +395,28 @@ impl Render for Spinner {
             .min_w_0()
             .child(orb)
             .when_some(label, |row, label| {
-                row.child(
+                // The pulse is a paint-only crossfade: a TEXT copy fades over
+                // the TEXT_DIM label. Animating the text color itself would
+                // change the text's measurement inputs every tick, so GPUI
+                // could not splice this view back into the retained panel and
+                // would rebuild the panel and the whole workspace each frame.
+                let text = |color: gpui::Rgba| {
                     div()
-                        .debug_selector(|| "panel-activity-label".into())
                         .min_w_0()
                         .truncate()
                         .text_size(px(11.0))
-                        .text_color(label_color)
-                        .child(label),
+                        .text_color(color)
+                        .child(label.clone())
+                };
+                row.child(
+                    div()
+                        .debug_selector(|| "panel-activity-label".into())
+                        .relative()
+                        .min_w_0()
+                        .child(text(theme.TEXT_DIM))
+                        // Always present, so the layout tree never changes
+                        // shape as the pulse passes through zero.
+                        .child(text(theme.TEXT).absolute().inset_0().opacity(intensity)),
                 )
             })
     }

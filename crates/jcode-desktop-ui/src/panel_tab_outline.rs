@@ -385,6 +385,7 @@ fn comet(
 
 impl Render for TabOutline {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("TabOutline");
         let ring = self
             .panel
             .upgrade()

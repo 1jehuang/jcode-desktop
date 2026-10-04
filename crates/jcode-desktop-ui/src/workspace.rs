@@ -834,6 +834,8 @@ pub struct Workspace {
     sidebar_hovered_session: Option<String>,
     /// Live "working for" timers, one per session that is mid-turn.
     sidebar_working: sidebar_working::Timers,
+    /// Breathing titles of working sidebar sessions, each its own view.
+    sidebar_title_pulses: crate::pulse_text::Tickers,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
@@ -902,9 +904,16 @@ impl Workspace {
                 let outcome = this.update(cx, |workspace: &mut Workspace, cx| {
                     let mut changed = false;
                     for update in updates {
+                        match &update {
+                            Update::Event { event, .. } => {
+                                crate::render_stats::note_variant("event:", event)
+                            }
+                            other => crate::render_stats::note_variant("update:", other),
+                        }
                         changed |= workspace.apply(update, cx);
                     }
                     if changed {
+                        crate::render_stats::note("workspace-notify:bridge");
                         cx.notify();
                     }
                 });
@@ -1122,6 +1131,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_working: Default::default(),
+            sidebar_title_pulses: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -1471,6 +1481,7 @@ impl Workspace {
             sidebar_gesture: None,
             sidebar_hovered_session: None,
             sidebar_working: Default::default(),
+            sidebar_title_pulses: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -4294,6 +4305,7 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(ActionCapture::is_pending)
                 {
+                    crate::render_stats::note("workspace-notify:animation-tick");
                     cx.notify();
                 }
             });
@@ -5270,6 +5282,7 @@ impl Workspace {
             )
             .collect::<HashSet<_>>();
         self.sidebar_working.sync(&working, cx);
+        self.sidebar_title_pulses.retain(|id| working.contains(id));
         let open_titles = self
             .slots
             .iter()
@@ -5788,6 +5801,17 @@ impl Workspace {
                             let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
                             let working = activity.is_some();
                             let hover_id = session.session_id.clone();
+                            let title_pulse = working.then(|| {
+                                this.sidebar_title_pulses.get(
+                                    &session.session_id,
+                                    crate::pulse_text::Kind::PulseText {
+                                        text: title.clone().into(),
+                                        period: crate::pulse_text::TOOL_PULSE_PERIOD,
+                                        curve: sidebar_title_pulse,
+                                    },
+                                    cx,
+                                )
+                            });
                             let session = session.clone();
                             list = list.child(
                                 div()
@@ -5866,7 +5890,7 @@ impl Workspace {
                                                     .child(icon),
                                             )
                                             .child({
-                                                let title = div()
+                                                let container = div()
                                                     .flex_1()
                                                     .min_w_0()
                                                     .max_h(px(18.0))
@@ -5878,22 +5902,14 @@ impl Workspace {
                                                         .into()
                                                     })
                                                     .text_size(px(12.0))
-                                                    .line_height(relative(1.5))
-                                                    .child(title);
+                                                    .line_height(relative(1.5));
                                                 // A working session's title breathes in step
-                                                // with running tool rows.
-                                                if working {
-                                                    gpui::AnimationExt::with_animation(
-                                                        title,
-                                                        ("sidebar-title-pulse", sidebar_index),
-                                                        gpui::Animation::new(Duration::from_millis(1400))
-                                                            .repeat_synced()
-                                                            .with_max_fps(20.0),
-                                                        |title, phase| title.opacity(sidebar_title_pulse(phase)),
-                                                    )
-                                                    .into_any_element()
-                                                } else {
-                                                    title.into_any_element()
+                                                // with running tool rows. The pulse is its own
+                                                // view, so a tick redraws only the title instead
+                                                // of the whole workspace.
+                                                match title_pulse {
+                                                    Some(pulse) => container.child(pulse),
+                                                    None => container.child(title),
                                                 }
                                             })
                                             .when(agent_total > 0, |row| row.child(
@@ -8056,6 +8072,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("Workspace");
         Theme::sync_window_background(window, &mut self.window_background);
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing

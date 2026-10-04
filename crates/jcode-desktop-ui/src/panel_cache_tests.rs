@@ -268,3 +268,99 @@ fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(
         51
     );
 }
+
+/// Renders of `name` recorded by `render_stats` on this test's thread.
+fn view_renders(name: &str) -> u64 {
+    crate::render_stats::snapshot()
+        .into_iter()
+        .find(|(view, _)| *view == name)
+        .map_or(0, |(_, stat)| stat.renders)
+}
+
+#[gpui::test]
+fn working_session_animation_ticks_do_not_rebuild_workspace_or_panel(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("working-ticks", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.status = "running_tools".into();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    for _ in 0..3 {
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(34));
+        vcx.run_until_parked();
+    }
+    let workspace_before = view_renders("Workspace");
+    let panel_before = view_renders("Panel");
+    let ring_before = view_renders("TabOutline");
+    let spinner_before = view_renders("Spinner");
+    for _ in 0..30 {
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(17));
+        vcx.run_until_parked();
+    }
+    let workspace = view_renders("Workspace") - workspace_before;
+    let panel = view_renders("Panel") - panel_before;
+    let ring = view_renders("TabOutline") - ring_before;
+    let spinner = view_renders("Spinner") - spinner_before;
+    eprintln!("workspace={workspace} panel={panel} ring={ring} spinner={spinner}");
+    assert!(
+        ring + spinner > 10,
+        "working indicators must keep animating (ring {ring}, spinner {spinner})"
+    );
+    assert!(
+        workspace <= 2 && panel <= 2,
+        "decorative ticks rebuilt Workspace {workspace} and Panel {panel} times in 30 frames"
+    );
+}
+
+#[gpui::test]
+fn running_tool_row_pulses_do_not_rebuild_the_panel(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("running-tool", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &jcode_sdk::ApiEvent::ToolStart {
+                session_id: "running-tool".into(),
+                call_id: "call-1".into(),
+                name: "bash".into(),
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    for _ in 0..3 {
+        vcx.executor().advance_clock(std::time::Duration::from_millis(50));
+        vcx.run_until_parked();
+    }
+    let workspace_before = view_renders("Workspace");
+    let panel_before = view_renders("Panel");
+    let ticker_before = view_renders("Ticker");
+    for _ in 0..20 {
+        vcx.executor().advance_clock(std::time::Duration::from_millis(50));
+        vcx.run_until_parked();
+    }
+    let workspace = view_renders("Workspace") - workspace_before;
+    let panel = view_renders("Panel") - panel_before;
+    let ticker = view_renders("Ticker") - ticker_before;
+    eprintln!("running tool: workspace={workspace} panel={panel} ticker={ticker}");
+    assert!(
+        ticker >= 15,
+        "the running tool's pulse and clock must keep animating ({ticker} ticks)"
+    );
+    assert!(
+        workspace <= 2 && panel <= 4,
+        "a running tool row rebuilt Workspace {workspace} and Panel {panel} times in one second"
+    );
+}

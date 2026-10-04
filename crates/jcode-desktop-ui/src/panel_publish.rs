@@ -328,6 +328,7 @@ struct PublishTooltip(&'static str);
 
 impl Render for PublishTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("PublishTooltip");
         div()
             .debug_selector(|| "publish-desktop-tooltip".into())
             .max_w(px(300.))

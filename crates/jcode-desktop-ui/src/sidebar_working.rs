@@ -26,6 +26,7 @@ impl WorkingTimer {
 
 impl Render for WorkingTimer {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("WorkingTimer");
         div().child(format_working(self.since.elapsed()))
     }
 }

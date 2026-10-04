@@ -2,8 +2,7 @@
 //! No asset loader registration or filesystem access is required.
 
 use crate::theme::Theme;
-use gpui::{Animation, AnimationExt, Div, Rgba, div, prelude::*, px};
-use std::time::Duration;
+use gpui::{Div, Rgba, div, prelude::*, px};
 
 /// A stable-sized icon that never compresses the tool-call label.
 pub(crate) fn render(name: &str) -> Div {
@@ -64,24 +63,35 @@ pub(crate) fn render_badge_with_label(
         )
 }
 
-/// Pulse the entire header together, not just its status glyph. GPUI's
-/// animation wrapper respects reduced motion and stops when the call finishes.
-pub(crate) fn animate_running(header: Div, done: bool, failed: bool) -> gpui::AnyElement {
-    if status(done, failed) == Status::Running {
-        div()
+/// Pulse the entire header together, not just its status glyph.
+///
+/// The header itself is static. `veil`, a [`crate::pulse_text::Ticker`] view
+/// built by [`running_veil`], fades a panel-colored fill over it, so each
+/// pulse frame redraws only that small view, never the transcript the header
+/// lives in. It respects reduced motion and stops when the call finishes.
+pub(crate) fn animate_running(
+    header: Div,
+    done: bool,
+    failed: bool,
+    veil: Option<gpui::AnyView>,
+) -> gpui::AnyElement {
+    match veil {
+        Some(veil) if status(done, failed) == Status::Running => div()
             .debug_selector(|| "tool-row-running".into())
-            .child(
-                header.with_animation(
-                    "tool-row-pulse",
-                    Animation::new(Duration::from_millis(1400))
-                        .repeat_synced()
-                        .with_max_fps(20.0),
-                    |header, phase| header.opacity(pulse_opacity(phase)),
-                ),
-            )
-            .into_any_element()
-    } else {
-        header.into_any_element()
+            .relative()
+            .child(header)
+            .child(veil)
+            .into_any_element(),
+        _ => header.into_any_element(),
+    }
+}
+
+/// The breathing overlay for a running header on a `background` surface.
+pub(crate) fn running_veil(background: Rgba) -> crate::pulse_text::Kind {
+    crate::pulse_text::Kind::PulseVeil {
+        color: background,
+        period: crate::pulse_text::TOOL_PULSE_PERIOD,
+        curve: pulse_opacity,
     }
 }
 

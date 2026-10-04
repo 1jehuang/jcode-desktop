@@ -72,6 +72,11 @@ struct Sample {
     input_max_ms: Option<f64>,
     coalesced_input_max: u64,
     mid_draw_inputs: u64,
+    /// Views whose `render` ran in this window, busiest first:
+    /// `[name, renders, total_ms, max_ms_ever]`. Answers "what is redrawing?"
+    views: Vec<(&'static str, u64, f64, f64)>,
+    /// Wake and notify causes counted in this window, most frequent first.
+    causes: Vec<(&'static str, u64)>,
 }
 
 fn delta(
@@ -117,6 +122,8 @@ fn delta(
             .1
             .mid_draw_events_dropped
             .saturating_sub(before.1.mid_draw_events_dropped),
+        views: Vec::new(),
+        causes: Vec::new(),
     }
 }
 
@@ -159,6 +166,8 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
             return;
         };
         let mut previous = None;
+        let mut previous_views = Vec::new();
+        let mut previous_causes = Vec::new();
         let mut capture_id = String::new();
         let mut sampled_at = Instant::now();
         let mut active = false;
@@ -195,6 +204,8 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
                 capture_id = request.capture_id;
                 previous = None;
             }
+            let views = crate::render_stats::snapshot();
+            let causes = crate::render_stats::causes();
             if let Some(before) = previous.as_ref() {
                 let mut sample = delta(
                     capture_id.clone(),
@@ -207,6 +218,18 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
                 sample.sampler_id = sampler_id.clone();
                 sample.window_active = window_active;
                 sample.thermal_state = thermal_state.clone();
+                sample.views = crate::render_stats::delta(&previous_views, &views)
+                    .into_iter()
+                    .map(|(name, stat)| {
+                        (
+                            name,
+                            stat.renders,
+                            stat.nanos as f64 / 1_000_000.0,
+                            stat.max_nanos as f64 / 1_000_000.0,
+                        )
+                    })
+                    .collect();
+                sample.causes = crate::render_stats::cause_delta(&previous_causes, &causes);
                 let output = path.with_file_name(format!(
                     "jcode-desktop-profile-{}-{}.jsonl",
                     std::process::id(),
@@ -220,6 +243,8 @@ pub fn spawn(window: &Window, cx: &App) -> Task<()> {
                     .await;
             }
             previous = Some(current);
+            previous_views = views;
+            previous_causes = causes;
             sampled_at = now;
         }
     })

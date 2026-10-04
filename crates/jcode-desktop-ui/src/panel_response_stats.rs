@@ -132,6 +132,7 @@ fn tokens(value: u64) -> String {
 struct StatsTooltip(String);
 impl Render for StatsTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("StatsTooltip");
         div()
             .px_3()
             .py_2()

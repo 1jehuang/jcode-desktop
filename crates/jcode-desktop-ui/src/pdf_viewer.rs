@@ -191,6 +191,7 @@ impl PdfViewer {
 
 impl Render for PdfViewer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("PdfViewer");
         let count = self.document.as_ref().map(|document| document.page_count());
         let toolbar = div()
             .flex_none()

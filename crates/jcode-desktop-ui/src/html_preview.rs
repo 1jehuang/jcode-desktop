@@ -367,6 +367,7 @@ impl Preview {
 }
 impl Render for Preview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("Preview");
         let theme = Theme::global();
         let copy = self.source.clone();
         let mut root = div()

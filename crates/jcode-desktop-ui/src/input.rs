@@ -2142,6 +2142,7 @@ impl Element for TextElement {
 
 impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("PromptInput");
         #[cfg(test)]
         crate::workspace::panel_cache_tests::record_render(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);

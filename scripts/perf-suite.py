@@ -109,6 +109,8 @@ def summarize(frames, before, after):
         values = [f[field] for f in frames if f.get(field) is not None]
         return max(values) if values else None
     present_mean = mean(present_weighted)
+    views = profile.view_totals(frames)
+    causes = profile.cause_totals(frames)
     return dict(
         seconds=round(seconds, 3),
         draws=draws,
@@ -132,6 +134,9 @@ def summarize(frames, before, after):
             if elapsed and 'main_thread_ticks' in after else None
         ),
         rss_mb=after['rss_kb'] / 1024,
+        # Which views rebuilt their element trees, and what that cost.
+        views=views,
+        causes=causes,
     )
 
 
@@ -387,6 +392,12 @@ def main():
               f'{cell(s["draw_p95_max_ms"], 8, 2)} {cell(s["draw_max_ms"], 8, 2)} '
               f'{cell(s["main_thread_cpu_percent"], 8, 1)} {cell(s["cpu_percent"], 8, 1)} '
               f'{cell(s["rss_mb"], 7, 0)}')
+
+    for key in sorted(runs):
+        first = runs[key][0]
+        print(f'\nViews rendered in {key} (first run, render() time only):')
+        profile.print_view_totals(first.get('views') or {}, first['seconds'] or 1)
+        profile.print_cause_totals(first.get('causes') or {}, first['seconds'] or 1)
 
     if args.baseline:
         worse = compare(summary, json.loads(args.baseline.read_text()), args.tolerance)

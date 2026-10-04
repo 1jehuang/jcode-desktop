@@ -791,6 +791,7 @@ fn stats((added, removed): (usize, usize)) -> AnyElement {
 
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("DiffView");
         let focus = self.selection.read(cx).focus_handle();
         let mut view = div()
             .id("diff-view")

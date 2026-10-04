@@ -120,6 +120,7 @@ impl TypeInLabel {
 
 impl Render for TypeInLabel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("TypeInLabel");
         if cx.reduce_motion() || crate::config::get().appearance.reduce_motion {
             self.tick = None;
             self.reveal.finish();

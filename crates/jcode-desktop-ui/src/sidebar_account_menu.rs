@@ -1,15 +1,28 @@
 //! In-app Jcode account menu, opened from the sidebar account pill.
 //!
 //! Plan, monthly usage, the spending limit, billing, and sign-out are handled
-//! here through the Jcode SDK instead of sending people to the website. Only
-//! the Stripe billing portal (payment methods, invoices, cancellation) still
-//! opens in the browser, because card entry must happen on Stripe.
+//! here through the Jcode SDK instead of sending people to the website.
+//!
+//! Upgrading is built to need as little as possible from the person:
+//! - Subscribers switch plans in place. The card already on the subscription
+//!   is used, so nothing is entered.
+//! - New subscribers pick a plan here and finish in Stripe Checkout, which
+//!   offers Link and saved cards. Card details are never typed into the app.
+//!   The menu watches the account and updates by itself once payment lands.
+//! - An expired sign-in never signs anyone out. It offers "Sign in again",
+//!   which replaces the key in place.
 use super::*;
 use jcode_base::subscription_api::{self as api, AccountApiError, BillingStatus, SubscriptionMe};
 use jcode_base::subscription_catalog as subscription;
 
 /// Monthly spending limits offered as one-tap choices, in dollars.
 const LIMIT_CHOICES: [u64; 5] = [25, 50, 100, 250, 500];
+/// Monthly plans offered as one-tap choices, in dollars. Each $10 buys $20 of
+/// included usage.
+const PLAN_CHOICES: [u64; 5] = [10, 20, 50, 100, 200];
+/// How long to watch for a Checkout payment before giving up quietly.
+const CHECKOUT_WATCH: Duration = Duration::from_secs(15 * 60);
+const CHECKOUT_POLL: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Snapshot {
@@ -24,6 +37,8 @@ pub(super) struct Snapshot {
 enum Busy {
     Loading,
     Limit(u64),
+    Plan(u64),
+    Checkout(u64),
     Portal,
     SigningOut,
 }
@@ -36,7 +51,14 @@ pub(super) struct State {
     error: Option<String>,
     notice: Option<String>,
     confirm_sign_out: bool,
+    /// A plan switch waiting for a second tap to confirm.
+    confirm_plan: Option<u64>,
+    /// The plan bought in a Checkout that is still open in the browser.
+    awaiting_checkout: Option<u64>,
+    /// The stored key was rejected. Offer sign-in, never sign out.
+    needs_sign_in: bool,
     task: Option<gpui::Task<()>>,
+    watch_task: Option<gpui::Task<()>>,
 }
 
 impl State {
@@ -57,13 +79,16 @@ pub(super) fn fixture_enabled() -> bool {
 }
 
 fn fixture() -> Option<Snapshot> {
+    let subscribed =
+        std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_MENU_PLAN").as_deref() != Ok("none");
     fixture_enabled().then(|| Snapshot {
         email: "ada@example.com".into(),
-        plan: Some("Pro"),
+        plan: subscribed.then_some("Pro"),
         status: "active".into(),
         used_usd: 12.34,
         billing: Some(BillingStatus {
             monthly_hard_cap_cents: 5_000,
+            plan_usd: subscribed.then_some(20),
             period: api::BillingPeriod {
                 resets_at: Some("2026-11-01T00:00:00.000Z".into()),
                 billable_microusd: 12_340_000,
@@ -102,11 +127,12 @@ fn credentials() -> Result<(String, String), String> {
     Ok((api::configured_api_base(), key))
 }
 
+/// Marker for a rejected key. The menu turns it into a "Sign in again" action.
+const SIGN_IN_EXPIRED: &str = "Your Jcode sign-in has expired.";
+
 fn describe(error: AccountApiError) -> String {
     match error {
-        AccountApiError::Unauthorized => {
-            "This sign-in is no longer valid. Sign out and sign in again.".into()
-        }
+        AccountApiError::Unauthorized => SIGN_IN_EXPIRED.into(),
         AccountApiError::Offline(_) => "Could not reach Jcode. Check your connection.".into(),
         AccountApiError::Http {
             code: Some(code), ..
@@ -116,6 +142,14 @@ fn describe(error: AccountApiError) -> String {
         AccountApiError::Http {
             code: Some(code), ..
         } if code == "invalid_hard_cap" => "That limit is not allowed.".into(),
+        AccountApiError::Http {
+            code: Some(code), ..
+        } if code == "already_activated" => {
+            "You already have a plan. Pick a new one to switch.".into()
+        }
+        AccountApiError::Http {
+            code: Some(code), ..
+        } if code == "not_subscribed" => "Choose a plan to subscribe first.".into(),
         other => other.to_string(),
     }
 }
@@ -138,6 +172,10 @@ fn load_snapshot() -> Result<Snapshot, String> {
             billing,
         })
     })?
+}
+
+fn checkout_notice(plan_usd: u64) -> String {
+    format!("Finish the ${plan_usd}/month plan in your browser. This updates by itself.")
 }
 
 /// "Nov 1" from an RFC 3339 timestamp. Falls back to nothing on bad input.
@@ -198,6 +236,39 @@ impl Snapshot {
     fn limit_cents(&self) -> Option<u64> {
         self.billing.as_ref().map(|b| b.monthly_hard_cap_cents)
     }
+
+    /// The subscribed monthly plan in dollars, if any.
+    fn plan_usd(&self) -> Option<u64> {
+        self.billing.as_ref().and_then(|b| b.plan_usd)
+    }
+
+    /// Accounts on an older subscription. They keep their plan but cannot
+    /// open a new Checkout or switch through the dollar plans.
+    fn legacy(&self) -> bool {
+        self.billing
+            .as_ref()
+            .is_some_and(|b| b.activation.state == "legacy")
+    }
+
+    /// Has a Stripe customer to manage, either a dollar plan or a legacy one.
+    fn has_billing(&self) -> bool {
+        self.plan_usd().is_some() || self.legacy()
+    }
+
+    fn plan_label(&self) -> String {
+        match (self.plan_usd(), self.plan) {
+            (Some(usd), _) => format!("${usd}/month plan"),
+            (None, Some(tier)) => format!("{tier} plan"),
+            (None, None) => "No plan yet".into(),
+        }
+    }
+}
+
+impl State {
+    fn fail(&mut self, error: String) {
+        self.needs_sign_in = error == SIGN_IN_EXPIRED;
+        self.error = Some(error);
+    }
 }
 
 impl Workspace {
@@ -205,7 +276,10 @@ impl Workspace {
         let menu = &mut self.account_menu;
         menu.open = !menu.open;
         menu.confirm_sign_out = false;
-        menu.notice = None;
+        menu.confirm_plan = None;
+        if menu.awaiting_checkout.is_none() {
+            menu.notice = None;
+        }
         if menu.open {
             self.refresh_account_menu(cx);
         }
@@ -218,6 +292,7 @@ impl Workspace {
         }
         self.account_menu.open = false;
         self.account_menu.confirm_sign_out = false;
+        self.account_menu.confirm_plan = None;
         cx.notify();
     }
 
@@ -234,8 +309,11 @@ impl Workspace {
                 let menu = &mut this.account_menu;
                 menu.busy = None;
                 match result {
-                    Ok(snapshot) => menu.snapshot = Some(snapshot),
-                    Err(error) => menu.error = Some(error),
+                    Ok(snapshot) => {
+                        menu.needs_sign_in = false;
+                        menu.snapshot = Some(snapshot);
+                    }
+                    Err(error) => menu.fail(error),
                 }
                 cx.notify();
             });
@@ -284,12 +362,188 @@ impl Workspace {
                         }
                         menu.notice = Some(format!("Monthly limit set to ${dollars_limit}"));
                     }
-                    Err(error) => menu.error = Some(error),
+                    Err(error) => menu.fail(error),
                 }
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// Tap a plan. Subscribers confirm and switch in place; everyone else goes
+    /// to Stripe Checkout and the menu watches for the payment.
+    fn choose_plan(&mut self, plan_usd: u64, cx: &mut Context<Self>) {
+        if self.account_menu.busy.is_some() {
+            return;
+        }
+        let current = self
+            .account_menu
+            .snapshot
+            .as_ref()
+            .and_then(Snapshot::plan_usd);
+        if current == Some(plan_usd) {
+            return;
+        }
+        if current.is_some() {
+            if self.account_menu.confirm_plan != Some(plan_usd) {
+                self.account_menu.confirm_plan = Some(plan_usd);
+                self.account_menu.notice = None;
+                self.account_menu.error = None;
+                cx.notify();
+                return;
+            }
+            self.switch_plan(plan_usd, cx);
+        } else {
+            self.start_checkout(plan_usd, cx);
+        }
+    }
+
+    fn switch_plan(&mut self, plan_usd: u64, cx: &mut Context<Self>) {
+        self.account_menu.confirm_plan = None;
+        if fixture_enabled() {
+            if let Some(billing) = self
+                .account_menu
+                .snapshot
+                .as_mut()
+                .and_then(|s| s.billing.as_mut())
+            {
+                billing.plan_usd = Some(plan_usd);
+                billing.monthly_hard_cap_cents = plan_usd * 1_000;
+            }
+            self.account_menu.notice = Some(format!("Switched to ${plan_usd}/month"));
+            cx.notify();
+            return;
+        }
+        self.account_menu.busy = Some(Busy::Plan(plan_usd));
+        self.account_menu.error = None;
+        self.account_menu.notice = None;
+        let change = cx.background_executor().spawn(async move {
+            let (base, key) = credentials()?;
+            let client = client()?;
+            run(api::change_plan_with(&client, &base, &key, plan_usd))?.map_err(describe)
+        });
+        self.account_menu.task = Some(cx.spawn(async move |this, cx| {
+            let result = change.await;
+            let _ = this.update(cx, |this, cx| {
+                this.account_menu.busy = None;
+                match result {
+                    Ok(change) => {
+                        let when = if change.effective == "next_invoice" {
+                            " from your next bill"
+                        } else {
+                            ""
+                        };
+                        this.account_menu.notice =
+                            Some(format!("Switched to ${}/month{when}", change.plan_usd));
+                        this.refresh_account_menu(cx);
+                    }
+                    Err(error) => this.account_menu.fail(error),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn start_checkout(&mut self, plan_usd: u64, cx: &mut Context<Self>) {
+        if fixture_enabled() {
+            self.account_menu.awaiting_checkout = Some(plan_usd);
+            self.account_menu.notice = Some(checkout_notice(plan_usd));
+            cx.notify();
+            return;
+        }
+        self.account_menu.busy = Some(Busy::Checkout(plan_usd));
+        self.account_menu.error = None;
+        self.account_menu.notice = None;
+        let checkout = cx.background_executor().spawn(async move {
+            let (base, key) = credentials()?;
+            let client = client()?;
+            run(api::start_subscription_checkout_with(
+                &client, &base, &key, plan_usd,
+            ))?
+            .map_err(describe)
+        });
+        self.account_menu.task = Some(cx.spawn(async move |this, cx| {
+            let result = checkout.await;
+            let _ = this.update(cx, |this, cx| {
+                this.account_menu.busy = None;
+                match result {
+                    Ok(url) => {
+                        cx.open_url(&url);
+                        this.account_menu.awaiting_checkout = Some(plan_usd);
+                        this.account_menu.notice = Some(checkout_notice(plan_usd));
+                        this.watch_checkout(cx);
+                    }
+                    Err(error) => this.account_menu.fail(error),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Poll the account until the Checkout payment activates a plan, then
+    /// update the menu and the sidebar pill without any action.
+    fn watch_checkout(&mut self, cx: &mut Context<Self>) {
+        let started = Instant::now();
+        self.account_menu.watch_task = Some(cx.spawn(async move |this, cx| {
+            while started.elapsed() < CHECKOUT_WATCH {
+                cx.background_executor().timer(CHECKOUT_POLL).await;
+                let load = cx.background_executor().spawn(async { load_snapshot() });
+                let Ok(snapshot) = load.await else { continue };
+                let activated = snapshot.plan_usd().is_some();
+                let keep_going = this
+                    .update(cx, |this, cx| {
+                        let menu = &mut this.account_menu;
+                        if menu.awaiting_checkout.is_none() {
+                            return false;
+                        }
+                        if activated {
+                            let plan = snapshot.plan_usd().unwrap_or_default();
+                            menu.snapshot = Some(snapshot);
+                            menu.awaiting_checkout = None;
+                            menu.error = None;
+                            menu.notice = Some(format!("You're on the ${plan}/month plan"));
+                            sidebar_account::JcodeAccount::invalidate();
+                            accounts::request_refresh();
+                            cx.notify();
+                            return false;
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |this, cx| {
+                if this.account_menu.awaiting_checkout.take().is_some() {
+                    this.account_menu.notice =
+                        Some("Checkout not finished yet. Tap a plan to try again.".into());
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn sign_in_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.account_menu.open = false;
+        let source = self
+            .slots
+            .get(self.active)
+            .filter(|slot| !slot.closing)
+            .map(|slot| slot.panel.entity_id());
+        match source {
+            Some(source) => self.open_accounts(
+                &OpenAccounts {
+                    source,
+                    login_command: Some("/login jcode".into()),
+                },
+                window,
+                cx,
+            ),
+            None => self.open_account_sign_in(window, cx),
+        }
     }
 
     fn open_billing_portal(&mut self, cx: &mut Context<Self>) {
@@ -312,7 +566,7 @@ impl Workspace {
                         cx.open_url(&url);
                         this.account_menu.notice = Some("Billing opened in your browser".into());
                     }
-                    Err(error) => this.account_menu.error = Some(error),
+                    Err(error) => this.account_menu.fail(error),
                 }
                 cx.notify();
             });
@@ -374,11 +628,13 @@ impl Workspace {
             .or(account.email.clone())
             .filter(|_| show_email)
             .unwrap_or_else(|| "Jcode account".into());
-        let plan = snapshot
-            .and_then(|s| s.plan)
-            .or(account.plan)
-            .map(|plan| format!("{plan} plan"))
-            .unwrap_or_else(|| "Usage-based".into());
+        let plan = match snapshot {
+            Some(snapshot) => snapshot.plan_label(),
+            None => account
+                .plan
+                .map(|plan| format!("{plan} plan"))
+                .unwrap_or_else(|| "Jcode account".into()),
+        };
         let status = snapshot
             .map(|s| s.status.as_str())
             .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("active"))
@@ -468,6 +724,78 @@ impl Workspace {
                 }),
         });
 
+        // Plan: switch in place, or upgrade through Checkout.
+        if let Some(snapshot) = snapshot.filter(|s| !s.legacy()) {
+            let current = snapshot.plan_usd();
+            let mut chips = div().flex().flex_wrap().gap_1();
+            for amount in PLAN_CHOICES {
+                let selected = current == Some(amount);
+                let confirming = menu.confirm_plan == Some(amount);
+                let pending = matches!(
+                    menu.busy,
+                    Some(Busy::Plan(p) | Busy::Checkout(p)) if p == amount
+                ) || menu.awaiting_checkout == Some(amount);
+                chips = chips.child(
+                    div()
+                        .id(("account-plan", amount as usize))
+                        .debug_selector(move || format!("account-plan-{amount}"))
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(if selected {
+                            theme.ACCENT
+                        } else if confirming || pending {
+                            theme.ACCENT_DIM
+                        } else {
+                            theme.INLINE_CODE_BG
+                        })
+                        .text_color(if selected {
+                            theme.BG
+                        } else if confirming || pending {
+                            theme.TEXT
+                        } else {
+                            theme.TEXT_DIM
+                        })
+                        .when(!selected, |el| {
+                            el.hover(|el| el.bg(theme.HEADER_BG).text_color(theme.TEXT))
+                        })
+                        .child(format!("${amount}"))
+                        .on_click(cx.listener(move |this, _, _, cx| this.choose_plan(amount, cx))),
+                );
+            }
+            let heading = if current.is_some() {
+                "Plan · per month"
+            } else {
+                "Upgrade · per month"
+            };
+            let hint = match (menu.confirm_plan, current) {
+                (Some(next), Some(_)) => Some(format!(
+                    "Tap ${next} again to switch. Your card on file is used from the next bill."
+                )),
+                (_, None) if menu.awaiting_checkout.is_none() => {
+                    Some("Each $10 includes $20 of usage. Pay with Link or a saved card.".into())
+                }
+                _ => None,
+            };
+            let mut section = div()
+                .debug_selector(|| "account-menu-plans".into())
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_color(theme.TEXT_DIM).child(heading))
+                .child(chips);
+            if let Some(hint) = hint {
+                section = section.child(
+                    div()
+                        .debug_selector(|| "account-menu-plan-hint".into())
+                        .text_color(theme.TEXT_DIM)
+                        .child(hint),
+                );
+            }
+            body = body.child(section);
+        }
+
         // Monthly spending limit.
         if let Some(current) = snapshot.and_then(Snapshot::limit_cents) {
             let mut chips = div().flex().flex_wrap().gap_1();
@@ -548,23 +876,30 @@ impl Workspace {
                 .child(label)
         };
         let busy = menu.busy;
+        let subscribed = snapshot.is_some_and(Snapshot::has_billing);
+        let mut actions = div().flex().flex_col().gap_1();
+        if menu.needs_sign_in {
+            actions = actions.child(
+                action("account-menu-sign-in-again", "Sign in again".into(), false)
+                    .on_click(cx.listener(|this, _, window, cx| this.sign_in_again(window, cx))),
+            );
+        }
         body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    action(
-                        "account-menu-billing",
-                        if busy == Some(Busy::Portal) {
-                            "Opening billing…".into()
-                        } else {
-                            "Payment & invoices ↗".into()
-                        },
-                        false,
+            actions
+                .when(subscribed, |el| {
+                    el.child(
+                        action(
+                            "account-menu-billing",
+                            if busy == Some(Busy::Portal) {
+                                "Opening billing…".into()
+                            } else {
+                                "Payment & invoices ↗".into()
+                            },
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.open_billing_portal(cx))),
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.open_billing_portal(cx))),
-                )
+                })
                 .child(
                     action(
                         "account-menu-refresh",
@@ -635,6 +970,35 @@ mod tests {
         assert_eq!(s.usage_line(), "$3.50 used");
         assert_eq!(s.fraction(), None);
         assert_eq!(s.limit_cents(), None);
+    }
+
+    #[test]
+    fn plan_label_prefers_the_subscribed_dollar_plan() {
+        let mut s = snapshot(5_000, 0);
+        assert_eq!(s.plan_label(), "Pro plan");
+        s.billing.as_mut().unwrap().plan_usd = Some(50);
+        assert_eq!(s.plan_usd(), Some(50));
+        assert_eq!(s.plan_label(), "$50/month plan");
+        s.plan = None;
+        s.billing = None;
+        assert_eq!(s.plan_label(), "No plan yet");
+    }
+
+    #[test]
+    fn legacy_accounts_keep_billing_but_hide_new_checkout() {
+        let mut s = snapshot(10_000, 0);
+        assert!(!s.legacy() && !s.has_billing());
+        s.billing.as_mut().unwrap().activation.state = "legacy".into();
+        assert!(s.legacy() && s.has_billing());
+    }
+
+    #[test]
+    fn rejected_keys_offer_sign_in_instead_of_signing_out() {
+        let mut state = State::default();
+        state.fail(describe(AccountApiError::Unauthorized));
+        assert!(state.needs_sign_in);
+        state.fail(describe(AccountApiError::Offline("x".into())));
+        assert!(!state.needs_sign_in);
     }
 
     #[test]

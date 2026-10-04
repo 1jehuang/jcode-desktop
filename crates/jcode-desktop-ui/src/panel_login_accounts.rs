@@ -116,6 +116,7 @@ struct AccountDragPreview(String);
 
 impl Render for AccountDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("AccountDragPreview");
         let theme = Theme::global();
         div()
             .debug_selector(|| "login-account-drag-preview".into())

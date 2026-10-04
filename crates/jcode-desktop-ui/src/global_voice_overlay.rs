@@ -238,6 +238,7 @@ impl VoiceOverlay {
 
 impl Render for VoiceOverlay {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("VoiceOverlay");
         let theme = Theme::global();
         let decided = self.snapshot.decided;
         div()

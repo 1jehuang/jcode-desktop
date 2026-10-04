@@ -216,6 +216,7 @@ impl Drop for VoiceState {
 struct VoiceTooltip(String);
 impl Render for VoiceTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("VoiceTooltip");
         div()
             .debug_selector(|| "voice-shortcut-tooltip".into())
             .max_w(px(300.))
@@ -1198,6 +1199,7 @@ fn voice_swap_phase(epoch: Instant, now: Instant) -> f32 {
 
 impl Render for VoiceSwap {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("VoiceSwap");
         let t = voice_swap_phase(self.epoch, cx.background_executor().now());
         let (mic_opacity, mic_offset) = voice_swap_frame(t, false);
         let (key_opacity, key_offset) = voice_swap_frame(t, true);

@@ -10,7 +10,24 @@ pub(crate) struct PreviewHeader {
 }
 
 impl TimedPreview {
-    pub(super) fn render_header(&self) -> gpui::Div {
+    pub(super) fn render_header(&mut self, cx: &mut gpui::Context<Self>) -> gpui::Div {
+        let running = !self.done && !self.header.review.failed;
+        if !running {
+            self.running_veil = None;
+        }
+        let veil = running.then(|| {
+            gpui::AnyView::from(
+                self.running_veil
+                    .get_or_insert_with(|| {
+                        cx.new(|_| {
+                            crate::pulse_text::Ticker::new(crate::tool_icon::running_veil(
+                                Theme::global().CODE_HEADER_BG,
+                            ))
+                        })
+                    })
+                    .clone(),
+            )
+        });
         let theme = Theme::global();
         let index = self.index;
         let countdown = self.timer.state() == EditPreviewState::Countdown;
@@ -120,6 +137,7 @@ impl TimedPreview {
                     .child(counts),
                 self.done,
                 self.header.review.failed,
+                veil,
             ))
             .child(metadata)
     }

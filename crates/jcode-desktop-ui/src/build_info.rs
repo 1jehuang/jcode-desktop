@@ -97,6 +97,7 @@ pub(crate) struct BuildTooltip;
 
 impl Render for BuildTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("BuildTooltip");
         let theme = Theme::global();
         div()
             .debug_selector(|| "panel-build-tooltip".into())

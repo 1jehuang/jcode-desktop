@@ -481,6 +481,7 @@ impl TerminalPanel {
 
 impl Render for TerminalPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("TerminalPanel");
         if self._focus_subscriptions.is_empty() {
             self._focus_subscriptions
                 .push(cx.on_focus(&self.focus, window, |this, _, cx| {

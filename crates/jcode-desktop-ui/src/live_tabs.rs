@@ -353,6 +353,7 @@ pub(super) struct TabTooltip(pub(super) gpui::SharedString);
 
 impl Render for TabTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("TabTooltip");
         div()
             .debug_selector(|| "live-session-tab-tooltip".into())
             .max_w(px(360.0))
