@@ -190,7 +190,12 @@ fn startup_committed_layout_round_trips_reload_and_empty_history_loading_frame(
     vcx.simulate_input("Short first prompt");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
-    assert_eq!(vcx.debug_bounds("prompt-input"), Some(fresh));
+    let committed = vcx.debug_bounds("prompt-input").unwrap();
+    // The editor stays where the welcome screen put it, and drops to the
+    // docked single-row shape as soon as the conversation starts.
+    assert_eq!(committed.origin, fresh.origin);
+    assert!(committed.size.height < fresh.size.height);
+    let fresh = committed;
     vcx.simulate_input("Unsent followup survives reload");
     let snapshot = panel.read_with(vcx, |panel, cx| panel.snapshot(cx));
     let serialized = serde_json::to_vec(&snapshot).unwrap();
@@ -314,20 +319,25 @@ fn startup_each_native_submission_paints_the_newest_row(cx: &mut gpui::TestAppCo
 }
 
 #[gpui::test]
-fn startup_composer_shrinks_to_one_row_once_transcript_fills_space(
+fn startup_composer_keeps_docked_shape_before_transcript_fills_space(
     cx: &mut gpui::TestAppContext,
 ) {
     let (panel, vcx) = focused_startup_panel(cx);
     let handle = vcx.update(|window, _| window.window_handle());
     vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
     vcx.run_until_parked();
+    let welcome = vcx.debug_bounds("prompt-input").unwrap();
+    assert!(
+        welcome.size.height >= px(crate::input::SPACIOUS_MIN_HEIGHT),
+        "the welcome screen keeps the two-row composer"
+    );
     vcx.simulate_input("Short question");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
-    let spacious = vcx.debug_bounds("prompt-input").unwrap();
+    let short = vcx.debug_bounds("prompt-input").unwrap();
     assert!(
-        spacious.size.height >= px(crate::input::SPACIOUS_MIN_HEIGHT),
-        "short transcript should keep the two-row composer"
+        short.size.height < welcome.size.height - px(10.),
+        "a short transcript already uses the docked shape: {short:?} vs {welcome:?}"
     );
     panel.update(vcx, |panel, cx| {
         panel.streaming_text = (0..40)
@@ -338,13 +348,15 @@ fn startup_composer_shrinks_to_one_row_once_transcript_fills_space(
     for _ in 0..4 {
         vcx.run_until_parked();
     }
-    let compact = vcx.debug_bounds("prompt-input").unwrap();
+    let full = vcx.debug_bounds("prompt-input").unwrap();
     assert!(
-        compact.size.height < spacious.size.height - px(10.),
-        "full transcript should shrink the composer: {compact:?} vs {spacious:?}"
+        (full.size.height - short.size.height).abs() < px(1.),
+        "the composer shape is the same before and after the transcript fills: {full:?} vs {short:?}"
     );
-    assert!(panel.read_with(vcx, |panel, _| panel
-        .startup_layout
-        .as_ref()
-        .is_some_and(|layout| layout.compact)));
+    assert!(panel.read_with(vcx, |panel, _| {
+        panel
+            .startup_layout
+            .as_ref()
+            .is_some_and(|layout| layout.compact)
+    }));
 }

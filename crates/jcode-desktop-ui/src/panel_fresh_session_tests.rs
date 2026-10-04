@@ -52,8 +52,13 @@ fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
     assert!(vcx.debug_bounds("fresh-session").is_none());
     let submitted = vcx.debug_bounds("prompt-input").expect("input paints");
     assert_eq!(
-        submitted, input,
-        "submission must not move or shrink the editor"
+        (submitted.origin, submitted.size.width),
+        (input.origin, input.size.width),
+        "submission must not move the editor"
+    );
+    assert!(
+        submitted.size.height < input.size.height,
+        "a started conversation uses the docked single-row shape"
     );
     let row = vcx.debug_bounds("transcript-row-0").expect("prompt paints");
     let transcript = vcx.debug_bounds("transcript").unwrap();
@@ -112,7 +117,11 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
             cx.notify();
         });
         vcx.run_until_parked();
-        assert_eq!(vcx.debug_bounds("prompt-input"), Some(initial));
+        // The editor stays put but takes the docked single-row shape.
+        let docked = vcx.debug_bounds("prompt-input").unwrap();
+        assert_eq!(docked.origin, initial.origin);
+        assert!(docked.size.height < initial.size.height);
+        let initial = docked;
         panel.update(vcx, |panel, cx| {
             panel.streaming_text = "Small response".into();
             cx.notify();

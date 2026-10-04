@@ -4279,17 +4279,16 @@ impl Render for Panel {
                 layout.committed = true;
             }
         }
-        let startup_spacious = self
-            .startup_layout
-            .as_ref()
-            .is_some_and(|layout| !layout.compact);
-        if self.input.read(cx).needs_layout_update(
-            fresh_session || startup_spacious,
-            composer::VOICE_TRAILING_SPACE,
-        ) {
+        if self
+            .input
+            .read(cx)
+            .needs_layout_update(fresh_session, composer::VOICE_TRAILING_SPACE)
+        {
             self.input.update(cx, |input, cx| {
-                // Two rows only while the transcript leaves room for them.
-                input.set_spacious(fresh_session || startup_spacious, cx);
+                // Two rows only on the welcome screen. Once a conversation
+                // starts the composer keeps its compact docked shape, even
+                // before the transcript reaches it.
+                input.set_spacious(fresh_session, cx);
                 input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
             });
         }
