@@ -161,6 +161,17 @@ pub fn ensure_release_check() {
     }
 }
 
+/// Forget the cached release result so the next render checks again.
+/// An in-flight check is left alone.
+pub fn recheck_release() {
+    let mut state = release_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if *state != ReleaseStatus::Checking {
+        *state = ReleaseStatus::Unknown;
+    }
+}
+
 /// What the updater is doing right now, in the user's terms.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum UpdateState {

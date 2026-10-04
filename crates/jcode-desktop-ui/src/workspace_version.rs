@@ -29,6 +29,17 @@ pub(super) fn pill_width() -> f32 {
 }
 
 impl Workspace {
+    /// Clicking the version pill: refresh the release check and ask the
+    /// platform updater to check, download, or install whatever is next.
+    fn check_and_apply_update() {
+        updates::recheck_release();
+        if updates::request_now() == updates::UpdateRequest::Unavailable {
+            updates::set(UpdateState::Failed {
+                message: "Automatic updates are unavailable in this build. Install the latest Desktop release manually.".into(),
+            });
+        }
+    }
+
     pub(super) fn render_version_header(
         &self,
         width: f32,
@@ -61,8 +72,19 @@ impl Workspace {
             .items_center()
             .gap(px(4.0))
             .occlude()
+            .cursor_pointer()
+            .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.08)))
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                cx.stop_propagation();
+                window.prevent_default();
+            })
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+                Self::check_and_apply_update();
+                cx.notify();
+            }))
             .tooltip(move |_, cx| {
-                cx.new(|_| live_tabs::TabTooltip(if detail == label { label.clone() } else { format!("{label}\n{detail}") }.into()))
+                cx.new(|_| live_tabs::TabTooltip(format!("{}\nClick to check for and apply updates", if detail == label { label.clone() } else { format!("{label}\n{detail}") }).into()))
                     .into()
             })
             .child(
@@ -95,19 +117,6 @@ impl Workspace {
                         .text_size(px(9.0))
                         .cursor_pointer()
                         .hover(|el| el.bg(Theme::global().ACCENT.opacity(0.22)))
-                        .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                            cx.stop_propagation();
-                            window.prevent_default();
-                        })
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.stop_propagation();
-                            if updates::request_now() == updates::UpdateRequest::Unavailable {
-                                updates::set(UpdateState::Failed {
-                                    message: "Automatic updates are unavailable in this build. Install the latest Desktop release manually.".into(),
-                                });
-                            }
-                            cx.notify();
-                        }))
                         .child(action),
                 )
             })
@@ -233,6 +242,21 @@ mod tests {
             vcx.debug_bounds("update-chip").is_none(),
             "workspace uses header, not bottom overlay"
         );
+        // Clicking the version text itself also checks for and applies updates.
+        updates::clear_test_actions();
+        updates::set_release_status(ReleaseStatus::Current {
+            latest: "1.0.0".into(),
+        });
+        unsafe {
+            updates::jcode_update_register_actions(check, check);
+        }
+        draw(vcx);
+        let build = vcx.debug_bounds("workspace-build").unwrap();
+        let before = REQUESTS.load(Ordering::SeqCst);
+        vcx.simulate_click(build.center(), gpui::Modifiers::default());
+        draw(vcx);
+        assert_eq!(REQUESTS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(updates::current(), UpdateState::Checking);
         updates::clear_test_actions();
         updates::set_release_status(ReleaseStatus::Source);
     }
