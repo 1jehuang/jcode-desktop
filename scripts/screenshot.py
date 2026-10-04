@@ -46,6 +46,8 @@ def main():
                         help="show optional first-launch account sign-in without network access")
     parser.add_argument("--account-sign-in-docked", action="store_true",
                         help="with --account-sign-in, show the email tab docked over the demo composer")
+    parser.add_argument("--account-menu", action="store_true",
+                        help="open the in-app Jcode account menu with an offline signed-in fixture")
     parser.add_argument("--account-sign-in-interact", action="store_true",
                         help="verify account welcome, waiting, skip and Settings re-entry offline")
     parser.add_argument("--beta-notice", action="store_true",
@@ -474,6 +476,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
         if args.account_sign_in_docked:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_DOCKED"] = "1"
+        if args.account_menu:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_MENU"] = "1"
         if args.preview_state is not None:
             env["JCODE_DESKTOP_SCREENSHOT_PREVIEW_STATE"] = args.preview_state
         if args.preview_interact:

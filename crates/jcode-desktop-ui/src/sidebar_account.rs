@@ -1,13 +1,13 @@
 //! The Jcode account pill pinned to the bottom of the sidebar.
 //!
 //! It names the signed-in Jcode account (not an AI provider login) with its
-//! plan, and opens account management or sign-in on click.
+//! plan. Clicking it opens the in-app account menu, or sign-in when signed out.
 use super::*;
 use jcode_base::provider_catalog::load_env_value_from_env_or_config;
 use jcode_base::subscription_catalog as subscription;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether the sidebar may show the account email. Off by default so a
 /// streamed or shared screen never reveals it.
@@ -28,8 +28,19 @@ pub(super) struct JcodeAccount {
     pub plan: Option<&'static str>,
 }
 
+thread_local! {
+    static CACHE: RefCell<Option<(Instant, JcodeAccount)>> = const { RefCell::new(None) };
+}
+
 impl JcodeAccount {
     fn load() -> Self {
+        if account_menu::fixture_enabled() {
+            return Self {
+                signed_in: true,
+                email: Some("ada@example.com".into()),
+                plan: Some("Pro"),
+            };
+        }
         let value = |key| {
             load_env_value_from_env_or_config(key, subscription::JCODE_ENV_FILE)
                 .map(|value| value.trim().to_owned())
@@ -46,9 +57,6 @@ impl JcodeAccount {
     /// sign-out from the CLI show up without hitting the disk every frame.
     pub(super) fn current() -> Self {
         const STALE: Duration = Duration::from_secs(3);
-        thread_local! {
-            static CACHE: RefCell<Option<(Instant, JcodeAccount)>> = const { RefCell::new(None) };
-        }
         CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
             match &*cache {
@@ -60,6 +68,12 @@ impl JcodeAccount {
                 }
             }
         })
+    }
+
+    /// Forget the cached account so the next frame re-reads it, e.g. after
+    /// signing out from the account menu.
+    pub(super) fn invalidate() {
+        CACHE.with(|cache| *cache.borrow_mut() = None);
     }
 
     fn title(&self, show_email: bool) -> String {
@@ -94,13 +108,26 @@ impl Workspace {
         let account = JcodeAccount::current();
         let signed_in = account.signed_in;
         let show_email = show_email();
-        let ink = if signed_in { theme.TEXT } else { theme.TEXT_DIM };
+        let ink = if signed_in {
+            theme.TEXT
+        } else {
+            theme.TEXT_DIM
+        };
+        let menu_open = signed_in && self.account_menu.open;
 
         div()
+            .id("sidebar-account-area")
             .flex_none()
             .px_2()
             .pt_1()
             .pb_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when(menu_open, |el| {
+                el.on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_account_menu(cx)))
+                    .child(self.render_account_menu(cx))
+            })
             .child(
                 div()
                     .id("sidebar-account")
@@ -113,13 +140,17 @@ impl Workspace {
                     .gap_2()
                     .rounded_full()
                     .cursor_pointer()
-                    .bg(theme.INLINE_CODE_BG)
+                    .bg(if menu_open {
+                        theme.HEADER_BG
+                    } else {
+                        theme.INLINE_CODE_BG
+                    })
                     .hover(|el| el.bg(theme.HEADER_BG))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             if signed_in {
-                                cx.open_url(subscription::JCODE_ACCOUNT_URL);
+                                this.toggle_account_menu(cx);
                                 return;
                             }
                             // Email sign-in is paused, so reuse the Jcode
@@ -220,7 +251,11 @@ impl Workspace {
             .child("Show account email in sidebar")
             .child(
                 div()
-                    .text_color(if enabled { theme.ACCENT } else { theme.TEXT_DIM })
+                    .text_color(if enabled {
+                        theme.ACCENT
+                    } else {
+                        theme.TEXT_DIM
+                    })
                     .child(if enabled { "On" } else { "Off" }),
             )
             .into_any_element()
@@ -252,9 +287,11 @@ mod tests {
         };
         assert_eq!(account.title(false), "Jcode account");
         assert_eq!(account.initial(false), "J");
-        assert!(!crate::config::DesktopConfig::default()
-            .workspace
-            .show_account_email);
+        assert!(
+            !crate::config::DesktopConfig::default()
+                .workspace
+                .show_account_email
+        );
     }
 
     #[test]

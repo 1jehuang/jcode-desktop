@@ -45,6 +45,10 @@ mod notifications;
 #[path = "workspace_change_review.rs"]
 pub(crate) mod change_review;
 
+#[path = "sidebar_account_menu.rs"]
+mod account_menu;
+#[path = "sidebar_account.rs"]
+mod sidebar_account;
 #[path = "sidebar_edits.rs"]
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
@@ -743,6 +747,7 @@ pub struct Workspace {
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     show_beta_notice: bool,
     account_sign_in: account_sign_in::State,
+    account_menu: account_menu::State,
     compact_sidebar_open: bool,
     compact_sidebar_motion: responsive::VisibilityMotion,
     last_canvas_width: Option<f32>,
@@ -1050,6 +1055,7 @@ impl Workspace {
             resume: None,
             show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
+            account_menu: account_menu::State::startup(),
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
             folder_frame: Default::default(),
@@ -1398,6 +1404,7 @@ impl Workspace {
             resume: None,
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
+            account_menu: account_menu::State::default(),
             show_sidebar: true,
             show_minimap: false,
             layout_mode: crate::config::LayoutMode::FolderTabs,

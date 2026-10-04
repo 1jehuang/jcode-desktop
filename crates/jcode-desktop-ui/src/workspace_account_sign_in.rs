@@ -830,7 +830,9 @@ impl Workspace {
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if connected {
-                        cx.open_url("https://jcode.sh/account");
+                        if !this.account_menu.open {
+                            this.toggle_account_menu(cx);
+                        }
                     } else {
                         this.open_account_sign_in(window, cx);
                     }
