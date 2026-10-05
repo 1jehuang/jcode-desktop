@@ -61,8 +61,6 @@ mod sidebar_selection;
 mod sidebar_swarm;
 #[path = "sidebar_workspaces.rs"]
 mod sidebar_workspaces;
-#[path = "sidebar_account.rs"]
-mod sidebar_account;
 #[path = "sidebar_working.rs"]
 mod sidebar_working;
 #[path = "sidebar_worktrees.rs"]

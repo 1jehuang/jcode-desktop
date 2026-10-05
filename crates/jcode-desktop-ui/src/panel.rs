@@ -103,6 +103,8 @@ pub(crate) mod demo_replay;
 mod gmail_draft_card;
 #[path = "panel_gmail_read_card.rs"]
 mod gmail_read_card;
+#[path = "panel_mcp_list_card.rs"]
+mod mcp_list_card;
 #[path = "panel_orchestration.rs"]
 pub(crate) mod orchestration;
 #[path = "panel_response_stats.rs"]
@@ -530,6 +532,12 @@ pub struct Panel {
     /// ticks on its own, so the transcript is not rebuilt 20 times a second
     /// while a tool runs. Filled while the transcript renders.
     running_tool_tickers: std::cell::RefCell<crate::pulse_text::Tickers>,
+    /// Gmail compose cards a later call replaced, keyed by call id, cached
+    /// for the transcript revision it was computed from.
+    superseded_drafts: std::cell::RefCell<(
+        u64,
+        std::rc::Rc<HashMap<String, gmail_draft_card::Superseded>>,
+    )>,
     terminal: Option<Entity<TerminalPanel>>,
     unfinished_work: Option<Vec<crate::harness::UnfinishedSession>>,
     unfinished_session_opener: Option<SessionOpener>,
@@ -973,6 +981,7 @@ impl Panel {
             tool_started: HashMap::new(),
             tool_durations: HashMap::new(),
             running_tool_tickers: Default::default(),
+            superseded_drafts: Default::default(),
             terminal: None,
             unfinished_work: None,
             unfinished_session_opener: None,
@@ -2131,6 +2140,38 @@ impl Panel {
         self.transcript_list.scroll_to_end();
         cx.notify();
         true
+    }
+
+    /// Compose cards a later Gmail call replaced, recomputed only when the
+    /// transcript changes.
+    fn superseded_drafts(&self) -> std::rc::Rc<HashMap<String, gmail_draft_card::Superseded>> {
+        let revision = self.items.revision();
+        let mut cache = self.superseded_drafts.borrow_mut();
+        if cache.0 != revision {
+            let tools = self.items.iter().filter_map(|item| match item {
+                Item::Tool {
+                    call_id,
+                    name,
+                    input,
+                    output,
+                    done,
+                    error,
+                } => Some((
+                    call_id.as_str(),
+                    name.as_str(),
+                    input.as_str(),
+                    output.as_str(),
+                    *done,
+                    error.as_deref(),
+                )),
+                _ => None,
+            });
+            *cache = (
+                revision,
+                std::rc::Rc::new(gmail_draft_card::superseded_cards(tools)),
+            );
+        }
+        cache.1.clone()
     }
 
     fn latest_todo_payload(&self) -> Option<TodoCardPayload> {
@@ -3589,6 +3630,8 @@ impl Panel {
                         .into_any_element();
                 }
                 if let Some(compose) = gmail_draft_card::parse(name, input) {
+                    let compose = gmail_draft_card::merge_output(compose, output, *done);
+                    let superseded = self.superseded_drafts().get(call_id).copied();
                     let expanded = self.expanded_tools.contains(call_id);
                     let toggle_id = call_id.clone();
                     let card = gmail_draft_card::render(
@@ -3596,6 +3639,7 @@ impl Panel {
                         &compose,
                         &gmail_draft_card::outcome(output, *done),
                         error.as_deref(),
+                        superseded,
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -3642,6 +3686,36 @@ impl Panel {
                     return div()
                         .id(("tool", index))
                         .debug_selector(|| "tool-gmail-read".into())
+                        .flex_none()
+                        .ml(px(offset))
+                        .opacity(opacity)
+                        .child(card)
+                        .into_any_element();
+                }
+                if let Some(view) =
+                    mcp_list_card::parse(name, input, output, *done, error.as_deref())
+                {
+                    let expanded = self.expanded_tools.contains(call_id);
+                    let toggle_id = call_id.clone();
+                    let card = mcp_list_card::render(
+                        index,
+                        &view,
+                        expanded,
+                        cx.listener(move |this, _event, _window, cx| {
+                            cx.stop_propagation();
+                            if !this.expanded_tools.remove(&toggle_id) {
+                                this.expanded_tools.insert(toggle_id.clone());
+                            }
+                            this.transcript_measurements.dirty = true;
+                            cx.notify();
+                        }),
+                        &self.transcript_selection,
+                        window,
+                        cx,
+                    );
+                    return div()
+                        .id(("tool", index))
+                        .debug_selector(|| "tool-mcp-list".into())
                         .flex_none()
                         .ml(px(offset))
                         .opacity(opacity)
@@ -9015,6 +9089,11 @@ fn demo_items() -> Vec<Item> {
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gmail-draft")
     {
         return gmail_draft_card::fixture_items();
+    }
+    if crate::harness::screenshot_mode()
+        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mcp-list")
+    {
+        return mcp_list_card::fixture_items();
     }
     if crate::harness::screenshot_mode()
         && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gmail-read")
