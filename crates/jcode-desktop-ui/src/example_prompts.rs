@@ -67,6 +67,13 @@ pub(crate) fn set(prompts: Vec<ExamplePrompt>, cx: &mut App) {
 
 /// Reads durable todo snapshots, so call it off the UI thread.
 pub(crate) fn load(sessions: &[SessionInfo]) -> Vec<ExamplePrompt> {
+    match crate::harness::jcode_home() {
+        Some(home) => load_from(&home, sessions),
+        None => Vec::new(),
+    }
+}
+
+pub(crate) fn load_from(home: &Path, sessions: &[SessionInfo]) -> Vec<ExamplePrompt> {
     let mut sessions = sessions.to_vec();
     sessions.sort_by_key(|session| {
         std::cmp::Reverse(
@@ -76,7 +83,7 @@ pub(crate) fn load(sessions: &[SessionInfo]) -> Vec<ExamplePrompt> {
                 .unwrap_or_default(),
         )
     });
-    from_unfinished(crate::harness::unfinished_sessions(&sessions))
+    from_unfinished(crate::harness::unfinished_sessions_in(home, &sessions))
 }
 
 pub(crate) fn from_unfinished(sessions: Vec<UnfinishedSession>) -> Vec<ExamplePrompt> {

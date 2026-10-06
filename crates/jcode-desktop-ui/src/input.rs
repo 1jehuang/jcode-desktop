@@ -3298,6 +3298,79 @@ mod tests {
     }
 
     #[gpui::test]
+    fn closed_session_todos_become_the_rendered_example_prompts(cx: &mut TestAppContext) {
+        let home = std::env::temp_dir().join(format!(
+            "jcode-desktop-example-prompts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(home.join("todos")).unwrap();
+        std::fs::write(
+            home.join("todos/closed.json"),
+            r#"[{"content":"Ship the onboarding flow","status":"pending"},
+                {"content":"Fix the parser crash","status":"in_progress"},
+                {"content":"Already done","status":"completed"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("todos/running.json"),
+            r#"[{"content":"Still being worked on","status":"pending"}]"#,
+        )
+        .unwrap();
+        let session = |id: &str, status: &str| {
+            let mut info: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+                "session_id": id,
+                "status": status,
+                "working_dir": "/repo/app",
+            }))
+            .unwrap();
+            info.title = Some(id.into());
+            info
+        };
+        let prompts = crate::example_prompts::load_from(
+            &home,
+            &[session("closed", "idle"), session("running", "running")],
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+
+        let (input, vcx) = cx.add_window_view(|_, cx| {
+            let mut input = PromptInput::new(cx, "Type something…", |_, _, _, _| {}).with_example_prompts();
+            input.set_working_dir(Some("/repo/app"));
+            input
+        });
+        vcx.update(|_, cx| crate::example_prompts::set(prompts, cx));
+        vcx.run_until_parked();
+        let picked = |vcx: &mut gpui::VisualTestContext| {
+            input.update(vcx, |input, _| {
+                let state = input.motion.borrow();
+                let picked = state.prompts.as_ref().expect("composer painted its examples");
+                (picked.prompts[0].to_string(), picked.prompts[1].to_string())
+            })
+        };
+        let (first, second) = picked(vcx);
+        let mut shown = [first.as_str(), second.as_str()];
+        shown.sort();
+        assert_eq!(
+            shown,
+            ["Fix the parser crash", "Ship the onboarding flow"],
+            "closed-session todos replace the generic examples, without running or done work"
+        );
+
+        // A composer in another project falls back to the generic catalog.
+        input.update(vcx, |input, cx| {
+            input.set_working_dir(Some("/elsewhere"));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let (first, second) = picked(vcx);
+        assert!(motion::FALLBACK_PROMPTS.contains(&first.as_str()), "{first}");
+        assert!(motion::FALLBACK_PROMPTS.contains(&second.as_str()), "{second}");
+    }
+
+    #[gpui::test]
     fn composer_editor_has_no_prompt_prefix_in_compact_or_spacious_mode(cx: &mut TestAppContext) {
         let (input, vcx) =
             cx.add_window_view(|_, cx| PromptInput::new(cx, "Type something…", |_, _, _, _| {}));

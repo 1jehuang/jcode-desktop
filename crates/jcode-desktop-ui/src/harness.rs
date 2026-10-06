@@ -1014,6 +1014,13 @@ pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
     let Some(home) = jcode_home() else {
         return Vec::new();
     };
+    unfinished_sessions_in(&home, sessions)
+}
+
+pub(crate) fn unfinished_sessions_in(
+    home: &Path,
+    sessions: &[SessionInfo],
+) -> Vec<UnfinishedSession> {
     let todos_dir = home.join("todos");
     sessions
         .iter()
@@ -1039,7 +1046,7 @@ pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
                     .title
                     .clone()
                     .filter(|title| !title.trim().is_empty())
-                    .or_else(|| persisted_todo_title(&home, &session.session_id))
+                    .or_else(|| persisted_todo_title(home, &session.session_id))
                     .unwrap_or_else(|| session.session_id.clone()),
                 working_dir: session.working_dir.clone(),
                 todos,
@@ -1268,7 +1275,7 @@ fn json_value_field(bytes: &[u8], field: &str, last: bool) -> Option<serde_json:
 /// gigabytes before the first row appears.
 const MAX_PERSISTED_SIDEBAR_SESSIONS: usize = 100;
 
-fn jcode_home() -> Option<PathBuf> {
+pub(crate) fn jcode_home() -> Option<PathBuf> {
     std::env::var_os("JCODE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".jcode")))

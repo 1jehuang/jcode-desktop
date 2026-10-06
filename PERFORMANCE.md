@@ -421,4 +421,8 @@ test-controllable animation clock would make them deterministic and faster.
 Optimizing proc macros (`[profile.dev.build-override] opt-level = 3`) cut UI
 test-target macro expansion from ~2.3s to ~1.3s per rebuild, but it changes
 the UI crate's metadata hash, which a running hot-reload host would reject.
-It needs a coordinated host restart, so it is not enabled.
+It needs a coordinated host restart, so it is not enabled. Scoping it to
+`[profile.test.build-override]` keeps the dev identity, but then test builds
+stop sharing dependency artifacts with dev builds: about 320 crates rebuild
+once, and every later sibling Jcode crate change compiles twice. That costs
+more than the ~1s it saves, so it is not enabled either.
