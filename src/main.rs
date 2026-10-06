@@ -210,14 +210,14 @@ impl Render for HostFallback {
 /// the unified look Finder, Safari, and Xcode use. The traffic lights are
 /// nudged down so they sit centered against the app's own header row.
 ///
-/// Windows keeps the opaque system titlebar. GPUI on Windows treats a
-/// transparent titlebar as "the app draws its own caption", and Jcode's
-/// header has no caption buttons or drag region, so the window could not be
-/// moved, minimized, or maximized (#5).
+/// On Windows the transparent titlebar means the app draws the caption.
+/// `window_caption` reports native hit-test regions for it (drag, Snap
+/// Layouts on maximize, minimize, close), so the window keeps standard
+/// Windows behavior while the tab row shares the caption row (#5).
 fn titlebar_options() -> TitlebarOptions {
     TitlebarOptions {
         title: Some("Jcode".into()),
-        appears_transparent: !cfg!(target_os = "windows"),
+        appears_transparent: true,
         traffic_light_position: Some(Point {
             x: px(16.0),
             y: px(16.0),
@@ -856,11 +856,8 @@ mod tests {
     }
 
     #[test]
-    fn windows_keeps_the_native_titlebar_so_the_window_can_move_and_minimize() {
-        assert_eq!(
-            super::titlebar_options().appears_transparent,
-            !cfg!(target_os = "windows")
-        );
+    fn titlebar_is_app_drawn_on_every_platform() {
+        assert!(super::titlebar_options().appears_transparent);
     }
 
     #[test]

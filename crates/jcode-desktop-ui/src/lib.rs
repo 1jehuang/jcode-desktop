@@ -66,6 +66,7 @@ mod tool_icon;
 mod transition;
 mod update_notes;
 mod updates;
+mod window_caption;
 mod workspace;
 
 use gpui::{App, KeyBinding, Window};

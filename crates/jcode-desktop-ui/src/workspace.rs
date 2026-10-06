@@ -378,7 +378,12 @@ const MINIMAP_WIDTH: f32 = 112.0 + MINIMAP_LABEL_WIDTH;
 const MINIMAP_HEIGHT: f32 = 96.0;
 const MINIMAP_PADDING: f32 = 5.0;
 const MINIMAP_ROW_GAP: f32 = 3.0;
-const MINIMAP_TOP: f32 = 8.0;
+const MINIMAP_TOP: f32 = if crate::window_caption::enabled() {
+    // Below the Windows caption buttons, which own the top-right corner.
+    crate::window_caption::HEIGHT + 6.0
+} else {
+    8.0
+};
 const MINIMAP_RIGHT: f32 = 12.0;
 /// The update chip sits above the workspace bar in the bottom-right corner,
 /// out of the reading path but always in view.
@@ -6155,6 +6160,8 @@ impl Workspace {
                                     div()
                                         .id("sidebar-navigation-tabs")
                                         .debug_selector(|| "sidebar-navigation-tabs".into())
+                                        // Clicks here select tabs, not the Windows caption drag.
+                                        .occlude()
                                         .flex_none()
                                         .h(px(34.0))
                                         .min_w_0()
@@ -8123,19 +8130,22 @@ impl Render for Workspace {
         }
         if self.onboarding_launch.error.is_some() {
             window.focus(&self.focus_handle, cx);
-            return self.render_onboarding_launch_error(cx);
+            return crate::window_caption::wrap(self.render_onboarding_launch_error(cx), window, true);
         }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
             let content = self.render_account_sign_in(window, cx);
-            return self.voice_modal_root(content, cx);
+            let root = self.voice_modal_root(content, cx);
+            return crate::window_caption::wrap(root, window, true);
         }
         if self.resume.is_some() {
             self.dump_state(window, cx);
-            return self.render_resume(cx);
+            let root = self.render_resume(cx);
+            return crate::window_caption::wrap(root, window, true);
         }
         if self.single_panel {
-            return self.render_single_panel(window, cx);
+            let root = self.render_single_panel(window, cx);
+            return crate::window_caption::wrap(root, window, true);
         }
         self.sidebar_applets = self.render_sidebar_applets(window, cx);
         self.restore_hidden_machine_focus(window, cx);
@@ -8554,7 +8564,8 @@ impl Render for Workspace {
             profile.observe_render(render_started.elapsed());
             profile.observe_frame(Instant::now(), animation_active);
         }
-        root
+        // The workspace tab row shares the caption row, Windows Terminal style.
+        crate::window_caption::wrap(root, window, false)
     }
 }
 

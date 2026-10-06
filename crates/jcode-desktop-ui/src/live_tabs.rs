@@ -12,7 +12,14 @@ const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
 /// Pointer route to the next workspace, beside the new-session plus.
 const TAB_NEXT_WORKSPACE_WIDTH: f32 = 40.0;
-const TAB_CLOSE_WIDTH: f32 = 40.0;
+/// Right edge reserved past the new-session button: Jcode's own close-window
+/// pill, or on Windows the native minimize, maximize and close buttons, which
+/// make a second close button redundant.
+const TAB_CLOSE_WIDTH: f32 = if crate::window_caption::enabled() {
+    crate::window_caption::BUTTONS_WIDTH
+} else {
+    40.0
+};
 const TAB_GROUP_LABEL_WIDTH: f32 = 24.0;
 const TAB_GROUP_GAP: f32 = 28.0;
 
@@ -1010,7 +1017,7 @@ impl Workspace {
                     )
                     .child("+"),
             )
-            .child(
+            .when(!crate::window_caption::enabled(), |el| el.child(
                 div()
                     .id("tab-close-window")
                     .debug_selector(|| "tab-close-window".into())
@@ -1046,7 +1053,7 @@ impl Workspace {
                         }
                     })
                     .child("×"),
-            )
+            ))
             .into_any_element()
     }
 }
@@ -1094,6 +1101,7 @@ mod tests {
     }
 
     #[gpui::test]
+    #[cfg(not(target_os = "windows"))]
     fn tab_close_window_is_separate_from_new_session_and_dispatches_host_action(
         cx: &mut gpui::TestAppContext,
     ) {
