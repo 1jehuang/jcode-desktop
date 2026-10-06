@@ -194,6 +194,10 @@ pub(crate) fn summary() -> Summary {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ReleaseOverview {
     pub title: String,
+    /// Version line without the editorial headline, e.g. "0.4.0 · Development preview".
+    pub release: String,
+    /// The editor's one-line theme for the release, when present.
+    pub headline: Option<String>,
     pub sections: Vec<ReleaseSection>,
 }
 
@@ -214,6 +218,8 @@ fn release_version(raw: &str) -> Option<semver::Version> {
 fn overview(raw: &str, current: &str) -> Option<ReleaseOverview> {
     let mut result = ReleaseOverview {
         title: format!("Jcode Desktop {}", current.trim().trim_start_matches('v')),
+        release: current.trim().trim_start_matches('v').to_owned(),
+        headline: None,
         sections: Vec::new(),
     };
     let version = release_version(current)?;
@@ -222,6 +228,7 @@ fn overview(raw: &str, current: &str) -> Option<ReleaseOverview> {
     if development {
         target.pre = semver::Prerelease::EMPTY;
         result.title = format!("Jcode Desktop {target} · Development preview");
+        result.release = format!("{target} · Development preview");
     }
 
     let mut matched = false;
@@ -259,6 +266,7 @@ fn overview(raw: &str, current: &str) -> Option<ReleaseOverview> {
             if !trimmed.starts_with(['#', '-', '*', '>']) {
                 result.title.push_str(" · ");
                 result.title.push_str(trimmed);
+                result.headline = Some(trimmed.to_owned());
                 continue;
             }
         }

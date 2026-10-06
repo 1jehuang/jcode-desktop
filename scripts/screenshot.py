@@ -553,7 +553,8 @@ def main():
                 # while it is still visible. Other fixtures can fully settle.
                 time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
-                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps):
+                if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps
+                        or args.changelog):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)
