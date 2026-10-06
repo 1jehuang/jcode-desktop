@@ -65,9 +65,74 @@ pub(crate) fn wrap(child: AnyElement, layout: TextLayout, color: Rgba) -> AnyEle
         .into_any_element()
 }
 
+/// Recently tessellated shapes, keyed by their exact line rectangles and radius.
+/// Prompt cards repaint every frame while their geometry rarely changes, and
+/// lyon tessellation dominated their paint cost. Paths are plain vertex lists,
+/// so a cached clone paints identically. A small LRU bounds memory.
+const PATH_CACHE_CAPACITY: usize = 64;
+
+type PathKey = (Vec<[u32; 4]>, u32);
+
+thread_local! {
+    static PATH_CACHE: std::cell::RefCell<Vec<(PathKey, Option<gpui::Path<Pixels>>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn path_key(lines: &[Bounds<Pixels>], radius: f32) -> PathKey {
+    let origin = lines.first().map_or(point(px(0.), px(0.)), |b| b.origin);
+    let lines = lines
+        .iter()
+        .map(|b| {
+            [
+                f32::from(b.origin.x - origin.x).to_bits(),
+                f32::from(b.origin.y - origin.y).to_bits(),
+                f32::from(b.size.width).to_bits(),
+                f32::from(b.size.height).to_bits(),
+            ]
+        })
+        .collect();
+    (lines, radius.to_bits())
+}
+
+fn translated(path: &gpui::Path<Pixels>, offset: gpui::Point<Pixels>) -> gpui::Path<Pixels> {
+    let mut path = path.clone();
+    for vertex in &mut path.vertices {
+        vertex.xy_position = vertex.xy_position + offset;
+    }
+    path.bounds.origin = path.bounds.origin + offset;
+    path
+}
+
 /// One rounded fill around vertically stacked, horizontally overlapping line
 /// rectangles, as used by prompt cards and the matching text selection.
+/// Shapes are cached relative to their first line, so a card that only moves
+/// (scrolling, sticky pinning) reuses its tessellation.
 pub(crate) fn rounded_union(lines: &[Bounds<Pixels>], radius: f32) -> Option<gpui::Path<Pixels>> {
+    let origin = lines.first()?.origin;
+    let key = path_key(lines, radius);
+    if let Some(hit) = PATH_CACHE.with_borrow_mut(|cache| {
+        let index = cache.iter().position(|(k, _)| *k == key)?;
+        let entry = cache.remove(index);
+        let path = entry.1.as_ref().map(|path| translated(path, origin));
+        cache.push(entry);
+        Some(path)
+    }) {
+        return hit;
+    }
+    let path = tessellate_rounded_union(lines, radius);
+    PATH_CACHE.with_borrow_mut(|cache| {
+        if cache.len() >= PATH_CACHE_CAPACITY {
+            cache.remove(0);
+        }
+        let relative = path
+            .as_ref()
+            .map(|path| translated(path, point(-origin.x, -origin.y)));
+        cache.push((key, relative));
+    });
+    path
+}
+
+fn tessellate_rounded_union(lines: &[Bounds<Pixels>], radius: f32) -> Option<gpui::Path<Pixels>> {
     let vertices = contour(lines);
     if vertices.len() < 3 {
         return None;
@@ -231,6 +296,30 @@ mod tests {
             vec![(108., -4.), (108., 70.), (-8., 70.), (-8., -4.)]
         );
         assert!(contour(&[]).is_empty());
+    }
+
+    #[test]
+    fn cached_union_matches_fresh_tessellation_after_moving() {
+        let at = |dx: f32, dy: f32| {
+            [line(100., 0.), line(40., 22.), line(80., 44.)].map(|b| {
+                Bounds::new(point(b.origin.x + px(dx), b.origin.y + px(dy)), b.size)
+            })
+        };
+        let first = rounded_union(&at(0., 0.), RADIUS).unwrap();
+        for (dx, dy) in [(0., 0.), (13.5, -250.25), (-7., 1000.)] {
+            let cached = rounded_union(&at(dx, dy), RADIUS).unwrap();
+            let fresh = tessellate_rounded_union(&at(dx, dy), RADIUS).unwrap();
+            assert_eq!(cached.vertices.len(), first.vertices.len());
+            assert_eq!(cached.vertices.len(), fresh.vertices.len());
+            for (a, b) in cached.vertices.iter().zip(&fresh.vertices) {
+                assert!((a.xy_position.x - b.xy_position.x).abs() < px(0.01));
+                assert!((a.xy_position.y - b.xy_position.y).abs() < px(0.01));
+                assert_eq!(a.st_position, b.st_position);
+            }
+            assert!((cached.bounds.origin.x - fresh.bounds.origin.x).abs() < px(0.01));
+            assert!((cached.bounds.origin.y - fresh.bounds.origin.y).abs() < px(0.01));
+            assert_eq!(cached.bounds.size, fresh.bounds.size);
+        }
     }
 
     #[test]

@@ -375,3 +375,33 @@ type layout, so it is ABI-compatible with a normally built release host. It
 does produce less optimized UI code, so it should apply only to Ctrl+R builds,
 not shipped releases. Doing that needs a host change (a dedicated profile or env
 in `rebuild_ui`) and a host restart, so it has not been adopted yet.
+
+### Dev profile breakdown, 2026-10-05
+
+A one-function body edit in `jcode-desktop-ui` (dev, incremental, warm) takes
+about 4.3s in rustc (`-Ztime-passes`): 1.2s generating crate metadata, 0.5s
+monomorphization collection, 0.4s macro expansion, 0.45s linking the cdylib,
+0.4s saving the incremental cache, 0.3s name resolution, and only 0.1-0.8s in
+LLVM, because incremental reuses unchanged codegen units. Cranelift could save
+at most that LLVM slice. The rest is front-end and fixed per-crate work, which
+only splitting the crate reduces. A full `cargo build` Ctrl+R also rebuilds
+`jcode-base` (6.7s) when the sibling Jcode checkout changes, and relinks the
+host binary (2s) unless `--lib` is passed.
+
+### Unit test run time, 2026-10-05
+
+`cargo test -p jcode-desktop-ui --lib` takes about 20s wall but 200s of CPU,
+and only 79s run one test at a time. The parallel run is contention-bound
+inside one process. `cargo nextest run` gives each test its own process and
+finishes in 12-15s. Configuration lives in `.config/nextest.toml`.
+
+The slowest test spent most of its time re-tessellating identical prompt-card
+backgrounds with lyon on every frame. `prompt_background::rounded_union` now
+keeps a small position-independent LRU of tessellated paths, which also
+benefits the running app: `native_scroll_paints_historical_prompt_cards`
+dropped from 15.8s to 3.2s, and `startup_each_native_submission_paints_the_newest_row`
+from 7.4s to 4.7s when run alone.
+
+Unit tests now ignore the developer's `~/.jcode/config.toml` unless
+`JCODE_DESKTOP_CONFIG` is set. Previously a non-default theme there failed
+theme-colour assertions whenever a test ran before anything set the theme.

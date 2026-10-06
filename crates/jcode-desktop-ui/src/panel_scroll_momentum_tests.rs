@@ -44,9 +44,17 @@ fn frame(vcx: &mut gpui::VisualTestContext, millis: u64) {
     vcx.run_until_parked();
 }
 
+/// Advance up to 16 frames, stopping as soon as nothing requested another one.
+/// Momentum and glides keep requesting frames while they move, so an idle
+/// frame means the motion has finished and further frames would be no-ops.
 pub(super) fn settle(vcx: &mut gpui::VisualTestContext) {
     for _ in 0..16 {
-        frame(vcx, 16);
+        vcx.executor().advance_clock(Duration::from_millis(16));
+        let ran = vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        if ran == 0 {
+            break;
+        }
     }
 }
 

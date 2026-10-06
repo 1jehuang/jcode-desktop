@@ -477,6 +477,12 @@ fn persist_sounds_enabled_at(
 }
 
 fn load() -> DesktopConfig {
+    // Unit tests must not depend on whoever runs them. Reading the developer's
+    // ~/.jcode/config.toml made theme-colour assertions pass or fail with
+    // their chosen theme. Tests that need a file set JCODE_DESKTOP_CONFIG.
+    if cfg!(test) && std::env::var_os("JCODE_DESKTOP_CONFIG").is_none() {
+        return DesktopConfig::default();
+    }
     let path = path();
     match fs::read_to_string(&path) {
         Ok(text) => match parse(&text, std::env::var_os("JCODE_DESKTOP_CONFIG").is_some()) {

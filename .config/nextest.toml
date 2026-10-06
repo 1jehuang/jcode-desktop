@@ -1,0 +1,11 @@
+# cargo-nextest configuration. `cargo nextest run --workspace` runs every test
+# in its own process, 16-wide. On the UI crate this measured 12-15 s versus
+# 18-20 s for `cargo test`, because GPUI tests stop contending for one
+# process's allocator and global state. Plain `cargo test` keeps working.
+[profile.default]
+# Report every failure rather than stopping at the first one.
+fail-fast = false
+# GPUI view tests are CPU-bound. Flag the slow ones so they get optimized.
+slow-timeout = { period = "10s" }
+status-level = "fail"
+final-status-level = "slow"
