@@ -131,6 +131,7 @@ fn super_shift_t_cycles_all_theme_presets_from_root_and_composer(cx: &mut gpui::
             Theme::select(self.0);
         }
     }
+    let _theme = crate::theme::test_theme_lock();
     let _restore = RestoreTheme(Theme::active_preset());
     let (workspace, vcx, commands) = setup(cx);
     for composer in [false, true] {

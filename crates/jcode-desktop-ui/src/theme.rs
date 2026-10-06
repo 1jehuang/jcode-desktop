@@ -118,7 +118,7 @@ impl Theme {
             let progress = started.elapsed().as_secs_f32() / 0.18;
             if progress < 1.0 {
                 let step = (progress * 16.0).round().clamp(0.0, 16.0) as usize;
-                return &transition_frames()[from][target][step];
+                return &transition_frames(from, target)[step];
             }
             *transition = None;
         }
@@ -141,11 +141,16 @@ impl Theme {
         let _ = themes();
         let from = ACTIVE_THEME.load(Ordering::Relaxed);
         ACTIVE_THEME.store(preset.index(), Ordering::Relaxed);
-        *transition_state().lock().unwrap() = if crate::config::get().appearance.reduce_motion {
-            None
-        } else {
-            Some((from, std::time::Instant::now()))
-        };
+        // The fade runs on wall-clock time, which GPUI's test executor cannot
+        // advance, so each switch kept redrawing for its full 180 ms. The
+        // palette is also process-global, so a fade started by one test leaked
+        // in-between colours into tests running in parallel. Switch instantly.
+        *transition_state().lock().unwrap() =
+            if cfg!(test) || crate::config::get().appearance.reduce_motion {
+                None
+            } else {
+                Some((from, std::time::Instant::now()))
+            };
     }
 
     /// Settled palette for a preset, for swatch previews that should not
@@ -473,26 +478,29 @@ impl ThemePreset {
 
 static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(ThemePreset::Parchment.index());
 
+/// The active theme is process-global. Every unit test that selects a theme
+/// must hold this for its whole body, or parallel tests observe its palette.
+#[cfg(test)]
+pub(crate) fn test_theme_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn transition_state() -> &'static Mutex<Option<(usize, std::time::Instant)>> {
     static STATE: OnceLock<Mutex<Option<(usize, std::time::Instant)>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-fn transition_frames() -> &'static Vec<Vec<Vec<Theme>>> {
-    static FRAMES: OnceLock<Vec<Vec<Vec<Theme>>>> = OnceLock::new();
-    FRAMES.get_or_init(|| {
-        themes()
-            .iter()
-            .map(|from| {
-                themes()
-                    .iter()
-                    .map(|to| {
-                        (0..=16)
-                            .map(|step| interpolate(from, to, step as f32 / 16.0))
-                            .collect()
-                    })
-                    .collect()
-            })
+/// The 17 interpolated palettes for one theme change, computed on first use.
+/// A session visits only a few of the 18 x 18 preset pairs, so building all
+/// 5,508 palettes on the first switch was wasted work.
+fn transition_frames(from: usize, to: usize) -> &'static [Theme] {
+    const N: usize = ThemePreset::ALL.len();
+    static FRAMES: OnceLock<Vec<OnceLock<Box<[Theme]>>>> = OnceLock::new();
+    let pairs = FRAMES.get_or_init(|| (0..N * N).map(|_| OnceLock::new()).collect());
+    pairs[from * N + to].get_or_init(|| {
+        (0..=16)
+            .map(|step| interpolate(&themes()[from], &themes()[to], step as f32 / 16.0))
             .collect()
     })
 }
@@ -1248,12 +1256,13 @@ mod tests {
 
     #[test]
     fn transition_frames_begin_and_end_at_the_selected_palettes() {
-        let frames = transition_frames();
         for from in 0..ThemePreset::ALL.len() {
             for to in 0..ThemePreset::ALL.len() {
-                assert_eq!(frames[from][to][0].BG, themes()[from].BG);
-                assert_eq!(frames[from][to][16].BG, themes()[to].BG);
-                assert_eq!(frames[from][to].len(), 17);
+                let frames = transition_frames(from, to);
+                assert_eq!(frames[0].BG, themes()[from].BG);
+                assert_eq!(frames[16].BG, themes()[to].BG);
+                assert_eq!(frames.len(), 17);
+                assert!(std::ptr::eq(frames, transition_frames(from, to)));
             }
         }
     }

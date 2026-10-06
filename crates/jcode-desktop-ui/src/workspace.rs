@@ -14860,6 +14860,7 @@ mod tests {
 
     #[gpui::test]
     fn theme_tab_and_shortcut_work_with_the_composer_focused(cx: &mut gpui::TestAppContext) {
+        let _theme = crate::theme::test_theme_lock();
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let original = Theme::active_preset();
         Theme::select(ThemePreset::WarmNeutral);

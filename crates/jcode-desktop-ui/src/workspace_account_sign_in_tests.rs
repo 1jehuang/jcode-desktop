@@ -4,9 +4,6 @@ use super::*;
 
 const DRAFT: &str = "Keep my unfinished prompt";
 
-/// The active theme is process-wide, so tests that change it take turns.
-static THEME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// The email flow is paused in the app but kept covered here.
 fn setup(cx: &mut gpui::TestAppContext) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
     setup_with_email(cx, true)
@@ -287,7 +284,7 @@ fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppCont
 fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
     cx: &mut gpui::TestAppContext,
 ) {
-    let _theme = THEME.lock().unwrap_or_else(|e| e.into_inner());
+    let _theme = crate::theme::test_theme_lock();
     let (workspace, vcx) = setup(cx);
     let original = Theme::active_preset();
     let target = crate::theme::ThemePreset::ALL
@@ -311,7 +308,7 @@ fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
 
 #[gpui::test]
 fn theme_hover_previews_before_and_after_a_click(cx: &mut gpui::TestAppContext) {
-    let _theme = THEME.lock().unwrap_or_else(|e| e.into_inner());
+    let _theme = crate::theme::test_theme_lock();
     let (workspace, vcx) = setup(cx);
     let original = Theme::active_preset();
     let all = crate::theme::ThemePreset::ALL;
