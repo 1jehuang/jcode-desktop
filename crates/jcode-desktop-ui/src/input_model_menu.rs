@@ -386,7 +386,9 @@ pub(super) fn model_logo(model: &str, details: &HashMap<String, ModelDetails>) -
             return logo;
         }
     }
-    detail.map_or("", |detail| provider_logo(&detail.provider, &detail.api_method))
+    detail.map_or("", |detail| {
+        provider_logo(&detail.provider, &detail.api_method)
+    })
 }
 
 #[cfg(test)]
@@ -484,14 +486,21 @@ mod tests {
     fn recommendation_breaks_usage_ties_and_unavailable_routes_are_excluded() {
         let mut unavailable = route("unavailable", "openai-oauth", 100);
         unavailable.available = false;
+        let recommended = jcode_provider_core::DEFAULT_OPENAI_MODEL;
         let details = from_routes(&[
             route("a-unknown", "openai-oauth", 0),
-            route("gpt-5.5", "openai-oauth", 0),
+            route(recommended, "openai-oauth", 0),
             unavailable,
         ]);
         let mut models: Vec<_> = details.keys().cloned().collect();
         rank(&mut models, &details);
-        assert_eq!(models, ["openai-oauth:gpt-5.5", "openai-oauth:a-unknown"]);
+        assert_eq!(
+            models,
+            [
+                format!("openai-oauth:{recommended}"),
+                "openai-oauth:a-unknown".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -555,8 +564,8 @@ mod tests {
 
     #[test]
     fn detail_line_is_usage_only() {
-        let detail = &from_routes(&[route("gpt-6-astra", "openai-api-key", 0)])
-            ["openai-api:gpt-6-astra"];
+        let detail =
+            &from_routes(&[route("gpt-6-astra", "openai-api-key", 0)])["openai-api:gpt-6-astra"];
         assert_eq!(detail.label(100), "No recorded usage yet");
     }
 
