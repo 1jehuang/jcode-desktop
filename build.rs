@@ -22,6 +22,14 @@ fn main() {
     println!("cargo:rerun-if-changed=packaging/macos/updater_bootstrap.m");
 
     let target = env::var("TARGET").expect("TARGET was not set by Cargo");
+    // Windows reserves only 1 MiB for the main thread, which GPUI renders on.
+    // Deep element trees (the applet showcase) overflowed it, so match the
+    // 8 MiB Linux and macOS give the main thread.
+    if target.ends_with("windows-msvc") {
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    } else if target.ends_with("windows-gnu") || target.ends_with("windows-gnullvm") {
+        println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608");
+    }
     if !target.ends_with("apple-darwin") {
         return;
     }
