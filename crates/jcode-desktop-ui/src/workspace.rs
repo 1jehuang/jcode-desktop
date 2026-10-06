@@ -59,8 +59,6 @@ mod sidebar_projects;
 mod sidebar_selection;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
-#[path = "sidebar_workspaces.rs"]
-mod sidebar_workspaces;
 #[path = "sidebar_working.rs"]
 mod sidebar_working;
 #[path = "sidebar_worktrees.rs"]
@@ -5657,63 +5655,94 @@ impl Workspace {
             } else {
                 Vec::new()
             };
+            // Like the pinned last prompt in chat, headers that scrolled
+            // below the list stack at its bottom edge, up to a limit.
+            const DOCK_LIMIT: usize = 3;
             let dock = (!below.is_empty()).then(|| {
+                let overflow = below.len().saturating_sub(DOCK_LIMIT);
+                let next_hidden = below.get(DOCK_LIMIT).map(|(item, _)| *item);
+                fn jump(
+                    item: usize,
+                ) -> impl Fn(&mut Workspace, &gpui::MouseDownEvent, &mut Window, &mut Context<Workspace>) + 'static {
+                    move |this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.sidebar_sessions_list.scroll_to(gpui::ListOffset {
+                            item_ix: item,
+                            offset_in_item: px(0.0),
+                        });
+                        cx.notify();
+                    }
+                }
+                let row = |id: gpui::ElementId| {
+                    div()
+                        .id(id)
+                        .flex_none()
+                        .mx_2()
+                        .pl_2()
+                        .pr_1()
+                        .h(px(24.0))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .text_size(px(11.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .hover(|el| {
+                            el.bg(Theme::global().TOOL_BG)
+                                .text_color(Theme::global().TEXT)
+                        })
+                };
                 div()
                     .id("sidebar-project-dock")
                     .debug_selector(|| "sidebar-project-dock".into())
                     .flex_none()
                     .w_full()
-                    .pl_2()
-                    .pr(px(crate::scrollbar::GUTTER + 4.0))
-                    .py(px(6.0))
+                    .pr(px(crate::scrollbar::GUTTER))
+                    .pt_1()
                     .flex()
-                    .flex_row()
-                    .flex_nowrap()
-                    .overflow_x_scroll()
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(Theme::global().PANEL_BORDER)
-                    .children(below.into_iter().map(|(item, project)| {
+                    .flex_col()
+                    .children(below.into_iter().take(DOCK_LIMIT).map(|(item, project)| {
                         let (info, _, count) = &groups[project];
-                        div()
-                            .id(("sidebar-project-dock-item", project))
+                        row(("sidebar-project-dock-item", project).into())
                             .debug_selector(move || format!("sidebar-project-dock-{project}"))
-                            .flex_none()
-                            .max_w(px(180.0))
-                            .h(px(22.0))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .bg(Theme::global().TOOL_BG)
-                            .text_size(px(11.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .hover(|el| {
-                                el.bg(Theme::global().PANEL_BG)
-                                    .text_color(Theme::global().TEXT)
-                            })
-                            .child(div().min_w_0().truncate().child(info.label.clone()))
+                            .child(
+                                div()
+                                    .w(px(12.0))
+                                    .flex_none()
+                                    .text_size(px(10.0))
+                                    .child("›"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(info.label.clone()),
+                            )
                             .child(
                                 div()
                                     .flex_none()
+                                    .w(px(16.0))
+                                    .text_right()
                                     .text_size(px(10.0))
-                                    .text_color(Theme::global().TEXT_FAINT)
                                     .child(count.to_string()),
                             )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                    this.sidebar_sessions_list.scroll_to(gpui::ListOffset {
-                                        item_ix: item,
-                                        offset_in_item: px(0.0),
-                                    });
-                                    cx.notify();
-                                }),
-                            )
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(jump(item)))
+                    }))
+                    .children(next_hidden.map(|item| {
+                        row("sidebar-project-dock-more".into())
+                            .debug_selector(|| "sidebar-project-dock-more".into())
+                            .text_size(px(10.0))
+                            .text_color(Theme::global().TEXT_FAINT)
+                            .child(div().w(px(12.0)).flex_none())
+                            .child(format!(
+                                "{overflow} more project{}",
+                                if overflow == 1 { "" } else { "s" }
+                            ))
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(jump(item)))
                     }))
             });
             list = list.child(div().relative().w_full().flex_1().min_h_0().child(
@@ -6508,9 +6537,6 @@ impl Workspace {
                         |el| el.child(self.render_sidebar_scrollbar(cx)),
                     ),
             )
-            .when(self.sidebar_view == SidebarView::Sessions, |el| {
-                el.children(self.render_sidebar_workspaces(cx))
-            })
             .child(self.render_sidebar_account(cx))
             .into_any_element()
     }
