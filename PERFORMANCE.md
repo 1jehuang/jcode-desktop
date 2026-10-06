@@ -438,13 +438,22 @@ size. Incremental compilation already skips most unchanged code, and editing
 a moved module still rebuilds the UI crate that depends on it, so measure a
 first slice before moving more.
 
-A first, self-contained `jcode-desktop-core` slice closes over itself with no
-extra modules (~11k lines): `diff_model`, `diff`, `learning`, `remote_targets`,
-`performance`, `managed_cloud_parity`, `input_model_search`, `effort`,
-`image_cache`, `native_mermaid`, `pdf_render`, `prompt_background`,
-`sidebar_projects`, `todoist`, `preview_control`, `terminal_paint`. A second
-slice would add `theme`, `config`, `markdown`, `text_selection`, and `harness`
-once their mutual references are cut.
+A first `jcode-desktop-core` slice of 13 modules (~10k lines, 193 tests) was
+verified on 2026-10-05 by copying the files unchanged into a standalone crate
+with the UI crate's dependency list: `cargo check` passes with no source
+edits. Modules: `diff_model` (with its `diff_tool_result` child), `diff`,
+`learning`, `remote_targets`, `performance`, `managed_cloud_parity`, `effort`,
+`image_cache`, `native_mermaid`, `pdf_render`, `prompt_background`, `todoist`,
+`preview_control`. Excluded after checking: `input_model_search`,
+`sidebar_projects`, and `terminal_paint` are child modules of `input`,
+`workspace`, and `terminal` that reach into their parents through `super`.
+Moving the slice changes callers' import paths and turns `pub(crate)` items
+used by the UI crate into `pub`. Its tests also need two adjustments, found by
+compiling them in the probe: `include_bytes!`/`include_str!` fixtures under
+`assets/previews/` use paths relative to `crates/jcode-desktop-ui/src`, and
+`performance` tests need the `hdrhistogram` dev-dependency. A second slice
+would add `theme`, `config`, `markdown`, `text_selection`, and `harness` once
+their mutual references are cut.
 
 Constraints: the UI crate is the hot-reloaded cdylib, so moved code is linked
 into it statically and keeps one GPUI instance. Moved types must stay out of
