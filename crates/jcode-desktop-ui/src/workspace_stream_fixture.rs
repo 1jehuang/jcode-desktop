@@ -8,15 +8,24 @@ use jcode_base::transcript_sample::SampleTurn;
 
 pub(super) fn enabled() -> bool {
     harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_STREAM").as_deref() == Ok("1")
+        && matches!(
+            std::env::var("JCODE_DESKTOP_SCREENSHOT_STREAM").as_deref(),
+            Ok("1" | "steady")
+        )
 }
 
 /// Streams the demo script into `session_id` forever, at about the cadence a
 /// provider delivers deltas.
 pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Task<()> {
     const CHUNK_DELAY: Duration = Duration::from_millis(30);
-    const TOOL_RUN: Duration = Duration::from_millis(600);
-    const TURN_GAP: Duration = Duration::from_millis(800);
+    // `JCODE_DESKTOP_SCREENSHOT_STREAM=steady` leaves out the pauses that a
+    // real turn has, so every sampling window measures the same load.
+    let steady = std::env::var("JCODE_DESKTOP_SCREENSHOT_STREAM").as_deref() == Ok("steady");
+    let (tool_run, turn_gap) = if steady {
+        (CHUNK_DELAY, CHUNK_DELAY)
+    } else {
+        (Duration::from_millis(600), Duration::from_millis(800))
+    };
     cx.spawn(async move |this, cx| {
         let executor = cx.background_executor().clone();
         let send = |event: jcode_sdk::ApiEvent, cx: &mut gpui::AsyncApp| {
@@ -95,7 +104,7 @@ pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Ta
                             );
                             executor.timer(CHUNK_DELAY).await;
                         }
-                        executor.timer(TOOL_RUN).await;
+                        executor.timer(tool_run).await;
                         ok && send(
                             jcode_sdk::ApiEvent::ToolDone {
                                 session_id,
@@ -120,7 +129,7 @@ pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Ta
             ) {
                 return;
             }
-            executor.timer(TURN_GAP).await;
+            executor.timer(turn_gap).await;
         }
     })
 }
