@@ -178,6 +178,45 @@ fn generate_changelog(version: &str, build_id: &str) {
         .expect("write embedded update history");
     fs::write(Path::new(&out).join("changelog.md"), notes).expect("write embedded changelog");
     fs::write(Path::new(&out).join("changelog-debug.md"), debug).expect("write debug changelog");
+    embed_changelog_shots(&root, Path::new(&out));
+}
+
+/// Screenshots referenced from CHANGELOG.md live under assets/changelog. Embed
+/// every PNG there with its pixel size so the panel reserves space before decode.
+fn embed_changelog_shots(root: &Path, out: &Path) {
+    let mut files = Vec::new();
+    let mut stack = vec![root.join("assets/changelog")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "png") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut code = String::from("&[\n");
+    for path in files {
+        let Ok(bytes) = fs::read(&path) else { continue };
+        // PNG IHDR: width and height are big-endian u32s at offsets 16 and 20.
+        if bytes.len() < 24 || &bytes[1..4] != b"PNG" {
+            continue;
+        }
+        let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        let absolute = fs::canonicalize(&path).unwrap_or(path.clone());
+        code.push_str(&format!(
+            "    ({:?}, {width}, {height}, include_bytes!({:?})),\n",
+            relative.to_string_lossy().replace('\\', "/"),
+            absolute.to_string_lossy(),
+        ));
+    }
+    code.push(']');
+    fs::write(out.join("changelog-shots.rs"), code).expect("write changelog screenshots");
 }
 
 fn escape_markdown(text: &str) -> String {

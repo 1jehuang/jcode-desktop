@@ -198,6 +198,8 @@ pub(crate) struct ReleaseOverview {
     pub release: String,
     /// The editor's one-line theme for the release, when present.
     pub headline: Option<String>,
+    /// Matched notes version, e.g. "0.4.0", used to find release screenshots.
+    pub notes_version: String,
     pub sections: Vec<ReleaseSection>,
 }
 
@@ -220,13 +222,16 @@ fn overview(raw: &str, current: &str) -> Option<ReleaseOverview> {
         title: format!("Jcode Desktop {}", current.trim().trim_start_matches('v')),
         release: current.trim().trim_start_matches('v').to_owned(),
         headline: None,
+        notes_version: String::new(),
         sections: Vec::new(),
     };
     let version = release_version(current)?;
     let mut target = version.clone();
     let development = version.pre.as_str().split('.').next() == Some("dev");
+    result.notes_version = target.to_string();
     if development {
         target.pre = semver::Prerelease::EMPTY;
+        result.notes_version = target.to_string();
         result.title = format!("Jcode Desktop {target} · Development preview");
         result.release = format!("{target} · Development preview");
     }
@@ -328,6 +333,39 @@ pub(crate) fn release_overview() -> Option<ReleaseOverview> {
     overview(fallback(), crate::build_info::VERSION)
 }
 
+/// A release screenshot embedded from `assets/changelog/<version>/`.
+pub(crate) struct Shot {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: &'static [u8],
+}
+
+const SHOTS: &[(&str, u32, u32, &[u8])] =
+    include!(concat!(env!("OUT_DIR"), "/changelog-shots.rs"));
+
+/// Screenshots attach to Themes by file-name order: `1-*.png` illustrates the
+/// first theme. Keeping them out of CHANGELOG.md leaves GitHub and Discord
+/// release text unchanged.
+pub(crate) fn theme_shot(version: &str, index: usize) -> Option<Shot> {
+    shot_in(SHOTS, version, index)
+}
+
+fn shot_in(
+    shots: &[(&str, u32, u32, &'static [u8])],
+    version: &str,
+    index: usize,
+) -> Option<Shot> {
+    let prefix = format!("assets/changelog/{version}/{}-", index + 1);
+    shots
+        .iter()
+        .find(|(path, ..)| path.starts_with(&prefix))
+        .map(|&(_, width, height, bytes)| Shot {
+            width,
+            height,
+            bytes,
+        })
+}
+
 pub(crate) fn fallback() -> &'static str {
     include_str!("../../../CHANGELOG.md")
 }
@@ -335,6 +373,23 @@ pub(crate) fn fallback() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shots_attach_to_themes_by_number_and_version() {
+        static BYTES: [u8; 1] = [0];
+        let shots: &[(&str, u32, u32, &'static [u8])] = &[
+            ("assets/changelog/1.0.0/1-a.png", 10, 5, &BYTES),
+            ("assets/changelog/1.0.0/3-c.png", 4, 4, &BYTES),
+            ("assets/changelog/1.0.1/2-b.png", 1, 1, &BYTES),
+        ];
+        assert_eq!(shot_in(shots, "1.0.0", 0).map(|s| s.width), Some(10));
+        assert!(shot_in(shots, "1.0.0", 1).is_none());
+        assert_eq!(shot_in(shots, "1.0.0", 2).map(|s| s.height), Some(4));
+        assert!(shot_in(shots, "1.0.1", 0).is_none());
+        assert!(theme_shot("0.4.0", 0).is_some(), "bundled 0.4.0 screenshot");
+        let notes = overview("### Jcode Desktop 1.0.0\n- A", "1.0.0-dev.3").unwrap();
+        assert_eq!(notes.notes_version, "1.0.0");
+    }
 
     #[test]
     fn overview_matches_only_the_requested_desktop_release() {

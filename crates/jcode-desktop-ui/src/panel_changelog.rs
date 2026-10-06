@@ -1,68 +1,28 @@
 //! Read-only update summary and versioned history.
 use super::*;
 use crate::update_notes::{self, View};
-use gpui::{HighlightStyle, StyledText};
 
-/// Comfortable reading measure. Wider lines in a monospace face are hard to
-/// track back to the next line, which made the notes feel like a wall of text.
+/// Comfortable reading measure. Long lines are hard to track back to the
+/// next line, which made the notes feel like a wall of text.
 const MEASURE: f32 = 680.;
 
-/// Split an entry into a short lead and its detail, so each bullet scans by
-/// its first words. "Applets: sandboxed UI" leads with "Applets", and longer
-/// entries lead with their first sentence when more text follows.
-fn lead_len(entry: &str) -> Option<usize> {
-    if let Some(colon) = entry.find(": ")
-        && colon <= 40
-        && !entry[..colon].contains('`')
-    {
-        return Some(colon + 1);
-    }
-    let end = entry.find(". ")? + 1;
-    (end < entry.len().saturating_sub(1)).then_some(end)
-}
+/// Release notes read as prose, so they use a proportional face like the
+/// changelogs of Linear, Raycast and Cursor, not the transcript's monospace.
+#[cfg(target_os = "macos")]
+const PROSE_FONT: &str = ".SystemUIFont";
+#[cfg(target_os = "windows")]
+const PROSE_FONT: &str = "Segoe UI";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const PROSE_FONT: &str = "Inter";
 
-fn entry_text(entry: String, emphasize: bool) -> StyledText {
-    let theme = Theme::global();
-    let lead = if emphasize { lead_len(&entry) } else { None };
-    let mut highlights = Vec::new();
-    match lead {
-        Some(lead) => {
-            highlights.push((
-                0..lead,
-                HighlightStyle {
-                    color: Some(theme.TEXT.into()),
-                    font_weight: Some(gpui::FontWeight::SEMIBOLD),
-                    ..Default::default()
-                },
-            ));
-            highlights.push((
-                lead..entry.len(),
-                HighlightStyle {
-                    color: Some(theme.TEXT_DIM.into()),
-                    ..Default::default()
-                },
-            ));
-        }
-        None => highlights.push((
-            0..entry.len(),
-            HighlightStyle {
-                color: Some(theme.TEXT.into()),
-                ..Default::default()
-            },
-        )),
-    }
-    StyledText::new(entry).with_highlights(highlights)
-}
-
-// Keep the release notes editorial rather than turning every commit into a card.
-// Quiet bullets, hanging indentation, and air between items keep long lists
-// scannable without boxes.
-fn update_entries(entries: Vec<String>, emphasize: bool) -> gpui::Div {
+// One sentence per row with a quiet bullet. No bold leads: they made every
+// row compete for attention.
+fn update_entries(entries: Vec<String>) -> gpui::Div {
     let theme = Theme::global();
     div()
         .flex()
         .flex_col()
-        .gap(px(if emphasize { 10. } else { 6. }))
+        .gap(px(8.))
         .children(entries.into_iter().map(move |entry| {
             div()
                 .flex()
@@ -70,14 +30,52 @@ fn update_entries(entries: Vec<String>, emphasize: bool) -> gpui::Div {
                 .gap_3()
                 .text_size(px(14.))
                 .line_height(px(22.))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_color(theme.TEXT_FAINT)
-                        .child("•"),
-                )
-                .child(div().flex_1().min_w_0().child(entry_text(entry, emphasize)))
+                .child(div().flex_shrink_0().text_color(theme.TEXT_FAINT).child("•"))
+                .child(div().flex_1().min_w_0().child(entry))
         }))
+}
+
+/// A theme is a short paragraph followed by its screenshot, when one exists.
+fn theme_block(text: String, shot: Option<update_notes::Shot>) -> gpui::Div {
+    let theme = Theme::global();
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .text_size(px(15.))
+                .line_height(px(24.))
+                .text_color(theme.TEXT)
+                .child(text),
+        )
+        .when_some(shot, |el, shot| {
+            let image = crate::image_cache::encoded(gpui::ImageFormat::Png, shot.bytes.to_vec());
+            el.child(
+                // A tinted mat with padding marks this as a picture of the
+                // product, not live controls in the panel.
+                div()
+                    .debug_selector(|| "update-theme-shot".into())
+                    .w_full()
+                    .p_3()
+                    .rounded_2xl()
+                    .bg(theme.HEADER_BG)
+                    .child(
+                        div()
+                            .w_full()
+                            // Reserve the final height before decode so text never jumps.
+                            .aspect_ratio(shot.width as f32 / shot.height.max(1) as f32)
+                            .rounded_lg()
+                            .overflow_hidden()
+                            .child(
+                                img(crate::image_cache::source(image))
+                                    .size_full()
+                                    .rounded_lg()
+                                    .object_fit(gpui::ObjectFit::Contain),
+                            ),
+                    ),
+            )
+        })
 }
 
 fn section_label(label: impl Into<SharedString>) -> gpui::Div {
@@ -122,7 +120,7 @@ fn running_build() -> gpui::Div {
         .child(
             div()
                 .debug_selector(|| "update-version".into())
-                .child(format!("Running {}", crate::build_info::version())),
+                .child(crate::build_info::version()),
         )
         .child(format!(
             "· {} · {}",
@@ -184,36 +182,48 @@ impl Panel {
                 let overview = update_notes::release_overview();
                 let has_overview = overview.is_some();
                 if let Some(overview) = overview {
+                    let notes_version = overview.notes_version.clone();
                     content = content.child(
                         div()
                             .debug_selector(|| "update-release-overview".into())
                             .flex()
                             .flex_col()
                             .gap_8()
+                            // The version appears once, in the dim line under the headline.
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .child(section_label(overview.release))
-                                    .when_some(overview.headline, |el, headline| {
-                                        el.child(
-                                            div()
-                                                .text_size(px(20.))
-                                                .line_height(px(28.))
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .child(headline),
-                                        )
-                                    })
+                                    .child(
+                                        div()
+                                            .text_size(px(24.))
+                                            .line_height(px(32.))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(overview.headline.unwrap_or(overview.title)),
+                                    )
                                     .child(running_build()),
                             )
                             .children(overview.sections.into_iter().map(|section| {
+                                if section.label == "Themes" {
+                                    let version = notes_version.clone();
+                                    return div().flex().flex_col().gap(px(28.)).children(
+                                        section.entries.into_iter().enumerate().map(
+                                            move |(index, entry)| {
+                                                theme_block(
+                                                    entry,
+                                                    update_notes::theme_shot(&version, index),
+                                                )
+                                            },
+                                        ),
+                                    );
+                                }
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap_3()
+                                    .gap(px(12.))
                                     .child(section_label(section.label))
-                                    .child(update_entries(section.entries, true))
+                                    .child(update_entries(section.entries))
                             })),
                     );
                 } else {
@@ -226,12 +236,14 @@ impl Panel {
                         .gap_3()
                         .child(section_label(summary.heading))
                         .when(!summary.entries.is_empty(), |el| {
-                            el.child(update_entries(summary.entries.clone(), false))
+                            el.child(update_entries(summary.entries.clone()))
                         })
                         .when(summary.entries.is_empty(), |el| {
-                            el.child(div().text_color(theme.TEXT_DIM).child(
-                                "Git history wasn’t included in this build.",
-                            ))
+                            el.child(
+                                div()
+                                    .text_color(theme.TEXT_DIM)
+                                    .child("Git history wasn’t included in this build."),
+                            )
                             .when(!has_overview, |el| {
                                 el.child(markdown::render(
                                     update_notes::fallback(),
@@ -279,7 +291,7 @@ impl Panel {
                             .flex_col()
                             .gap_3()
                             .child(release_heading(group.version, group.date))
-                            .child(update_entries(group.entries, false))
+                            .child(update_entries(group.entries))
                     }));
             }
         }
@@ -290,7 +302,7 @@ impl Panel {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .font_family(theme.FONT_AI)
+            .font_family(PROSE_FONT)
             .text_size(px(14.))
             .text_color(theme.TEXT)
             .track_focus(&self.focus_handle)
@@ -354,10 +366,8 @@ impl Panel {
                                 .text_color(theme.TEXT_DIM)
                                 .hover(|el| el.bg(theme.HEADER_BG).text_color(theme.TEXT))
                                 .on_click(|_, window, cx| {
-                                    window.dispatch_action(
-                                        Box::new(crate::workspace::ClosePanel),
-                                        cx,
-                                    )
+                                    window
+                                        .dispatch_action(Box::new(crate::workspace::ClosePanel), cx)
                                 })
                                 .child("Close"),
                         ),
@@ -386,21 +396,6 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn entries_lead_with_a_label_or_first_sentence() {
-        fn lead(s: &str) -> Option<&str> {
-            lead_len(s).map(|n| &s[..n])
-        }
-        assert_eq!(lead("Applets: sandboxed custom UI."), Some("Applets:"));
-        assert_eq!(
-            lead("Model picker with logos. The method pill switches."),
-            Some("Model picker with logos.")
-        );
-        assert_eq!(lead("A single sentence."), None);
-        assert_eq!(lead("`/save [label]`: names"), None);
-        assert_eq!(lead("Plain commit subject"), None);
-    }
 
     #[gpui::test]
     fn update_views_switch_without_editing_or_using_runtime(cx: &mut gpui::TestAppContext) {
