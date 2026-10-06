@@ -19,6 +19,7 @@ mod diff_model;
 mod diff_review_content;
 mod diff_view;
 mod effort;
+mod example_prompts;
 mod fps_counter;
 #[cfg(target_os = "linux")]
 mod global_voice_input;

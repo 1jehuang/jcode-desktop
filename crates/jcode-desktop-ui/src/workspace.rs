@@ -2123,6 +2123,20 @@ impl Workspace {
                     }
                 }
                 self.sessions = sessions;
+                // Composer examples come from todos left in closed sessions.
+                // Reading every todo file belongs off the UI thread, and unit
+                // tests must not pick up the developer's own sessions.
+                if !cfg!(test) {
+                    let sessions = self.sessions.clone();
+                    cx.spawn(async move |_, cx| {
+                        let prompts = cx
+                            .background_executor()
+                            .spawn(async move { crate::example_prompts::load(&sessions) })
+                            .await;
+                        cx.update(|cx| crate::example_prompts::set(prompts, cx));
+                    })
+                    .detach();
+                }
                 let mut unfinished = None;
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == "unfinished-work" {

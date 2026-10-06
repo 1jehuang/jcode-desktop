@@ -4393,6 +4393,12 @@ impl Render for Panel {
                 input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
             });
         }
+        if self.input.read(cx).working_dir() != self.working_dir.as_deref() {
+            let working_dir = self.working_dir.clone();
+            self.input.update(cx, |input, _| {
+                input.set_working_dir(working_dir.as_deref());
+            });
+        }
         let row_count_changed = row_count != self.transcript_row_count;
         if row_count_changed {
             if row_count > self.transcript_row_count {

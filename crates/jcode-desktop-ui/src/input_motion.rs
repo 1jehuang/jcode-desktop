@@ -8,23 +8,20 @@ use std::time::{Duration, Instant};
 
 use gpui::{Pixels, Point, point, px};
 
-/// Example prompts shown behind an empty chat composer.
-pub(super) const EXAMPLE_PROMPTS: &[&str] = &[
+/// Generic example prompts. Shown when there is no personalized work to
+/// suggest (see `crate::example_prompts`), so they must fit any project.
+pub(super) const FALLBACK_PROMPTS: &[&str] = &[
     "Find bugs in this repo",
-    "Fix the flaky test in the Jcode TUI",
-    "Make Jcode Desktop hot reload faster",
-    "Spin up a swarm to review this PR",
-    "Compare Claude and Codex on this diff",
-    "Profile GPUI frame times on Wayland",
-    "Why does niri drop this window's focus?",
-    "Fix Handterm scrollback after a resize",
-    "Wire Nari dictation into the composer",
-    "Ask Jev to route my voice notes",
-    "Make the harness API TypeSafe end to end",
-    "Add a Copilot login route",
-    "Switch this session from OpenAI to Anthropic",
-    "Explain how hot reload swaps the UI plugin",
-    "Write tests for the swarm task graph",
+    "Explain how this codebase is structured",
+    "Write tests for the most fragile code",
+    "Fix the failing tests",
+    "Review my uncommitted changes",
+    "Refactor the messiest file here",
+    "Document the public API",
+    "Speed up the slowest part of this app",
+    "Find dead code and remove it",
+    "Make the error messages clearer",
+    "Summarize what changed this week",
     "Commit and push my changes",
 ];
 
@@ -49,22 +46,33 @@ const GLIDE: Duration = Duration::from_millis(55);
 /// period so all decorative ticks share one frame on the animation grid.
 pub(super) const TICK: Duration = Duration::from_nanos(33_333_334);
 
-/// Two prompts drawn from the catalog by `seed`: the first is typed, held
-/// and deleted, then the second is typed and stays. Returns the visible
-/// prefix and whether the placeholder is still animating.
-pub(super) fn placeholder_at(
+/// The prompts one idle composer shows: personalized ones first, then the
+/// generic fallback catalog for any remaining slot. `seed` rotates both.
+pub(super) fn pick_prompts<S: AsRef<str>>(personal: &[S], seed: usize) -> [&str; SHOWN_PROMPTS] {
+    std::array::from_fn(|step| {
+        if step < personal.len() {
+            personal[(seed + step) % personal.len()].as_ref()
+        } else {
+            FALLBACK_PROMPTS[(seed + step) % FALLBACK_PROMPTS.len()]
+        }
+    })
+}
+
+/// The first prompt is typed, held and deleted, then the second is typed
+/// and stays. Returns the visible prefix, the prompt it belongs to, and
+/// whether the placeholder is still animating.
+pub(super) fn placeholder_at<'a>(
     elapsed: Duration,
-    seed: usize,
+    prompts: [&'a str; SHOWN_PROMPTS],
     reduce_motion: bool,
-) -> (&'static str, bool) {
-    let count = EXAMPLE_PROMPTS.len();
-    let pick = |step: usize| EXAMPLE_PROMPTS[(seed + step) % count];
+) -> (&'a str, &'a str, bool) {
+    let pick = |step: usize| prompts[step];
     let last = pick(SHOWN_PROMPTS - 1);
     if reduce_motion {
         return if elapsed < STILL_ROTATE {
-            (pick(0), true)
+            (pick(0), pick(0), true)
         } else {
-            (last, false)
+            (last, last, false)
         };
     }
     let mut t = elapsed;
@@ -74,7 +82,7 @@ pub(super) fn placeholder_at(
         let typing = TYPE_PER_CHAR * chars;
         let final_prompt = step + 1 == SHOWN_PROMPTS;
         if final_prompt && t >= typing {
-            return (prompt, false);
+            return (prompt, prompt, false);
         }
         let total = typing + HOLD + DELETE_PER_CHAR * chars + GAP;
         if !final_prompt && t >= total {
@@ -95,9 +103,9 @@ pub(super) fn placeholder_at(
             .char_indices()
             .nth(shown)
             .map_or(prompt.len(), |(byte, _)| byte);
-        return (&prompt[..end], true);
+        return (&prompt[..end], prompt, true);
     }
-    (last, false)
+    (last, last, false)
 }
 
 /// Caret opacity at `since` the caret last moved, and how long until it next
@@ -184,48 +192,64 @@ impl Glide {
 mod tests {
     use super::*;
 
+    const NONE: &[&str] = &[];
+
     #[test]
     fn placeholder_types_holds_deletes_and_advances() {
-        let first = EXAMPLE_PROMPTS[0];
-        let (start, live) = placeholder_at(Duration::ZERO, 0, false);
+        let prompts = pick_prompts(NONE, 0);
+        let first = FALLBACK_PROMPTS[0];
+        let (start, full, live) = placeholder_at(Duration::ZERO, prompts, false);
         assert!(live);
-        assert_eq!(start, &first[..1]);
+        assert_eq!((start, full), (&first[..1], first));
         let typed = TYPE_PER_CHAR * first.chars().count() as u32;
-        assert_eq!(placeholder_at(typed + HOLD / 2, 0, false).0, first);
+        assert_eq!(placeholder_at(typed + HOLD / 2, prompts, false).0, first);
         let deleted = typed + HOLD + DELETE_PER_CHAR * first.chars().count() as u32;
-        assert_eq!(placeholder_at(deleted + GAP / 2, 0, false).0, "");
-        let second = placeholder_at(deleted + GAP + TYPE_PER_CHAR * 3, 0, false).0;
-        assert!(EXAMPLE_PROMPTS[1].starts_with(second) && second.chars().count() == 4);
+        assert_eq!(placeholder_at(deleted + GAP / 2, prompts, false).0, "");
+        let (second, full, _) = placeholder_at(deleted + GAP + TYPE_PER_CHAR * 3, prompts, false);
+        assert_eq!(full, FALLBACK_PROMPTS[1]);
+        assert!(full.starts_with(second) && second.chars().count() == 4);
     }
 
     #[test]
     fn placeholder_settles_on_the_second_prompt_and_stops_ticking() {
-        let first = EXAMPLE_PROMPTS[3].chars().count() as u32;
-        let second = EXAMPLE_PROMPTS[4].chars().count() as u32;
+        let prompts = pick_prompts(NONE, 3);
+        let first = FALLBACK_PROMPTS[3].chars().count() as u32;
+        let second = FALLBACK_PROMPTS[4].chars().count() as u32;
         let settled =
             TYPE_PER_CHAR * first + HOLD + DELETE_PER_CHAR * first + GAP + TYPE_PER_CHAR * second;
+        let done = (FALLBACK_PROMPTS[4], FALLBACK_PROMPTS[4], false);
+        assert_eq!(placeholder_at(settled, prompts, false), done);
         assert_eq!(
-            placeholder_at(settled, 3, false),
-            (EXAMPLE_PROMPTS[4], false)
-        );
-        assert_eq!(
-            placeholder_at(settled * 10, 3, false),
-            (EXAMPLE_PROMPTS[4], false),
+            placeholder_at(settled * 10, prompts, false),
+            done,
             "never rotates to a third prompt"
         );
+        let prompts = pick_prompts(NONE, 0);
         assert_eq!(
-            placeholder_at(Duration::from_secs(1), 0, true),
-            (EXAMPLE_PROMPTS[0], true)
+            placeholder_at(Duration::from_secs(1), prompts, true),
+            (FALLBACK_PROMPTS[0], FALLBACK_PROMPTS[0], true)
         );
         assert_eq!(
-            placeholder_at(Duration::from_secs(6), 0, true),
-            (EXAMPLE_PROMPTS[1], false)
+            placeholder_at(Duration::from_secs(6), prompts, true),
+            (FALLBACK_PROMPTS[1], FALLBACK_PROMPTS[1], false)
         );
     }
 
     #[test]
-    fn example_prompts_are_single_line_and_short() {
-        for prompt in EXAMPLE_PROMPTS {
+    fn personalized_prompts_lead_and_fallbacks_fill_the_rest() {
+        let one = ["Finish the login flow"];
+        assert_eq!(
+            pick_prompts(&one, 5),
+            ["Finish the login flow", FALLBACK_PROMPTS[6]]
+        );
+        let two = ["Alpha task", "Beta task"];
+        assert_eq!(pick_prompts(&two, 0), ["Alpha task", "Beta task"]);
+        assert_eq!(pick_prompts(&two, 1), ["Beta task", "Alpha task"]);
+    }
+
+    #[test]
+    fn fallback_prompts_are_single_line_and_short() {
+        for prompt in FALLBACK_PROMPTS {
             assert!(!prompt.contains('\n'));
             assert!(prompt.chars().count() <= 48, "{prompt}");
         }

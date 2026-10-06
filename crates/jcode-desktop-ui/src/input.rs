@@ -213,11 +213,22 @@ pub struct PromptInput {
     chrome: bool,
     /// Cycle example prompts behind an empty chat composer.
     example_prompts: bool,
+    /// Project this composer works in. Scopes personalized example prompts.
+    working_dir: Option<String>,
     /// Shared with paint and the ticker, outside the entity, so that caret
     /// and placeholder frames do not count as changes to this input: GPUI
     /// retains views between frames and builds again a view whose entities
     /// were updated.
     motion: std::rc::Rc<std::cell::RefCell<MotionState>>,
+}
+
+/// Example prompts chosen for one seed, project and personalized catalog.
+struct PickedPrompts {
+    seed: usize,
+    /// Identity of the personalized catalog they were picked from.
+    source: Option<usize>,
+    working_dir: Option<String>,
+    prompts: [SharedString; 2],
 }
 
 /// Placeholder typewriter and caret motion. Never snapshotted.
@@ -226,6 +237,8 @@ struct MotionState {
     epoch: Instant,
     key: Option<(SharedString, usize)>,
     seed: usize,
+    /// Example prompts picked for `seed`, with the inputs they came from.
+    prompts: Option<PickedPrompts>,
     glide: Option<motion::Glide>,
     /// Delay until the painted motion next changes. `None` once settled.
     next: Option<Duration>,
@@ -241,6 +254,7 @@ impl Default for MotionState {
             epoch: Instant::now(),
             key: None,
             seed,
+            prompts: None,
             glide: None,
             next: None,
             ticker: None,
@@ -553,6 +567,7 @@ impl PromptInput {
             trailing_inset: 0.,
             chrome: true,
             example_prompts: false,
+            working_dir: None,
             motion: Default::default(),
         }
     }
@@ -568,20 +583,68 @@ impl PromptInput {
         &self,
         now: Instant,
         cx: &App,
-    ) -> (SharedString, Option<&'static str>, bool) {
+    ) -> (SharedString, Option<SharedString>, bool) {
         if !self.example_prompts {
             return (self.placeholder.clone(), None, false);
         }
         let reduced = motion_reduced(cx);
-        let state = self.motion.borrow();
+        let mut state = self.motion.borrow_mut();
+        let source = cx
+            .try_global::<crate::example_prompts::ExamplePrompts>()
+            .map(|global| Arc::as_ptr(&global.0) as usize);
+        let fresh = state.prompts.as_ref().is_some_and(|picked| {
+            picked.seed == state.seed
+                && picked.source == source
+                && picked.working_dir == self.working_dir
+        });
+        if !fresh {
+            let personal = crate::example_prompts::for_dir(cx, self.working_dir.as_deref());
+            let prompts = motion::pick_prompts(&personal, state.seed).map(SharedString::from);
+            if state
+                .prompts
+                .as_ref()
+                .is_some_and(|picked| picked.prompts != prompts)
+            {
+                // Sessions loaded after the composer appeared. Start the new
+                // example from its first letter rather than mid-word.
+                state.epoch = now;
+            }
+            state.prompts = Some(PickedPrompts {
+                seed: state.seed,
+                source,
+                working_dir: self.working_dir.clone(),
+                prompts,
+            });
+        }
+        let picked = state
+            .prompts
+            .as_ref()
+            .expect("example prompts were just picked");
         let elapsed = now.saturating_duration_since(state.epoch);
-        let (shown, live) = motion::placeholder_at(elapsed, state.seed, reduced);
-        let full = motion::EXAMPLE_PROMPTS
+        let prompts = [picked.prompts[0].as_ref(), picked.prompts[1].as_ref()];
+        let (shown, full, live) = motion::placeholder_at(elapsed, prompts, reduced);
+        let full = picked
+            .prompts
             .iter()
-            .copied()
-            .find(|prompt| prompt.starts_with(shown) && !shown.is_empty())
-            .unwrap_or(shown);
-        (SharedString::new_static(shown), Some(full), live)
+            .find(|prompt| prompt.as_ref() == full)
+            .cloned();
+        let shown = if full.as_ref().is_some_and(|full| full.len() == shown.len()) {
+            full.clone().unwrap_or_default()
+        } else {
+            SharedString::from(shown.to_owned())
+        };
+        (shown, full, live)
+    }
+
+    /// Scope personalized example prompts to this project.
+    pub(crate) fn set_working_dir(&mut self, working_dir: Option<&str>) {
+        if self.working_dir.as_deref() != working_dir {
+            self.working_dir = working_dir.map(str::to_owned);
+        }
+    }
+
+    pub(crate) fn working_dir(&self) -> Option<&str> {
+        self.working_dir.as_deref()
     }
 
     /// Whether `set_spacious` or `set_trailing_inset` with these values would
@@ -1845,13 +1908,13 @@ impl Element for TextElement {
         let wrap_width = (bounds.size.width - text_indent).max(px(0.));
         let (display_text, text_color) = if content.is_empty() {
             let (mut text, full, live) = input.placeholder_text(now, cx);
-            placeholder_full = full;
+            placeholder_full = full.clone();
             // Only an active window animates. Background windows show the
             // whole example rather than freezing mid-word.
             placeholder_live = live && window.is_window_active();
             if live && !placeholder_live {
-                if let Some(full) = full {
-                    text = SharedString::new_static(full);
+                if let Some(full) = &full {
+                    text = full.clone();
                 }
             }
             (text, to_hsla(Theme::global().TEXT_DIM))
@@ -1921,7 +1984,7 @@ impl Element for TextElement {
             let full_lines = window
                 .text_system()
                 .shape_text(
-                    SharedString::new_static(full),
+                    full.clone(),
                     font_size,
                     &[TextRun {
                         len: full.len(),
