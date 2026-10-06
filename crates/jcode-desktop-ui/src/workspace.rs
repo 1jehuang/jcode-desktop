@@ -8536,7 +8536,11 @@ fn sidebar_enabled(
 /// The process default, for callers without a window (tests, helpers).
 #[cfg(test)]
 fn default_working_dir() -> Option<String> {
-    launch_working_dir(&jcode_desktop_api::WindowLaunch::current_process())
+    // Match `Workspace::for_test`, whose launch is empty. Reading this process's
+    // environment made the expected default follow JCODE_DESKTOP_WORKING_DIR,
+    // which sessions launched from Desktop inherit, so home-directory
+    // assertions failed when tests ran from inside Desktop.
+    launch_working_dir(&jcode_desktop_api::WindowLaunch::default())
 }
 
 /// `JCODE_DESKTOP_WORKING_DIR` from the launch that opened a window, so each

@@ -111,7 +111,12 @@ mod tests {
         let footer = vcx.debug_bounds("sidebar-workspaces").unwrap();
         let sidebar = vcx.debug_bounds("sidebar").unwrap();
         let list = vcx.debug_bounds("sidebar-session-list").unwrap();
-        assert_eq!(footer.bottom(), sidebar.bottom());
+        // The account pill is pinned to the very bottom (d03987a), so the
+        // workspace buttons sit directly above it rather than at the edge.
+        let account = vcx.debug_bounds("sidebar-account").unwrap();
+        assert!(footer.bottom() <= account.top());
+        assert!(account.bottom() <= sidebar.bottom());
+        assert!(sidebar.bottom() - footer.bottom() < px(80.0));
         assert!(list.bottom() <= footer.top());
         workspace.update(vcx, |w, cx| {
             w.sidebar_sessions_list.scroll_to_end();
@@ -157,7 +162,9 @@ mod tests {
                 let footer = vcx.debug_bounds("sidebar-workspaces").unwrap();
                 let sidebar = vcx.debug_bounds("sidebar").unwrap();
                 let list = vcx.debug_bounds("sidebar-session-list").unwrap();
-                assert_eq!(footer.bottom(), sidebar.bottom());
+                let account = vcx.debug_bounds("sidebar-account").unwrap();
+                assert!(footer.bottom() <= account.top());
+                assert!(account.bottom() <= sidebar.bottom());
                 assert!(list.bottom() <= footer.top());
                 assert!(list.size.height > px(100.0));
                 let last = vcx.debug_bounds("sidebar-workspace-switch-3").unwrap();
