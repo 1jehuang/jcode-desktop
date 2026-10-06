@@ -395,12 +395,14 @@ and only 79s run one test at a time. The parallel run is contention-bound
 inside one process. `cargo nextest run` gives each test its own process and
 finishes in 12-15s. Configuration lives in `.config/nextest.toml`.
 
-The slowest test spent most of its time re-tessellating identical prompt-card
-backgrounds with lyon on every frame. `prompt_background::rounded_union` now
+Profiles of the slowest tests showed lyon re-tessellating identical
+prompt-card backgrounds every frame. `prompt_background::rounded_union` now
 keeps a small position-independent LRU of tessellated paths, which also
-benefits the running app: `native_scroll_paints_historical_prompt_cards`
-dropped from 15.8s to 3.2s, and `startup_each_native_submission_paints_the_newest_row`
-from 7.4s to 4.7s when run alone.
+benefits the running app. The first before/after numbers (15.8s to 3.2s) mixed
+an unloaded run with a loaded one and overstated the effect. A same-load,
+interleaved CPU-time comparison on 2026-10-05 measured roughly 10-25% less
+CPU for `native_scroll_paints_historical_prompt_cards` and
+`startup_each_native_submission_paints_the_newest_row`.
 
 Unit tests now ignore the developer's `~/.jcode/config.toml` unless
 `JCODE_DESKTOP_CONFIG` is set. Previously a non-default theme there failed
@@ -408,11 +410,13 @@ theme-colour assertions whenever a test ran before anything set the theme.
 
 Theme switches are instant under `cfg(test)`. The 180 ms fade runs on wall
 clock time, which GPUI's test executor cannot advance, so each switch kept a
-test redrawing until it ended: the theme-cycle test took 6.6s and now 0.06s.
+test redrawing until it ended. Same-load interleaved runs: the theme-cycle
+test takes 6.8-7.1s without the change and 0.2-0.6s with it.
 Tests that change the process-global theme hold `theme::test_theme_lock()`.
 
-With these changes `cargo nextest run --workspace` takes about 9-13s on an
-idle machine (from about 22s for `cargo test`).
+On an idle machine `cargo nextest run --workspace` measured about 9-13s, versus
+about 22s for `cargo test` before these changes. This was not reproduced
+under heavy load, and an isolated full-suite A/B is still to be done.
 
 Animations generally sample `Instant::now()`, so about a dozen tests still
 `thread::sleep` through real transitions and can flake under heavy load. A
