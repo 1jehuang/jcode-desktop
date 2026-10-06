@@ -194,11 +194,32 @@ def caption_checks(name, hwnd, out_dir):
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     time.sleep(1.5)
     check("maximize button restores", not user32.IsZoomed(hwnd))
+    # Snap Layouts: Windows 11 opens a flyout owned by explorer when the
+    # pointer rests on an HTMAXBUTTON region. Report whether it appeared.
+    left, top, right, bottom = window_rect(hwnd)
+    user32.SetCursorPos(right - int(69 * scale) - 8, top + int(16 * scale))
+    time.sleep(2.5)
+    grab((max(right - int(700 * scale), 0), top, right, top + int(400 * scale)), out_dir / f"{name}-snap-hover.png")
+    flyouts = []
+
+    def find(hwnd_, _):
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd_, buf, 256)
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd_, title, 256)
+        if user32.IsWindowVisible(hwnd_) and ("Snap" in title.value or "SnapAssist" in buf.value
+                                              or "Xaml" in buf.value and "Snap" in title.value):
+            flyouts.append(f"{buf.value}:{title.value}")
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(find), 0)
+    import platform
+    report.append(f"INFO snap-layouts flyout={flyouts or 'none'} os={platform.platform()}")
     user32.SetCursorPos(5, 5)
     time.sleep(0.5)
     (out_dir / f"{name}-checks.txt").write_text("\n".join(report) + "\n")
     print("\n".join(report))
-    return all(line.startswith("PASS") for line in report)
+    return all(line.startswith(("PASS", "INFO")) for line in report)
 
 
 def capture(name, binary, out_dir, timeout):
