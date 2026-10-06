@@ -414,9 +414,13 @@ test redrawing until it ended. Same-load interleaved runs: the theme-cycle
 test takes 6.8-7.1s without the change and 0.2-0.6s with it.
 Tests that change the process-global theme hold `theme::test_theme_lock()`.
 
-On an idle machine `cargo nextest run --workspace` measured about 9-13s, versus
-about 22s for `cargo test` before these changes. This was not reproduced
-under heavy load, and an isolated full-suite A/B is still to be done.
+Verified A/B, 2026-10-05: the UI unit-test binary built without these changes
+(`625f7aa`) against one built with them, run alternately three times each at
+the same load (11-22) with plain libtest: 20.7s, 20.3s, 20.6s before versus
+11.5s, 11.0s, 10.7s after, with failures falling from 8-11 to 0-2. The
+remaining intermittent failure is a timing flake under load. Whole-workspace
+`cargo nextest run --workspace` passes 1727 of 1728 in about 11s; the one
+failure is the stale `GPUI_REVISION` constant, which needs a host restart.
 
 Animations generally sample `Instant::now()`, so about a dozen tests still
 `thread::sleep` through real transitions and can flake under heavy load. A
