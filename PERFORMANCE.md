@@ -405,3 +405,20 @@ from 7.4s to 4.7s when run alone.
 Unit tests now ignore the developer's `~/.jcode/config.toml` unless
 `JCODE_DESKTOP_CONFIG` is set. Previously a non-default theme there failed
 theme-colour assertions whenever a test ran before anything set the theme.
+
+Theme switches are instant under `cfg(test)`. The 180 ms fade runs on wall
+clock time, which GPUI's test executor cannot advance, so each switch kept a
+test redrawing until it ended: the theme-cycle test took 6.6s and now 0.06s.
+Tests that change the process-global theme hold `theme::test_theme_lock()`.
+
+With these changes `cargo nextest run --workspace` takes about 9-13s on an
+idle machine (from about 22s for `cargo test`).
+
+Animations generally sample `Instant::now()`, so about a dozen tests still
+`thread::sleep` through real transitions and can flake under heavy load. A
+test-controllable animation clock would make them deterministic and faster.
+
+Optimizing proc macros (`[profile.dev.build-override] opt-level = 3`) cut UI
+test-target macro expansion from ~2.3s to ~1.3s per rebuild, but it changes
+the UI crate's metadata hash, which a running hot-reload host would reject.
+It needs a coordinated host restart, so it is not enabled.
