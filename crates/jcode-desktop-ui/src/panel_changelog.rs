@@ -30,52 +30,78 @@ fn update_entries(entries: Vec<String>) -> gpui::Div {
                 .gap_3()
                 .text_size(px(14.))
                 .line_height(px(22.))
-                .child(div().flex_shrink_0().text_color(theme.TEXT_FAINT).child("•"))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(theme.TEXT_FAINT)
+                        .child("•"),
+                )
                 .child(div().flex_1().min_w_0().child(entry))
         }))
 }
 
-/// A theme is a short paragraph followed by its screenshot, when one exists.
-fn theme_block(text: String, shot: Option<update_notes::Shot>) -> gpui::Div {
+/// A theme is a numbered short paragraph followed by its screenshot, when one
+/// exists. The number hangs in its own column so text and image align.
+fn theme_block(number: usize, text: String, shot: Option<update_notes::Shot>) -> gpui::Div {
     let theme = Theme::global();
     div()
         .flex()
-        .flex_col()
+        .items_start()
         .gap_3()
         .child(
             div()
+                .debug_selector(move || format!("update-theme-number-{number}").into())
+                .flex_shrink_0()
+                .w(px(22.))
                 .text_size(px(15.))
                 .line_height(px(24.))
-                .text_color(theme.TEXT)
-                .child(text),
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.TEXT_DIM)
+                .child(format!("{number}.")),
         )
-        .when_some(shot, |el, shot| {
-            let image = crate::image_cache::encoded(gpui::ImageFormat::Png, shot.bytes.to_vec());
-            el.child(
-                // A tinted mat with padding marks this as a picture of the
-                // product, not live controls in the panel.
-                div()
-                    .debug_selector(|| "update-theme-shot".into())
-                    .w_full()
-                    .p_3()
-                    .rounded_2xl()
-                    .bg(theme.HEADER_BG)
-                    .child(
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .line_height(px(24.))
+                        .text_color(theme.TEXT)
+                        .child(text),
+                )
+                .when_some(shot, |el, shot| {
+                    let image =
+                        crate::image_cache::encoded(gpui::ImageFormat::Png, shot.bytes.to_vec());
+                    el.child(
+                        // A tinted mat with padding marks this as a picture of the
+                        // product, not live controls in the panel.
                         div()
+                            .debug_selector(|| "update-theme-shot".into())
                             .w_full()
-                            // Reserve the final height before decode so text never jumps.
-                            .aspect_ratio(shot.width as f32 / shot.height.max(1) as f32)
-                            .rounded_lg()
-                            .overflow_hidden()
+                            .p_3()
+                            .rounded_2xl()
+                            .bg(theme.HEADER_BG)
                             .child(
-                                img(crate::image_cache::source(image))
-                                    .size_full()
+                                div()
+                                    .w_full()
+                                    // Reserve the final height before decode so text never jumps.
+                                    .aspect_ratio(shot.width as f32 / shot.height.max(1) as f32)
                                     .rounded_lg()
-                                    .object_fit(gpui::ObjectFit::Contain),
+                                    .overflow_hidden()
+                                    .child(
+                                        img(crate::image_cache::source(image))
+                                            .size_full()
+                                            .rounded_lg()
+                                            .object_fit(gpui::ObjectFit::Contain),
+                                    ),
                             ),
-                    ),
-            )
-        })
+                    )
+                }),
+        )
 }
 
 fn section_label(label: impl Into<SharedString>) -> gpui::Div {
@@ -211,6 +237,7 @@ impl Panel {
                                         section.entries.into_iter().enumerate().map(
                                             move |(index, entry)| {
                                                 theme_block(
+                                                    index + 1,
                                                     entry,
                                                     update_notes::theme_shot(&version, index),
                                                 )

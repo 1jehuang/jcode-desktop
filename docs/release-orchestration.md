@@ -53,6 +53,27 @@ tag, so automatic betas still carry notes. Preview before tagging:
 python3 scripts/release_notes.py desktop-v0.3.4 --limit 1850
 ```
 
+### Theme screenshots
+
+The in-app updates panel numbers each `#### Themes` bullet and shows a product
+screenshot under it. Screenshots are part of the release notes and must be
+updated whenever the Themes change:
+
+1. In `scripts/changelog_shots.py`, add an entry to `SHOTS` for the new version.
+   Give one shot per theme, numbered to match the bullet order, with the
+   `scripts/screenshot.py` fixture flags that show the feature and a crop box.
+2. Render them with `python3 scripts/changelog_shots.py X.Y.Z --build`. This
+   uses the offline fixture on a private Xvfb, so no credentials or real
+   sessions are captured. Output goes to `assets/changelog/X.Y.Z/N-name.png`.
+3. Open every PNG and check the crop shows the feature and nothing private.
+   Then check the panel with
+   `python3 scripts/screenshot.py --changelog --size 1440x1600 target/changelog.png`.
+4. Commit the PNGs with the `CHANGELOG.md` section.
+
+A theme without a matching `N-*.png` renders as text only, so a missing
+screenshot never blocks a release. `CHANGELOG.md` never references the images,
+so GitHub and Discord notes are unchanged.
+
 ## What the command owns
 
 1. Validate the explicit version against all four source manifests and consistent

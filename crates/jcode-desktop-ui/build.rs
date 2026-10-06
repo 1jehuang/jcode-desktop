@@ -187,7 +187,9 @@ fn embed_changelog_shots(root: &Path, out: &Path) {
     let mut files = Vec::new();
     let mut stack = vec![root.join("assets/changelog")];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {

@@ -340,8 +340,7 @@ pub(crate) struct Shot {
     pub bytes: &'static [u8],
 }
 
-const SHOTS: &[(&str, u32, u32, &[u8])] =
-    include!(concat!(env!("OUT_DIR"), "/changelog-shots.rs"));
+const SHOTS: &[(&str, u32, u32, &[u8])] = include!(concat!(env!("OUT_DIR"), "/changelog-shots.rs"));
 
 /// Screenshots attach to Themes by file-name order: `1-*.png` illustrates the
 /// first theme. Keeping them out of CHANGELOG.md leaves GitHub and Discord
@@ -350,11 +349,7 @@ pub(crate) fn theme_shot(version: &str, index: usize) -> Option<Shot> {
     shot_in(SHOTS, version, index)
 }
 
-fn shot_in(
-    shots: &[(&str, u32, u32, &'static [u8])],
-    version: &str,
-    index: usize,
-) -> Option<Shot> {
+fn shot_in(shots: &[(&str, u32, u32, &'static [u8])], version: &str, index: usize) -> Option<Shot> {
     let prefix = format!("assets/changelog/{version}/{}-", index + 1);
     shots
         .iter()

@@ -1,11 +1,21 @@
 # Desktop changelog presentation
 
-The updates panel uses a compact monospace document rather than a large version
-card. **Highlights** shows the installed release's editorial headline and named
-sections. **Full changelog** retains the complete embedded commit history with
-inline version/date headings, hanging bullets, and newest-first grouping.
-The panel has only these two views, including in development builds. Build
-diagnostics remain available in the development footer tooltip.
+The updates panel has a one-row header (title, **Highlights** and **All
+changes** pills, Close) and a 680px reading column in a proportional font
+(Inter on Linux, Segoe UI on Windows, the system font on macOS).
+
+**Highlights** shows the installed release:
+
+- The editorial headline, with the running build on one dim line beneath it.
+  The version appears only there.
+- Each `#### Themes` bullet as a numbered paragraph, followed by its screenshot
+  on a tinted mat when `assets/changelog/<version>/N-*.png` exists.
+- `#### Highlights`, `#### Improvements`, and `#### Fixes` as plain one-line
+  bullets under small section labels.
+- Recent commits and a **See all changes** pill.
+
+**All changes** keeps the embedded commit history grouped by release, newest
+first.
 
 ## Editorial source
 
@@ -15,28 +25,27 @@ diagnostics remain available in the development footer tooltip.
 bullet lists. Older unsectioned bullets are treated as highlights. Unknown
 sections and download footers are not promoted to release highlights.
 
-Only the installed Desktop version is selected. Development versions may use
-their base release, explicitly labeled as a development preview. Other
-prerelease channels require an exact match. Missing editorial notes do not
-substitute another release or CLI notes. Commit history and unseen counts remain
-independent of this curated overview.
+Only the installed Desktop version is selected. Development versions use their
+base release's notes and screenshots. Other prerelease channels require an exact
+match. Missing editorial notes do not substitute another release or CLI notes.
+
+## Theme screenshots
+
+`build.rs` embeds every PNG under `assets/changelog/` with its pixel size, so the
+panel reserves the right height before decoding. Shot `N-*.png` belongs to the
+Nth Themes bullet. Render them reproducibly with
+`python3 scripts/changelog_shots.py X.Y.Z`. See "Theme screenshots" in
+`docs/release-orchestration.md` for the release steps.
 
 ## Verification
 
-- `cargo test -p jcode-desktop-ui update_ --lib -- --test-threads=1`: 18 passed,
-  including release/version matching, section parsing, headline selection, and
-  bounded summaries.
-- `cargo test -p jcode-desktop-ui changelog --lib -- --test-threads=1`: 12 passed,
-  including local-only view navigation, slash command opening, singleton panels,
-  focus/draft preservation, and reload behavior. One view test overlaps the
-  preceding filter.
-- `python3 scripts/screenshot.py target/changelog-highlights.png --changelog
-  --theme graphite`: real offline app capture on private Xvfb, visually reviewed.
+- `cargo test -p jcode-desktop-ui --lib -- changelog update_notes`: version
+  matching, section parsing, headline selection, screenshot lookup by theme
+  number, local-only view navigation, and reload behavior.
+- `python3 scripts/screenshot.py --changelog --size 1440x1600
+  target/changelog.png`: real offline app capture on private Xvfb.
 - `python3 scripts/changelog_acceptance.py target/changelog-native-dark`: native
-  clicks, scrolling, keyboard navigation, independent view scroll positions, and
-  Escape dismissal. PNG/OCR evidence and `acceptance.json` remain in the output
-  directory. The same harness supports `--theme paper --width 1100` to exercise
-  light-theme and responsive single-tab layout.
+  clicks, scrolling, keyboard navigation, and Escape dismissal.
 
-The native harness inherits no user desktop sockets or credentials. It uses the
-existing offline fixture and never sends a provider request.
+The harnesses inherit no user desktop sockets or credentials and never send a
+provider request.
