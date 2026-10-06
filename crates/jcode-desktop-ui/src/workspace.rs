@@ -63,6 +63,8 @@ mod sidebar_swarm;
 mod sidebar_working;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
+#[path = "workspace_stream_fixture.rs"]
+mod workspace_stream_fixture;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -866,6 +868,7 @@ pub struct Workspace {
     animation_tick_task: Option<gpui::Task<()>>,
     _bridge_task: gpui::Task<()>,
     _housekeeping_task: gpui::Task<()>,
+    _stream_fixture: Option<gpui::Task<()>>,
     _performance_task: gpui::Task<()>,
     _live_profile_task: gpui::Task<()>,
 }
@@ -1153,6 +1156,7 @@ impl Workspace {
             animation_tick_task: None,
             _bridge_task: bridge_task,
             _housekeeping_task: housekeeping_task,
+            _stream_fixture: None,
             _performance_task: performance_task,
             _live_profile_task: crate::live_profile::spawn(window, cx),
         };
@@ -1288,6 +1292,12 @@ impl Workspace {
                 workspace.active = panel_count / 2;
             }
             workspace.focus_pending = true;
+            if workspace_stream_fixture::enabled() {
+                workspace._stream_fixture = Some(workspace_stream_fixture::spawn(
+                    "screenshot-fixture".into(),
+                    cx,
+                ));
+            }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNTS").as_deref() == Ok("1")
                 && let Some(slot) = workspace.slots.first()
             {
@@ -1503,6 +1513,7 @@ impl Workspace {
             animation_tick_task: None,
             _bridge_task: cx.spawn(async move |_, _| {}),
             _housekeeping_task: cx.spawn(async move |_, _| {}),
+            _stream_fixture: None,
             _performance_task: cx.spawn(async move |_, _| {}),
             _live_profile_task: cx.spawn(async move |_, _| {}),
         }
