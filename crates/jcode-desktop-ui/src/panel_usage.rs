@@ -25,46 +25,92 @@ impl Render for MeterTooltip {
     }
 }
 
-fn meter(
-    id: String,
-    label: String,
-    percent: Option<f32>,
-    detail: String,
-) -> gpui::Stateful<gpui::Div> {
-    let theme = Theme::global();
-    let used = percent.filter(|p| p.is_finite()).map(|p| p.clamp(0., 100.));
-    let selector = id.clone();
-    let (name, value) = match percent {
-        Some(_) => label.rsplit_once(' ').unwrap_or((&label, "")),
-        None => (label.as_str(), ""),
-    };
-    let name = name.to_owned();
-    let value = value.to_owned();
+/// Subscription quota shown when hovering the composer's method pill.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LimitsSummary {
+    Limits(Vec<UsageLimit>),
+    Unavailable(String),
+}
+
+/// Hover card for the method pill: the credential name plus one bar per
+/// quota window with its reset time.
+pub(crate) struct LimitsTooltip {
+    pub(crate) method: String,
+    pub(crate) summary: LimitsSummary,
+}
+
+impl Render for LimitsTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("LimitsTooltip");
+        let theme = Theme::global();
+        let body: Vec<gpui::AnyElement> = match &self.summary {
+            LimitsSummary::Unavailable(reason) => vec![
+                div()
+                    .max_w(px(320.))
+                    .text_color(theme.TEXT_DIM)
+                    .child(format!("Usage limits unavailable because {reason}."))
+                    .into_any_element(),
+            ],
+            LimitsSummary::Limits(limits) => limits
+                .iter()
+                .enumerate()
+                .map(|(index, limit)| limit_row(index, limit, &theme))
+                .collect(),
+        };
+        div()
+            .debug_selector(|| "panel-limits-tooltip".into())
+            .px_3()
+            .py_2()
+            .min_w(px(220.))
+            .rounded_xl()
+            .bg(theme.HEADER_BG)
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
+            .text_size(px(11.))
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .child(
+                div()
+                    .text_color(theme.TEXT)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(self.method.clone()),
+            )
+            .children(body)
+    }
+}
+
+fn limit_row(index: usize, limit: &UsageLimit, theme: &Theme) -> gpui::AnyElement {
+    let used = limit
+        .usage_percent
+        .is_finite()
+        .then(|| limit.usage_percent.clamp(0., 100.));
+    let value = used
+        .map(|used| format!("{used:.0}%"))
+        .unwrap_or_else(|| "not reported".into());
     div()
-        .id(SharedString::from(id))
-        .debug_selector(move || selector.clone())
-        .min_w_0()
+        .debug_selector(move || format!("panel-limit-{index}"))
         .flex()
-        .items_center()
-        .gap_1p5()
-        .h(px(22.))
-        .text_color(theme.TEXT_DIM)
-        .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
-        .child(div().min_w_0().truncate().child(name))
-        .when(!value.is_empty(), |el| {
-            el.child(div().flex_none().child(value))
-        })
-        .children(used.map(|used| {
-            let color = if used >= 90. {
-                theme.ERROR
-            } else if used >= 70. {
-                theme.WARN
-            } else {
-                theme.ACCENT
-            };
+        .flex_col()
+        .gap_0p5()
+        .child(
             div()
-                .flex_none()
-                .w(px(24.))
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_color(theme.TEXT_DIM)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(limit.name.clone()),
+                )
+                .child(div().flex_none().font_family(theme.FONT_MONO).child(value)),
+        )
+        .children(used.map(|used| {
+            div()
+                .w_full()
                 .h(px(4.))
                 .rounded_full()
                 .overflow_hidden()
@@ -74,9 +120,16 @@ fn meter(
                         .h_full()
                         .w(relative(used / 100.))
                         .rounded_full()
-                        .bg(color),
+                        .bg(usage_color(used, theme)),
                 )
         }))
+        .children(limit.reset_in.as_ref().map(|reset| {
+            div()
+                .text_size(px(10.))
+                .text_color(theme.TEXT_FAINT)
+                .child(format!("Resets in {reset}"))
+        }))
+        .into_any_element()
 }
 
 fn usage_color(used: f32, theme: &Theme) -> gpui::Rgba {
@@ -241,7 +294,12 @@ fn active_account<'a>(
 ) -> Option<&'a Account> {
     let provider = provider?;
     // Runtime identity arrives asynchronously. Ambiguous auth is not OAuth.
-    if auth.is_none() && matches!(provider, "openai" | "anthropic" | "gemini") {
+    if auth.is_none()
+        && matches!(
+            provider.trim().to_ascii_lowercase().as_str(),
+            "openai" | "anthropic" | "claude" | "gemini"
+        )
+    {
         return None;
     }
     let id = crate::accounts::credential_id(provider, auth);
@@ -323,7 +381,7 @@ impl Panel {
         )
     }
 
-    pub(super) fn render_usage_meters(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+    pub(super) fn render_usage_meters(&self) -> Option<gpui::Div> {
         if self.model.is_none() && self.provider.is_none() {
             return None;
         }
@@ -336,6 +394,8 @@ impl Panel {
             .gap_2()
             .flex_nowrap()
             .overflow_hidden();
+        // Subscription quota lives in the method pill's hover card. Only
+        // per-token spend stays inline.
         if let Some((cost, turns)) = self.session_api_cost() {
             let detail = format!(
                 "{}: estimated API spend for this session, priced from {turns} reported response{} at list rates. Not a bill.",
@@ -354,12 +414,19 @@ impl Panel {
                     .tooltip(move |_, cx| cx.new(|_| MeterTooltip(detail.clone())).into())
                     .child(format_cost(cost)),
             );
-            return Some(row);
         }
-        // Per-token routes have no quota. When the model cannot be priced,
-        // show nothing rather than a misleading "Limits" placeholder.
+        Some(row)
+    }
+
+    /// Quota for the active subscription credential, for the method pill's
+    /// hover card. `None` on per-token routes or when nothing is known.
+    pub(super) fn limits_summary(&self, cx: &App) -> Option<LimitsSummary> {
+        if self.model.is_none() && self.provider.is_none() {
+            return None;
+        }
+        // Per-token routes have no quota.
         if metered_source_key(self.provider.as_deref(), self.auth_method.as_deref()).is_some() {
-            return Some(row);
+            return None;
         }
         // Local account snapshots cannot describe credentials on a remote host.
         let account = if crate::harness::remote_host(&self.session_id).is_none() {
@@ -374,57 +441,15 @@ impl Panel {
             None
         };
         let limits = account.and_then(Account::active_limits);
+        if let Some(limits) = limits.filter(|limits| !limits.is_empty()) {
+            return Some(LimitsSummary::Limits(limits.to_vec()));
+        }
         // A subscription login whose quota fetch failed says so rather than
         // silently omitting its meters.
-        if limits.is_none_or(<[UsageLimit]>::is_empty)
-            && let Some(reason) = account
-                .and_then(Account::active_report)
-                .and_then(crate::accounts::UsageReport::usage_error)
-        {
-            let detail = format!(
-                "{}: usage limits unavailable because {reason}.",
-                account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
-            );
-            row = row.child(meter(
-                "panel-limits-unavailable".into(),
-                "Limits unavailable".into(),
-                None,
-                detail,
-            ));
-            return Some(row);
-        }
-        if let Some(limits) = limits.filter(|limits| !limits.is_empty()) {
-            for (index, limit) in limits.iter().enumerate() {
-                let percent = limit
-                    .usage_percent
-                    .is_finite()
-                    .then_some(limit.usage_percent);
-                let label = percent
-                    .map(|p| format!("{} {:.0}%", limit.name, p.clamp(0., 100.)))
-                    .unwrap_or_else(|| limit.name.clone());
-                let reset = limit
-                    .reset_in
-                    .as_deref()
-                    .map(|reset| format!(" Resets in {reset}."))
-                    .unwrap_or_default();
-                let detail = format!(
-                    "{}: {label}{}.{reset}",
-                    account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
-                    if percent.is_some() {
-                        " used"
-                    } else {
-                        " usage not reported"
-                    },
-                );
-                row = row.child(meter(
-                    format!("panel-limit-{index}"),
-                    label,
-                    percent,
-                    detail,
-                ));
-            }
-        }
-        Some(row)
+        account
+            .and_then(Account::active_report)
+            .and_then(crate::accounts::UsageReport::usage_error)
+            .map(|reason| LimitsSummary::Unavailable(reason.to_string()))
     }
 }
 
@@ -561,10 +586,17 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        for selector in ["panel-context-meter", "panel-limit-0", "panel-limit-1"] {
-            let bounds = vcx.debug_bounds(selector).expect(selector);
-            assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
-        }
+        let bounds = vcx.debug_bounds("panel-context-meter").unwrap();
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        // Quota bars live in the method pill's hover card, not the pill row.
+        assert!(vcx.debug_bounds("panel-limit-0").is_none());
+        let summary = workspace.update(vcx, |workspace, cx| {
+            workspace.test_panel(0).unwrap().read(cx).limits_summary(cx)
+        });
+        let Some(LimitsSummary::Limits(limits)) = summary else {
+            panic!("expected limits, got {summary:?}");
+        };
+        assert_eq!(limits.len(), 2);
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(640.), px(480.)));
         vcx.run_until_parked();
@@ -574,15 +606,6 @@ mod tests {
         // The context ring rides in the composer's pill row, after the method.
         assert!(login.right() <= context.left());
         assert!((f32::from(context.center().y - login.center().y)).abs() < 1.);
-        for selector in ["panel-limit-0", "panel-limit-1"] {
-            let limit = vcx.debug_bounds(selector).unwrap();
-            assert!(
-                (f32::from(limit.center().y - context.center().y)).abs() < 1.,
-                "limits share the composer pill row"
-            );
-            assert!(limit.left() >= context.right());
-            assert!(limit.right() <= px(640.));
-        }
         workspace.update(vcx, |workspace, cx| {
             workspace.test_panel(0).unwrap().update(cx, |panel, cx| {
                 panel.auth_method = Some("api key".into());
@@ -592,7 +615,12 @@ mod tests {
             });
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("panel-limit-0").is_none());
+        assert_eq!(
+            workspace.update(vcx, |workspace, cx| {
+                workspace.test_panel(0).unwrap().read(cx).limits_summary(cx)
+            }),
+            None
+        );
         // Unpriced API routes stay honest: no fake $0 and no "Limits" label.
         assert!(vcx.debug_bounds("panel-limits-unavailable").is_none());
         assert!(vcx.debug_bounds("panel-api-cost").is_none());
@@ -617,6 +645,38 @@ mod tests {
     }
 
     #[gpui::test]
+    fn claude_oauth_limits_paint_with_daemon_display_name(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut accounts = crate::accounts::parse(
+                r#"{"providers":[{"id":"claude","status":"available","auth_kind":"OAuth"},{"id":"anthropic-api","status":"available","auth_kind":"API key"}]}"#,
+            )
+            .unwrap();
+            crate::accounts::merge_usage_for_tests(
+                &mut accounts,
+                r#"{"providers":[{"provider_name":"Anthropic (Claude) (j***5@gmail.com)","limits":[{"name":"5-hour window","usage_percent":1.0,"reset_in":"3h 56m"},{"name":"7-day window","usage_percent":15.0,"reset_in":"1d 13h"}],"extra_info":[],"error":null}]}"#,
+            );
+            cx.set_global(StatusAccounts(accounts));
+        });
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("claude-session", cx);
+            workspace.test_panel(0).unwrap().update(cx, |panel, _| {
+                // The daemon reports `Claude`, not the canonical `claude` id.
+                panel.provider = Some("Claude".into());
+                panel.auth_method = Some("oauth".into());
+                panel.model = Some("claude-opus-4-5".into());
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+        let summary = workspace.update(vcx, |workspace, cx| {
+            workspace.test_panel(0).unwrap().read(cx).limits_summary(cx)
+        });
+        assert!(matches!(summary, Some(LimitsSummary::Limits(ref limits)) if limits.len() == 2));
+    }
+
+    #[gpui::test]
     fn throttled_claude_oauth_quota_says_limits_are_unavailable(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             let mut accounts = crate::accounts::parse(
@@ -629,7 +689,7 @@ mod tests {
             );
             cx.set_global(StatusAccounts(accounts));
         });
-        let (_, vcx) = cx.add_window_view(|_, cx| {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
             workspace.push_test_panel("claude-session", cx);
@@ -641,8 +701,13 @@ mod tests {
             workspace
         });
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("panel-limits-unavailable").is_some());
-        assert!(vcx.debug_bounds("panel-limit-0").is_none());
+        let summary = workspace.update(vcx, |workspace, cx| {
+            workspace.test_panel(0).unwrap().read(cx).limits_summary(cx)
+        });
+        assert!(
+            matches!(summary, Some(LimitsSummary::Unavailable(_))),
+            "{summary:?}"
+        );
     }
 
     #[test]

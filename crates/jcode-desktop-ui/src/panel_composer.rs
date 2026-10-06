@@ -38,6 +38,7 @@ impl Panel {
         let account_label =
             account_method_label(self.provider.as_deref(), self.auth_method.as_deref());
         let model_label = pretty_model_label(self.model.as_deref());
+        let limits = self.limits_summary(cx);
         let effort = self
             .reasoning_effort
             .as_deref()
@@ -91,7 +92,7 @@ impl Panel {
                     .gap_2()
                     .overflow_hidden()
                     .children(self.render_voice_status(status_line))
-                    .children(self.render_usage_meters(cx))
+                    .children(self.render_usage_meters())
                     .children(self.render_image_pane_toggle(cx)),
             )
             .when(self.show_build_footer, |el| {
@@ -159,7 +160,15 @@ impl Panel {
                             .flex_shrink(2.)
                             .min_w(px(48.))
                             .text_color(theme.TEXT_FAINT)
-                            .child(div().min_w_0().truncate().child(account_label))
+                            .child(div().min_w_0().truncate().child(account_label.clone()))
+                            .when_some(limits, |pill, summary| {
+                                pill.tooltip(move |_, cx| {
+                                    let method = account_label.clone();
+                                    let summary = summary.clone();
+                                    cx.new(|_| super::usage::LimitsTooltip { method, summary })
+                                        .into()
+                                })
+                            })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_provider_picker(window, cx);
                                 cx.stop_propagation();
@@ -491,7 +500,10 @@ mod tests {
             assert!(name.right() <= model.right());
             assert!(model.right() <= effort.left(), "effort follows the model");
             assert!(effort.right() <= login.left(), "method follows effort");
-            assert!(login.right() <= context.left(), "context ring follows method");
+            assert!(
+                login.right() <= context.left(),
+                "context ring follows method"
+            );
             // The voice button lives inside the input box, on its right, and
             // the editor never runs underneath it.
             assert!(
@@ -504,7 +516,10 @@ mod tests {
             assert!(editor.right() <= voice.left(), "{editor:?} {voice:?}");
             if width >= 480. {
                 let location = vcx.debug_bounds("composer-location").unwrap();
-                assert!(location.top() > input.bottom(), "location is below the input");
+                assert!(
+                    location.top() > input.bottom(),
+                    "location is below the input"
+                );
                 assert!(context.right() <= location.left(), "location sits right");
                 assert!(
                     input.right() - location.right() < px(12.),
