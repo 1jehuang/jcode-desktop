@@ -266,7 +266,7 @@ impl Perimeter {
         // pixels long and at a new phase every frame, so they are built
         // fresh.
         if span < CACHED_STROKE_MIN {
-            if let Some(path) = self.tessellate(from, to, width) {
+            if let Some(path) = self.ribbon(from, to, width) {
                 window.paint_path(path, color);
             }
             return;
@@ -306,6 +306,45 @@ impl Perimeter {
             }
         }
         path.build().ok()
+    }
+
+    /// A short stroke as a strip of quads along the perimeter. Comet segments
+    /// are a few pixels long, two dozen of them are painted every frame, and
+    /// running lyon's stroker for each was most of the outline's cost. A
+    /// butt-capped ribbon is what the stroker produced for them anyway.
+    fn ribbon(&self, from: f32, to: f32, width: f32) -> Option<gpui::Path<Pixels>> {
+        let span = to - from;
+        let steps = (span.ceil() as usize).clamp(1, 64);
+        let half = width / 2.0;
+        let at = |s: f32| {
+            let p = self.at(s);
+            (f32::from(p.x), f32::from(p.y))
+        };
+        // Offsets either side of the centre line, from the local direction.
+        let edge = |s: f32| {
+            let (x, y) = at(s);
+            let (ax, ay) = at(s - 0.25);
+            let (bx, by) = at(s + 0.25);
+            let (dx, dy) = (bx - ax, by - ay);
+            let length = (dx * dx + dy * dy).sqrt();
+            if length <= f32::EPSILON {
+                return None;
+            }
+            let (nx, ny) = (-dy / length * half, dx / length * half);
+            Some((point(px(x + nx), px(y + ny)), point(px(x - nx), px(y - ny))))
+        };
+        let st = (point(0., 1.), point(0., 1.), point(0., 1.));
+        let mut previous = edge(from)?;
+        let mut path = gpui::Path::new(previous.0);
+        for step in 1..=steps {
+            let Some(next) = edge(from + span * step as f32 / steps as f32) else {
+                continue;
+            };
+            path.push_triangle((previous.0, previous.1, next.0), st);
+            path.push_triangle((previous.1, next.1, next.0), st);
+            previous = next;
+        }
+        (!path.vertices.is_empty()).then_some(path)
     }
 }
 
@@ -485,6 +524,36 @@ mod tests {
         for (a, b) in direct.vertices.iter().zip(&moved.vertices) {
             assert!((f32::from(a.xy_position.x) - f32::from(b.xy_position.x)).abs() < 0.01);
             assert!((f32::from(a.xy_position.y) - f32::from(b.xy_position.y)).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn comet_ribbons_cover_what_the_stroker_covered() {
+        let p = Perimeter::new(point(px(10.0), px(20.0)), 120.0, 28.0, 0.75).unwrap();
+        let area = |path: &gpui::Path<Pixels>| -> f32 {
+            path.vertices
+                .chunks_exact(3)
+                .map(|t| {
+                    let (a, b, c) = (t[0].xy_position, t[1].xy_position, t[2].xy_position);
+                    let (ax, ay) = (f32::from(a.x), f32::from(a.y));
+                    let (bx, by) = (f32::from(b.x), f32::from(b.y));
+                    let (cx, cy) = (f32::from(c.x), f32::from(c.y));
+                    ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)).abs() / 2.0
+                })
+                .sum()
+        };
+        // Straight runs, a corner, and the wrap through the top centre.
+        for (from, span, width) in [(3.0, 4.0, 1.5), (55.0, 9.0, 3.0), (p.len() - 2.0, 5.0, 2.0)] {
+            let lyon = p.tessellate(from, from + span, width).unwrap();
+            let ribbon = p.ribbon(from, from + span, width).unwrap();
+            let (expected, actual) = (area(&lyon), area(&ribbon));
+            assert!(
+                (expected - actual).abs() <= expected * 0.08,
+                "stroke {from}+{span} w{width}: lyon {expected}, ribbon {actual}"
+            );
+            let grow = |b: gpui::Bounds<Pixels>| b.dilate(px(0.6));
+            assert!(grow(lyon.bounds).contains(&ribbon.bounds.origin), "{from}");
+            assert!(grow(ribbon.bounds).contains(&lyon.bounds.origin), "{from}");
         }
     }
 

@@ -3736,8 +3736,12 @@ impl Panel {
                     .unwrap_or(if expanded { 1.0 } else { 0.0 });
                 let detail_visible = expanded || self.tool_detail_motion.contains_key(call_id);
                 let summary = tool_summary(input);
-                let detail = tool_detail(name, input, output);
-                let has_detail = !detail.is_empty();
+                // Pretty-printing the arguments and stripping ANSI from the
+                // whole output is the costly part of a tool row, and it was
+                // done for every collapsed row on every frame. The detail
+                // always has a header line, so only build it while it shows.
+                let has_detail = true;
+                let detail = detail_visible.then(|| tool_detail(name, input, output));
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 let running_veil = (!*done && error.is_none()).then(|| {
@@ -3893,7 +3897,7 @@ impl Panel {
                         error.is_some(),
                         running_veil,
                     ))
-                    .when(detail_visible && has_detail, |el| {
+                    .when_some(detail.filter(|_| has_detail), |el, detail| {
                         el.child(
                             div()
                                 .debug_selector(|| "tool-detail".into())
