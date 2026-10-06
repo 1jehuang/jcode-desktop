@@ -426,3 +426,24 @@ It needs a coordinated host restart, so it is not enabled. Scoping it to
 stop sharing dependency artifacts with dev builds: about 320 crates rebuild
 once, and every later sibling Jcode crate change compiles twice. That costs
 more than the ~1s it saves, so it is not enabled either.
+
+### Crate split plan, 2026-10-05
+
+`jcode-desktop-ui` is 183 non-test modules and ~122k lines. A static scan of
+`crate::`/`super::` references shows ~45k lines in modules that never reach
+`workspace` or `panel`. Those are the split candidates, because an edit to
+`workspace.rs` or a panel file would no longer re-check them, and an edit to
+them would rebuild only a small crate plus the UI crate's metadata reuse.
+
+A first, self-contained `jcode-desktop-core` slice closes over itself with no
+extra modules (~11k lines): `diff_model`, `diff`, `learning`, `remote_targets`,
+`performance`, `managed_cloud_parity`, `input_model_search`, `effort`,
+`image_cache`, `native_mermaid`, `pdf_render`, `prompt_background`,
+`sidebar_projects`, `todoist`, `preview_control`, `terminal_paint`. A second
+slice would add `theme`, `config`, `markdown`, `text_selection`, and `harness`
+once their mutual references are cut.
+
+Constraints: the UI crate is the hot-reloaded cdylib, so moved code is linked
+into it statically and keeps one GPUI instance. Moved types must stay out of
+the host/plugin ABI (`jcode-desktop-api`). Do the move while no other session
+has large uncommitted edits in the UI crate, since every moved file conflicts.
