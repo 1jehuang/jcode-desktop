@@ -137,7 +137,8 @@ fn prompt_text(content: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let line = line.trim_end_matches(['.', ':', ',', ';']).trim();
-    if line.chars().count() < 4 {
+    let line = strip_label(line, &["next:", "todo:", "then:"]);
+    if line.chars().count() < 4 || !actionable(line) {
         return None;
     }
     if line.chars().count() <= MAX_CHARS {
@@ -167,6 +168,43 @@ fn same_project(a: &str, b: &str) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
+fn strip_label<'a>(line: &'a str, labels: &[&str]) -> &'a str {
+    for label in labels {
+        if line.len() >= label.len()
+            && line.is_char_boundary(label.len())
+            && line[..label.len()].eq_ignore_ascii_case(label)
+        {
+            return line[label.len()..].trim_start();
+        }
+    }
+    line
+}
+
+/// Whether a todo is work the user could start in a new session. Blocked
+/// items wait on someone else, and wrap-up steps (test, commit, reload) only
+/// make sense inside the session that did the work.
+fn actionable(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("blocked") || lower.contains("blocked on") || lower.contains("waiting on")
+    {
+        return false;
+    }
+    const WRAP_UP: &[&str] = &[
+        "test", "tests", "run", "commit", "push", "reload", "rebuild", "build", "verify",
+        "screenshot", "screenshots", "show", "report", "review", "validate", "check",
+    ];
+    // "Test, screenshot, commit and reload": the leading verbs are all wrap-up.
+    let verbs: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| {
+            !word.is_empty()
+                && !matches!(*word, "and" | "then" | "the" | "both" | "all" | "ci" | "user")
+        })
+        .take(3)
+        .collect();
+    !(verbs.len() >= 2 && verbs.iter().all(|word| WRAP_UP.contains(word)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +225,30 @@ mod tests {
             working_dir: Some(dir.into()),
             todos,
         }
+    }
+
+    #[test]
+    fn blocked_and_wrap_up_todos_are_not_suggested() {
+        for skipped in [
+            "BLOCKED on user: stale GPUI_REVISION",
+            "Run CI, review screenshots, show user",
+            "Test, screenshot, commit both repos, reload desktop",
+            "Build, test, commit",
+        ] {
+            assert_eq!(prompt_text(skipped), None, "{skipped}");
+        }
+        for kept in [
+            "Move limit bars into method pill hover card",
+            "Test-controllable animation clock to replace thread::sleep",
+            "Review the login flow for races",
+            "Fix the parser",
+        ] {
+            assert!(prompt_text(kept).is_some(), "{kept}");
+        }
+        assert_eq!(
+            prompt_text("Next: remaining slow tests").as_deref(),
+            Some("remaining slow tests")
+        );
     }
 
     #[test]
